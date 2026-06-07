@@ -70,35 +70,102 @@ fn typescript_path(capability: &Capability, ctx: &BindingBuildContext) -> Vec<St
 }
 
 fn rest_operation_path_segments(capability: &Capability) -> Vec<String> {
-    let operation_segments = rest_operation_id_path_segments(&capability.operation_id);
-    if operation_segments.len() > 1 {
-        return operation_segments;
-    }
-    rest_provider_path_segments(&capability.provider_origin.provider_name)
+    let group = rest_operation_group(capability);
+    let leaf = rest_operation_leaf(capability, &group);
+    vec![group, leaf]
 }
 
-fn rest_operation_id_path_segments(operation_id: &str) -> Vec<String> {
-    let mut segments = operation_id.splitn(2, '_');
-    let Some(group) = segments.next().filter(|segment| !segment.is_empty()) else {
-        return Vec::new();
-    };
-    let Some(action) = segments.next().filter(|segment| !segment.is_empty()) else {
-        return vec![identifier_segment(group)];
-    };
-    vec![identifier_segment(group), identifier_segment(action)]
-}
-
-fn rest_provider_path_segments(provider_name: &str) -> Vec<String> {
-    if let Some((group, action)) = provider_name.split_once('/')
-        && !group.is_empty()
-        && !action.is_empty()
+fn rest_operation_group(capability: &Capability) -> String {
+    if let Some(tag) = capability
+        .provider_origin
+        .tags
+        .iter()
+        .find(|tag| !tag.trim().is_empty())
     {
-        return vec![identifier_segment(group), identifier_segment(action)];
+        return identifier_segment(tag);
     }
-    let Some((group, action)) = split_camel_group_action(provider_name) else {
-        return vec![identifier_segment(provider_name)];
+    // Tags are the provider-authored grouping model. Without tags, use the URL
+    // shape instead of inferring a namespace from operationId casing.
+    rest_path_group(capability).unwrap_or_else(|| "root".to_string())
+}
+
+fn rest_path_group(capability: &Capability) -> Option<String> {
+    let UpstreamBinding::Rest(binding) = &capability.upstream_binding else {
+        return None;
     };
-    vec![identifier_segment(group), identifier_segment(action)]
+    binding
+        .path_template
+        .split('/')
+        .map(str::trim)
+        .find(|segment| useful_path_segment(segment))
+        .map(identifier_segment)
+}
+
+fn useful_path_segment(segment: &str) -> bool {
+    if segment.is_empty()
+        || segment.starts_with('{')
+        || segment.starts_with(':')
+        || matches!(segment.to_ascii_lowercase().as_str(), "api" | "apis")
+    {
+        return false;
+    }
+    !is_version_segment(segment)
+}
+
+fn is_version_segment(segment: &str) -> bool {
+    let lower = segment.to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix('v') {
+        return is_prefixed_version_body(rest);
+    }
+    is_version_body(&lower)
+}
+
+fn is_prefixed_version_body(value: &str) -> bool {
+    !value.is_empty()
+        && value.starts_with(|ch: char| ch.is_ascii_digit())
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+}
+
+fn is_version_body(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().any(|ch| ch.is_ascii_digit())
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || matches!(ch, '.' | '_' | '-'))
+}
+
+fn rest_operation_leaf(capability: &Capability, group: &str) -> String {
+    let provider_operation_id = capability.provider_origin.provider_name.trim();
+    let raw = if provider_operation_id.is_empty() {
+        capability.operation_id.as_str()
+    } else {
+        provider_operation_id
+    };
+    let leaf = strip_matching_operation_group(raw, group).unwrap_or_else(|| raw.to_string());
+    identifier_segment(&leaf)
+}
+
+fn strip_matching_operation_group(operation_id: &str, group: &str) -> Option<String> {
+    // Only strip provider-authored hierarchy separators. CamelCase prefixes are
+    // intentionally preserved so operationIds like ValidateMonitor stay intact.
+    if !operation_id.contains(['/', '.']) {
+        return None;
+    }
+    let mut segments = operation_id
+        .split(['/', '.'])
+        .filter(|segment| !segment.is_empty());
+    let first = segments.next()?;
+    if identifier_segment(first) != group {
+        return None;
+    }
+    let remainder = segments.collect::<Vec<_>>().join("/");
+    if remainder.is_empty() {
+        None
+    } else {
+        Some(remainder)
+    }
 }
 
 fn graphql_operation_path_segments(capability: &Capability) -> Vec<String> {
@@ -119,27 +186,6 @@ fn graphql_operation_path_segments(capability: &Capability) -> Vec<String> {
         .strip_prefix(&prefix)
         .unwrap_or(capability.operation_id.as_str());
     vec![kind.to_string(), identifier_segment(field)]
-}
-
-fn split_camel_group_action(value: &str) -> Option<(&str, &str)> {
-    let bytes = value.as_bytes();
-    for index in 1..bytes.len() {
-        let previous = bytes.get(index.wrapping_sub(1)).copied()?;
-        let current = bytes.get(index).copied()?;
-        let next = bytes.get(index + 1).copied();
-        let split_before_upper_after_lower =
-            previous.is_ascii_lowercase() && current.is_ascii_uppercase();
-        let split_acronym_before_word = previous.is_ascii_uppercase()
-            && current.is_ascii_uppercase()
-            && next.is_some_and(|next| next.is_ascii_lowercase());
-        if split_before_upper_after_lower || split_acronym_before_word {
-            let (group, action) = value.split_at(index);
-            if !group.is_empty() && !action.is_empty() {
-                return Some((group, action));
-            }
-        }
-    }
-    None
 }
 
 /// Builds a deterministic TypeScript type name from a binding path.
@@ -177,6 +223,7 @@ mod tests {
                 kind: ProviderOriginKind::FileRelation,
                 snapshot_ref: "interfaces/files/provider-snapshot.yaml#/files/issues".to_string(),
                 provider_name: "List Issues".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::FileRead(FileScanBinding {
                 file_refs: Vec::new(),
@@ -211,6 +258,7 @@ mod tests {
                     "interfaces/graph/provider-snapshot.yaml#/root_fields/query_project_update"
                         .to_string(),
                 provider_name: "projectUpdate".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::Graphql(GraphqlOperationBinding {
                 endpoint_ref: "source/src_linear/interface/graph/endpoint/default".to_string(),
@@ -234,6 +282,7 @@ mod tests {
                     "interfaces/graph/provider-snapshot.yaml#/root_fields/mutation_project_update"
                         .to_string(),
                 provider_name: "projectUpdate".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::Graphql(GraphqlOperationBinding {
                 endpoint_ref: "source/src_linear/interface/graph/endpoint/default".to_string(),
@@ -277,25 +326,164 @@ mod tests {
     }
 
     #[test]
-    fn typescript_contributor_splits_rest_group_and_action_segments() {
+    fn typescript_contributor_uses_rest_tags_and_provider_operation_id_leaf() {
+        let source_id = SourceId("src_datadog".to_string());
+        let capability = Capability::new(
+            source_id.clone(),
+            "rest_v1",
+            "validate_monitor",
+            ProviderOrigin {
+                kind: ProviderOriginKind::RestOperation,
+                snapshot_ref:
+                    "interfaces/rest_v1/provider-snapshot.yaml#/operations/validate_monitor"
+                        .to_string(),
+                provider_name: "ValidateMonitor".to_string(),
+                tags: vec!["Monitors".to_string()],
+            },
+            UpstreamBinding::Rest(coral_capabilities::RestUpstreamBinding {
+                operation_ref:
+                    "interfaces/rest_v1/provider-snapshot.yaml#/operations/validate_monitor"
+                        .to_string(),
+                method: coral_capabilities::HttpMethod::Get,
+                path_template: "/api/v1/monitor/validate".to_string(),
+                parameter_bindings: Vec::new(),
+                request_bodies: Vec::new(),
+                responses: Vec::new(),
+                pagination: None,
+            }),
+        );
+        let ctx = BindingBuildContext {
+            source_id,
+            display_name: "Datadog".to_string(),
+            source_key: SourceKey("datadog".to_string()),
+        };
+
+        let contribution = TypescriptBindingContributor::new()
+            .contribute(&capability, &ctx)
+            .expect("rest contribution");
+
+        let Some(Binding::Typescript(binding)) = contribution.bindings.first() else {
+            panic!("expected TypeScript binding");
+        };
+        assert_eq!(
+            binding.path,
+            ["datadog", "restV1", "monitors", "validateMonitor"]
+        );
+        assert_eq!(
+            binding.ref_.value,
+            "typescript:datadog.restV1.monitors.validateMonitor"
+        );
+    }
+
+    #[test]
+    fn typescript_contributor_skips_bare_version_segments_for_untagged_rest_groups() {
+        let source_id = SourceId("src_twilio".to_string());
+        let capability = Capability::new(
+            source_id.clone(),
+            "rest",
+            "list_accounts",
+            ProviderOrigin {
+                kind: ProviderOriginKind::RestOperation,
+                snapshot_ref: "interfaces/rest/provider-snapshot.yaml#/operations/list_accounts"
+                    .to_string(),
+                provider_name: "ListAccounts".to_string(),
+                tags: Vec::new(),
+            },
+            UpstreamBinding::Rest(coral_capabilities::RestUpstreamBinding {
+                operation_ref: "interfaces/rest/provider-snapshot.yaml#/operations/list_accounts"
+                    .to_string(),
+                method: coral_capabilities::HttpMethod::Get,
+                path_template: "/2010-04-01/accounts".to_string(),
+                parameter_bindings: Vec::new(),
+                request_bodies: Vec::new(),
+                responses: Vec::new(),
+                pagination: None,
+            }),
+        );
+        let ctx = BindingBuildContext {
+            source_id,
+            display_name: "Twilio".to_string(),
+            source_key: SourceKey("twilio".to_string()),
+        };
+
+        let contribution = TypescriptBindingContributor::new()
+            .contribute(&capability, &ctx)
+            .expect("rest contribution");
+
+        let Some(Binding::Typescript(binding)) = contribution.bindings.first() else {
+            panic!("expected TypeScript binding");
+        };
+        assert_eq!(
+            binding.ref_.value,
+            "typescript:twilio.rest.accounts.listAccounts"
+        );
+    }
+
+    #[test]
+    fn typescript_contributor_skips_prerelease_version_segments_for_untagged_rest_groups() {
+        let source_id = SourceId("src_google".to_string());
+        let capability = Capability::new(
+            source_id.clone(),
+            "rest",
+            "list_projects",
+            ProviderOrigin {
+                kind: ProviderOriginKind::RestOperation,
+                snapshot_ref: "interfaces/rest/provider-snapshot.yaml#/operations/list_projects"
+                    .to_string(),
+                provider_name: "ListProjects".to_string(),
+                tags: Vec::new(),
+            },
+            UpstreamBinding::Rest(coral_capabilities::RestUpstreamBinding {
+                operation_ref: "interfaces/rest/provider-snapshot.yaml#/operations/list_projects"
+                    .to_string(),
+                method: coral_capabilities::HttpMethod::Get,
+                path_template: "/api/v1beta1/projects".to_string(),
+                parameter_bindings: Vec::new(),
+                request_bodies: Vec::new(),
+                responses: Vec::new(),
+                pagination: None,
+            }),
+        );
+        let ctx = BindingBuildContext {
+            source_id,
+            display_name: "Google".to_string(),
+            source_key: SourceKey("google".to_string()),
+        };
+
+        let contribution = TypescriptBindingContributor::new()
+            .contribute(&capability, &ctx)
+            .expect("rest contribution");
+
+        let Some(Binding::Typescript(binding)) = contribution.bindings.first() else {
+            panic!("expected TypeScript binding");
+        };
+        assert_eq!(
+            binding.ref_.value,
+            "typescript:google.rest.projects.listProjects"
+        );
+    }
+
+    #[test]
+    fn typescript_contributor_strips_matching_group_from_slash_operation_ids() {
         let source_id = SourceId("src_github".to_string());
         let capability = Capability::new(
             source_id.clone(),
             "rest",
-            "users_get_authenticated",
+            "agent_tasks_list_tasks",
             ProviderOrigin {
                 kind: ProviderOriginKind::RestOperation,
                 snapshot_ref:
-                    "interfaces/rest/provider-snapshot.yaml#/operations/users_get_authenticated"
+                    "interfaces/rest/provider-snapshot.yaml#/operations/agent_tasks_list_tasks"
                         .to_string(),
-                provider_name: "users/get-authenticated".to_string(),
+                provider_name: "agent-tasks/list-tasks".to_string(),
+                tags: vec!["Agent tasks".to_string()],
             },
             UpstreamBinding::Rest(coral_capabilities::RestUpstreamBinding {
                 operation_ref:
-                    "interfaces/rest/provider-snapshot.yaml#/operations/users_get_authenticated"
+                    "interfaces/rest/provider-snapshot.yaml#/operations/agent_tasks_list_tasks"
                         .to_string(),
                 method: coral_capabilities::HttpMethod::Get,
-                path_template: "/user".to_string(),
+                path_template: "/agent-tasks".to_string(),
                 parameter_bindings: Vec::new(),
                 request_bodies: Vec::new(),
                 responses: Vec::new(),
@@ -316,90 +504,8 @@ mod tests {
             panic!("expected TypeScript binding");
         };
         assert_eq!(
-            binding.path,
-            ["github", "rest", "users", "getAuthenticated"]
-        );
-        assert_eq!(
             binding.ref_.value,
-            "typescript:github.rest.users.getAuthenticated"
-        );
-    }
-
-    #[test]
-    fn typescript_contributor_uses_unique_rest_operation_id_suffixes() {
-        let source_id = SourceId("src_github".to_string());
-        let first = Capability::new(
-            source_id.clone(),
-            "rest",
-            "pulls_list_reviews",
-            ProviderOrigin {
-                kind: ProviderOriginKind::RestOperation,
-                snapshot_ref:
-                    "interfaces/rest/provider-snapshot.yaml#/operations/pulls_list_reviews"
-                        .to_string(),
-                provider_name: "pulls/list-reviews".to_string(),
-            },
-            UpstreamBinding::Rest(coral_capabilities::RestUpstreamBinding {
-                operation_ref:
-                    "interfaces/rest/provider-snapshot.yaml#/operations/pulls_list_reviews"
-                        .to_string(),
-                method: coral_capabilities::HttpMethod::Get,
-                path_template: "/repos/{owner}/{repo}/pulls/{pull_number}/reviews".to_string(),
-                parameter_bindings: Vec::new(),
-                request_bodies: Vec::new(),
-                responses: Vec::new(),
-                pagination: None,
-            }),
-        );
-        let second = Capability::new(
-            source_id.clone(),
-            "rest",
-            "pulls_list_reviews_2",
-            ProviderOrigin {
-                kind: ProviderOriginKind::RestOperation,
-                snapshot_ref:
-                    "interfaces/rest/provider-snapshot.yaml#/operations/pulls_list_reviews_2"
-                        .to_string(),
-                provider_name: "pullsListReviews".to_string(),
-            },
-            UpstreamBinding::Rest(coral_capabilities::RestUpstreamBinding {
-                operation_ref:
-                    "interfaces/rest/provider-snapshot.yaml#/operations/pulls_list_reviews_2"
-                        .to_string(),
-                method: coral_capabilities::HttpMethod::Get,
-                path_template: "/repos/{owner}/{repo}/pulls/{pull_number}/reviews".to_string(),
-                parameter_bindings: Vec::new(),
-                request_bodies: Vec::new(),
-                responses: Vec::new(),
-                pagination: None,
-            }),
-        );
-        let ctx = BindingBuildContext {
-            source_id,
-            display_name: "GitHub".to_string(),
-            source_key: SourceKey("github".to_string()),
-        };
-
-        let first = TypescriptBindingContributor::new()
-            .contribute(&first, &ctx)
-            .expect("first contribution");
-        let second = TypescriptBindingContributor::new()
-            .contribute(&second, &ctx)
-            .expect("second contribution");
-
-        let Some(Binding::Typescript(first_binding)) = first.bindings.first() else {
-            panic!("expected first TypeScript binding");
-        };
-        let Some(Binding::Typescript(second_binding)) = second.bindings.first() else {
-            panic!("expected second TypeScript binding");
-        };
-        assert_eq!(
-            first_binding.ref_.value,
-            "typescript:github.rest.pulls.listReviews"
-        );
-        assert_eq!(
-            second_binding.ref_.value,
-            "typescript:github.rest.pulls.listReviews2"
+            "typescript:github.rest.agentTasks.listTasks"
         );
     }
 
@@ -415,6 +521,7 @@ mod tests {
                 snapshot_ref: "interfaces/mcp/provider-snapshot.yaml#/tools/slack_search_public"
                     .to_string(),
                 provider_name: "slackSearchPublic".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::McpTool(McpToolUpstreamBinding {
                 server_ref: "source/src_slack/interface/mcp/server/default".to_string(),

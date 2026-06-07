@@ -3,10 +3,14 @@ use serde_json::Value as JsonValue;
 use super::CompletionState;
 use super::EXIT_SENTINEL;
 use super::RuntimeState;
+use super::UnhandledPromiseRejection;
 use super::value::json_to_v8;
 use super::value::structured_result_to_json;
 use super::value::value_to_error_text;
 use crate::input::CODE_MODE_RESULT_SLOT;
+
+const MAX_NESTED_ERROR_DETAIL_BYTES: usize = 8192;
+const NESTED_ERROR_DETAIL_TRUNCATED: &str = "...[truncated]";
 
 pub(super) fn evaluate_main_module(
     scope: &mut v8::PinScope<'_, '_>,
@@ -86,7 +90,6 @@ pub(super) fn resolve_tool_response(
             if !pending_call.allow_error_result
                 && let Some(error_text) = nested_error_result_text(&result)
             {
-                mark_fatal_error(&mut tc, &error_text);
                 let value = v8::String::new(&tc, &error_text)
                     .ok_or_else(|| "failed to allocate tool error".to_string())?;
                 resolver.reject(&tc, value.into());
@@ -144,7 +147,32 @@ fn nested_error_result_text(result: &JsonValue) -> Option<String> {
         .and_then(JsonValue::as_str)
         .filter(|message| !message.trim().is_empty())
         .unwrap_or("nested tool returned ok=false");
-    Some(format!("nested tool returned ok=false: {message}"))
+    let details = object
+        .get("error")
+        .and_then(JsonValue::as_object)
+        .and_then(|error| error.get("details"))
+        .filter(|details| !details.is_null())
+        .and_then(|details| serde_json::to_string(details).ok())
+        .map(truncate_nested_error_detail);
+    match details {
+        Some(details) => Some(format!(
+            "nested tool returned ok=false: {message}; details: {details}"
+        )),
+        None => Some(format!("nested tool returned ok=false: {message}")),
+    }
+}
+
+fn truncate_nested_error_detail(mut detail: String) -> String {
+    if detail.len() <= MAX_NESTED_ERROR_DETAIL_BYTES {
+        return detail;
+    }
+    let mut end = MAX_NESTED_ERROR_DETAIL_BYTES.saturating_sub(NESTED_ERROR_DETAIL_TRUNCATED.len());
+    while !detail.is_char_boundary(end) {
+        end -= 1;
+    }
+    detail.truncate(end);
+    detail.push_str(NESTED_ERROR_DETAIL_TRUNCATED);
+    detail
 }
 
 fn is_coral_error_result(object: &serde_json::Map<String, JsonValue>) -> bool {
@@ -168,6 +196,7 @@ pub(super) fn completion_state(
         exit_requested,
         fatal_error_text,
         has_pending_tool_calls,
+        unhandled_rejections,
     ) = scope
         .get_slot::<RuntimeState>()
         .map(|state| {
@@ -177,10 +206,19 @@ pub(super) fn completion_state(
                 state.exit_requested,
                 state.fatal_error_text.clone(),
                 !state.pending_tool_calls.is_empty(),
+                state.unhandled_rejections.clone(),
             )
         })
         .unwrap_or_default();
     if let Some(error_text) = fatal_error_text {
+        return CompletionState::Completed {
+            stored_values,
+            stored_value_updates,
+            result: None,
+            error_text: Some(error_text),
+        };
+    }
+    if let Some(error_text) = unhandled_rejection_error(scope, &unhandled_rejections) {
         return CompletionState::Completed {
             stored_values,
             stored_value_updates,
@@ -250,6 +288,19 @@ pub(super) fn completion_state(
             }
         }
     }
+}
+
+fn unhandled_rejection_error(
+    scope: &mut v8::PinScope<'_, '_>,
+    unhandled_rejections: &[UnhandledPromiseRejection],
+) -> Option<String> {
+    unhandled_rejections
+        .iter()
+        .find(|call| {
+            let promise = v8::Local::new(scope, &call.promise);
+            promise.state() == v8::PromiseState::Rejected && !promise.has_handler()
+        })
+        .map(|call| call.error_text.clone())
 }
 
 fn read_result_slot(

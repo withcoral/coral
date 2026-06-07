@@ -456,18 +456,18 @@ mod tests {
 
     #[test]
     fn describe_arguments_default_to_compact_view() {
-        let value = json!({ "reference": "tools.github.rest.searchIssues" });
+        let value = json!({ "reference": "tools.github.rest.search.issues" });
         let arguments = value.as_object().expect("object");
         let parsed = describe_arguments(Some(arguments)).expect("parse describe args");
 
-        assert_eq!(parsed.reference, "tools.github.rest.searchIssues");
+        assert_eq!(parsed.reference, "tools.github.rest.search.issues");
         assert_eq!(parsed.view, DescribeView::Compact);
     }
 
     #[test]
     fn describe_arguments_accept_detailed_view() {
         let value = json!({
-            "reference": "tools.github.rest.searchIssues",
+            "reference": "tools.github.rest.search.issues",
             "view": "detailed"
         });
         let arguments = value.as_object().expect("object");

@@ -176,11 +176,11 @@ fn mock_search_exports_response(request: &SearchExportsRequest) -> SearchExports
         Vec::new()
     } else {
         vec![SearchExportItem {
-            alias: "github.rest.listIssues".to_string(),
-            full_path: "tools.github.rest.listIssues".to_string(),
+            alias: "github.rest.issues.listIssues".to_string(),
+            full_path: "tools.github.rest.issues.listIssues".to_string(),
             capability_id: "src_github.rest.list_issues".to_string(),
             refs: vec![
-                "typescript:github.rest.listIssues".to_string(),
+                "typescript:github.rest.issues.listIssues".to_string(),
                 "sql_table:github.list_issues".to_string(),
             ],
             source_id: "src_github".to_string(),
@@ -247,9 +247,9 @@ fn mock_describe_export_response(request: &DescribeExportRequest) -> DescribeExp
         ambiguous: false,
         entry: Some(ExportDescription {
             capability_id: "src_github.rest.list_issues".to_string(),
-            alias: "github.rest.listIssues".to_string(),
+            alias: "github.rest.issues.listIssues".to_string(),
             refs: vec![
-                "typescript:github.rest.listIssues".to_string(),
+                "typescript:github.rest.issues.listIssues".to_string(),
                 "sql_table:github.list_issues".to_string(),
             ],
             source_id: "src_github".to_string(),
@@ -264,6 +264,7 @@ fn mock_describe_export_response(request: &DescribeExportRequest) -> DescribeExp
             typescript_path: vec![
                 "github".to_string(),
                 "rest".to_string(),
+                "issues".to_string(),
                 "listIssues".to_string(),
             ],
             capability: Some(json_object_value([(
@@ -287,7 +288,7 @@ fn mock_describe_export_response(request: &DescribeExportRequest) -> DescribeExp
                     },
                 )])),
             }],
-            full_path: "tools.github.rest.listIssues".to_string(),
+            full_path: "tools.github.rest.issues.listIssues".to_string(),
             deprecated: false,
             support_status: "generated".to_string(),
         }),

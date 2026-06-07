@@ -869,6 +869,7 @@ mod tests {
                 kind: ProviderOriginKind::FileRelation,
                 snapshot_ref: "interfaces/files/provider-snapshot.yaml#/files/issues".to_string(),
                 provider_name: "issues".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::FileRead(FileScanBinding {
                 file_refs: Vec::new(),
@@ -1038,6 +1039,7 @@ mod tests {
                 kind: ProviderOriginKind::RestOperation,
                 snapshot_ref: format!("interfaces/rest/provider-snapshot.yaml#/{operation_id}"),
                 provider_name: provider_name.to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::FileRead(FileScanBinding {
                 file_refs: Vec::new(),

@@ -589,11 +589,18 @@ pub(super) struct RuntimeState {
     runtime_command_tx: std_mpsc::Sender<RuntimeCommand>,
     exit_requested: bool,
     fatal_error_text: Option<String>,
+    unhandled_rejections: Vec<UnhandledPromiseRejection>,
 }
 
 pub(super) struct PendingToolCall {
     resolver: v8::Global<v8::PromiseResolver>,
     allow_error_result: bool,
+}
+
+#[derive(Clone)]
+pub(super) struct UnhandledPromiseRejection {
+    promise: v8::Global<v8::Promise>,
+    error_text: String,
 }
 
 pub(super) enum CompletionState {
@@ -690,6 +697,7 @@ fn run_runtime(
         exceeded: false,
     };
     let isolate = &mut v8::Isolate::new(code_mode_create_params());
+    isolate.set_promise_reject_callback(code_mode_promise_reject_callback);
     let isolate_handle = isolate.thread_safe_handle();
     heap_limit_state.isolate_handle = Some(isolate_handle.clone());
     let heap_limit_state_ptr = (&raw mut heap_limit_state).cast::<c_void>();
@@ -722,6 +730,7 @@ fn run_runtime(
         runtime_command_tx,
         exit_requested: false,
         fatal_error_text: None,
+        unhandled_rejections: Vec::new(),
     });
 
     if let Err(error_text) = globals::install_globals(scope) {
@@ -830,19 +839,6 @@ fn run_runtime(
         }
 
         scope.perform_microtask_checkpoint();
-        if let Some((stored_values, stored_value_updates)) = exit_requested_result(scope) {
-            send_scope_result(
-                scope,
-                &event_tx,
-                stored_values,
-                stored_value_updates,
-                None,
-                None,
-                config.max_output_tokens,
-            );
-            return;
-        }
-
         match module_loader::completion_state(
             scope,
             pending_promise.as_ref(),
@@ -875,6 +871,70 @@ fn run_runtime(
                 pending_promise = None;
             }
         }
+    }
+}
+
+extern "C" fn code_mode_promise_reject_callback(message: v8::PromiseRejectMessage) {
+    let event = message.get_event();
+    if !matches!(
+        event,
+        v8::PromiseRejectEvent::PromiseRejectWithNoHandler
+            | v8::PromiseRejectEvent::PromiseHandlerAddedAfterReject
+    ) {
+        return;
+    }
+    v8::callback_scope!(unsafe callback_scope, &message);
+    let promise = message.get_promise();
+    v8::scope!(let scope, callback_scope);
+    match event {
+        v8::PromiseRejectEvent::PromiseRejectWithNoHandler => {
+            record_unhandled_rejection(scope, promise, message.get_value());
+        }
+        v8::PromiseRejectEvent::PromiseHandlerAddedAfterReject => {
+            remove_handled_rejection(scope, promise);
+        }
+        _ => {}
+    }
+}
+
+fn record_unhandled_rejection(
+    scope: &mut v8::PinScope<'_, '_>,
+    promise: v8::Local<'_, v8::Promise>,
+    rejection: Option<v8::Local<'_, v8::Value>>,
+) {
+    let error_text = rejection
+        .map(|value| value::value_to_error_text(scope, value))
+        .unwrap_or_else(|| "unhandled promise rejection".to_string());
+    let promise = v8::Global::new(scope, promise);
+    if let Some(state) = scope.get_slot_mut::<RuntimeState>() {
+        if state.exit_requested && error_text == EXIT_SENTINEL {
+            return;
+        }
+        state.unhandled_rejections.push(UnhandledPromiseRejection {
+            promise,
+            error_text,
+        });
+    }
+}
+
+fn remove_handled_rejection(
+    scope: &mut v8::PinScope<'_, '_>,
+    handled_promise: v8::Local<'_, v8::Promise>,
+) {
+    let Some(mut rejections) = scope
+        .get_slot_mut::<RuntimeState>()
+        .map(|state| std::mem::take(&mut state.unhandled_rejections))
+    else {
+        return;
+    };
+    let handled_promise: v8::Local<v8::Value> = handled_promise.into();
+    rejections.retain(|rejection| {
+        let rejected_promise = v8::Local::new(scope, &rejection.promise);
+        let rejected_promise: v8::Local<v8::Value> = rejected_promise.into();
+        !rejected_promise.strict_equals(handled_promise)
+    });
+    if let Some(state) = scope.get_slot_mut::<RuntimeState>() {
+        state.unhandled_rejections = rejections;
     }
 }
 
@@ -932,20 +992,6 @@ fn next_paused_runtime_command(
             }
         }
     }
-}
-
-fn exit_requested_result(
-    scope: &mut v8::PinScope<'_, '_>,
-) -> Option<(HashMap<String, JsonValue>, HashMap<String, JsonValue>)> {
-    let state = scope.get_slot::<RuntimeState>()?;
-    if !state.exit_requested {
-        return None;
-    }
-
-    Some((
-        state.stored_values.clone(),
-        state.stored_value_updates.clone(),
-    ))
 }
 
 fn capture_scope_send_error(

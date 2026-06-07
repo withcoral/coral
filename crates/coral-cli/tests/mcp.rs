@@ -596,7 +596,7 @@ async fn assert_search_tool(
         }))),
     )
     .await?;
-    assert_eq!(search["items"][0]["alias"], "github.rest.listIssues");
+    assert_eq!(search["items"][0]["alias"], "github.rest.issues.listIssues");
     assert_eq!(search["items"][0]["deprecated"], false);
     assert_eq!(search["items"][0]["support_status"], "generated");
     assert_eq!(search["limit"], 5);
@@ -627,7 +627,7 @@ async fn assert_describe_tool(
     let described = structured_tool_content(
         client,
         CallToolRequestParams::new("describe").with_arguments(json_object(&json!({
-            "reference": "typescript:github.rest.listIssues",
+            "reference": "typescript:github.rest.issues.listIssues",
             "view": "detailed"
         }))),
     )
@@ -643,7 +643,7 @@ async fn assert_describe_tool(
     );
     assert_eq!(
         described["entry"]["full_path"],
-        "tools.github.rest.listIssues"
+        "tools.github.rest.issues.listIssues"
     );
     assert_eq!(described["entry"]["deprecated"], false);
     assert_eq!(described["entry"]["support_status"], "generated");
@@ -656,7 +656,7 @@ async fn assert_describe_tool(
     let describe_request = describe_requests.last().expect("describe export request");
     assert_eq!(
         describe_request.reference,
-        "typescript:github.rest.listIssues"
+        "typescript:github.rest.issues.listIssues"
     );
     Ok(())
 }
@@ -731,7 +731,7 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
     assert_eq!(search.is_error, Some(false));
     assert_eq!(
         search.structured_content.expect("structured content")["items"][0]["alias"],
-        "github.rest.listIssues"
+        "github.rest.issues.listIssues"
     );
 
     client.cancel().await?;

@@ -9,14 +9,18 @@ use url::Url;
 use wiremock::matchers::{body_partial_json, header, method};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::http::{DEFAULT_USER_AGENT, MAX_PROVIDER_RESPONSE_BYTES, upstream_http_client};
+use crate::http::{
+    DEFAULT_USER_AGENT, MAX_PROVIDER_ERROR_BODY_BYTES, MAX_PROVIDER_RESPONSE_BYTES,
+    upstream_http_client,
+};
 use crate::mcp::{
     MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER, McpHttpSession,
 };
+use crate::model::MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES;
 use crate::{
-    GraphqlUpstreamResponse, HttpRequestPlan, McpConnectionTarget, McpContentBlock,
-    McpToolCallPlan, McpUpstreamResponse, ProviderErrorKind, RedactableString, UpstreamError,
-    UpstreamInvocationPlan, UpstreamResponseEnvelope, execute_plan, list_mcp_tools,
+    GraphqlRequestPlan, GraphqlUpstreamResponse, HttpRequestPlan, McpConnectionTarget,
+    McpContentBlock, McpToolCallPlan, McpUpstreamResponse, ProviderErrorKind, RedactableString,
+    UpstreamError, UpstreamInvocationPlan, UpstreamResponseEnvelope, execute_plan, list_mcp_tools,
 };
 
 #[test]
@@ -39,6 +43,15 @@ fn graphql_media_type_classifies_errors_by_body() {
         UpstreamError::Provider { kind, detail } => {
             assert_eq!(kind, ProviderErrorKind::GraphqlError);
             assert!(detail.contains("partial_data"));
+            let detail: Value = serde_json::from_str(&detail).expect("structured detail");
+            assert_eq!(
+                detail.pointer("/http_status").and_then(Value::as_u64),
+                Some(400)
+            );
+            assert_eq!(
+                detail.pointer("/media_type").and_then(Value::as_str),
+                Some("application/graphql-response+json")
+            );
         }
         other => panic!("unexpected error: {other}"),
     }
@@ -59,7 +72,50 @@ fn graphql_success_status_preserves_data_with_errors() {
         response.partial_data,
         Some(serde_json::json!({ "issue": null }))
     );
+    assert_eq!(response.media_type.as_deref(), Some("application/json"));
     assert_eq!(response.errors.len(), 1);
+}
+
+#[test]
+fn graphql_error_only_response_bounds_provider_detail() {
+    let oversized = "x".repeat(MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES + 1024);
+    let body = serde_json::json!({
+        "errors": [{
+            "message": "bad",
+            "extensions": {
+                "blob": oversized
+            }
+        }]
+    })
+    .to_string();
+    let error = GraphqlUpstreamResponse::from_http_json(
+        200,
+        Some("application/json"),
+        BTreeMap::new(),
+        body.as_bytes(),
+    )
+    .expect_err("GraphQL errors without data fail");
+
+    let UpstreamError::Provider { kind, detail } = error else {
+        panic!("unexpected error: {error}");
+    };
+    assert_eq!(kind, ProviderErrorKind::GraphqlError);
+    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
+    assert_eq!(
+        detail.pointer("/http_status").and_then(Value::as_u64),
+        Some(200)
+    );
+    assert_eq!(
+        detail.pointer("/errors/truncated").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(detail.pointer("/partial_data"), Some(&Value::Null));
+    assert!(
+        detail
+            .pointer("/errors/json_preview")
+            .and_then(Value::as_str)
+            .is_some_and(|preview| preview.len() <= MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES)
+    );
 }
 
 #[test]
@@ -71,13 +127,205 @@ fn graphql_http_error_without_graphql_body_is_http_error() {
         b"server error",
     )
     .expect_err("http error");
-    assert!(matches!(
-        error,
-        UpstreamError::Provider {
-            kind: ProviderErrorKind::HttpError,
-            ..
-        }
-    ));
+    let UpstreamError::Provider { kind, detail } = error else {
+        panic!("unexpected error");
+    };
+    assert_eq!(kind, ProviderErrorKind::HttpError);
+    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
+    assert_eq!(
+        detail.pointer("/http_status").and_then(Value::as_u64),
+        Some(500)
+    );
+    assert_eq!(
+        detail.pointer("/body").and_then(Value::as_str),
+        Some("server error")
+    );
+}
+
+#[tokio::test]
+async fn oversized_graphql_http_error_preserves_status_and_bounded_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(502)
+                .append_header("Content-Type", "text/plain")
+                .set_body_bytes(vec![b'x'; MAX_PROVIDER_RESPONSE_BYTES + 1]),
+        )
+        .mount(&server)
+        .await;
+
+    let error = execute_plan(&UpstreamInvocationPlan::Graphql(GraphqlRequestPlan {
+        endpoint: server.uri().parse().expect("mock server URL"),
+        headers: Vec::new(),
+        operation_name: "Probe".to_string(),
+        graphql_operation_kind: coral_capabilities::GraphqlOperationKind::Query,
+        document: "query Probe { viewer { id } }".to_string(),
+        variables: Map::new(),
+        timeout: None,
+        trace_labels: BTreeMap::new(),
+    }))
+    .await
+    .expect_err("GraphQL HTTP 502 should fail with bounded diagnostics");
+
+    let UpstreamError::Provider { kind, detail } = error else {
+        panic!("unexpected error: {error}");
+    };
+    assert_eq!(kind, ProviderErrorKind::HttpError);
+    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
+    assert_eq!(
+        detail.pointer("/http_status").and_then(Value::as_u64),
+        Some(502)
+    );
+    assert_eq!(
+        detail.pointer("/media_type").and_then(Value::as_str),
+        Some("text/plain")
+    );
+    assert_eq!(
+        detail
+            .pointer("/body_preview_bytes")
+            .and_then(Value::as_u64),
+        Some(MAX_PROVIDER_ERROR_BODY_BYTES as u64)
+    );
+    assert_eq!(
+        detail.pointer("/body_truncated").and_then(Value::as_bool),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn oversized_graphql_media_error_preserves_status_and_bounded_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(
+            vec![b'['; MAX_PROVIDER_RESPONSE_BYTES + 1],
+            "application/graphql-response+json",
+        ))
+        .mount(&server)
+        .await;
+
+    let error = execute_plan(&UpstreamInvocationPlan::Graphql(GraphqlRequestPlan {
+        endpoint: server.uri().parse().expect("mock server URL"),
+        headers: Vec::new(),
+        operation_name: "Probe".to_string(),
+        graphql_operation_kind: coral_capabilities::GraphqlOperationKind::Query,
+        document: "query Probe { viewer { id } }".to_string(),
+        variables: Map::new(),
+        timeout: None,
+        trace_labels: BTreeMap::new(),
+    }))
+    .await
+    .expect_err("GraphQL media HTTP 400 should fail with bounded diagnostics");
+
+    let UpstreamError::Provider { kind, detail } = error else {
+        panic!("unexpected error: {error}");
+    };
+    assert_eq!(kind, ProviderErrorKind::GraphqlError);
+    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
+    assert_eq!(
+        detail.pointer("/http_status").and_then(Value::as_u64),
+        Some(400)
+    );
+    assert_eq!(
+        detail.pointer("/media_type").and_then(Value::as_str),
+        Some("application/graphql-response+json")
+    );
+    assert_eq!(
+        detail
+            .pointer("/body_preview_bytes")
+            .and_then(Value::as_u64),
+        Some(MAX_PROVIDER_ERROR_BODY_BYTES as u64)
+    );
+    assert_eq!(
+        detail.pointer("/body_truncated").and_then(Value::as_bool),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn malformed_graphql_media_http_error_preserves_bounded_diagnostics() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_raw("not-json", "application/graphql-response+json"),
+        )
+        .mount(&server)
+        .await;
+
+    let error = execute_plan(&UpstreamInvocationPlan::Graphql(GraphqlRequestPlan {
+        endpoint: server.uri().parse().expect("mock server URL"),
+        headers: Vec::new(),
+        operation_name: "Probe".to_string(),
+        graphql_operation_kind: coral_capabilities::GraphqlOperationKind::Query,
+        document: "query Probe { viewer { id } }".to_string(),
+        variables: Map::new(),
+        timeout: None,
+        trace_labels: BTreeMap::new(),
+    }))
+    .await
+    .expect_err("malformed non-2xx GraphQL media should fail with provider diagnostics");
+
+    let UpstreamError::Provider { kind, detail } = error else {
+        panic!("unexpected error: {error}");
+    };
+    assert_eq!(kind, ProviderErrorKind::GraphqlError);
+    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
+    assert_eq!(
+        detail.pointer("/http_status").and_then(Value::as_u64),
+        Some(400)
+    );
+    assert_eq!(
+        detail.pointer("/media_type").and_then(Value::as_str),
+        Some("application/graphql-response+json")
+    );
+    assert_eq!(
+        detail.pointer("/body").and_then(Value::as_str),
+        Some("not-json")
+    );
+    assert_eq!(
+        detail.pointer("/body_truncated").and_then(Value::as_bool),
+        Some(false)
+    );
+}
+
+#[tokio::test]
+async fn graphql_media_http_error_without_errors_does_not_succeed() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(
+            serde_json::to_vec(&serde_json::json!({ "data": null })).expect("json body"),
+            "application/graphql-response+json",
+        ))
+        .mount(&server)
+        .await;
+
+    let error = execute_plan(&UpstreamInvocationPlan::Graphql(GraphqlRequestPlan {
+        endpoint: server.uri().parse().expect("mock server URL"),
+        headers: Vec::new(),
+        operation_name: "Probe".to_string(),
+        graphql_operation_kind: coral_capabilities::GraphqlOperationKind::Query,
+        document: "query Probe { viewer { id } }".to_string(),
+        variables: Map::new(),
+        timeout: None,
+        trace_labels: BTreeMap::new(),
+    }))
+    .await
+    .expect_err("non-2xx GraphQL media without errors should still fail");
+
+    let UpstreamError::Provider { kind, detail } = error else {
+        panic!("unexpected error: {error}");
+    };
+    assert_eq!(kind, ProviderErrorKind::GraphqlError);
+    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
+    assert_eq!(
+        detail.pointer("/http_status").and_then(Value::as_u64),
+        Some(400)
+    );
+    assert!(detail.pointer("/body/data").is_some_and(Value::is_null));
+    assert_eq!(
+        detail.pointer("/body_truncated").and_then(Value::as_bool),
+        Some(false)
+    );
 }
 
 #[test]
@@ -123,6 +371,39 @@ fn mcp_is_error_preserves_tool_result_payload_in_provider_detail() {
     );
 }
 
+#[test]
+fn mcp_is_error_bounds_large_tool_result_payload_in_provider_detail() {
+    let error = McpUpstreamResponse {
+        structured_content: Some(serde_json::json!({
+            "blob": "x".repeat(MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES + 1024),
+        })),
+        content: Vec::new(),
+        is_error: true,
+        meta: None,
+        response_trust: coral_capabilities::ResponseTrust::UntrustedProviderData,
+    }
+    .into_success()
+    .expect_err("isError=true should fail closed");
+
+    let UpstreamError::Provider { kind, detail } = error else {
+        panic!("unexpected error: {error}");
+    };
+    assert_eq!(kind, ProviderErrorKind::ToolError);
+    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
+    assert_eq!(
+        detail
+            .pointer("/mcp_tool_result/truncated")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        detail
+            .pointer("/mcp_tool_result/json_preview")
+            .and_then(Value::as_str)
+            .is_some_and(|preview| preview.len() <= MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES)
+    );
+}
+
 #[tokio::test]
 async fn http_requests_include_default_user_agent_when_missing() {
     let server = MockServer::start().await;
@@ -144,6 +425,101 @@ async fn http_requests_include_default_user_agent_when_missing() {
     }))
     .await
     .expect("HTTP request should include default User-Agent");
+}
+
+#[tokio::test]
+async fn http_provider_error_preserves_status_and_json_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .append_header("Content-Type", "application/json")
+                .set_body_json(serde_json::json!({
+                    "errors": ["invalid query"],
+                    "code": "bad_request"
+                })),
+        )
+        .mount(&server)
+        .await;
+
+    let error = execute_plan(&UpstreamInvocationPlan::Http(HttpRequestPlan {
+        method: coral_capabilities::HttpMethod::Get,
+        url: server.uri().parse().expect("mock server URL"),
+        headers: Vec::new(),
+        body: None,
+        timeout: None,
+        trace_labels: BTreeMap::new(),
+    }))
+    .await
+    .expect_err("HTTP 400 should fail");
+
+    let UpstreamError::Provider { kind, detail } = error else {
+        panic!("unexpected error: {error}");
+    };
+    assert_eq!(kind, ProviderErrorKind::HttpError);
+    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
+    assert_eq!(
+        detail.pointer("/http_status").and_then(Value::as_u64),
+        Some(400)
+    );
+    assert_eq!(
+        detail.pointer("/body/code").and_then(Value::as_str),
+        Some("bad_request")
+    );
+    assert_eq!(
+        detail.pointer("/body/errors/0").and_then(Value::as_str),
+        Some("invalid query")
+    );
+}
+
+#[tokio::test]
+async fn oversized_http_provider_error_preserves_status_and_bounded_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(500)
+                .append_header("Content-Type", "text/plain")
+                .set_body_bytes(vec![b'x'; MAX_PROVIDER_RESPONSE_BYTES + 1]),
+        )
+        .mount(&server)
+        .await;
+
+    let error = execute_plan(&UpstreamInvocationPlan::Http(HttpRequestPlan {
+        method: coral_capabilities::HttpMethod::Get,
+        url: server.uri().parse().expect("mock server URL"),
+        headers: Vec::new(),
+        body: None,
+        timeout: None,
+        trace_labels: BTreeMap::new(),
+    }))
+    .await
+    .expect_err("HTTP 500 should fail with bounded diagnostics");
+
+    let UpstreamError::Provider { kind, detail } = error else {
+        panic!("unexpected error: {error}");
+    };
+    assert_eq!(kind, ProviderErrorKind::HttpError);
+    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
+    assert_eq!(
+        detail.pointer("/http_status").and_then(Value::as_u64),
+        Some(500)
+    );
+    assert_eq!(
+        detail
+            .pointer("/body_preview_bytes")
+            .and_then(Value::as_u64),
+        Some(MAX_PROVIDER_ERROR_BODY_BYTES as u64)
+    );
+    assert_eq!(
+        detail.pointer("/body_truncated").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        detail
+            .pointer("/body_bytes")
+            .and_then(Value::as_u64)
+            .is_some_and(|bytes| bytes >= MAX_PROVIDER_ERROR_BODY_BYTES as u64)
+    );
 }
 
 #[tokio::test]
@@ -258,6 +634,124 @@ async fn executes_streamable_http_mcp_tools_call() {
         vec![McpContentBlock::Text {
             text: "done".to_string()
         }]
+    );
+}
+
+#[tokio::test]
+async fn streamable_http_mcp_tool_json_rpc_error_preserves_payload() {
+    let server = MockServer::start().await;
+    mount_streamable_http_mcp_initialize(&server).await;
+    Mock::given(method("POST"))
+        .and(header(MCP_SESSION_ID_HEADER, "session-123"))
+        .and(header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION))
+        .and(body_partial_json(serde_json::json!({
+            "method": "tools/call",
+            "params": {
+                "name": "search_monitors",
+                "arguments": { "query": "status:no_data" },
+            },
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "error": {
+                "code": -32602,
+                "message": "invalid status value",
+                "data": { "query": "status:no_data" }
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = execute_plan(&UpstreamInvocationPlan::McpToolCall(McpToolCallPlan {
+        server: McpConnectionTarget::StreamableHttp {
+            url: server.uri().parse().expect("mock server URL"),
+            headers: Vec::new(),
+        },
+        tool_name: "search_monitors".to_string(),
+        arguments: Map::from_iter([("query".to_string(), serde_json::json!("status:no_data"))]),
+        timeout: None,
+        trace_labels: BTreeMap::new(),
+    }))
+    .await
+    .expect_err("JSON-RPC tool error should fail");
+
+    let UpstreamError::Provider { kind, detail } = error else {
+        panic!("unexpected error: {error}");
+    };
+    assert_eq!(kind, ProviderErrorKind::ToolError);
+    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
+    assert_eq!(
+        detail.pointer("/mcp_error/message").and_then(Value::as_str),
+        Some("invalid status value")
+    );
+    assert_eq!(
+        detail
+            .pointer("/mcp_error/data/query")
+            .and_then(Value::as_str),
+        Some("status:no_data")
+    );
+}
+
+#[tokio::test]
+async fn streamable_http_mcp_json_rpc_error_bounds_large_payload() {
+    let server = MockServer::start().await;
+    mount_streamable_http_mcp_initialize(&server).await;
+    Mock::given(method("POST"))
+        .and(header(MCP_SESSION_ID_HEADER, "session-123"))
+        .and(header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION))
+        .and(body_partial_json(serde_json::json!({
+            "method": "tools/call",
+            "params": {
+                "name": "search_monitors",
+                "arguments": { "query": "status:no_data" },
+            },
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "error": {
+                "code": -32602,
+                "message": "invalid status value",
+                "data": {
+                    "blob": "x".repeat(MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES + 1024),
+                }
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = execute_plan(&UpstreamInvocationPlan::McpToolCall(McpToolCallPlan {
+        server: McpConnectionTarget::StreamableHttp {
+            url: server.uri().parse().expect("mock server URL"),
+            headers: Vec::new(),
+        },
+        tool_name: "search_monitors".to_string(),
+        arguments: Map::from_iter([("query".to_string(), serde_json::json!("status:no_data"))]),
+        timeout: None,
+        trace_labels: BTreeMap::new(),
+    }))
+    .await
+    .expect_err("JSON-RPC tool error should fail");
+
+    let UpstreamError::Provider { kind, detail } = error else {
+        panic!("unexpected error: {error}");
+    };
+    assert_eq!(kind, ProviderErrorKind::ToolError);
+    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
+    assert_eq!(
+        detail
+            .pointer("/mcp_error/truncated")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        detail
+            .pointer("/mcp_error/json_preview")
+            .and_then(Value::as_str)
+            .is_some_and(|preview| preview.len() <= MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES)
     );
 }
 

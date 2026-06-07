@@ -89,6 +89,7 @@ fn import_mcp_tool_capability(
             kind: ProviderOriginKind::McpTool,
             snapshot_ref: provider_ref,
             provider_name: name.to_string(),
+            tags: Vec::new(),
         },
         UpstreamBinding::McpTool(McpToolUpstreamBinding {
             server_ref: format!(

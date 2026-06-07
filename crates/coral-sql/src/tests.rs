@@ -26,6 +26,7 @@ fn file_capability() -> Capability {
             kind: ProviderOriginKind::FileRelation,
             snapshot_ref: "interfaces/files/provider-snapshot.yaml#/files/issues".to_string(),
             provider_name: "issues".to_string(),
+            tags: Vec::new(),
         },
         UpstreamBinding::FileRead(FileScanBinding {
             file_refs: vec![FileArtifactRef {
@@ -106,6 +107,7 @@ fn mcp_read_tool_without_output_schema_reports_sql_diagnostic() {
             kind: ProviderOriginKind::McpTool,
             snapshot_ref: "interfaces/mcp/provider-snapshot.yaml#/tools/search_public".to_string(),
             provider_name: "search_public".to_string(),
+            tags: Vec::new(),
         },
         UpstreamBinding::McpTool(McpToolUpstreamBinding {
             server_ref: "source/src_demo/interface/mcp/server/default".to_string(),
@@ -151,6 +153,7 @@ fn mcp_read_tool_with_list_output_schema_gets_sql_binding() {
             kind: ProviderOriginKind::McpTool,
             snapshot_ref: "interfaces/mcp/provider-snapshot.yaml#/tools/search_public".to_string(),
             provider_name: "search_public".to_string(),
+            tags: Vec::new(),
         },
         UpstreamBinding::McpTool(McpToolUpstreamBinding {
             server_ref: "source/src_demo/interface/mcp/server/default".to_string(),

@@ -27,7 +27,7 @@ use coral_spec::{
 use coral_upstream::{
     GraphqlRequestPlan, HttpRequestPlan, McpConnectionTarget, McpToolCallPlan, RedactableString,
     UpstreamError, UpstreamInvocationPlan, UpstreamRequestBody, UpstreamResponseBody,
-    UpstreamResponseEnvelope, execute_plan,
+    UpstreamResponseEnvelope, bounded_provider_diagnostic_value, execute_plan,
 };
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use tonic::{Request, Response, Status};
@@ -1959,6 +1959,15 @@ fn graphql_error_response(
     resolved: &ResolvedInvocation,
     response: &coral_upstream::GraphqlUpstreamResponse,
 ) -> InvokeCapabilityResponse {
+    let errors = bounded_provider_diagnostic_value(JsonValue::Array(response.errors.clone()));
+    let partial_data = response
+        .partial_data
+        .clone()
+        .map_or(JsonValue::Null, bounded_provider_diagnostic_value);
+    let data = response
+        .data
+        .clone()
+        .map_or(JsonValue::Null, bounded_provider_diagnostic_value);
     error_response(
         "provider_error",
         format!(
@@ -1968,10 +1977,11 @@ fn graphql_error_response(
         json!({
             "provider_error": {
                 "kind": "graphql_error",
-                "errors": response.errors,
-                "partial_data": response.partial_data,
-                "data": response.data,
+                "errors": errors,
+                "partial_data": partial_data,
+                "data": data,
                 "http_status": response.http_status,
+                "media_type": response.media_type,
             },
             "capability_id": resolved.capability.capability_id.as_str(),
             "source_id": resolved.entry.source_id.as_str(),
@@ -1989,6 +1999,7 @@ fn upstream_error_response(
         UpstreamError::InvalidResponse(detail) => ("invalid_response".to_string(), detail),
         UpstreamError::Transport(detail) => ("transport_error".to_string(), detail),
     };
+    let detail = upstream_error_detail_value(detail);
     error_response(
         "provider_error",
         format!(
@@ -2004,6 +2015,10 @@ fn upstream_error_response(
             "source_id": resolved.entry.source_id.as_str(),
         }),
     )
+}
+
+fn upstream_error_detail_value(detail: String) -> JsonValue {
+    serde_json::from_str(&detail).unwrap_or(JsonValue::String(detail))
 }
 
 fn invoke_file_read(
@@ -2474,6 +2489,7 @@ mod tests {
                 kind: ProviderOriginKind::FileRelation,
                 snapshot_ref: "interfaces/files/provider-snapshot.yaml".to_string(),
                 provider_name: "files".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::FileRead(FileScanBinding {
                 file_refs: vec![FileArtifactRef {
@@ -2499,6 +2515,7 @@ mod tests {
                 snapshot_ref: "interfaces/rest/provider-snapshot.yaml#/operations/get_item"
                     .to_string(),
                 provider_name: "getItem".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::Rest(RestUpstreamBinding {
                 operation_ref: "interfaces/rest/provider-snapshot.yaml#/operations/get_item"
@@ -2546,6 +2563,7 @@ mod tests {
                 snapshot_ref: "interfaces/mcp/provider-snapshot.yaml#/tools/search_issues"
                     .to_string(),
                 provider_name: "search_issues".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::McpTool(McpToolUpstreamBinding {
                 server_ref: "source/src_github/interface/mcp/server/default".to_string(),
@@ -3174,6 +3192,7 @@ mod tests {
                     "interfaces/graph/provider-snapshot.yaml#/root_fields/query_ratelimit"
                         .to_string(),
                 provider_name: "rateLimit".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::Graphql(GraphqlOperationBinding {
                 endpoint_ref: "source/src_github/interface/graph/endpoint/default".to_string(),
@@ -3208,6 +3227,53 @@ mod tests {
             .join(crate::graphql_documents::GENERATED_GRAPHQL_OPERATIONS_DIR);
         std::fs::create_dir_all(&operations_dir).expect("graphql operations dir");
         std::fs::write(operations_dir.join(filename), document).expect("graphql operation doc");
+    }
+
+    fn graphql_rate_limit_workspace(
+        endpoint: &str,
+    ) -> (tempfile::TempDir, LoadedWorkspaceExports, String) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("schema.graphql"),
+            "type Query { rateLimit: String }",
+        )
+        .expect("schema");
+        let materialized_dir = write_installed_manifest(
+            temp.path(),
+            &format!(
+                r"
+spec_version: 1
+kind: source
+name: github
+interfaces:
+  - id: graph
+    type: graphql
+    endpoint: {endpoint}
+    schema:
+      kind: sdl_file
+      file: ./schema.graphql
+"
+            ),
+        );
+        let mut capability = graphql_capability();
+        capability.shape_hints = ShapeHints::singleton_at_path(vec!["rateLimit".to_string()]);
+        write_graphql_operation_document(
+            &materialized_dir,
+            "graph",
+            "query_ratelimit.graphql",
+            "query QueryRatelimit { rateLimit }",
+        );
+        let capability_id = capability.capability_id.to_string();
+        let workspace = workspace_exports(
+            capability,
+            vec![
+                "github".to_string(),
+                "graph".to_string(),
+                "rateLimit".to_string(),
+            ],
+            materialized_dir,
+        );
+        (temp, workspace, capability_id)
     }
 
     fn graphql_singleton_issue_workspace(
@@ -3287,6 +3353,7 @@ interfaces:
             vec![
                 "github".to_string(),
                 "rest".to_string(),
+                "items".to_string(),
                 "getItem".to_string(),
             ],
             materialized_dir,
@@ -3294,7 +3361,7 @@ interfaces:
         let request = InvokeCapabilityRequest {
             workspace: None,
             capability_id,
-            binding_ref: "typescript:github.rest.getItem".to_string(),
+            binding_ref: "typescript:github.rest.items.getItem".to_string(),
             binding_path: Vec::new(),
             args_json: json!({ "id": 42 }).to_string(),
         };
@@ -3412,6 +3479,7 @@ interfaces:
                 snapshot_ref: "interfaces/graph/provider-snapshot.yaml#/root_fields/query_issues"
                     .to_string(),
                 provider_name: "issues".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::Graphql(GraphqlOperationBinding {
                 endpoint_ref: "source/src_github/interface/graph/endpoint/default".to_string(),
@@ -3790,6 +3858,7 @@ interfaces:
             vec![
                 "github".to_string(),
                 "rest".to_string(),
+                "items".to_string(),
                 "getItem".to_string(),
             ],
             materialized_dir,
@@ -3797,7 +3866,7 @@ interfaces:
         let request = InvokeCapabilityRequest {
             workspace: None,
             capability_id,
-            binding_ref: "typescript:github.rest.getItem".to_string(),
+            binding_ref: "typescript:github.rest.items.getItem".to_string(),
             binding_path: Vec::new(),
             args_json: json!({ "path": { "id": 42 } }).to_string(),
         };
@@ -3816,6 +3885,83 @@ interfaces:
         assert_json_pointer(&envelope, "/kind", &json!("rest"));
         assert_json_pointer(&envelope, "/provider/status", &json!(200));
         assert!(!envelope.to_string().contains("provider-session=secret"));
+    }
+
+    #[tokio::test]
+    async fn rest_provider_error_preserves_status_and_body_details() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/items/42"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .append_header("Content-Type", "application/json")
+                    .set_body_json(json!({
+                        "errors": ["invalid monitor query"],
+                        "status": "error"
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let materialized_dir = write_installed_manifest(
+            temp.path(),
+            &format!(
+                r"
+spec_version: 1
+kind: source
+name: github
+interfaces:
+  - id: rest
+    type: openapi
+    file: ./openapi.json
+    base_url: {}/api/v1
+",
+                server.uri()
+            ),
+        );
+        let capability = rest_capability();
+        let capability_id = capability.capability_id.to_string();
+        let workspace = workspace_exports(
+            capability,
+            vec![
+                "github".to_string(),
+                "rest".to_string(),
+                "items".to_string(),
+                "getItem".to_string(),
+            ],
+            materialized_dir,
+        );
+        let request = InvokeCapabilityRequest {
+            workspace: None,
+            capability_id,
+            binding_ref: "typescript:github.rest.items.getItem".to_string(),
+            binding_path: Vec::new(),
+            args_json: json!({ "path": { "id": 42 } }).to_string(),
+        };
+        let resolved = resolve_invocation(&workspace, &request).expect("resolve");
+        let response = invoke_resolved(
+            resolved,
+            serde_json::from_str(&request.args_json).expect("args"),
+            None,
+            false,
+        )
+        .await;
+
+        assert!(!response.ok);
+        let error = response.error.expect("error");
+        assert_eq!(error.kind, "provider_error");
+        let details = error
+            .details
+            .clone()
+            .map(proto_json_value_to_json)
+            .expect("error details");
+        assert_json_pointer(&details, "/provider_error/detail/http_status", &json!(400));
+        assert_json_pointer(
+            &details,
+            "/provider_error/detail/body/errors/0",
+            &json!("invalid monitor query"),
+        );
     }
 
     #[tokio::test]
@@ -3862,14 +4008,15 @@ interfaces:
             vec![
                 "github".to_string(),
                 "rest".to_string(),
-                "pullsListReviews".to_string(),
+                "pulls".to_string(),
+                "listReviews".to_string(),
             ],
             materialized_dir,
         );
         let request = InvokeCapabilityRequest {
             workspace: None,
             capability_id,
-            binding_ref: "typescript:github.rest.pullsListReviews".to_string(),
+            binding_ref: "typescript:github.rest.pulls.listReviews".to_string(),
             binding_path: Vec::new(),
             args_json: json!({
                 "owner": "withcoral",
@@ -3976,6 +4123,7 @@ paths: {{}}
             vec![
                 "github".to_string(),
                 "rest".to_string(),
+                "items".to_string(),
                 "getItem".to_string(),
             ],
             materialized_dir,
@@ -3983,7 +4131,7 @@ paths: {{}}
         let request = InvokeCapabilityRequest {
             workspace: None,
             capability_id,
-            binding_ref: "typescript:github.rest.getItem".to_string(),
+            binding_ref: "typescript:github.rest.items.getItem".to_string(),
             binding_path: Vec::new(),
             args_json: json!({ "path": { "id": 42 } }).to_string(),
         };
@@ -4038,6 +4186,7 @@ paths: {}
             vec![
                 "github".to_string(),
                 "rest".to_string(),
+                "items".to_string(),
                 "getItem".to_string(),
             ],
             materialized_dir,
@@ -4045,7 +4194,7 @@ paths: {}
         let request = InvokeCapabilityRequest {
             workspace: None,
             capability_id,
-            binding_ref: "typescript:github.rest.getItem".to_string(),
+            binding_ref: "typescript:github.rest.items.getItem".to_string(),
             binding_path: Vec::new(),
             args_json: json!({ "path": { "id": 42 } }).to_string(),
         };
@@ -4124,6 +4273,7 @@ interfaces:
             vec![
                 "github".to_string(),
                 "rest".to_string(),
+                "items".to_string(),
                 "getItem".to_string(),
             ],
             materialized_dir,
@@ -4131,7 +4281,7 @@ interfaces:
         let request = InvokeCapabilityRequest {
             workspace: None,
             capability_id,
-            binding_ref: "typescript:github.rest.getItem".to_string(),
+            binding_ref: "typescript:github.rest.items.getItem".to_string(),
             binding_path: Vec::new(),
             args_json: json!({ "path": { "id": 42 } }).to_string(),
         };
@@ -4165,6 +4315,7 @@ interfaces:
             vec![
                 "github".to_string(),
                 "rest".to_string(),
+                "items".to_string(),
                 "getItem".to_string(),
             ],
             PathBuf::from("/nonexistent/materialized/source"),
@@ -4172,7 +4323,7 @@ interfaces:
         let request = InvokeCapabilityRequest {
             workspace: None,
             capability_id,
-            binding_ref: "typescript:github.rest.getItem".to_string(),
+            binding_ref: "typescript:github.rest.items.getItem".to_string(),
             binding_path: Vec::new(),
             args_json: json!({ "path": { "id": 42 } }).to_string(),
         };
@@ -4238,6 +4389,7 @@ interfaces:
             vec![
                 "github".to_string(),
                 "rest".to_string(),
+                "items".to_string(),
                 "getItem".to_string(),
             ],
             materialized_dir,
@@ -4245,7 +4397,7 @@ interfaces:
         let request = InvokeCapabilityRequest {
             workspace: None,
             capability_id,
-            binding_ref: "typescript:github.rest.getItem".to_string(),
+            binding_ref: "typescript:github.rest.items.getItem".to_string(),
             binding_path: Vec::new(),
             args_json: json!({
                 "path": { "id": 42 },
@@ -4446,6 +4598,11 @@ interfaces:
             "/provider_error/partial_data/issue",
             &JsonValue::Null,
         );
+        assert_json_pointer(
+            &details,
+            "/provider_error/media_type",
+            &json!("application/json"),
+        );
     }
 
     #[tokio::test]
@@ -4600,6 +4757,131 @@ interfaces:
             "/provider_error/partial_data/rateLimit",
             &JsonValue::Null,
         );
+    }
+
+    #[tokio::test]
+    async fn graphql_error_details_bound_provider_payloads() {
+        let server = MockServer::start().await;
+        let oversized = "x".repeat(coral_upstream::MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES + 1024);
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(body_json(json!({
+                "query": "query QueryRatelimit { rateLimit }",
+                "variables": {},
+                "operationName": "QueryRatelimit"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "rateLimit": {
+                        "blob": oversized.clone()
+                    }
+                },
+                "errors": [{
+                    "message": "Rate limit exceeded",
+                    "path": ["rateLimit"],
+                    "extensions": {
+                        "code": "RATE_LIMITED",
+                        "blob": oversized
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let (_temp, workspace, capability_id) = graphql_rate_limit_workspace(&server.uri());
+        let request = InvokeCapabilityRequest {
+            workspace: None,
+            capability_id,
+            binding_ref: "typescript:github.graph.rateLimit".to_string(),
+            binding_path: Vec::new(),
+            args_json: "{}".to_string(),
+        };
+        let resolved = resolve_invocation(&workspace, &request).expect("resolve");
+        let response = invoke_resolved(resolved, JsonMap::new(), None, false).await;
+
+        assert!(!response.ok);
+        let error = response.error.expect("structured error");
+        assert_eq!(error.kind, "provider_error");
+        let details = error
+            .details
+            .map_or(JsonValue::Null, proto_json_value_to_json);
+        assert_json_pointer(&details, "/provider_error/http_status", &json!(200));
+        assert_json_pointer(&details, "/provider_error/errors/truncated", &json!(true));
+        assert_json_pointer(
+            &details,
+            "/provider_error/partial_data/truncated",
+            &json!(true),
+        );
+        assert_json_pointer(&details, "/provider_error/data/truncated", &json!(true));
+        for pointer in [
+            "/provider_error/errors/json_preview",
+            "/provider_error/partial_data/json_preview",
+            "/provider_error/data/json_preview",
+        ] {
+            let preview = details
+                .pointer(pointer)
+                .and_then(JsonValue::as_str)
+                .expect("preview string");
+            assert!(preview.len() <= coral_upstream::MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES);
+        }
+    }
+
+    #[tokio::test]
+    async fn graphql_error_only_upstream_detail_bounds_provider_payloads() {
+        let server = MockServer::start().await;
+        let oversized = "x".repeat(coral_upstream::MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES + 1024);
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(body_json(json!({
+                "query": "query QueryRatelimit { rateLimit }",
+                "variables": {},
+                "operationName": "QueryRatelimit"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "errors": [{
+                    "message": "Rate limit exceeded",
+                    "path": ["rateLimit"],
+                    "extensions": {
+                        "code": "RATE_LIMITED",
+                        "blob": oversized
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let (_temp, workspace, capability_id) = graphql_rate_limit_workspace(&server.uri());
+        let request = InvokeCapabilityRequest {
+            workspace: None,
+            capability_id,
+            binding_ref: "typescript:github.graph.rateLimit".to_string(),
+            binding_path: Vec::new(),
+            args_json: "{}".to_string(),
+        };
+        let resolved = resolve_invocation(&workspace, &request).expect("resolve");
+        let response = invoke_resolved(resolved, JsonMap::new(), None, false).await;
+
+        assert!(!response.ok);
+        let error = response.error.expect("structured error");
+        assert_eq!(error.kind, "provider_error");
+        let details = error
+            .details
+            .map_or(JsonValue::Null, proto_json_value_to_json);
+        assert_json_pointer(
+            &details,
+            "/provider_error/detail/errors/truncated",
+            &json!(true),
+        );
+        assert_json_pointer(
+            &details,
+            "/provider_error/detail/partial_data",
+            &JsonValue::Null,
+        );
+        let preview = details
+            .pointer("/provider_error/detail/errors/json_preview")
+            .and_then(JsonValue::as_str)
+            .expect("preview string");
+        assert!(preview.len() <= coral_upstream::MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES);
     }
 
     #[test]

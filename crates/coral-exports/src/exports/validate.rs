@@ -46,6 +46,7 @@ pub fn validate_source_exports(
     let known = capability_by_id(capabilities);
     let mut refs = BTreeSet::new();
     let mut ts_paths = BTreeSet::new();
+    let mut ts_path_segments = Vec::new();
     for entry in &exports.entries {
         if !known.contains(&entry.capability_id) {
             return Err(ExportError::validation(format!(
@@ -74,6 +75,7 @@ pub fn validate_source_exports(
                             binding.path.join(".")
                         )));
                     }
+                    ts_path_segments.push(binding.path.clone());
                 }
                 Binding::Sql(binding) => {
                     let expected_ref = binding.kind.export_ref(binding.sql_reference.as_str());
@@ -84,6 +86,25 @@ pub fn validate_source_exports(
                         )));
                     }
                 }
+            }
+        }
+    }
+    validate_no_typescript_prefix_collisions(&ts_path_segments)?;
+    Ok(())
+}
+
+fn validate_no_typescript_prefix_collisions(paths: &[Vec<String>]) -> Result<()> {
+    for left in paths {
+        for right in paths {
+            if left.len() >= right.len() {
+                continue;
+            }
+            if right.starts_with(left) {
+                return Err(ExportError::validation(format!(
+                    "TypeScript binding path '{}' conflicts with namespace path '{}'",
+                    left.join("."),
+                    right.join(".")
+                )));
             }
         }
     }
@@ -102,6 +123,7 @@ pub fn validate_workspace_exports(exports: &WorkspaceExports) -> Result<()> {
         ));
     }
     let mut refs = BTreeSet::new();
+    let mut ts_path_segments = Vec::new();
     for entry in &exports.entries {
         for binding in &entry.bindings {
             if !refs.insert(binding.ref_().value.clone()) {
@@ -110,7 +132,11 @@ pub fn validate_workspace_exports(exports: &WorkspaceExports) -> Result<()> {
                     binding.ref_().value
                 )));
             }
+            if let Binding::Typescript(binding) = binding {
+                ts_path_segments.push(binding.path.clone());
+            }
         }
     }
+    validate_no_typescript_prefix_collisions(&ts_path_segments)?;
     Ok(())
 }

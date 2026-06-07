@@ -725,6 +725,77 @@ interfaces:
 }
 
 #[test]
+fn openapi_import_preserves_provider_operation_id_and_tags() {
+    let spec = parse_source_manifest_yaml(
+        r"
+spec_version: 1
+kind: source
+name: datadog
+interfaces:
+  - id: rest_v1
+    type: openapi
+    url: https://example.com/openapi.json
+    base_url: https://api.datadoghq.com
+",
+    )
+    .expect("parse rest source spec");
+    let raw = BTreeMap::from([(
+        "rest_v1".to_string(),
+        RawInterfaceInput::OpenApiDocument {
+            bytes: serde_json::to_vec(&json!({
+                "openapi": "3.0.3",
+                "paths": {
+                    "/api/v1/monitor/validate": {
+                        "post": {
+                            "operationId": "ValidateMonitor",
+                            "tags": ["Monitors"],
+                            "responses": { "200": { "description": "ok" } }
+                        }
+                    }
+                }
+            }))
+            .expect("serialize openapi fixture"),
+        },
+    )]);
+
+    let result = import_source(
+        coral_capabilities::SourceId("src_datadog".to_string()),
+        &spec,
+        &raw,
+    )
+    .expect("import");
+    let capability = result
+        .capabilities
+        .capabilities
+        .iter()
+        .find(|capability| capability.operation_id == "validate_monitor")
+        .expect("validate monitor capability");
+    assert_eq!(capability.provider_origin.provider_name, "ValidateMonitor");
+    assert_eq!(
+        capability.provider_origin.tags,
+        vec!["Monitors".to_string()]
+    );
+    let snapshot = result
+        .provider_snapshots
+        .first()
+        .expect("provider snapshot");
+    assert_eq!(
+        snapshot
+            .snapshot
+            .pointer("/operations/0/provider_operation_id")
+            .and_then(Value::as_str),
+        Some("ValidateMonitor")
+    );
+    assert_eq!(
+        snapshot
+            .snapshot
+            .pointer("/operations/0/tags/0")
+            .and_then(Value::as_str),
+        Some("Monitors")
+    );
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "OpenAPI fixture keeps singleton, root-list, and nested-list shape hints together"

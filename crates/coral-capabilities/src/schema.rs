@@ -891,6 +891,7 @@ mod tests {
                 kind: ProviderOriginKind::RestOperation,
                 snapshot_ref: "interfaces/rest/provider-snapshot.yaml#/operations/list".to_string(),
                 provider_name: "list".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::Rest(RestUpstreamBinding {
                 operation_ref: "interfaces/rest/provider-snapshot.yaml#/operations/list"
@@ -1233,6 +1234,7 @@ mod tests {
                 snapshot_ref: "interfaces/mcp/provider-snapshot.yaml#/tools/create_issue"
                     .to_string(),
                 provider_name: "create_issue".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::McpTool(McpToolUpstreamBinding {
                 server_ref: "source/src_mcp/interface/mcp/server/default".to_string(),
@@ -1289,6 +1291,7 @@ mod tests {
                 kind: ProviderOriginKind::McpTool,
                 snapshot_ref: "interfaces/mcp/provider-snapshot.yaml#/tools/walk_path".to_string(),
                 provider_name: "walk_path".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::McpTool(McpToolUpstreamBinding {
                 server_ref: "source/src_mcp/interface/mcp/server/default".to_string(),
@@ -1386,6 +1389,7 @@ mod tests {
                 kind: ProviderOriginKind::FileRelation,
                 snapshot_ref: "interfaces/files/provider-snapshot.yaml".to_string(),
                 provider_name: "files".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::FileRead(FileScanBinding {
                 file_refs: Vec::new(),
@@ -1418,6 +1422,7 @@ mod tests {
                     "interfaces/rest/provider-snapshot.yaml#/operations/pulls_list_reviews"
                         .to_string(),
                 provider_name: "GitHub".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::Rest(RestUpstreamBinding {
                 operation_ref:

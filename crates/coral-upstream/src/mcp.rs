@@ -13,9 +13,11 @@ use tokio::process::Command;
 use url::Url;
 
 use crate::http::{
-    MAX_PROVIDER_RESPONSE_BYTES, limited_response_bytes, response_headers, response_media_type,
+    MAX_PROVIDER_RESPONSE_BYTES, http_provider_error_detail_from_preview,
+    limited_error_response_body, limited_response_bytes, response_headers, response_media_type,
     upstream_http_client,
 };
+use crate::model::{bounded_provider_diagnostic_value, structured_provider_error_detail};
 use crate::{
     McpConnectionTarget, McpContentBlock, McpToolCallPlan, McpUpstreamResponse, ProviderErrorKind,
     RedactableString, Result, UpstreamError,
@@ -113,7 +115,7 @@ async fn execute_streamable_http_mcp_tool_call(
         "arguments": &plan.arguments,
     });
     let value = session.post_request("tools/call", &params).await?;
-    mcp_tool_response_from_json_rpc(value)?.into_success()
+    mcp_tool_response_from_json_rpc("tools/call", value)?.into_success()
 }
 
 async fn execute_stdio_mcp_tool_call(
@@ -129,7 +131,11 @@ async fn execute_stdio_mcp_tool_call(
         .await
         .map_err(|error| UpstreamError::Provider {
             kind: ProviderErrorKind::ToolError,
-            detail: error.to_string(),
+            detail: mcp_provider_error_detail(
+                "MCP stdio tools/call failed",
+                None,
+                Some(Value::String(error.to_string())),
+            ),
         })?;
     let raw_value = serde_json::to_value(raw)
         .map_err(|error| UpstreamError::InvalidResponse(error.to_string()))?;
@@ -154,7 +160,11 @@ async fn list_stdio_mcp_tools(
         .await
         .map_err(|error| UpstreamError::Provider {
             kind: ProviderErrorKind::ProtocolError,
-            detail: error.to_string(),
+            detail: mcp_provider_error_detail(
+                "MCP stdio tools/list failed",
+                Some("tools/list"),
+                Some(Value::String(error.to_string())),
+            ),
         })?;
     let value = serde_json::json!({ "tools": tools });
     let _close_result = client
@@ -253,7 +263,11 @@ async fn connect_stdio_mcp(
         .await
         .map_err(|error| UpstreamError::Provider {
             kind: ProviderErrorKind::ProtocolError,
-            detail: format!("failed to initialize MCP stdio server: {error}"),
+            detail: mcp_provider_error_detail(
+                "failed to initialize MCP stdio server",
+                Some("initialize"),
+                Some(Value::String(error.to_string())),
+            ),
         })
 }
 
@@ -356,7 +370,11 @@ impl<'a> McpHttpSession<'a> {
         {
             return Err(UpstreamError::Provider {
                 kind: ProviderErrorKind::ProtocolError,
-                detail: format!("MCP {method} returned JSON-RPC error: {error}"),
+                detail: mcp_provider_error_detail(
+                    format!("MCP {method} returned JSON-RPC error"),
+                    Some(method),
+                    Some(error.clone()),
+                ),
             });
         }
         Ok(())
@@ -391,9 +409,18 @@ impl<'a> McpHttpSession<'a> {
         let headers = response_headers(response.headers());
         let media_type = response_media_type(&headers);
         if !(200..300).contains(&status) {
+            let body = limited_error_response_body(response).await?;
             return Err(UpstreamError::Provider {
                 kind: ProviderErrorKind::HttpError,
-                detail: format!("MCP endpoint returned HTTP {status}"),
+                detail: http_provider_error_detail_from_preview(
+                    "MCP endpoint",
+                    status,
+                    media_type.as_deref(),
+                    &body.bytes,
+                    body.body_truncated,
+                    body.body_bytes,
+                    body.body_bytes_exact,
+                ),
             });
         }
         let value = if media_type
@@ -446,7 +473,11 @@ pub(crate) fn json_rpc_result(method: &str, response: Value) -> Result<Value> {
     if let Some(error) = object.remove("error") {
         return Err(UpstreamError::Provider {
             kind: ProviderErrorKind::ProtocolError,
-            detail: format!("MCP {method} returned JSON-RPC error: {error}"),
+            detail: mcp_provider_error_detail(
+                format!("MCP {method} returned JSON-RPC error"),
+                Some(method),
+                Some(error),
+            ),
         });
     }
     object.remove("result").ok_or_else(|| {
@@ -551,7 +582,7 @@ fn request_id_matches(value: &Value, expected: Option<&Value>) -> bool {
     }
 }
 
-fn mcp_tool_response_from_json_rpc(value: Value) -> Result<McpUpstreamResponse> {
+fn mcp_tool_response_from_json_rpc(method: &str, value: Value) -> Result<McpUpstreamResponse> {
     let Value::Object(mut object) = value else {
         return Err(UpstreamError::InvalidResponse(
             "MCP tools/call response must be a JSON-RPC object".to_string(),
@@ -560,7 +591,11 @@ fn mcp_tool_response_from_json_rpc(value: Value) -> Result<McpUpstreamResponse> 
     if let Some(error) = object.remove("error") {
         return Err(UpstreamError::Provider {
             kind: ProviderErrorKind::ToolError,
-            detail: error.to_string(),
+            detail: mcp_provider_error_detail(
+                format!("MCP {method} returned JSON-RPC error"),
+                Some(method),
+                Some(error),
+            ),
         });
     }
     let Some(Value::Object(mut result)) = object.remove("result") else {
@@ -594,11 +629,32 @@ fn mcp_tool_response_from_json_rpc(value: Value) -> Result<McpUpstreamResponse> 
 }
 
 fn mcp_tool_response_from_result_value(result: &Value) -> Result<McpUpstreamResponse> {
-    mcp_tool_response_from_json_rpc(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 0,
-        "result": result,
-    }))
+    mcp_tool_response_from_json_rpc(
+        "tools/call",
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "result": result,
+        }),
+    )
+}
+
+fn mcp_provider_error_detail(
+    message: impl Into<String>,
+    method: Option<&str>,
+    mcp_error: Option<Value>,
+) -> String {
+    let mut detail = Map::new();
+    if let Some(method) = method {
+        detail.insert("method".to_string(), Value::String(method.to_string()));
+    }
+    if let Some(error) = mcp_error {
+        detail.insert(
+            "mcp_error".to_string(),
+            bounded_provider_diagnostic_value(error),
+        );
+    }
+    structured_provider_error_detail(message, detail)
 }
 
 fn mcp_content_block_from_value(value: Value) -> Option<McpContentBlock> {

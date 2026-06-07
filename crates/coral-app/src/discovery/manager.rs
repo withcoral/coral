@@ -573,9 +573,9 @@ fn read_yaml_artifact<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use coral_capabilities::{
-        Capability, CapabilityId, CapabilityKind, EffectKind, EffectProfile, FileFormatDescriptor,
-        FileScanBinding, GraphqlOperationBinding, GraphqlOperationKind, IdempotencyKind,
-        InvocationSchema, OutputContract, ProviderOrigin, ProviderOriginKind,
+        Capability, CapabilityId, CapabilityKind, EffectKind, EffectProfile,
+        GraphqlOperationBinding, GraphqlOperationKind, HttpMethod, IdempotencyKind,
+        InvocationSchema, OutputContract, ProviderOrigin, ProviderOriginKind, RestUpstreamBinding,
         SOURCE_CAPABILITY_GENERATOR_VERSION, ShapeHints, SourceCapabilitySet, SourceId,
         SupportStatus, UpstreamBinding,
     };
@@ -774,7 +774,10 @@ mod tests {
 
         let manager = DiscoveryManager::new(config_store, layout);
         let description = manager
-            .describe(&workspace_name, "tools.github.rest.search")
+            .describe(
+                &workspace_name,
+                "tools.github.rest.search.issuesAndPullRequests",
+            )
             .expect("describe should skip stale unrelated source");
 
         let DiscoveryDescribeResult::Found(description) = description else {
@@ -827,7 +830,7 @@ mod tests {
         let result = manager
             .describe(
                 &workspace_name,
-                "tools.github.rest.searchIssuesAndPullRequests",
+                "tools.github.rest.search.issuesAndPullRequests",
             )
             .expect("untyped stale describe should return not found diagnostics");
 
@@ -954,7 +957,7 @@ mod tests {
 
         let error = error.to_string();
         assert!(
-            error.contains("requires 'source-exports-v9'"),
+            error.contains("requires 'source-exports-v10'"),
             "unexpected error: {error}"
         );
         assert!(
@@ -965,7 +968,7 @@ mod tests {
             error.contains("Restart any MCP/client session"),
             "expected restart guidance in error: {error}"
         );
-        assert_eq!(SOURCE_EXPORTS_GENERATOR_VERSION, "source-exports-v9");
+        assert_eq!(SOURCE_EXPORTS_GENERATOR_VERSION, "source-exports-v10");
     }
 
     #[test]
@@ -994,7 +997,7 @@ mod tests {
 
         let error = error.to_string();
         assert!(
-            error.contains("requires 'derive-capabilities-v12'"),
+            error.contains("requires 'derive-capabilities-v13'"),
             "unexpected error: {error}"
         );
         assert!(
@@ -1007,7 +1010,7 @@ mod tests {
         );
         assert_eq!(
             SOURCE_CAPABILITY_GENERATOR_VERSION,
-            "derive-capabilities-v12"
+            "derive-capabilities-v13"
         );
     }
 
@@ -1036,12 +1039,19 @@ mod tests {
                 snapshot_ref:
                     "interfaces/rest/provider-snapshot.yaml#/operations/searchIssuesAndPullRequests"
                         .to_string(),
-                provider_name: "search".to_string(),
+                provider_name: "search/issues-and-pull-requests".to_string(),
+                tags: vec!["Search".to_string()],
             },
-            UpstreamBinding::FileRead(FileScanBinding {
-                file_refs: Vec::new(),
-                format: FileFormatDescriptor::Jsonl,
-                schema_ref: None,
+            UpstreamBinding::Rest(RestUpstreamBinding {
+                operation_ref:
+                    "interfaces/rest/provider-snapshot.yaml#/operations/searchIssuesAndPullRequests"
+                        .to_string(),
+                method: HttpMethod::Get,
+                path_template: "/search/issues".to_string(),
+                parameter_bindings: Vec::new(),
+                request_bodies: Vec::new(),
+                responses: Vec::new(),
+                pagination: None,
             }),
         );
         let mut capability = capability;
@@ -1085,6 +1095,7 @@ mod tests {
                 snapshot_ref: "interfaces/graph/provider-snapshot.yaml#/root_fields/query_issues"
                     .to_string(),
                 provider_name: "issues".to_string(),
+                tags: Vec::new(),
             },
             UpstreamBinding::Graphql(GraphqlOperationBinding {
                 endpoint_ref: "source/src_linear_graphql/interface/graph/endpoint/default"

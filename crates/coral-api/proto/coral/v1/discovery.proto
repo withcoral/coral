@@ -72,7 +72,7 @@ message SearchExportItem {
   repeated string matched_fields = 14;
   // Short human-readable explanation of the rank.
   string rank_reason = 15;
-  // Full generated Code Mode call path, such as tools.github.issues.list, when invokable.
+  // Full generated Code Mode call path, such as tools.github.rest.issues.list, when invokable.
   string full_path = 16;
   // Whether the provider marks this capability deprecated.
   bool deprecated = 17;
@@ -134,7 +134,7 @@ message TypeScriptBindingDescription {
   string args_type_name = 3;
   // Generated result type name.
   string result_type_name = 4;
-  // Full generated Code Mode call path, such as tools.github.issues.list.
+  // Full generated Code Mode call path, such as tools.github.rest.issues.list.
   string full_path = 5;
 }
 
@@ -228,7 +228,7 @@ message ExportDescription {
   repeated SqlBindingDescription sql_bindings = 18;
   // Structured diagnostics for this export row.
   repeated ExportDiagnosticDescription diagnostics = 19;
-  // Full generated Code Mode call path, such as tools.github.issues.list, when invokable.
+  // Full generated Code Mode call path, such as tools.github.rest.issues.list, when invokable.
   string full_path = 20;
   // Whether the provider marks this capability deprecated.
   bool deprecated = 21;

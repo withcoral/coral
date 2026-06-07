@@ -690,7 +690,7 @@ impl AppCodeModeHost {
         context: &CellContext,
         full_path: &str,
         args: JsonValue,
-        allow_error_result: bool,
+        _allow_error_result: bool,
     ) -> Result<JsonValue, String> {
         if !self.runtime_exposure.exposes_typescript() {
             return Err(
@@ -756,7 +756,7 @@ impl AppCodeModeHost {
             "error": error_value,
             "envelope": response.envelope.map_or(JsonValue::Null, proto_json_value_to_json),
         });
-        if !ok && !allow_error_result {
+        if !ok && !generated_tool_provider_error_result(&value) {
             return Err(generated_tool_failure_text(full_path, &value));
         }
         Ok(value)
@@ -777,6 +777,7 @@ impl CodeModeTurnHost for AppCodeModeHost {
         let cell_id = invocation.cell_id;
         let tool_call_id = invocation.runtime_tool_call_id;
         let tool_name = invocation.tool_name.name;
+        let allow_error_result = invocation.allow_error_result;
         let input = invocation
             .input
             .unwrap_or_else(|| JsonValue::Object(JsonMap::new()));
@@ -804,7 +805,7 @@ impl CodeModeTurnHost for AppCodeModeHost {
                             &context,
                             full_path,
                             input,
-                            invocation.allow_error_result,
+                            allow_error_result,
                         ))
                         .await
                     }
@@ -814,15 +815,31 @@ impl CodeModeTurnHost for AppCodeModeHost {
         };
         match result {
             Ok(value) => {
-                self.push_run_event(
-                    &context,
-                    CodeModeRunEventKind::ToolCompleted {
-                        cell_id,
-                        tool_call_id,
-                        tool_name,
-                    },
-                )
-                .await;
+                if !allow_error_result && generated_tool_error_result(&value) {
+                    self.push_run_event(
+                        &context,
+                        CodeModeRunEventKind::ToolFailed {
+                            cell_id,
+                            tool_call_id,
+                            tool_name: tool_name.clone(),
+                            error: tool_call_error(
+                                &tool_name,
+                                generated_tool_failure_text(&tool_name, &value),
+                            ),
+                        },
+                    )
+                    .await;
+                } else {
+                    self.push_run_event(
+                        &context,
+                        CodeModeRunEventKind::ToolCompleted {
+                            cell_id,
+                            tool_call_id,
+                            tool_name,
+                        },
+                    )
+                    .await;
+                }
                 Ok(value)
             }
             Err(error) => {
@@ -931,7 +948,57 @@ fn generated_tool_failure_text(full_path: &str, value: &JsonValue) -> String {
         .and_then(JsonValue::as_str)
         .filter(|message| !message.trim().is_empty())
         .unwrap_or("capability invocation returned ok=false");
-    format!("generated tool `{full_path}` failed: {message}")
+    let Some(details) = value.pointer("/error/details") else {
+        return format!("generated tool `{full_path}` failed: {message}");
+    };
+    if details.is_null() {
+        return format!("generated tool `{full_path}` failed: {message}");
+    }
+    let details = serde_json::to_string(details).map_or_else(
+        |_| "<unserializable error details>".to_string(),
+        |details| truncate_error_detail_text(&details),
+    );
+    format!("generated tool `{full_path}` failed: {message}; details: {details}")
+}
+
+fn generated_tool_error_result(value: &JsonValue) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.get("ok").and_then(JsonValue::as_bool) == Some(false)
+        && object.get("error").is_some_and(JsonValue::is_object)
+        && ((object.contains_key("value") && object.contains_key("envelope"))
+            || (object.contains_key("complete")
+                && object.contains_key("partial")
+                && object.contains_key("source_status")))
+}
+
+fn generated_tool_provider_error_result(value: &JsonValue) -> bool {
+    generated_tool_error_result(value)
+        && value
+            .pointer("/error/kind")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|kind| kind == "provider_error")
+}
+
+const MAX_GENERATED_TOOL_ERROR_DETAIL_CHARS: usize = 8192;
+
+fn truncate_error_detail_text(value: &str) -> String {
+    if value.len() <= MAX_GENERATED_TOOL_ERROR_DETAIL_CHARS {
+        return value.to_string();
+    }
+    let mut end = 0;
+    for (index, _) in value.char_indices() {
+        if index > MAX_GENERATED_TOOL_ERROR_DETAIL_CHARS {
+            break;
+        }
+        end = index;
+    }
+    format!(
+        "{}... [truncated {} bytes]",
+        value.get(..end).unwrap_or_default(),
+        value.len().saturating_sub(end)
+    )
 }
 
 fn provider_error_has_partial_data(error_value: &JsonValue) -> bool {
@@ -941,10 +1008,16 @@ fn provider_error_has_partial_data(error_value: &JsonValue) -> bool {
     {
         return true;
     }
-    let Some(detail) = error_value
-        .pointer("/details/provider_error/detail")
-        .and_then(JsonValue::as_str)
-    else {
+    let Some(detail) = error_value.pointer("/details/provider_error/detail") else {
+        return false;
+    };
+    if detail
+        .pointer("/partial_data")
+        .is_some_and(|value| !value.is_null())
+    {
+        return true;
+    }
+    let Some(detail) = detail.as_str() else {
         return false;
     };
     serde_json::from_str::<JsonValue>(detail)
@@ -1572,9 +1645,10 @@ mod tests {
     use tonic::{Code, Request};
 
     use coral_capabilities::{
-        Capability, EffectProfile, FileFormatDescriptor, FileScanBinding, HttpMethod,
-        InvocationSchema, OutputContract, ProviderOrigin, ProviderOriginKind, RestOutputVariant,
-        RestUpstreamBinding, SourceCapabilitySet, SourceId, StatusRange, UpstreamBinding,
+        Capability, EffectProfile, FileArtifactRef, FileFormatDescriptor, FileScanBinding,
+        HttpMethod, InvocationSchema, OutputContract, ProviderOrigin, ProviderOriginKind,
+        RestOutputVariant, RestUpstreamBinding, SourceCapabilitySet, SourceId, StatusRange,
+        UpstreamBinding,
     };
     use coral_exports::{
         BindingBuildContext, SourceKey, TypescriptBindingContributor, build_source_exports,
@@ -1770,12 +1844,14 @@ mod tests {
                 ref_: coral_exports::ExportRef::typescript(&[
                     "github".to_string(),
                     "rest".to_string(),
-                    "pullsListReviews".to_string(),
+                    "pulls".to_string(),
+                    "listReviews".to_string(),
                 ]),
                 path: vec![
                     "github".to_string(),
                     "rest".to_string(),
-                    "pullsListReviews".to_string(),
+                    "pulls".to_string(),
+                    "listReviews".to_string(),
                 ],
                 args_type_name: "GithubRestPullsListReviewsArgs".to_string(),
                 result_type_name: "GithubRestPullsListReviewsResult".to_string(),
@@ -1786,7 +1862,7 @@ mod tests {
 
         assert_eq!(
             value.pointer("/full_path").and_then(|value| value.as_str()),
-            Some("tools.github.rest.pullsListReviews")
+            Some("tools.github.rest.pulls.listReviews")
         );
         assert_eq!(
             value
@@ -1937,6 +2013,7 @@ mod tests {
                     "interfaces/rest/provider-snapshot.yaml#/operations/pulls_list_reviews"
                         .to_string(),
                 provider_name: "pulls/list-reviews".to_string(),
+                tags: vec!["Pulls".to_string()],
             },
             UpstreamBinding::Rest(RestUpstreamBinding {
                 operation_ref:
@@ -2129,6 +2206,87 @@ return "unexpected";
             tool_failed_cause(&failed_tool.events, "coral.sql.query"),
             Some(CodeModeRunErrorCause::SqlError)
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn generated_tool_errors_are_catchable_without_failing_run() {
+        let (temp, service) = test_service();
+        install_search_fixture_source(temp.path());
+        initialize_workspace(&service, "default").await;
+
+        let completed = service
+            .exec(Request::new(ExecCodeModeRequest {
+                workspace: Some(workspace("default")),
+                source: r#"
+try {
+  await tools.searchFixture.files.alpha({ file_id: "bad" });
+  return "unexpected";
+} catch (error) {
+  return {
+    caught: true,
+    text: String(error),
+  };
+}
+"#
+                .to_string(),
+            }))
+            .await
+            .expect("exec")
+            .into_inner();
+
+        assert_eq!(completed.status, status(CodeModeRunStatus::Completed));
+        assert_eq!(
+            last_output_item_from_events(&completed.events)
+                .and_then(|value| { value.get("caught").and_then(serde_json::Value::as_bool) }),
+            Some(true)
+        );
+        let text = last_output_item_from_events(&completed.events)
+            .and_then(|value| {
+                value
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .expect("caught error text");
+        assert!(text.contains("invalid_response"), "{text}");
+        assert_eq!(
+            tool_failed_cause(&completed.events, "tools.searchFixture.files.alpha"),
+            Some(CodeModeRunErrorCause::NestedToolFailed)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn generated_tool_non_provider_errors_remain_fatal_with_allow_error_result() {
+        let (temp, service) = test_service();
+        install_search_fixture_source(temp.path());
+        initialize_workspace(&service, "default").await;
+
+        let failed = service
+            .exec(Request::new(ExecCodeModeRequest {
+                workspace: Some(workspace("default")),
+                source: r#"
+try {
+  await tools.searchFixture.files.alpha({ bogus: true }, { allowErrorResult: true });
+  return "unexpected";
+} catch (error) {
+  return {
+    caught: true,
+    text: String(error),
+  };
+}
+"#
+                .to_string(),
+            }))
+            .await
+            .expect("exec")
+            .into_inner();
+
+        assert_eq!(failed.status, status(CodeModeRunStatus::Failed));
+        assert_eq!(
+            tool_failed_cause(&failed.events, "tools.searchFixture.files.alpha"),
+            Some(CodeModeRunErrorCause::NestedToolFailed)
+        );
+        assert!(last_output_item_from_events(&failed.events).is_none());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2502,9 +2660,18 @@ return "ran";
                                 "interfaces/files/provider-snapshot.yaml#/files/{operation_id}"
                             ),
                             provider_name: operation_id.to_string(),
+                            tags: Vec::new(),
                         },
                         UpstreamBinding::FileRead(FileScanBinding {
-                            file_refs: Vec::new(),
+                            file_refs: (operation_id == "alpha")
+                                .then(|| FileArtifactRef {
+                                    id: "bad".to_string(),
+                                    source_local_path: "interfaces/files/files/bad.jsonl"
+                                        .to_string(),
+                                    display_name: Some("bad.jsonl".to_string()),
+                                })
+                                .into_iter()
+                                .collect(),
                             format: FileFormatDescriptor::Jsonl,
                             schema_ref: None,
                         }),
@@ -2527,6 +2694,13 @@ return "ran";
         .expect("source exports");
         let materialized_dir = layout.source_materialized_dir(&workspace_name, &source.name);
         std::fs::create_dir_all(materialized_dir.join("exports")).expect("exports dir");
+        std::fs::create_dir_all(materialized_dir.join("interfaces/files/files"))
+            .expect("files dir");
+        std::fs::write(
+            materialized_dir.join("interfaces/files/files/bad.jsonl"),
+            b"{not-json}\n",
+        )
+        .expect("write bad provider data");
         std::fs::write(
             materialized_dir.join("exports/source-exports.yaml"),
             serde_yaml::to_string(&exports).expect("exports yaml"),

@@ -58,7 +58,10 @@ Code Mode exposes Coral host helpers and generated provider methods:
 await coral.search({ query: "github issues" });
 await coral.describe({ reference: "tools.github.rest.issues.list", view: "compact" });
 await coral.sql.query("select * from github.issues limit 5");
-const response = await tools.github.rest.issues.list({ owner: "withcoral", repo: "coral" });
+const response = await tools.github.rest.issues.list(
+  { owner: "withcoral", repo: "coral" },
+  { allowErrorResult: true }
+);
 if (!response.ok) return response;
 const { value } = response;
 return value;
@@ -66,7 +69,7 @@ return value;
 
 When TypeScript exposure is disabled, generated TypeScript methods fail before capability invocation. When SQL exposure is disabled, `coral.sql.query(...)` and SQL refs are hidden.
 
-Generated TypeScript methods call `CapabilityService.Invoke` inside Coral. They do not call providers directly, do not receive credentials, and do not bypass the experimental mutation gate. For dynamic workflows, use `full_path` from `search` or `describe` and call the generated method under `tools.*` inside Code Mode. Generated methods throw on provider or transport failure by default; successful calls return `{ ok, complete, partial, errors, source_status, value, error, envelope }`. To deliberately collect a raw error envelope, pass a second options object: `await tools.github.rest.issues.list(args, { allowErrorResult: true })`; raw error results are visibly incomplete through `complete`, `partial`, `errors`, and `source_status`.
+Generated TypeScript methods call `CapabilityService.Invoke` inside Coral. They do not call providers directly, do not receive credentials, and do not bypass the experimental mutation gate. For dynamic workflows, use `full_path` from `search` or `describe` and call the generated method under `tools.*` inside Code Mode. Generated methods reject on provider or transport failure by default; the rejection is catchable with JavaScript `try`/`catch`, and an uncaught rejection fails the run. Successful calls return `{ ok, complete, partial, errors, source_status, value, error, envelope }`. To deliberately collect a raw error envelope, pass a second options object: `await tools.github.rest.issues.list(args, { allowErrorResult: true })`; raw error results are visibly incomplete through `complete`, `partial`, `errors`, and `source_status`. Provider error details are bounded structured diagnostics when available, such as HTTP status/body previews, MCP protocol errors, or MCP `isError` tool results.
 
 Code Mode enforces explicit default nested-call budgets. A run fails at the top level when it exceeds `max_nested_tool_calls=100` or `max_parallel_tool_calls=100`; total nested invocations are counted by `max_nested_tool_calls`. Budget errors include the limit name, configured value, observed count, and invocation path. Direct result previews default to `max_output_tokens=10000` unless overridden with the first-line `// @exec` pragma; oversized direct results complete with a bounded preview, truncation metadata, and `truncation.full_output_path` when Coral can spill the complete JSON result to disk. Spilled direct results are capped by `max_output_result_spill_bytes=1048576`; larger results still return the preview plus `truncation.max_spill_bytes`, but no full-output path. Verbose `console.*` diagnostics are bounded separately as content events; when Coral truncates, drops, or spills console text, the event stream includes an `output_shaping` content item with the limit name, observed/dropped counts, and `full_output_path` when available. Spilled console text is capped by `max_output_text_spill_bytes=1048576`; after that, diagnostics are dropped with metadata instead of failing the run or growing the spill file indefinitely.
 

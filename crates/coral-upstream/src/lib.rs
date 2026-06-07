@@ -22,9 +22,10 @@ pub use graphql::graphql_request_body;
 pub use mcp::list_mcp_tools;
 pub use model::{
     GraphqlRequestPlan, GraphqlUpstreamResponse, HttpRequestPlan, HttpUpstreamResponse,
-    McpConnectionTarget, McpContentBlock, McpToolCallPlan, McpUpstreamResponse, ProviderErrorKind,
-    RedactableString, Result, UpstreamError, UpstreamInvocationPlan, UpstreamRequestBody,
-    UpstreamResponseBody, UpstreamResponseEnvelope,
+    MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES, McpConnectionTarget, McpContentBlock, McpToolCallPlan,
+    McpUpstreamResponse, ProviderErrorKind, RedactableString, Result, UpstreamError,
+    UpstreamInvocationPlan, UpstreamRequestBody, UpstreamResponseBody, UpstreamResponseEnvelope,
+    bounded_provider_diagnostic_value,
 };
 
 /// Executes a neutral upstream invocation plan.

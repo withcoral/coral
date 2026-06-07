@@ -53,6 +53,7 @@ pub(super) fn import_file(
             kind: ProviderOriginKind::FileRelation,
             snapshot_ref: provider_ref,
             provider_name: "files".to_string(),
+            tags: Vec::new(),
         },
         UpstreamBinding::FileRead(FileScanBinding {
             file_refs: file_refs.clone(),

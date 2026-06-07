@@ -807,7 +807,7 @@ fn compact_entry_value(description: &ExportDescription) -> Result<Value, tonic::
         "result_wrapper": {
             "shape": "{ ok, complete, partial, errors, source_status, value, error, envelope }",
             "success_value_path": "value",
-            "fail_closed": "Generated tools throw by default on provider or transport failure. Use allowErrorResult only for explicit raw-error collection."
+            "fail_closed": "Generated tools reject by default on provider or transport failure; try/catch can recover, uncaught rejections fail the run. Use allowErrorResult only for explicit raw-error collection."
         },
         "credential_requirements": capability_value
             .get("credential_requirements")

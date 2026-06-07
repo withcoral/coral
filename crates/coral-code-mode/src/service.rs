@@ -1099,7 +1099,7 @@ mod tests {
             match invocation.tool_name.name.as_str() {
                 "coral.search" => Ok(json!({
                     "items": [{
-                        "full_path": "tools.github.rest.searchIssuesAndPullRequests",
+                        "full_path": "tools.github.rest.search.issuesAndPullRequests",
                         "title": "Search issues and pull requests",
                         "score": 100,
                     }],
@@ -1113,7 +1113,7 @@ mod tests {
                         "capability_id": "github.rest.searchIssuesAndPullRequests",
                         "bindings": [{
                             "binding_type": "typescript",
-                            "path": ["github", "rest", "searchIssuesAndPullRequests"],
+                            "path": ["github", "rest", "search", "issuesAndPullRequests"],
                         }],
                     },
                 })),
@@ -1189,13 +1189,13 @@ return {
             .execute(ExecuteRequest {
                 enabled_tools: vec![
                     function_tool("coral.search"),
-                    function_tool("tools.github.rest.searchIssuesAndPullRequests"),
+                    function_tool("tools.github.rest.search.issuesAndPullRequests"),
                 ],
                 source: r#"
 const queries = [{ q: "repo:withcoral/coral is:pr is:open review:required draft:false" }];
 const hits = await coral.search({ query: "github prs to review" });
 const hit = hits.items[0];
-const direct = await tools.github.rest.searchIssuesAndPullRequests({
+const direct = await tools.github.rest.search.issuesAndPullRequests({
   query: { q: queries[0].q },
 });
 return {
@@ -1224,7 +1224,7 @@ return {
                     "hasInvoke": false,
                     "ownsInvoke": false,
                     "enumerable": false,
-                    "called": "tools.github.rest.searchIssuesAndPullRequests",
+                    "called": "tools.github.rest.search.issuesAndPullRequests",
                     "input": {
                         "query": {
                             "q": "repo:withcoral/coral is:pr is:open review:required draft:false",
@@ -1245,11 +1245,11 @@ return {
             .execute(ExecuteRequest {
                 enabled_tools: vec![
                     function_tool("coral.describe"),
-                    function_tool("tools.github.rest.searchIssuesAndPullRequests"),
+                    function_tool("tools.github.rest.search.issuesAndPullRequests"),
                 ],
                 source: r#"
-const described = await coral.describe({ reference: "tools.github.rest.searchIssuesAndPullRequests" });
-const direct = await tools.github.rest.searchIssuesAndPullRequests({ query: { q: "repo:withcoral/coral is:pr" } });
+const described = await coral.describe({ reference: "tools.github.rest.search.issuesAndPullRequests" });
+const direct = await tools.github.rest.search.issuesAndPullRequests({ query: { q: "repo:withcoral/coral is:pr" } });
 return {
   hasInvoke: typeof described.entry.invoke === "function",
   ownsInvoke: Object.prototype.hasOwnProperty.call(described.entry, "invoke"),
@@ -1274,7 +1274,7 @@ return {
                 result: Some(json!({
                     "hasInvoke": false,
                     "ownsInvoke": false,
-                    "called": "tools.github.rest.searchIssuesAndPullRequests",
+                    "called": "tools.github.rest.search.issuesAndPullRequests",
                     "input": {
                         "query": {
                             "q": "repo:withcoral/coral is:pr",
@@ -1349,6 +1349,171 @@ return "unexpected";
             panic!("expected nested Coral error result failure");
         };
         assert!(error_text.contains("ok=false"), "{error_text}");
+        assert!(error_text.contains("provider failed"), "{error_text}");
+    }
+
+    #[tokio::test]
+    async fn nested_coral_error_result_can_be_caught() {
+        let service = CodeModeService::new();
+        let _worker = service.start_turn_worker(Arc::new(EchoHost));
+
+        let response = service
+            .execute(ExecuteRequest {
+                enabled_tools: vec![function_tool("echo")],
+                source: r#"
+try {
+  await tools.echo({
+    ok: false,
+    value: null,
+    error: {
+      kind: "provider_error",
+      message: "provider failed",
+      details: { provider_error: { detail: { http_status: 400 } } },
+    },
+    envelope: null,
+  });
+  return "unexpected";
+} catch (error) {
+  return {
+    caught: true,
+    text: String(error),
+  };
+}
+"#
+                .to_string(),
+                yield_time_ms: Some(60_000),
+                ..execute_request("")
+            })
+            .await
+            .unwrap();
+
+        let RuntimeResponse::Result {
+            result: Some(result),
+            error_text: None,
+            ..
+        } = response
+        else {
+            panic!("expected caught nested error to complete");
+        };
+        assert_eq!(
+            result.get("caught").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        let text = result
+            .get("text")
+            .and_then(JsonValue::as_str)
+            .expect("error text");
+        assert!(text.contains("provider failed"), "{text}");
+        assert!(text.contains("http_status"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn unawaited_nested_coral_error_result_fails_closed() {
+        let service = CodeModeService::new();
+        let _worker = service.start_turn_worker(Arc::new(EchoHost));
+
+        let response = service
+            .execute(ExecuteRequest {
+                enabled_tools: vec![function_tool("echo")],
+                source: r#"
+tools.echo({
+  ok: false,
+  value: null,
+  error: {
+    kind: "provider_error",
+    message: "provider failed",
+    details: { provider_error: { detail: { http_status: 400 } } },
+  },
+  envelope: null,
+});
+return "unexpected";
+"#
+                .to_string(),
+                yield_time_ms: Some(60_000),
+                ..execute_request("")
+            })
+            .await
+            .unwrap();
+
+        let RuntimeResponse::Result {
+            result: None,
+            error_text: Some(error_text),
+            ..
+        } = response
+        else {
+            panic!("expected unawaited nested error to fail closed");
+        };
+        assert!(error_text.contains("provider failed"), "{error_text}");
+        assert!(error_text.contains("http_status"), "{error_text}");
+    }
+
+    #[tokio::test]
+    async fn unawaited_nested_coral_error_result_fails_while_main_promise_is_pending() {
+        let service = CodeModeService::new();
+        let _worker = service.start_turn_worker(Arc::new(EchoHost));
+
+        let response = service
+            .execute(ExecuteRequest {
+                enabled_tools: vec![function_tool("echo")],
+                source: r#"
+tools.echo({
+  ok: false,
+  value: null,
+  error: { kind: "provider_error", message: "provider failed" },
+  envelope: null,
+});
+await new Promise(() => {});
+"#
+                .to_string(),
+                yield_time_ms: Some(60_000),
+                ..execute_request("")
+            })
+            .await
+            .unwrap();
+
+        let RuntimeResponse::Result {
+            result: None,
+            error_text: Some(error_text),
+            ..
+        } = response
+        else {
+            panic!("expected unawaited nested error to fail while main promise is pending");
+        };
+        assert!(error_text.contains("provider failed"), "{error_text}");
+    }
+
+    #[tokio::test]
+    async fn propagated_nested_coral_error_result_fails_closed() {
+        let service = CodeModeService::new();
+        let _worker = service.start_turn_worker(Arc::new(EchoHost));
+
+        let response = service
+            .execute(ExecuteRequest {
+                enabled_tools: vec![function_tool("echo")],
+                source: r#"
+tools.echo({
+  ok: false,
+  value: null,
+  error: { kind: "provider_error", message: "provider failed" },
+  envelope: null,
+}).then(() => "ignored");
+return "unexpected";
+"#
+                .to_string(),
+                yield_time_ms: Some(60_000),
+                ..execute_request("")
+            })
+            .await
+            .unwrap();
+
+        let RuntimeResponse::Result {
+            result: None,
+            error_text: Some(error_text),
+            ..
+        } = response
+        else {
+            panic!("expected propagated nested error to fail closed");
+        };
         assert!(error_text.contains("provider failed"), "{error_text}");
     }
 
@@ -1433,6 +1598,40 @@ try {
     }
 
     #[tokio::test]
+    async fn exit_does_not_downgrade_caught_host_errors() {
+        let service = CodeModeService::new();
+        let _worker = service.start_turn_worker(Arc::new(FailingHost));
+
+        let response = service
+            .execute(ExecuteRequest {
+                enabled_tools: vec![function_tool("fail")],
+                source: r#"
+try {
+  await tools.fail({}, { allowErrorResult: true });
+  return "unexpected";
+} catch (_error) {
+  exit();
+}
+"#
+                .to_string(),
+                yield_time_ms: Some(60_000),
+                ..execute_request("")
+            })
+            .await
+            .unwrap();
+
+        let RuntimeResponse::Result {
+            result: None,
+            error_text: Some(error_text),
+            ..
+        } = response
+        else {
+            panic!("expected exit after host error to remain fatal");
+        };
+        assert!(error_text.contains("host transport failed"), "{error_text}");
+    }
+
+    #[tokio::test]
     async fn plain_ok_false_tool_output_is_returned_as_data() {
         let service = CodeModeService::new();
         let _worker = service.start_turn_worker(Arc::new(EchoHost));
@@ -1490,6 +1689,37 @@ return result;
                 result: None,
                 error_text: None,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn user_rejected_exit_sentinel_fails_closed() {
+        let service = CodeModeService::new();
+
+        let response = service
+            .execute(ExecuteRequest {
+                source: r#"
+Promise.reject("__codex_code_mode_exit__");
+return "unexpected";
+"#
+                .to_string(),
+                yield_time_ms: None,
+                ..execute_request("")
+            })
+            .await
+            .unwrap();
+
+        let RuntimeResponse::Result {
+            result: None,
+            error_text: Some(error_text),
+            ..
+        } = response
+        else {
+            panic!("expected user-created sentinel rejection to fail closed");
+        };
+        assert!(
+            error_text.contains("__codex_code_mode_exit__"),
+            "{error_text}"
         );
     }
 

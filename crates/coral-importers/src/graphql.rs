@@ -115,6 +115,7 @@ pub(super) fn import_graphql(
                 kind: ProviderOriginKind::GraphqlRootField,
                 snapshot_ref: provider_ref,
                 provider_name: field.name.clone(),
+                tags: Vec::new(),
             },
             UpstreamBinding::Graphql(GraphqlOperationBinding {
                 endpoint_ref: format!(

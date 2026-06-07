@@ -10,6 +10,8 @@ use url::Url;
 /// Upstream result type.
 pub type Result<T> = std::result::Result<T, UpstreamError>;
 
+pub const MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES: usize = 64 * 1024;
+
 /// Upstream runtime errors.
 #[derive(Debug, thiserror::Error)]
 pub enum UpstreamError {
@@ -49,6 +51,50 @@ impl fmt::Display for ProviderErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = serde_json::to_value(self).map_err(|_error| fmt::Error)?;
         f.write_str(value.as_str().unwrap_or("unknown"))
+    }
+}
+
+pub(crate) fn structured_provider_error_detail(
+    message: impl Into<String>,
+    mut detail: Map<String, Value>,
+) -> String {
+    detail.insert("message".to_string(), Value::String(message.into()));
+    Value::Object(detail).to_string()
+}
+
+#[must_use]
+pub fn bounded_provider_diagnostic_value(value: Value) -> Value {
+    let Ok(serialized) = serde_json::to_string(&value) else {
+        return value;
+    };
+    if serialized.len() <= MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES {
+        return value;
+    }
+    let preview = truncate_utf8_bytes(serialized, MAX_PROVIDER_DIAGNOSTIC_JSON_BYTES);
+    let preview_bytes = preview.text.len();
+    serde_json::json!({
+        "truncated": true,
+        "json_bytes": preview.original_bytes,
+        "json_preview_bytes": preview_bytes,
+        "json_preview": preview.text,
+    })
+}
+
+struct TruncatedText {
+    text: String,
+    original_bytes: usize,
+}
+
+fn truncate_utf8_bytes(mut text: String, max_bytes: usize) -> TruncatedText {
+    let original_bytes = text.len();
+    let mut end = max_bytes.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    TruncatedText {
+        text,
+        original_bytes,
     }
 }
 
@@ -218,11 +264,13 @@ fn mcp_tool_error_detail(
         tool_result.insert("_meta".to_string(), meta);
     }
 
-    serde_json::json!({
-        "message": "upstream MCP tool returned isError=true",
-        "mcp_tool_result": tool_result,
-    })
-    .to_string()
+    structured_provider_error_detail(
+        "upstream MCP tool returned isError=true",
+        Map::from_iter([(
+            "mcp_tool_result".to_string(),
+            bounded_provider_diagnostic_value(Value::Object(tool_result)),
+        )]),
+    )
 }
 
 /// MCP content block.
@@ -239,6 +287,7 @@ pub enum McpContentBlock {
 pub struct GraphqlUpstreamResponse {
     pub http_status: u16,
     pub headers: BTreeMap<String, String>,
+    pub media_type: Option<String>,
     pub data: Option<Value>,
     pub errors: Vec<Value>,
     pub extensions: Option<Value>,

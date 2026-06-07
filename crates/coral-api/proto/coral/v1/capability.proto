@@ -10,7 +10,7 @@ message InvokeCapabilityRequest {
   Workspace workspace = 1;
   // Stable generated capability id.
   string capability_id = 2;
-  // Captured typed binding ref, such as typescript:github.issues.addLabels.
+  // Captured typed binding ref, such as typescript:github.rest.issues.addLabels.
   string binding_ref = 3;
   // Captured TypeScript binding path when invocation came from generated code.
   repeated string binding_path = 4;

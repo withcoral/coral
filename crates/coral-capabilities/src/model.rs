@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// Generator version for source capability artifacts produced by this binary.
-pub const SOURCE_CAPABILITY_GENERATOR_VERSION: &str = "derive-capabilities-v12";
+pub const SOURCE_CAPABILITY_GENERATOR_VERSION: &str = "derive-capabilities-v13";
 
 /// Result type for capability validation and construction.
 pub type Result<T> = std::result::Result<T, CapabilityError>;
@@ -196,6 +196,8 @@ pub struct ProviderOrigin {
     pub kind: ProviderOriginKind,
     pub snapshot_ref: String,
     pub provider_name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 /// Provider origin kind.

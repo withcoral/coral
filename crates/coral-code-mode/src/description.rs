@@ -55,8 +55,9 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
 - Tool path segments that are not valid JavaScript identifiers are exposed with normalized identifiers.
 - Nested tool methods take the input shape described in their tool declaration.
 - Nested tools return JSON-serializable structured values.
-- Generated provider tools throw on provider or transport failure by default; successful calls return `{ ok, complete, partial, errors, source_status, value, error, envelope }`; after checking `response.ok`, read provider data from `response.value`.
-- Pass `{ allowErrorResult: true }` as a second argument only when you deliberately want the raw error result instead of fail-closed execution.
+- Generated provider tools reject on provider or transport failure by default; the rejection is catchable with JavaScript `try`/`catch`, and an uncaught rejection fails the run.
+- Successful generated provider calls return `{ ok, complete, partial, errors, source_status, value, error, envelope }`; after checking `response.ok`, read provider data from `response.value`.
+- Pass `{ allowErrorResult: true }` as a second argument only when you deliberately want the raw `{ ok: false }` error result with structured provider diagnostics.
 - Runs JavaScript in Coral's V8 isolate. Supported globals are `tools.*`, `coral.*`, standard JavaScript, `console.*`, and the documented helpers listed below.
 - Accepts raw JavaScript source text, not JSON, quoted strings, or markdown code fences.
 - Return the JSON-serializable value you want `exec` to return. A bare final expression or bare `await tools...` statement is ignored unless it is returned.
@@ -67,7 +68,7 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
 - `yield_time_ms` asks `exec` to yield early after that many milliseconds if the script is still running.
 - `max_output_tokens` sets the preview token budget for direct `exec` results. Oversized direct results return a bounded preview with truncation metadata and, when possible, `truncation.full_output_path` for the complete spilled JSON result. Spilled direct results are capped by `max_output_result_spill_bytes=1048576`; larger results still return the preview plus `truncation.max_spill_bytes`, but no full-output path.
 - Verbose `console.*` diagnostics are bounded as content events; when Coral truncates, drops, or spills console text, it emits an `output_shaping` content item with `limit_name`, observed/dropped counts, and `full_output_path` when available. Spilled console text is also capped by `max_output_text_spill_bytes=1048576`; after that, diagnostics are dropped with metadata instead of failing the run or growing the spill file indefinitely.
-- When the JS code is fully evaluated, the isolate's lifetime ends and unawaited promises are silently discarded.
+- When the JS code is fully evaluated, the isolate's lifetime ends and unawaited unresolved/fulfilled promises are discarded; unhandled rejected promises fail the run.
 
 - Global helpers:
 - `exit()`: Immediately ends the current script successfully (like an early return from the top level).
@@ -531,7 +532,7 @@ fn generated_provider_usage_example(
         .and_then(|_| tool_name.strip_prefix("tools."))
         .map(|path| format!("tools.{path}"))?;
     Some(format!(
-        "const response = await {call_path}({input_name});\nif (!response.ok) return response;\nconst {{ value }} = response;\nreturn value;"
+        "const response = await {call_path}({input_name}, {{ allowErrorResult: true }});\nif (!response.ok) return response;\nconst {{ value }} = response;\nreturn value;"
     ))
 }
 
@@ -1280,7 +1281,7 @@ bar"
 
         assert!(description.contains("exec usage example"));
         assert!(description.contains(
-            "const response = await tools.github.rest.search.issuesAndPullRequests(args);"
+            "const response = await tools.github.rest.search.issuesAndPullRequests(args, { allowErrorResult: true });"
         ));
         assert!(description.contains("if (!response.ok) return response;"));
         assert!(description.contains("const { value } = response;"));

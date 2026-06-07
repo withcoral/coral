@@ -467,7 +467,7 @@ MCP agents discover generated exports with `search` and inspect them with
 Typed refs identify usable bindings:
 
 ```text
-typescript:github.issues.list
+typescript:github.rest.issues.list
 sql_table:github.issues
 ```
 
@@ -477,8 +477,10 @@ handling without changing capability identity.
 
 ## MCP Error Reasons
 
-Upstream MCP provider failures are returned as structured provider errors. Common
-reasons include:
+Upstream MCP provider failures are returned as structured provider errors.
+Generated Code Mode methods reject by default, and callers can use
+`allowErrorResult` to collect the raw `{ ok: false }` envelope. Common reasons
+include:
 
 | Reason | Meaning |
 | --- | --- |
@@ -491,4 +493,6 @@ reasons include:
 
 Provider output is untrusted. Coral preserves structured content and content
 blocks, but it does not follow resource links or embedded resources
-automatically.
+automatically. Provider error details are bounded before they leave the provider
+runtime; HTTP failures include status and a body preview when available, and MCP
+failures include JSON-RPC or tool-result details when available.

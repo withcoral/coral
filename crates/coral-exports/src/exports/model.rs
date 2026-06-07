@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::package::SourceKey;
 
 /// Generator version for source export artifacts produced by this binary.
-pub const SOURCE_EXPORTS_GENERATOR_VERSION: &str = "source-exports-v9";
+pub const SOURCE_EXPORTS_GENERATOR_VERSION: &str = "source-exports-v10";
 
 /// Build context for one installed source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,7 +150,7 @@ impl CapabilityExport {
 }
 
 fn base_search_text(capability: &Capability, ctx: &BindingBuildContext) -> Vec<String> {
-    [
+    let mut values = [
         ctx.source_key.as_str(),
         ctx.display_name.as_str(),
         capability.interface_id.as_str(),
@@ -162,7 +162,9 @@ fn base_search_text(capability: &Capability, ctx: &BindingBuildContext) -> Vec<S
     .into_iter()
     .filter(|value| !value.trim().is_empty())
     .map(ToOwned::to_owned)
-    .collect()
+    .collect::<Vec<_>>();
+    values.extend(capability.provider_origin.tags.iter().cloned());
+    values
 }
 
 /// Snapshot of capability effect metadata in exports.

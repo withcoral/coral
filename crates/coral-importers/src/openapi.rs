@@ -80,7 +80,7 @@ pub(super) fn import_openapi(
             source_id: source_id.clone(),
             interface_id: interface.id.clone(),
             interface_type: "openapi".to_string(),
-            importer_version: "openapi-3.0-v1".to_string(),
+            importer_version: "openapi-3.0-v2".to_string(),
             source_document_sha256: sha256_hex(bytes),
             snapshot: serde_json::json!({ "operations": [] }),
             diagnostics: vec![diagnostic],
@@ -129,6 +129,7 @@ pub(super) fn import_openapi(
                 .and_then(Value::as_str)
                 .map_or_else(|| format!("{method_name}_{path}"), ToString::to_string);
             let operation_id = operation_ids.allocate(&provider_operation_id);
+            let provider_tags = operation_tags(operation);
             let mut parameters = path_parameters.clone();
             let operation_parameters = operation
                 .get("parameters")
@@ -154,8 +155,10 @@ pub(super) fn import_openapi(
             );
             snapshot_ops.push(serde_json::json!({
                 "operation_id": operation_id,
+                "provider_operation_id": provider_operation_id.clone(),
+                "tags": provider_tags.clone(),
                 "method": method_name,
-                "path": path,
+                "path_template": path,
                 "parameters": parameters,
                 "request_body_media_types": request_bodies.iter().map(|body| body.media_type.clone()).collect::<Vec<_>>(),
                 "response_variants": responses.iter().map(|response| serde_json::json!({
@@ -171,7 +174,8 @@ pub(super) fn import_openapi(
                 ProviderOrigin {
                     kind: ProviderOriginKind::RestOperation,
                     snapshot_ref: provider_ref.clone(),
-                    provider_name: provider_operation_id,
+                    provider_name: provider_operation_id.clone(),
+                    tags: provider_tags.clone(),
                 },
                 UpstreamBinding::Rest(RestUpstreamBinding {
                     operation_ref: provider_ref,
@@ -225,7 +229,7 @@ pub(super) fn import_openapi(
         source_id: source_id.clone(),
         interface_id: interface.id.clone(),
         interface_type: "openapi".to_string(),
-        importer_version: "openapi-3.0-v1".to_string(),
+        importer_version: "openapi-3.0-v2".to_string(),
         source_document_sha256: sha256_hex(bytes),
         snapshot: serde_json::json!({ "operations": snapshot_ops }),
         diagnostics: Vec::new(),
@@ -234,6 +238,19 @@ pub(super) fn import_openapi(
         snapshot,
         capabilities,
     })
+}
+
+fn operation_tags(operation: &Map<String, Value>) -> Vec<String> {
+    operation
+        .get("tags")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn is_allowed_runtime_base_url(value: &str) -> bool {
