@@ -4,7 +4,9 @@
 **Backend:** HTTP (Salesforce REST API v59.0)
 **Base URL:** `https://{your-instance}.my.salesforce.com`
 
-Query Salesforce CRM accounts, contacts, leads, opportunities, and cases as SQL tables. Join with Linear issues and Sentry errors for cross-source sales and support intelligence.
+Query Salesforce CRM accounts, contacts, leads, opportunities, and cases as
+SQL tables. Join contacts with Linear issues or other sources using email,
+account IDs, and conversion IDs.
 
 ## Tables
 
@@ -156,7 +158,8 @@ LIMIT 50;
 
 ## Cross-Source JOIN Examples
 
-Contacts with open Linear issues assigned to the same person:
+Contacts with open Linear issues assigned to the same person (requires
+`linear` source):
 
 ```sql
 SELECT c.first_name, c.last_name, c.email, COUNT(li.id) AS open_issues
@@ -168,7 +171,8 @@ ORDER BY open_issues DESC
 LIMIT 20;
 ```
 
-Open opportunities linked to contacts who have open Linear issues:
+Open opportunities linked to contacts who have open Linear issues (requires
+`linear` source):
 
 ```sql
 SELECT o.name AS opportunity, o.stage_name, o.amount, li.title AS linear_issue
@@ -184,12 +188,21 @@ LIMIT 20;
 
 - All tables are read-only.
 - Filters listed in the pushdown column above are injected into SOQL so the 2000-row cap applies to the filtered set. All other SQL `WHERE` conditions run client-side after fetching.
+- Salesforce returns additional query pages through a path-based
+  `nextRecordsUrl`, which Coral's current HTTP source DSL cannot follow. Use
+  the documented pushdown filters to keep matching result sets below 2000
+  records.
 - `close_date` and `converted_date` are date-only strings (`YYYY-MM-DD`), not full timestamps.
 - `amount`, `annual_revenue`, and `probability` are `Float64` (Salesforce currency/percent fields).
 - Access tokens expire; re-run `sf org display` or re-authorize to refresh.
 
 ## Rate limits
 
-Salesforce enforces per-org daily API call limits. Each table query counts as one API call. The response header `Sforce-Limit-Info: api-usage=NNN/MMMM` shows current usage. If the daily limit is reached, the API returns `403 REQUEST_LIMIT_EXCEEDED`. Check current usage and limits at `GET /services/data/v59.0/limits`.
+Salesforce enforces per-org daily API call limits. Each table query counts as
+one API call. The response header `Sforce-Limit-Info: api-usage=NNN/MMMM`
+shows current usage. If the daily limit is reached, the API returns `403
+REQUEST_LIMIT_EXCEEDED`. Coral does not automatically retry generic `403`
+responses because the same status also represents permission failures. Check
+current usage and limits at `GET /services/data/v59.0/limits`.
 
 See [Salesforce API limits](https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_limits.htm) and [monitoring API usage](https://developer.salesforce.com/blogs/2024/11/api-limits-and-monitoring-your-api-usage).

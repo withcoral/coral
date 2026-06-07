@@ -4,8 +4,8 @@ dsl_version: 3
 backend: http
 description: >-
   Query Salesforce CRM accounts, contacts, leads, opportunities, and cases
-  via the Salesforce REST API v59.0. Join with GitHub PRs, Linear issues,
-  and PagerDuty incidents for cross-source sales and support intelligence.
+  via the Salesforce REST API v59.0. Join contacts with Linear issues or
+  other sources using email, account IDs, and conversion IDs.
 
 base_url: "{{input.SALESFORCE_API_URL}}"
 
@@ -27,8 +27,8 @@ inputs:
       The token's user must have API Access enabled in their profile and Read
       permission on Account, Contact, Lead, Opportunity, and Case objects with
       field-level visibility for all queried fields. A 401 means the token is
-      expired; a 403 INSUFFICIENT_ACCESS means the user lacks the required
-      object or field permissions.
+      expired; a 403 INSUFFICIENT_ACCESS_OR_READONLY means the user lacks the
+      required object or field permissions.
       See https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/quickstart_oauth.htm
 
 auth:
@@ -46,7 +46,6 @@ request_headers:
 rate_limit:
   extra_statuses:
     - 429
-    - 403
 
 test_queries:
   - SELECT id, name FROM salesforce.accounts LIMIT 1
@@ -217,7 +216,7 @@ tables:
       Use the account_id filter to push a condition into SOQL and fetch only
       contacts for a specific account. Without it, results are the 2000 most
       recently modified contacts and SQL WHERE runs client-side. Join on email
-      with GitHub PR authors, Linear assignees, and PagerDuty users for
+      with Linear assignees or other sources that expose a contact email for
       cross-source identity resolution.
     filters:
       - name: account_id
@@ -804,6 +803,7 @@ tables:
       - when_filters:
           - is_closed
           - priority
+          - account_id
         method: GET
         path: /services/data/v59.0/query
         query:
@@ -814,6 +814,49 @@ tables:
               ContactId,OwnerId,IsClosed,CreatedDate,LastModifiedDate
               FROM Case WHERE IsClosed = {{filter.is_closed}}
               AND Priority = '{{filter.priority}}'
+              AND AccountId = '{{filter.account_id}}'
+              ORDER BY LastModifiedDate DESC LIMIT 2000
+      - when_filters:
+          - is_closed
+          - priority
+        method: GET
+        path: /services/data/v59.0/query
+        query:
+          - name: q
+            from: template
+            template: >-
+              SELECT Id,Subject,Status,Priority,Origin,Type,AccountId,
+              ContactId,OwnerId,IsClosed,CreatedDate,LastModifiedDate
+              FROM Case WHERE IsClosed = {{filter.is_closed}}
+              AND Priority = '{{filter.priority}}'
+              ORDER BY LastModifiedDate DESC LIMIT 2000
+      - when_filters:
+          - is_closed
+          - account_id
+        method: GET
+        path: /services/data/v59.0/query
+        query:
+          - name: q
+            from: template
+            template: >-
+              SELECT Id,Subject,Status,Priority,Origin,Type,AccountId,
+              ContactId,OwnerId,IsClosed,CreatedDate,LastModifiedDate
+              FROM Case WHERE IsClosed = {{filter.is_closed}}
+              AND AccountId = '{{filter.account_id}}'
+              ORDER BY LastModifiedDate DESC LIMIT 2000
+      - when_filters:
+          - priority
+          - account_id
+        method: GET
+        path: /services/data/v59.0/query
+        query:
+          - name: q
+            from: template
+            template: >-
+              SELECT Id,Subject,Status,Priority,Origin,Type,AccountId,
+              ContactId,OwnerId,IsClosed,CreatedDate,LastModifiedDate
+              FROM Case WHERE Priority = '{{filter.priority}}'
+              AND AccountId = '{{filter.account_id}}'
               ORDER BY LastModifiedDate DESC LIMIT 2000
       - when_filters:
           - is_closed
