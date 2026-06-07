@@ -21,6 +21,7 @@ pub(crate) struct BundledSourceManifest {
 pub(crate) struct InstalledSourceManifest {
     pub(crate) source_spec: ValidatedSourceManifest,
     pub(crate) candidate: CandidateSource,
+    pub(crate) manifest_yaml: String,
 }
 
 pub(crate) fn list_bundled_sources(
@@ -84,6 +85,7 @@ pub(crate) fn resolve_installed_manifest(
     Ok(InstalledSourceManifest {
         source_spec,
         candidate,
+        manifest_yaml,
     })
 }
 
@@ -105,7 +107,7 @@ fn candidate_from_manifest(
     Ok(CandidateSource {
         name: SourceName::parse(manifest.schema_name())?,
         description: manifest.description().to_string(),
-        version: manifest.source_version().to_string(),
+        version: manifest.source_version().map(ToString::to_string),
         inputs: manifest.declared_inputs().to_vec(),
         installed,
         origin,
@@ -142,7 +144,7 @@ mod tests {
                 .iter()
                 .any(|source| source.name == SourceName::parse("stripe").expect("source"))
         );
-        assert!(sources.iter().all(|source| !source.version.is_empty()));
+        assert!(sources.iter().all(|source| source.version.is_some()));
     }
 
     #[test]
@@ -150,6 +152,14 @@ mod tests {
         let hn = SourceName::parse("hn").expect("source");
         let error = load_bundled_source(&hn).expect_err("community source should not be bundled");
         assert!(error.to_string().contains("unknown bundled source 'hn'"));
+    }
+
+    #[test]
+    fn core_v4_preview_sources_are_not_bundled() {
+        let github_v4 = SourceName::parse("github_v4").expect("source");
+
+        let error = load_bundled_source(&github_v4).expect_err("v4 source should not be bundled");
+        assert!(error.to_string().contains("unknown bundled source"));
     }
 
     #[test]

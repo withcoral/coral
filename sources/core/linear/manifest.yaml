@@ -1,10 +1,11 @@
 name: linear
-version: 2.2.0
+version: 2.3.0
 dsl_version: 3
 backend: http
 description: >-
-  Query issues, projects, cycles, initiatives, teams, users, comments,
-  project milestones, labels, and attachments from Linear.
+  Query Linear teams, users, issues, issue relations, projects, project
+  milestones, cycles, initiatives, initiative-project links, labels, and
+  attachments.
 inputs:
   LINEAR_API_KEY:
     kind: secret
@@ -686,6 +687,15 @@ tables:
                   name
                   description
                   private
+                  cyclesEnabled
+                  activeCycle {
+                    id
+                    number
+                    name
+                    startsAt
+                    endsAt
+                    completedAt
+                  }
                   createdAt
                   updatedAt
                 }
@@ -761,6 +771,68 @@ tables:
           kind: path
           path:
             - private
+      - name: cycles_enabled
+        type: Boolean
+        nullable: true
+        description: Whether the team has Linear cycles enabled
+        expr:
+          kind: path
+          path:
+            - cyclesEnabled
+      - name: active_cycle_id
+        type: Utf8
+        nullable: true
+        description: Current active cycle ID for this team
+        expr:
+          kind: path
+          path:
+            - activeCycle
+            - id
+      - name: active_cycle_number
+        type: Int64
+        nullable: true
+        description: Current active cycle number for this team
+        expr:
+          kind: path
+          path:
+            - activeCycle
+            - number
+      - name: active_cycle_name
+        type: Utf8
+        nullable: true
+        description: Current active cycle name for this team
+        expr:
+          kind: path
+          path:
+            - activeCycle
+            - name
+      - name: active_cycle_starts_at
+        type: Utf8
+        nullable: true
+        description: Current active cycle start timestamp
+        expr:
+          kind: path
+          path:
+            - activeCycle
+            - startsAt
+      - name: active_cycle_ends_at
+        type: Utf8
+        nullable: true
+        description: Current active cycle end timestamp
+        expr:
+          kind: path
+          path:
+            - activeCycle
+            - endsAt
+      - name: active_cycle_completed_at
+        type: Utf8
+        nullable: true
+        description: Current active cycle completion timestamp
+        expr:
+          kind: path
+          path:
+            - activeCycle
+            - completedAt
       - name: created_at
         type: Utf8
         nullable: true
@@ -927,6 +999,12 @@ tables:
                   targetDate
                   createdAt
                   updatedAt
+                  initiatives(first: 1) {
+                    nodes {
+                      id
+                      name
+                    }
+                  }
                   teams {
                     nodes {
                       id
@@ -1039,6 +1117,28 @@ tables:
           kind: path
           path:
             - updatedAt
+      - name: initiative_id
+        type: Utf8
+        nullable: true
+        description: First linked initiative ID
+        expr:
+          kind: first_array_item_path
+          path:
+            - initiatives
+            - nodes
+          item_path:
+            - id
+      - name: initiative_name
+        type: Utf8
+        nullable: true
+        description: First linked initiative name
+        expr:
+          kind: first_array_item_path
+          path:
+            - initiatives
+            - nodes
+          item_path:
+            - name
       - name: team_id
         type: Utf8
         nullable: true
@@ -1087,8 +1187,8 @@ tables:
             - query
           from: literal
           value: |
-            query Cycles($first: Int!, $after: String) {
-              cycles(first: $first, after: $after) {
+            query Cycles($filter: CycleFilter, $first: Int!, $after: String) {
+              cycles(filter: $filter, first: $first, after: $after) {
                 nodes {
                   id
                   number
@@ -1096,6 +1196,9 @@ tables:
                   startsAt
                   endsAt
                   completedAt
+                  isActive
+                  isPrevious
+                  isNext
                   team {
                     id
                     key
@@ -1106,6 +1209,43 @@ tables:
                 }
               }
             }
+        - path:
+            - variables
+            - filter
+            - team
+            - id
+            - eq
+          from: filter
+          key: team_id
+        - path:
+            - variables
+            - filter
+            - team
+            - key
+            - eq
+          from: filter
+          key: team_key
+        - path:
+            - variables
+            - filter
+            - isActive
+            - eq
+          from: filter_bool
+          key: is_active
+        - path:
+            - variables
+            - filter
+            - isPrevious
+            - eq
+          from: filter_bool
+          key: is_previous
+        - path:
+            - variables
+            - filter
+            - isNext
+            - eq
+          from: filter_bool
+          key: is_next
         - path:
             - variables
             - first
@@ -1199,8 +1339,43 @@ tables:
           path:
             - team
             - key
+      - name: is_active
+        type: Boolean
+        nullable: true
+        description: Whether this is the team's current active cycle
+        expr:
+          kind: path
+          path:
+            - isActive
+      - name: is_previous
+        type: Boolean
+        nullable: true
+        description: Whether this is the team's previous cycle
+        expr:
+          kind: path
+          path:
+            - isPrevious
+      - name: is_next
+        type: Boolean
+        nullable: true
+        description: Whether this is the team's next cycle
+        expr:
+          kind: path
+          path:
+            - isNext
     filters:
       - name: team_id
+        required: false
+      - name: team_key
+        required: false
+      - name: is_active
+        type: Boolean
+        required: false
+      - name: is_previous
+        type: Boolean
+        required: false
+      - name: is_next
+        type: Boolean
         required: false
   - name: initiatives
     description: Initiatives in the Linear workspace
@@ -1223,6 +1398,12 @@ tables:
                   id
                   name
                   description
+                  slugId
+                  status
+                  health
+                  targetDate
+                  startedAt
+                  completedAt
                   createdAt
                   updatedAt
                 }
@@ -1282,6 +1463,54 @@ tables:
           kind: path
           path:
             - description
+      - name: slug_id
+        type: Utf8
+        nullable: true
+        description: Initiative short slug identifier
+        expr:
+          kind: path
+          path:
+            - slugId
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Initiative status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: health
+        type: Utf8
+        nullable: true
+        description: Initiative health
+        expr:
+          kind: path
+          path:
+            - health
+      - name: target_date
+        type: Utf8
+        nullable: true
+        description: Initiative target date
+        expr:
+          kind: path
+          path:
+            - targetDate
+      - name: started_at
+        type: Utf8
+        nullable: true
+        description: Initiative start timestamp
+        expr:
+          kind: path
+          path:
+            - startedAt
+      - name: completed_at
+        type: Utf8
+        nullable: true
+        description: Initiative completion timestamp
+        expr:
+          kind: path
+          path:
+            - completedAt
       - name: created_at
         type: Utf8
         nullable: true
@@ -1298,6 +1527,290 @@ tables:
           kind: path
           path:
             - updatedAt
+  - name: initiative_projects
+    description: Links between Linear initiatives and projects
+    guide: |
+      Use this table for roadmap and schedule questions that need initiative
+      context plus project progress and target dates. A project can belong to
+      more than one initiative, so prefer this table over the compact
+      `projects.initiative_*` columns when exact membership matters.
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query InitiativeProjects($first: Int!, $after: String) {
+              initiativeToProjects(first: $first, after: $after) {
+                nodes {
+                  id
+                  sortOrder
+                  createdAt
+                  updatedAt
+                  archivedAt
+                  initiative {
+                    id
+                    name
+                    status
+                    health
+                    targetDate
+                  }
+                  project {
+                    id
+                    name
+                    slugId
+                    state
+                    health
+                    progress
+                    targetDate
+                    startedAt
+                    completedAt
+                    teams {
+                      nodes {
+                        id
+                        key
+                        name
+                      }
+                    }
+                  }
+                }
+                pageInfo {
+                  endCursor
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - initiativeToProjects
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - initiativeToProjects
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Initiative-project link ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: initiative_id
+        type: Utf8
+        nullable: true
+        description: Initiative ID
+        expr:
+          kind: path
+          path:
+            - initiative
+            - id
+      - name: initiative_name
+        type: Utf8
+        nullable: true
+        description: Initiative name
+        expr:
+          kind: path
+          path:
+            - initiative
+            - name
+      - name: initiative_status
+        type: Utf8
+        nullable: true
+        description: Initiative status
+        expr:
+          kind: path
+          path:
+            - initiative
+            - status
+      - name: initiative_health
+        type: Utf8
+        nullable: true
+        description: Initiative health
+        expr:
+          kind: path
+          path:
+            - initiative
+            - health
+      - name: initiative_target_date
+        type: Utf8
+        nullable: true
+        description: Initiative target date
+        expr:
+          kind: path
+          path:
+            - initiative
+            - targetDate
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Project ID
+        expr:
+          kind: path
+          path:
+            - project
+            - id
+      - name: project_name
+        type: Utf8
+        nullable: true
+        description: Project name
+        expr:
+          kind: path
+          path:
+            - project
+            - name
+      - name: project_slug_id
+        type: Utf8
+        nullable: true
+        description: Project short slug identifier
+        expr:
+          kind: path
+          path:
+            - project
+            - slugId
+      - name: project_state
+        type: Utf8
+        nullable: true
+        description: Project state
+        expr:
+          kind: path
+          path:
+            - project
+            - state
+      - name: project_health
+        type: Utf8
+        nullable: true
+        description: Project health
+        expr:
+          kind: path
+          path:
+            - project
+            - health
+      - name: project_progress
+        type: Float64
+        nullable: true
+        description: Project progress fraction
+        expr:
+          kind: path
+          path:
+            - project
+            - progress
+      - name: project_target_date
+        type: Utf8
+        nullable: true
+        description: Project target date
+        expr:
+          kind: path
+          path:
+            - project
+            - targetDate
+      - name: project_started_at
+        type: Utf8
+        nullable: true
+        description: Project start timestamp
+        expr:
+          kind: path
+          path:
+            - project
+            - startedAt
+      - name: project_completed_at
+        type: Utf8
+        nullable: true
+        description: Project completion timestamp
+        expr:
+          kind: path
+          path:
+            - project
+            - completedAt
+      - name: project_team_id
+        type: Utf8
+        nullable: true
+        description: First project team ID
+        expr:
+          kind: first_array_item_path
+          path:
+            - project
+            - teams
+            - nodes
+          item_path:
+            - id
+      - name: project_team_key
+        type: Utf8
+        nullable: true
+        description: First project team key
+        expr:
+          kind: first_array_item_path
+          path:
+            - project
+            - teams
+            - nodes
+          item_path:
+            - key
+      - name: project_team_name
+        type: Utf8
+        nullable: true
+        description: First project team name
+        expr:
+          kind: first_array_item_path
+          path:
+            - project
+            - teams
+            - nodes
+          item_path:
+            - name
+      - name: sort_order
+        type: Float64
+        nullable: true
+        description: Initiative-project sort order
+        expr:
+          kind: path
+          path:
+            - sortOrder
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+      - name: archived_at
+        type: Utf8
+        nullable: true
+        description: Archive timestamp
+        expr:
+          kind: path
+          path:
+            - archivedAt
   - name: issue_labels
     description: Issue labels in the Linear workspace
     guide: |
@@ -1395,6 +1908,554 @@ tables:
           kind: path
           path:
             - isGroup
+  - name: issue_relations
+    description: Relationships between Linear issues, including blockers
+    guide: |
+      Use `relation_type = 'blocks'` to find dependency rows. In those rows,
+      `issue_*` is the blocking issue and `related_issue_*` is the issue being
+      blocked. Compare the team columns to find blockers across teams.
+    request:
+      method: POST
+      path: /graphql
+      query: []
+      body:
+        - path:
+            - query
+          from: literal
+          value: |
+            query IssueRelations($first: Int!, $after: String) {
+              issueRelations(first: $first, after: $after) {
+                nodes {
+                  id
+                  type
+                  createdAt
+                  updatedAt
+                  archivedAt
+                  issue {
+                    id
+                    identifier
+                    title
+                    url
+                    priority
+                    priorityLabel
+                    team {
+                      id
+                      key
+                      name
+                    }
+                    state {
+                      id
+                      name
+                      type
+                    }
+                    assignee {
+                      id
+                      name
+                      email
+                    }
+                    project {
+                      id
+                      name
+                    }
+                    cycle {
+                      id
+                      number
+                      name
+                    }
+                  }
+                  relatedIssue {
+                    id
+                    identifier
+                    title
+                    url
+                    priority
+                    priorityLabel
+                    team {
+                      id
+                      key
+                      name
+                    }
+                    state {
+                      id
+                      name
+                      type
+                    }
+                    assignee {
+                      id
+                      name
+                      email
+                    }
+                    project {
+                      id
+                      name
+                    }
+                    cycle {
+                      id
+                      number
+                      name
+                    }
+                  }
+                }
+                pageInfo {
+                  endCursor
+                }
+              }
+            }
+        - path:
+            - variables
+            - first
+          from: literal
+          value: 100
+    response:
+      rows_path:
+        - data
+        - issueRelations
+        - nodes
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - variables
+        - after
+      response_cursor_path:
+        - data
+        - issueRelations
+        - pageInfo
+        - endCursor
+      page_size:
+        default: 100
+        max: 250
+        body_path:
+          - variables
+          - first
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Issue relation ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: relation_type
+        type: Utf8
+        nullable: true
+        description: Relation type, for example blocks, duplicate, related, or similar
+        expr:
+          kind: path
+          path:
+            - type
+      - name: issue_id
+        type: Utf8
+        nullable: true
+        description: Source issue ID
+        expr:
+          kind: path
+          path:
+            - issue
+            - id
+      - name: issue_identifier
+        type: Utf8
+        nullable: true
+        description: Source issue identifier
+        expr:
+          kind: path
+          path:
+            - issue
+            - identifier
+      - name: issue_title
+        type: Utf8
+        nullable: true
+        description: Source issue title
+        expr:
+          kind: path
+          path:
+            - issue
+            - title
+      - name: issue_url
+        type: Utf8
+        nullable: true
+        description: Source issue URL
+        expr:
+          kind: path
+          path:
+            - issue
+            - url
+      - name: issue_priority
+        type: Int64
+        nullable: true
+        description: Source issue priority
+        expr:
+          kind: path
+          path:
+            - issue
+            - priority
+      - name: issue_priority_label
+        type: Utf8
+        nullable: true
+        description: Source issue priority label
+        expr:
+          kind: path
+          path:
+            - issue
+            - priorityLabel
+      - name: issue_team_id
+        type: Utf8
+        nullable: true
+        description: Source issue team ID
+        expr:
+          kind: path
+          path:
+            - issue
+            - team
+            - id
+      - name: issue_team_key
+        type: Utf8
+        nullable: true
+        description: Source issue team key
+        expr:
+          kind: path
+          path:
+            - issue
+            - team
+            - key
+      - name: issue_team_name
+        type: Utf8
+        nullable: true
+        description: Source issue team name
+        expr:
+          kind: path
+          path:
+            - issue
+            - team
+            - name
+      - name: issue_state_id
+        type: Utf8
+        nullable: true
+        description: Source issue workflow state ID
+        expr:
+          kind: path
+          path:
+            - issue
+            - state
+            - id
+      - name: issue_state_name
+        type: Utf8
+        nullable: true
+        description: Source issue workflow state name
+        expr:
+          kind: path
+          path:
+            - issue
+            - state
+            - name
+      - name: issue_state_type
+        type: Utf8
+        nullable: true
+        description: Source issue workflow state type
+        expr:
+          kind: path
+          path:
+            - issue
+            - state
+            - type
+      - name: issue_assignee_id
+        type: Utf8
+        nullable: true
+        description: Source issue assignee ID
+        expr:
+          kind: path
+          path:
+            - issue
+            - assignee
+            - id
+      - name: issue_assignee_name
+        type: Utf8
+        nullable: true
+        description: Source issue assignee name
+        expr:
+          kind: path
+          path:
+            - issue
+            - assignee
+            - name
+      - name: issue_assignee_email
+        type: Utf8
+        nullable: true
+        description: Source issue assignee email
+        expr:
+          kind: path
+          path:
+            - issue
+            - assignee
+            - email
+      - name: issue_project_id
+        type: Utf8
+        nullable: true
+        description: Source issue project ID
+        expr:
+          kind: path
+          path:
+            - issue
+            - project
+            - id
+      - name: issue_project_name
+        type: Utf8
+        nullable: true
+        description: Source issue project name
+        expr:
+          kind: path
+          path:
+            - issue
+            - project
+            - name
+      - name: issue_cycle_id
+        type: Utf8
+        nullable: true
+        description: Source issue cycle ID
+        expr:
+          kind: path
+          path:
+            - issue
+            - cycle
+            - id
+      - name: issue_cycle_number
+        type: Int64
+        nullable: true
+        description: Source issue cycle number
+        expr:
+          kind: path
+          path:
+            - issue
+            - cycle
+            - number
+      - name: issue_cycle_name
+        type: Utf8
+        nullable: true
+        description: Source issue cycle name
+        expr:
+          kind: path
+          path:
+            - issue
+            - cycle
+            - name
+      - name: related_issue_id
+        type: Utf8
+        nullable: true
+        description: Related issue ID
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - id
+      - name: related_issue_identifier
+        type: Utf8
+        nullable: true
+        description: Related issue identifier
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - identifier
+      - name: related_issue_title
+        type: Utf8
+        nullable: true
+        description: Related issue title
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - title
+      - name: related_issue_url
+        type: Utf8
+        nullable: true
+        description: Related issue URL
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - url
+      - name: related_issue_priority
+        type: Int64
+        nullable: true
+        description: Related issue priority
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - priority
+      - name: related_issue_priority_label
+        type: Utf8
+        nullable: true
+        description: Related issue priority label
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - priorityLabel
+      - name: related_issue_team_id
+        type: Utf8
+        nullable: true
+        description: Related issue team ID
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - team
+            - id
+      - name: related_issue_team_key
+        type: Utf8
+        nullable: true
+        description: Related issue team key
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - team
+            - key
+      - name: related_issue_team_name
+        type: Utf8
+        nullable: true
+        description: Related issue team name
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - team
+            - name
+      - name: related_issue_state_id
+        type: Utf8
+        nullable: true
+        description: Related issue workflow state ID
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - state
+            - id
+      - name: related_issue_state_name
+        type: Utf8
+        nullable: true
+        description: Related issue workflow state name
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - state
+            - name
+      - name: related_issue_state_type
+        type: Utf8
+        nullable: true
+        description: Related issue workflow state type
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - state
+            - type
+      - name: related_issue_assignee_id
+        type: Utf8
+        nullable: true
+        description: Related issue assignee ID
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - assignee
+            - id
+      - name: related_issue_assignee_name
+        type: Utf8
+        nullable: true
+        description: Related issue assignee name
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - assignee
+            - name
+      - name: related_issue_assignee_email
+        type: Utf8
+        nullable: true
+        description: Related issue assignee email
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - assignee
+            - email
+      - name: related_issue_project_id
+        type: Utf8
+        nullable: true
+        description: Related issue project ID
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - project
+            - id
+      - name: related_issue_project_name
+        type: Utf8
+        nullable: true
+        description: Related issue project name
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - project
+            - name
+      - name: related_issue_cycle_id
+        type: Utf8
+        nullable: true
+        description: Related issue cycle ID
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - cycle
+            - id
+      - name: related_issue_cycle_number
+        type: Int64
+        nullable: true
+        description: Related issue cycle number
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - cycle
+            - number
+      - name: related_issue_cycle_name
+        type: Utf8
+        nullable: true
+        description: Related issue cycle name
+        expr:
+          kind: path
+          path:
+            - relatedIssue
+            - cycle
+            - name
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Updated timestamp
+        expr:
+          kind: path
+          path:
+            - updatedAt
+      - name: archived_at
+        type: Utf8
+        nullable: true
+        description: Archive timestamp
+        expr:
+          kind: path
+          path:
+            - archivedAt
   - name: issues
     description: Issues in the Linear workspace
     guide: |
@@ -1407,9 +2468,14 @@ tables:
       readiness checks with `parent_identifier`, `state_type`, `due_date`,
       and SLA timestamp columns.
     filters:
+      - name: team_id
+      - name: team_key
       - name: project_id
       - name: project_milestone_id
       - name: project_milestone_name
+      - name: cycle_id
+      - name: cycle_number
+        type: Int64
     request:
       method: POST
       path: /graphql
@@ -1435,6 +2501,7 @@ tables:
                   completedAt
                   canceledAt
                   dueDate
+                  addedToCycleAt
                   branchName
                   slaStartedAt
                   slaBreachesAt
@@ -1445,6 +2512,17 @@ tables:
                   team {
                     id
                     key
+                  }
+                  cycle {
+                    id
+                    number
+                    name
+                    startsAt
+                    endsAt
+                    completedAt
+                    isActive
+                    isPrevious
+                    isNext
                   }
                   state {
                     id
@@ -1489,6 +2567,22 @@ tables:
         - path:
             - variables
             - filter
+            - team
+            - id
+            - eq
+          from: filter
+          key: team_id
+        - path:
+            - variables
+            - filter
+            - team
+            - key
+            - eq
+          from: filter
+          key: team_key
+        - path:
+            - variables
+            - filter
             - project
             - id
             - eq
@@ -1510,6 +2604,22 @@ tables:
             - eq
           from: filter
           key: project_milestone_name
+        - path:
+            - variables
+            - filter
+            - cycle
+            - id
+            - eq
+          from: filter
+          key: cycle_id
+        - path:
+            - variables
+            - filter
+            - cycle
+            - number
+            - eq
+          from: filter_int
+          key: cycle_number
         - path:
             - variables
             - first
@@ -1611,6 +2721,87 @@ tables:
           path:
             - team
             - key
+      - name: cycle_id
+        type: Utf8
+        nullable: true
+        description: Cycle ID
+        expr:
+          kind: path
+          path:
+            - cycle
+            - id
+      - name: cycle_number
+        type: Int64
+        nullable: true
+        description: Cycle number
+        expr:
+          kind: path
+          path:
+            - cycle
+            - number
+      - name: cycle_name
+        type: Utf8
+        nullable: true
+        description: Cycle name
+        expr:
+          kind: path
+          path:
+            - cycle
+            - name
+      - name: cycle_starts_at
+        type: Utf8
+        nullable: true
+        description: Cycle start timestamp
+        expr:
+          kind: path
+          path:
+            - cycle
+            - startsAt
+      - name: cycle_ends_at
+        type: Utf8
+        nullable: true
+        description: Cycle end timestamp
+        expr:
+          kind: path
+          path:
+            - cycle
+            - endsAt
+      - name: cycle_completed_at
+        type: Utf8
+        nullable: true
+        description: Cycle completion timestamp
+        expr:
+          kind: path
+          path:
+            - cycle
+            - completedAt
+      - name: cycle_is_active
+        type: Boolean
+        nullable: true
+        description: Whether this issue's cycle is active
+        expr:
+          kind: path
+          path:
+            - cycle
+            - isActive
+      - name: cycle_is_previous
+        type: Boolean
+        nullable: true
+        description: Whether this issue's cycle is the previous cycle
+        expr:
+          kind: path
+          path:
+            - cycle
+            - isPrevious
+      - name: cycle_is_next
+        type: Boolean
+        nullable: true
+        description: Whether this issue's cycle is the next cycle
+        expr:
+          kind: path
+          path:
+            - cycle
+            - isNext
       - name: state_id
         type: Utf8
         nullable: true
@@ -1786,6 +2977,14 @@ tables:
           kind: path
           path:
             - canceledAt
+      - name: added_to_cycle_at
+        type: Utf8
+        nullable: true
+        description: Timestamp when the issue was added to its cycle
+        expr:
+          kind: path
+          path:
+            - addedToCycleAt
       - name: due_date
         type: Utf8
         nullable: true
