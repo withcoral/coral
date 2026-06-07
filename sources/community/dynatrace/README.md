@@ -6,8 +6,8 @@
 **Base URL:** configured via `DYNATRACE_BASE_URL` input
 
 Query Dynatrace problems, monitored entities, and software releases via the
-Environment API v2. Join with GitHub deploys, Sentry errors, and PagerDuty
-incidents for cross-source SRE and observability intelligence.
+Environment API v2. Join with GitHub deploys and Sentry errors for
+cross-source SRE and observability intelligence.
 
 ## Install
 
@@ -37,15 +37,17 @@ For managed (on-premise) environments use `https://your-host/e/your-environment-
 
 ## Tables
 
-| Table | Required filters | Description |
-| --- | --- | --- |
-| `problems` | none | Problems from the last two weeks (up to 50 per query) |
-| `entities` | `entity_selector` | Monitored entities scoped by Dynatrace entity selector syntax |
-| `releases` | none | Software releases from the last two weeks (up to 200 per query) |
+| Table | Required filters | Optional provider filters | Description |
+| --- | --- | --- | --- |
+| `problems` | none | `problem_selector` | Problems from the last two weeks (up to 50 per query) |
+| `entities` | `entity_selector` | none | Monitored entities scoped by Dynatrace entity selector syntax |
+| `releases` | none | `releases_selector` | Software releases from the last two weeks (up to 200 per query) |
 
 Multi-page cursor pagination is not enabled on any table. Dynatrace requires
 `nextPageKey` follow-up requests to omit all other query params, which Coral's
 cursor pagination does not do. Each query returns the first page only.
+Provider filters use Dynatrace selector syntax and are sent to the API before
+Coral applies remaining SQL conditions.
 
 ## Validation
 
@@ -97,7 +99,8 @@ coral sql "SELECT problem_id, title, status, severity_level FROM dynatrace.probl
 ```sql
 SELECT problem_id, display_id, title, severity_level, impact_level, start_time_ms
 FROM dynatrace.problems
-WHERE status = 'OPEN'
+WHERE problem_selector = 'status("open")'
+  AND status = 'OPEN'
 ORDER BY start_time_ms DESC
 LIMIT 20;
 ```
@@ -120,7 +123,7 @@ WHERE entity_selector = 'type(HOST)'
 LIMIT 50;
 ```
 
-### Releases with active problems
+### Releases with problems from the first page
 
 ```sql
 SELECT name, version, product, stage, problem_count, vulnerability_count
@@ -130,7 +133,7 @@ ORDER BY problem_count DESC
 LIMIT 20;
 ```
 
-### Problem duration for resolved problems
+### Problem duration for closed problems
 
 `end_time_ms` is -1 for open problems (not null). Use `NULLIF` when
 computing durations:
@@ -140,7 +143,8 @@ SELECT problem_id, title, start_time_ms,
        NULLIF(end_time_ms, -1) AS end_time_ms,
        (NULLIF(end_time_ms, -1) - start_time_ms) / 60000 AS duration_min
 FROM dynatrace.problems
-WHERE status = 'RESOLVED'
+WHERE problem_selector = 'status("closed")'
+  AND status = 'CLOSED'
 ORDER BY start_time_ms DESC
 LIMIT 20;
 ```
@@ -149,6 +153,8 @@ LIMIT 20;
 
 ### Dynatrace problems overlapping with Sentry errors
 
+Requires the `sentry` source.
+
 ```sql
 SELECT dt.title AS dynatrace_problem,
        dt.severity_level,
@@ -156,11 +162,12 @@ SELECT dt.title AS dynatrace_problem,
        se.first_seen
 FROM dynatrace.problems dt
 JOIN sentry.issues se
-  ON se.first_seen >= TO_TIMESTAMP(dt.start_time_ms / 1000)
-  AND se.first_seen <= TO_TIMESTAMP(
+  ON CAST(se.first_seen AS TIMESTAMP) >= TO_TIMESTAMP(dt.start_time_ms / 1000)
+  AND CAST(se.first_seen AS TIMESTAMP) <= TO_TIMESTAMP(
         COALESCE(NULLIF(dt.end_time_ms, -1), dt.start_time_ms + 3600000) / 1000
       )
-WHERE dt.status = 'OPEN'
+WHERE dt.problem_selector = 'status("open")'
+  AND dt.status = 'OPEN'
 LIMIT 20;
 ```
 
@@ -183,12 +190,16 @@ LIMIT 20;
 
 ### Dynatrace releases with problems matched against GitHub release tags
 
+`github.releases` requires `owner` and `repo` filters:
+
 ```sql
 SELECT dr.version, dr.product, dr.stage, dr.problem_count,
        gr.name AS github_release
 FROM dynatrace.releases dr
 LEFT JOIN github.releases gr ON gr.tag_name = dr.version
 WHERE dr.affected_by_problems = true
+  AND gr.owner = 'myorg'
+  AND gr.repo = 'myapp'
 ORDER BY dr.problem_count DESC
 LIMIT 20;
 ```
@@ -198,7 +209,9 @@ LIMIT 20;
 - **First page only** — multi-page cursor pagination is not enabled because
   Dynatrace requires `nextPageKey` follow-up requests to omit all other query
   params. Problems return up to 50 rows; entities and releases return up to 200
-  rows per query.
+  rows per query. Use `problem_selector`, `entity_selector`, or
+  `releases_selector` to narrow the provider response. Other SQL `WHERE`
+  conditions run client-side after the first page is fetched.
 - **Two-week window for problems** — the manifest explicitly sends `from=now-2w`
   (Dynatrace API default is `now-2h`). Releases default to `now-2w`.
 - **end_time_ms = -1 for open problems** — Dynatrace returns -1, not null.
@@ -211,6 +224,13 @@ LIMIT 20;
   and `last_seen_ms` are Unix epoch milliseconds; use `TO_TIMESTAMP(x / 1000)`
   for SQL timestamp comparisons.
 - Community sources are maintained separately from bundled core sources.
+
+## API reference
+
+- [Problems list](https://docs.dynatrace.com/docs/dynatrace-api/environment-api/problems-v2/problems/get-problems-list)
+- [Entities list](https://docs.dynatrace.com/docs/dynatrace-api/environment-api/entity-v2/get-entities-list)
+- [Releases list](https://docs.dynatrace.com/docs/dynatrace-api/environment-api/releaseapi/get-releaseall)
+- [Tokens and authentication](https://docs.dynatrace.com/docs/dynatrace-api/basics/dynatrace-api-authentication)
 
 ## Contributing
 

@@ -4,8 +4,8 @@ dsl_version: 3
 backend: http
 description: >-
   Query Dynatrace problems, entities, and releases via the Dynatrace
-  Environment API v2. Join with GitHub deploys, Sentry errors, and PagerDuty
-  incidents for cross-source SRE and observability intelligence.
+  Environment API v2. Join with GitHub deploys and Sentry errors for
+  cross-source SRE and observability intelligence.
 base_url: "{{input.DYNATRACE_BASE_URL}}"
 
 inputs:
@@ -56,16 +56,21 @@ tables:
       entities array, and start and end times.
     guide: |
       Problems are Dynatrace's automatically detected incidents. Use
-      status = 'OPEN' to surface active problems. endTime = -1 (not null)
-      for open problems; use NULLIF(end_time_ms, -1) when computing durations.
+      problem_selector = 'status("open")' to narrow the provider response to
+      active problems. endTime = -1 (not null) for open problems; use
+      NULLIF(end_time_ms, -1) when computing durations.
       Join start_time_ms with GitHub deploy timestamps to correlate deploys
       with newly opened problems.
       Severity levels: AVAILABILITY, ERROR, PERFORMANCE, RESOURCE_CONTENTION,
-      CUSTOM_ALERT, INFO. Impact levels: APPLICATION, SERVICES, INFRASTRUCTURE.
+      CUSTOM_ALERT, INFO, MONITORING_UNAVAILABLE. Impact levels: APPLICATION,
+      ENVIRONMENT, SERVICES, INFRASTRUCTURE.
       Multi-page cursor pagination is not enabled because Dynatrace requires
       follow-up nextPageKey requests to omit all other query params; this
       source returns the first page only (up to 50 problems).
     fetch_limit_default: 50
+    filters:
+      - name: problem_selector
+        required: false
     request:
       method: GET
       path: /api/v2/problems
@@ -76,6 +81,9 @@ tables:
         - name: pageSize
           from: literal
           value: "50"
+        - name: problemSelector
+          from: filter
+          key: problem_selector
     response:
       rows_path:
         - problems
@@ -109,7 +117,7 @@ tables:
       - name: status
         type: Utf8
         nullable: true
-        description: Problem status (OPEN or RESOLVED).
+        description: Problem status (OPEN or CLOSED).
         expr:
           kind: path
           path:
@@ -119,7 +127,8 @@ tables:
         nullable: true
         description: >-
           Severity level (AVAILABILITY, ERROR, PERFORMANCE,
-          RESOURCE_CONTENTION, CUSTOM_ALERT, or INFO).
+          RESOURCE_CONTENTION, CUSTOM_ALERT, INFO, or
+          MONITORING_UNAVAILABLE).
         expr:
           kind: path
           path:
@@ -127,7 +136,9 @@ tables:
       - name: impact_level
         type: Utf8
         nullable: true
-        description: Highest impact level (APPLICATION, SERVICES, or INFRASTRUCTURE).
+        description: >-
+          Highest impact level (APPLICATION, ENVIRONMENT, SERVICES, or
+          INFRASTRUCTURE).
         expr:
           kind: path
           path:
@@ -214,7 +225,7 @@ tables:
           key: entity_selector
         - name: fields
           from: literal
-          value: +tags,+properties,+managementZones
+          value: +firstSeenTms,+lastSeenTms,+tags,+managementZones
         - name: pageSize
           from: literal
           value: "200"
@@ -275,7 +286,7 @@ tables:
       - name: raw
         type: Json
         nullable: true
-        description: Raw entity object including properties and management zones.
+        description: Raw entity object including tags and management zones.
         expr:
           kind: current_row
 
@@ -287,11 +298,15 @@ tables:
     guide: |
       Join version and product with GitHub release tags or deploy environment
       names to correlate Dynatrace-tracked releases with code changes.
-      Use affected_by_problems = true to surface releases with active problems.
+      Use releases_selector to narrow the provider response before applying
+      SQL filters to the first page.
       Multi-page cursor pagination is not enabled because Dynatrace requires
       follow-up nextPageKey requests to omit all other query params; this
       source returns the first page only (up to 200 releases).
     fetch_limit_default: 200
+    filters:
+      - name: releases_selector
+        required: false
     request:
       method: GET
       path: /api/v2/releases
@@ -299,6 +314,9 @@ tables:
         - name: pageSize
           from: literal
           value: "200"
+        - name: releasesSelector
+          from: filter
+          key: releases_selector
     response:
       rows_path:
         - releases
@@ -356,7 +374,7 @@ tables:
       - name: affected_by_problems
         type: Boolean
         nullable: true
-        description: True when this release has one or more open Dynatrace problems.
+        description: True when this release has one or more Dynatrace problems.
         expr:
           kind: path
           path:
@@ -372,7 +390,7 @@ tables:
       - name: affected_by_vulnerabilities
         type: Boolean
         nullable: true
-        description: True when this release has open security vulnerabilities.
+        description: True when this release has security vulnerabilities.
         expr:
           kind: path
           path:
@@ -388,7 +406,7 @@ tables:
       - name: throughput
         type: Float64
         nullable: true
-        description: Request throughput for this release in requests per minute.
+        description: Throughput for this release in bytes per second.
         expr:
           kind: path
           path:
