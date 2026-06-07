@@ -1,5 +1,5 @@
 name: razorpay
-version: 0.3.0
+version: 0.4.0
 dsl_version: 3
 backend: http
 
@@ -43,23 +43,23 @@ tables:
   # razorpay.payments
   # GET /v1/payments
   # Docs: https://razorpay.com/docs/api/payments/fetch-all-payments/
-  # Pagination: count/skip (max count=100). count is owned by pagination;
-  # do NOT hard-code it in query so Coral can manage page size for SQL LIMIT.
+  # from/to required to prevent unbounded full-table scans on large accounts.
+  # count is owned by pagination; not duplicated in query block.
   # -----------------------------------------------------------------------
   - name: payments
     description: >
       All payments processed through your Razorpay account.
-      Filter by `from` and `to` (Unix epoch seconds) to scope a time window.
-      Without filters Coral fetches in pages of 25 — add a time range for
-      large accounts.
+      `from` and `to` (Unix epoch seconds, Int64) are required to scope a
+      time window and prevent unbounded scans on large accounts.
+    fetch_limit_default: 1000
     filters:
       - name: from
         type: Int64
-        required: false
+        required: true
         description: Unix epoch start timestamp in seconds (inclusive)
       - name: to
         type: Int64
-        required: false
+        required: true
         description: Unix epoch end timestamp in seconds (inclusive)
     request:
       method: GET
@@ -100,8 +100,7 @@ tables:
         description: ISO 4217 currency code (e.g. INR, USD)
       - name: status
         type: Utf8
-        description: >
-          Payment status: created, authorized, captured, refunded, or failed
+        description: "Payment status: created, authorized, captured, refunded, or failed"
       - name: order_id
         type: Utf8
         description: Associated order ID if the payment was made against an order
@@ -113,8 +112,7 @@ tables:
         description: Whether the payment is from an international card
       - name: method
         type: Utf8
-        description: >
-          Payment method: card, netbanking, wallet, emi, upi, or other
+        description: "Payment method: card, netbanking, wallet, emi, upi, or other"
       - name: amount_refunded
         type: Int64
         description: Amount already refunded in smallest currency unit
@@ -187,22 +185,24 @@ tables:
   # razorpay.orders
   # GET /v1/orders
   # Docs: https://razorpay.com/docs/api/orders/fetch-all/
-  # authorized is integer 1/0 per Razorpay docs — filter_int sends 1/0.
-  # count is owned by pagination; not hard-coded in query.
+  # from/to required. authorized is integer 1/0 per Razorpay docs.
+  # count is owned by pagination; not duplicated in query block.
   # -----------------------------------------------------------------------
   - name: orders
     description: >
       All orders created in your Razorpay account. An order represents a
-      merchant-created payment session. Filter by `from`/`to` (Unix epoch
-      seconds) or `authorized` (1 = authorized, 0 = not authorized).
+      merchant-created payment session. `from` and `to` (Unix epoch seconds,
+      Int64) are required to prevent unbounded scans.
+      Filter by `authorized` (1 = authorized, 0 = not authorized).
+    fetch_limit_default: 1000
     filters:
       - name: from
         type: Int64
-        required: false
+        required: true
         description: Unix epoch start timestamp in seconds (inclusive)
       - name: to
         type: Int64
-        required: false
+        required: true
         description: Unix epoch end timestamp in seconds (inclusive)
       - name: authorized
         type: Int64
@@ -290,21 +290,24 @@ tables:
   # razorpay.refunds
   # GET /v1/refunds
   # Docs: https://razorpay.com/docs/api/refunds/fetch-all/
-  # count is owned by pagination; not hard-coded in query.
+  # from/to required. speed_processed: instant or normal per Razorpay docs.
+  # count is owned by pagination; not duplicated in query block.
   # -----------------------------------------------------------------------
   - name: refunds
     description: >
       All refunds issued on your Razorpay account across all payments.
-      Filter by `from`/`to` (Unix epoch seconds) to scope a time window.
+      `from` and `to` (Unix epoch seconds, Int64) are required to scope a
+      time window and prevent unbounded scans.
       Join with razorpay.payments on payment_id = payments.id for enrichment.
+    fetch_limit_default: 1000
     filters:
       - name: from
         type: Int64
-        required: false
+        required: true
         description: Unix epoch start timestamp in seconds (inclusive)
       - name: to
         type: Int64
-        required: false
+        required: true
         description: Unix epoch end timestamp in seconds (inclusive)
     request:
       method: GET
@@ -360,10 +363,10 @@ tables:
         description: "Refund status: pending, processed, or failed"
       - name: speed_processed
         type: Utf8
-        description: "Actual refund speed used: normal or optimum (instant)"
+        description: "Actual refund speed used: normal or instant"
       - name: speed_requested
         type: Utf8
-        description: Refund speed requested at the time of issue
+        description: "Refund speed requested at creation: normal or optimum"
       - name: created_at
         type: Timestamp
         description: Unix epoch timestamp when the refund was initiated
@@ -379,21 +382,23 @@ tables:
   # razorpay.settlements
   # GET /v1/settlements
   # Docs: https://razorpay.com/docs/api/settlements/fetch-all/
-  # count is owned by pagination; not hard-coded in query.
+  # from/to required. Status includes failed per Razorpay docs.
+  # count is owned by pagination; not duplicated in query block.
   # -----------------------------------------------------------------------
   - name: settlements
     description: >
       All settlements transferred from Razorpay to your linked bank account.
-      Each row is one settlement batch. Filter by `from`/`to` (Unix epoch
-      seconds) to scope by date.
+      Each row is one settlement batch. `from` and `to` (Unix epoch seconds,
+      Int64) are required to scope by date and prevent unbounded scans.
+    fetch_limit_default: 1000
     filters:
       - name: from
         type: Int64
-        required: false
+        required: true
         description: Unix epoch start timestamp in seconds (inclusive)
       - name: to
         type: Int64
-        required: false
+        required: true
         description: Unix epoch end timestamp in seconds (inclusive)
     request:
       method: GET
@@ -431,7 +436,7 @@ tables:
         description: Settlement amount in smallest currency unit
       - name: status
         type: Utf8
-        description: "Settlement status: created or processed"
+        description: "Settlement status: created, processed, or failed"
       - name: fees
         type: Int64
         description: Total Razorpay fees deducted in smallest currency unit
@@ -455,18 +460,34 @@ tables:
   # -----------------------------------------------------------------------
   # razorpay.plans
   # GET /v1/plans
-  # Docs: https://razorpay.com/docs/api/payments/route/plans/fetch-all/
-  # No time filters on this endpoint — list is account-scoped and small.
-  # count is owned by pagination; not hard-coded in query.
+  # Docs: https://razorpay.com/docs/api/payments/subscriptions/fetch-all-plans/
+  # from/to supported per Razorpay docs; added as optional filters.
+  # count is owned by pagination; not duplicated in query block.
   # -----------------------------------------------------------------------
   - name: plans
     description: >
       All billing plans defined in your Razorpay account. Plans are the
       templates for recurring subscriptions — they define interval, amount,
-      and currency.
+      and currency. Optionally filter by `from`/`to` (Unix epoch seconds).
+    filters:
+      - name: from
+        type: Int64
+        required: false
+        description: Unix epoch start timestamp in seconds (inclusive)
+      - name: to
+        type: Int64
+        required: false
+        description: Unix epoch end timestamp in seconds (inclusive)
     request:
       method: GET
       path: /plans
+      query:
+        - name: from
+          from: filter
+          key: from
+        - name: to
+          from: filter
+          key: to
     response:
       rows_path:
         - items
@@ -532,14 +553,15 @@ tables:
   # razorpay.subscriptions
   # GET /v1/subscriptions
   # Docs: https://razorpay.com/docs/api/payments/subscriptions/fetch-all/
-  # count is owned by pagination; not hard-coded in query.
+  # from/to required. count is owned by pagination; not duplicated in query.
   # -----------------------------------------------------------------------
   - name: subscriptions
     description: >
-      All recurring subscriptions on your Razorpay account. Filter by
-      `plan_id` or by `from`/`to` (Unix epoch seconds).
-      Join with razorpay.plans on plan_id = plans.id to enrich with
-      pricing details.
+      All recurring subscriptions on your Razorpay account. `from` and `to`
+      (Unix epoch seconds, Int64) are required to prevent unbounded scans.
+      Filter by `plan_id` to narrow to one plan.
+      Join with razorpay.plans on plan_id = plans.id to enrich with pricing.
+    fetch_limit_default: 1000
     filters:
       - name: plan_id
         type: Utf8
@@ -547,11 +569,11 @@ tables:
         description: Filter to subscriptions belonging to a specific plan
       - name: from
         type: Int64
-        required: false
+        required: true
         description: Unix epoch start timestamp in seconds (inclusive)
       - name: to
         type: Int64
-        required: false
+        required: true
         description: Unix epoch end timestamp in seconds (inclusive)
     request:
       method: GET
@@ -677,11 +699,10 @@ tables:
   # razorpay.payment_links
   # GET /v1/payment_links/
   # Docs: https://razorpay.com/docs/api/payments/payment-links/fetch-all-standard/
-  # Only payment_id and reference_id are accepted as filters.
-  # No count/skip pagination supported by this endpoint.
-  # cancelled_at, expire_by, expired_at are kept as Int64 because Razorpay
-  # returns 0 when unset — surfacing 0 as 1970-01-01 would be misleading.
-  # Consumers should treat 0 as "not set".
+  # Only payment_id and reference_id filters supported by this endpoint.
+  # No count/skip pagination supported — mode: none.
+  # cancelled_at, expire_by, expired_at kept as Int64 because Razorpay
+  # returns 0 when unset; surfacing 0 as 1970-01-01 would be misleading.
   # -----------------------------------------------------------------------
   - name: payment_links
     description: >
