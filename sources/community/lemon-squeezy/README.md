@@ -144,12 +144,13 @@ LIMIT 20;
 SELECT
   oi.product_name,
   oi.variant_name,
-  SUM(oi.quantity)                        AS units_sold,
-  ROUND(SUM(oi.price * oi.quantity) / 100.0, 2) AS gross_revenue
+  o.currency,
+  SUM(oi.quantity)                                      AS units_sold,
+  ROUND(SUM(oi.price * oi.quantity) / 100.0, 2)        AS gross_revenue
 FROM lemon_squeezy.order_items oi
 JOIN lemon_squeezy.orders o ON o.id = CAST(oi.order_id AS VARCHAR)
 WHERE o.status = 'paid'
-GROUP BY 1, 2
+GROUP BY 1, 2, 3
 ORDER BY gross_revenue DESC;
 ```
 
