@@ -1,0 +1,150 @@
+openapi: 3.0.3
+info:
+  title: Slack metadata
+  version: 0.0.1
+servers:
+  - url: https://slack.com/api
+paths:
+  /conversations.list:
+    get:
+      operationId: channels
+      parameters:
+        - name: types
+          in: query
+          required: false
+          schema:
+            type: string
+            default: public_channel,private_channel,mpim,im
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 200
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Slack conversations list response.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  channels:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        is_channel:
+                          type: boolean
+                        is_group:
+                          type: boolean
+                        is_im:
+                          type: boolean
+                        is_mpim:
+                          type: boolean
+                        is_archived:
+                          type: boolean
+                        is_private:
+                          type: boolean
+                        is_member:
+                          type: boolean
+                        num_members:
+                          type: integer
+                        purpose:
+                          type: object
+                          properties:
+                            value:
+                              type: string
+                            creator:
+                              type: string
+                            last_set:
+                              type: integer
+                        topic:
+                          type: object
+                          properties:
+                            value:
+                              type: string
+                            creator:
+                              type: string
+                            last_set:
+                              type: integer
+                  response_metadata:
+                    type: object
+                    properties:
+                      next_cursor:
+                        type: string
+  /users.list:
+    get:
+      operationId: users
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 200
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Slack users list response.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  members:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        team_id:
+                          type: string
+                        name:
+                          type: string
+                        real_name:
+                          type: string
+                        deleted:
+                          type: boolean
+                        is_bot:
+                          type: boolean
+                        is_admin:
+                          type: boolean
+                        is_owner:
+                          type: boolean
+                        tz:
+                          type: string
+                        profile:
+                          type: object
+                          properties:
+                            display_name:
+                              type: string
+                            real_name:
+                              type: string
+                            title:
+                              type: string
+                            email:
+                              type: string
+                  response_metadata:
+                    type: object
+                    properties:
+                      next_cursor:
+                        type: string

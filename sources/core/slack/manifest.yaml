@@ -1,67 +1,18 @@
 spec_version: 1
 kind: source
 name: slack
-description: Use Slack's hosted MCP server over Streamable HTTP to search Slack, read messages and canvases, manage users, and send messages as the authenticated user.
+description: Query Slack workspace channel and user metadata through the Slack Web API.
 inputs:
-    - key: SLACK_USER_TOKEN
-      kind: secret
-      label: Slack user OAuth token
-      hint: User OAuth token for Slack's hosted MCP server. Install interactively to authorize with Slack OAuth, or set this to an existing user token.
-      required: true
-      credential:
-          methods:
-              - type: oauth
-                label: Connect with Slack
-                description: Authorize Slack with OAuth and store a user token for Slack's hosted MCP server.
-                hint: The Slack app must be internal or directory-published, have MCP access and PKCE enabled, and allow the redirect URL http://localhost:53682/oauth/callback.
-                oauth:
-                    flow:
-                        type: authorization_code
-                        pkce: required
-                    redirect_uri: http://localhost:53682/oauth/callback
-                    redirect_uri_port_mode: fixed
-                    endpoints:
-                        authorization_url: https://slack.com/oauth/v2_user/authorize
-                        token_url: https://slack.com/api/oauth.v2.user.access
-                    client:
-                        id:
-                            input: SLACK_OAUTH_CLIENT_ID
-                    scopes:
-                        scope:
-                            delimiter: comma
-                            values:
-                                - search:read.public
-                                - search:read.private
-                                - search:read.mpim
-                                - search:read.im
-                                - search:read.files
-                                - files:read
-                                - emoji:read
-                                - search:read.users
-                                - chat:write
-                                - channels:history
-                                - groups:history
-                                - mpim:history
-                                - im:history
-                                - channels:write
-                                - groups:write
-                                - im:write
-                                - mpim:write
-                                - reactions:write
-                                - canvases:read
-                                - canvases:write
-                                - users:read
-                                - users:read.email
-                                - channels:read
-                                - groups:read
-                                - mpim:read
+  - key: SLACK_TOKEN
+    kind: secret
+    label: Slack token
+    hint: Slack OAuth token used as the Web API Authorization bearer token.
+    required: true
 interfaces:
-    - id: tools
-      type: mcp
-      server:
-          transport:
-              type: streamable_http
-              url: https://mcp.slack.com/mcp
-          auth:
-              kind: bearer_input
-              key: SLACK_USER_TOKEN
+  - id: rest
+    type: openapi
+    file: ./openapi.yaml
+    base_url: https://slack.com/api
+    auth:
+      kind: bearer_input
+      key: SLACK_TOKEN
