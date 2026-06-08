@@ -127,19 +127,57 @@ pub fn generated_tool_output_schema(capability: &Capability) -> Value {
                     { "type": "null" }
                 ]
             },
-            "envelope": {
-                "anyOf": [
-                    {
-                        "type": "object",
-                        "description": "Coral invocation envelope with provider status and metadata.",
-                        "additionalProperties": true
-                    },
-                    { "type": "null" }
-                ]
-            }
+            "envelope": generated_tool_envelope_schema()
         },
         "additionalProperties": false
     })))
+}
+
+fn generated_tool_envelope_schema() -> Value {
+    json!({
+        "anyOf": [
+            {
+                "type": "object",
+                "description": "Coral invocation envelope with provider transport status and metadata. REST providers include lowercase response headers at envelope.provider.headers.",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "description": "Provider binding kind, such as rest, graphql, mcp_tool, or file_read."
+                    },
+                    "capability_id": { "type": "string" },
+                    "source_id": { "type": "string" },
+                    "provider": {
+                        "type": "object",
+                        "description": "Provider transport envelope. REST providers include status, lowercase response headers, media_type, body, and response_trust.",
+                        "properties": {
+                            "kind": { "type": "string" },
+                            "status": { "type": "integer" },
+                            "headers": {
+                                "type": "object",
+                                "description": "Lowercase REST response headers captured from the provider response.",
+                                "additionalProperties": { "type": "string" }
+                            },
+                            "media_type": {
+                                "anyOf": [
+                                    { "type": "string" },
+                                    { "type": "null" }
+                                ]
+                            },
+                            "body": {
+                                "description": "Parsed REST response body; this matches value for REST invocations."
+                            },
+                            "response_trust": {
+                                "description": "Trust classification for provider-originated data."
+                            }
+                        },
+                        "additionalProperties": true
+                    }
+                },
+                "additionalProperties": true
+            },
+            { "type": "null" }
+        ]
+    })
 }
 
 /// Returns unresolved provider references annotated in an executable schema.
@@ -1355,6 +1393,14 @@ mod tests {
             Vec::<String>::new()
         );
         assert!(schema.pointer("/$defs/Issue").is_some());
+        assert_eq!(
+            schema
+                .pointer(
+                    "/properties/envelope/anyOf/0/properties/provider/properties/headers/additionalProperties/type"
+                )
+                .and_then(Value::as_str),
+            Some("string")
+        );
         let compiled = jsonschema::JSONSchema::compile(&schema).expect("schema compiles");
 
         assert!(compiled.is_valid(&json!({

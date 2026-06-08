@@ -56,7 +56,7 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
 - Nested tool methods take the input shape described in their tool declaration.
 - Nested tools return JSON-serializable structured values.
 - Generated provider tools reject on provider or transport failure by default; the rejection is catchable with JavaScript `try`/`catch`, and an uncaught rejection fails the run.
-- Successful generated provider calls return `{ ok, complete, partial, errors, source_status, value, error, envelope }`; after checking `response.ok`, read provider data from `response.value`.
+- Successful generated provider calls return `{ ok, complete, partial, errors, source_status, value, error, envelope }`; after checking `response.ok`, read provider data from `response.value`. REST calls also expose transport details such as `response.envelope.provider.status` and lowercase response headers at `response.envelope.provider.headers`.
 - Pass `{ allowErrorResult: true }` as a second argument only when you deliberately want the raw `{ ok: false }` error result with structured provider diagnostics.
 - Runs JavaScript in Coral's V8 isolate. Supported globals are `tools.*`, `coral.*`, standard JavaScript, `console.*`, and the documented helpers listed below.
 - Accepts raw JavaScript source text, not JSON, quoted strings, or markdown code fences.

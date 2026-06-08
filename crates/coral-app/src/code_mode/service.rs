@@ -1777,6 +1777,14 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("string")
         );
+        assert_eq!(
+            schema
+                .pointer(
+                    "/properties/envelope/anyOf/0/properties/provider/properties/headers/additionalProperties/type"
+                )
+                .and_then(|value| value.as_str()),
+            Some("string")
+        );
     }
 
     #[test]

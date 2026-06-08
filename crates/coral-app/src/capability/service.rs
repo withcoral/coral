@@ -1830,6 +1830,7 @@ fn public_upstream_envelope(envelope: &UpstreamResponseEnvelope) -> JsonValue {
         UpstreamResponseEnvelope::Http(response) => json!({
             "kind": "http",
             "status": response.status,
+            "headers": response.headers,
             "media_type": response.media_type,
             "body": response_body_value(&response.body),
             "response_trust": response.response_trust,
@@ -2453,6 +2454,61 @@ mod tests {
 
     fn assert_json_pointer(value: &JsonValue, pointer: &str, expected: &JsonValue) {
         assert_eq!(value.pointer(pointer), Some(expected));
+    }
+
+    fn assert_rest_response_headers_are_exposed(envelope: &JsonValue) {
+        assert_json_pointer(
+            envelope,
+            "/provider/headers/link",
+            &json!(
+                r#"<https://user:pass@api.example.test/api/v1/items?page=2&access_token=link-token&password=secret&code=oauth-code&session=session-id&jwt=jwt-value#access_token=fragment-token>; rel="next""#
+            ),
+        );
+        assert_json_pointer(
+            envelope,
+            "/provider/headers/location",
+            &json!("https://api.example.test/api/v1/items?page=2&X-Amz-Signature=signed"),
+        );
+        assert_json_pointer(
+            envelope,
+            "/provider/headers/content-location",
+            &json!("https://api.example.test/api/v1/items?page=2&token=content-token"),
+        );
+        assert_json_pointer(
+            envelope,
+            "/provider/headers/authorization",
+            &json!("Bearer provider-token"),
+        );
+        assert_json_pointer(
+            envelope,
+            "/provider/headers/proxy-authorization",
+            &json!("Bearer proxy-token"),
+        );
+        assert_json_pointer(
+            envelope,
+            "/provider/headers/x-ratelimit-remaining",
+            &json!("4999"),
+        );
+        assert_json_pointer(
+            envelope,
+            "/provider/headers/x-ratelimit-token",
+            &json!("provider-rate-limit-token"),
+        );
+        assert_json_pointer(
+            envelope,
+            "/provider/headers/set-cookie",
+            &json!("provider-session=secret"),
+        );
+        assert_json_pointer(
+            envelope,
+            "/provider/headers/refresh",
+            &json!("0; url=https://api.example.test/items?access_token=refresh-token"),
+        );
+        assert_json_pointer(
+            envelope,
+            "/provider/headers/x-api-key",
+            &json!("provider-api-key"),
+        );
     }
 
     fn proto_json_value_to_json(value: coral_api::v1::JsonValue) -> JsonValue {
@@ -3825,7 +3881,33 @@ interfaces:
             .and(path("/api/v1/items/42"))
             .respond_with(
                 ResponseTemplate::new(200)
+                    .insert_header("Authorization", "Bearer provider-token")
+                    .insert_header(
+                        "Content-Location",
+                        "https://api.example.test/api/v1/items?page=2&token=content-token",
+                    )
+                    .insert_header("Proxy-Authorization", "Bearer proxy-token")
+                    .insert_header(
+                        "Refresh",
+                        "0; url=https://api.example.test/items?access_token=refresh-token",
+                    )
                     .insert_header("Set-Cookie", "provider-session=secret")
+                    .insert_header(
+                        "Link",
+                        r#"<https://user:pass@api.example.test/api/v1/items?page=2&access_token=link-token&password=secret&code=oauth-code&session=session-id&jwt=jwt-value#access_token=fragment-token>; rel="next""#,
+                    )
+                    .insert_header(
+                        "Location",
+                        "https://api.example.test/api/v1/items?page=2&X-Amz-Signature=signed",
+                    )
+                    .insert_header("X-Api-Key", "provider-api-key")
+                    .insert_header("X-Auth-Token", "provider-auth-token")
+                    .insert_header("X-Access-Key", "provider-access-key")
+                    .insert_header("X-CSRF-Token", "provider-csrf-token")
+                    .insert_header("X-Password", "provider-password")
+                    .insert_header("X-RateLimit-Remaining", "4999")
+                    .insert_header("X-RateLimit-Token", "provider-rate-limit-token")
+                    .insert_header("X-Subject-Token", "provider-subject-token")
                     .set_body_json(json!({
                         "id": 42,
                         "name": "answer"
@@ -3884,7 +3966,7 @@ interfaces:
         let envelope = response_envelope(&response);
         assert_json_pointer(&envelope, "/kind", &json!("rest"));
         assert_json_pointer(&envelope, "/provider/status", &json!(200));
-        assert!(!envelope.to_string().contains("provider-session=secret"));
+        assert_rest_response_headers_are_exposed(&envelope);
     }
 
     #[tokio::test]

@@ -27,10 +27,12 @@ This release is intended for single-user local use:
 Coral reduces data exposure by keeping execution local and by exposing a narrow
 MCP tool surface: `search`, `describe`, `exec`, `wait`, and `feedback`.
 SQL is available through the CLI and inside Code Mode
-through `coral.sql.query`, not as a separate MCP tool. Secret
-values are resolved by the local app at materialization or invocation time and
-are not returned through discovery, MCP results, Code Mode globals, logs, or
-diagnostics.
+through `coral.sql.query`, not as a separate MCP tool. Coral-managed source
+secret inputs are resolved by the local app at materialization or invocation
+time and are not returned through discovery, Code Mode globals, logs, or
+diagnostics. Provider-originated response data, including REST response bodies
+and headers, is returned as untrusted provider data and may contain whatever the
+provider sent.
 
 ## What Coral protects against
 
