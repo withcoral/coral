@@ -1,0 +1,67 @@
+---
+title: "Configuration"
+description: "Reference for Coral's config.toml file and runtime configuration."
+---
+
+Coral stores local configuration in `config.toml` inside its platform-specific [local state directory](/getting-started/installation#local-state).
+
+## Managed state
+
+Coral writes source installation state to `config.toml` when you run commands such as `coral source add` and `coral source remove`.
+
+This state includes installed-source metadata and non-secret source variables. Source secrets are stored separately within the same local trust boundary.
+
+<Note>
+  Prefer the `coral source` commands for source state instead of editing workspace entries manually.
+</Note>
+
+## Runtime features
+
+Experimental runtime features are configured under `[features]`.
+
+```toml
+[features]
+feedback = true
+```
+
+You can inspect available features and their effective state with:
+
+```shellscript
+coral features list
+```
+
+Enable or disable a feature with:
+
+```shellscript
+coral features enable feedback
+coral features disable feedback
+```
+
+Feature values must be booleans. Unknown feature keys are preserved in `config.toml` but ignored by Coral.
+
+| Feature | Default | Description |
+| ------- | ------- | ----------- |
+| `feedback` | `false` | Experimental. Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral. |
+
+## OpenTelemetry
+
+External OpenTelemetry export is configured under `[otel]`.
+
+```toml
+[otel]
+endpoint = "http://localhost:4318"
+headers = "authorization=Bearer ..."
+log_filter = "info"
+trace_filter = "coral_app=debug"
+service_name = "coral"
+```
+
+Trace history settings are configured under `[trace_history]`.
+
+```toml
+[trace_history]
+enabled = true
+retention_days = 7
+```
+
+See [Observe with OpenTelemetry](/guides/observe-with-opentelemetry) for the full telemetry setup guide.

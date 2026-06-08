@@ -1,31 +1,31 @@
 use std::any::Any;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use coral_spec::ManifestDataType;
 use coral_spec::backends::mcp::McpTableSpec;
-use coral_spec::{FilterMode, ManifestDataType};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::logical_expr::{Expr, Operator, TableProviderFilterPushDown, TableType};
+use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
 use rmcp::model::JsonObject;
 use serde_json::Value;
 
+use super::McpSourceInputs;
 use super::client::McpSourceClient;
 use super::error::McpProviderQueryError;
 use super::fetch::McpFetchPlan;
 use crate::backends::schema_from_columns;
-use crate::backends::shared::filter_expr::{extract_filter_values, literal_to_string};
+use crate::backends::shared::filter_expr::{classify_filter_pushdown, extract_filter_values};
 use crate::backends::shared::json_exec::JsonExec;
 use crate::backends::shared::mapping::convert_items;
-use crate::backends::shared::template::{RenderContext, resolve_value_source};
 
 pub(super) struct McpTableProvider {
     backend: McpSourceClient,
     source_schema: String,
-    resolved_inputs: Arc<BTreeMap<String, String>>,
+    source_inputs: Arc<McpSourceInputs>,
     table: Arc<McpTableSpec>,
     schema: SchemaRef,
 }
@@ -44,14 +44,14 @@ impl McpTableProvider {
     pub(super) fn new(
         backend: McpSourceClient,
         source_schema: String,
-        resolved_inputs: Arc<BTreeMap<String, String>>,
+        source_inputs: Arc<McpSourceInputs>,
         table: McpTableSpec,
     ) -> Result<Self> {
         let schema = schema_from_columns(table.columns(), &source_schema, table.name())?;
         Ok(Self {
             backend,
             source_schema,
-            resolved_inputs,
+            source_inputs,
             table: Arc::new(table),
             schema,
         })
@@ -76,23 +76,7 @@ impl TableProvider for McpTableProvider {
         &self,
         filters: &[&Expr],
     ) -> Result<Vec<TableProviderFilterPushDown>> {
-        let allowed: std::collections::HashSet<&str> = self
-            .table
-            .filters()
-            .iter()
-            .map(|f| f.name.as_str())
-            .collect();
-        let filter_modes: HashMap<&str, FilterMode> = self
-            .table
-            .filters()
-            .iter()
-            .map(|f| (f.name.as_str(), f.mode))
-            .collect();
-
-        Ok(filters
-            .iter()
-            .map(|expr| classify_filter(expr, &allowed, &filter_modes))
-            .collect())
+        Ok(classify_filter_pushdown(filters, self.table.filters()))
     }
 
     async fn scan(
@@ -105,13 +89,6 @@ impl TableProvider for McpTableProvider {
         let filter_values = extract_filter_values(filters, self.table.filters());
 
         let mut arguments = JsonObject::new();
-
-        let render_context = RenderContext::source_scoped(&self.resolved_inputs);
-        for (name, source) in &self.table.tool_args {
-            if let Some(value) = resolve_value_source(source, &render_context)? {
-                arguments.insert(name.clone(), value);
-            }
-        }
 
         for filter in self.table.filters() {
             match filter_values.get(&filter.name) {
@@ -167,6 +144,8 @@ impl TableProvider for McpTableProvider {
             relation: self.table.name().to_string(),
             tool_name: self.table.tool.clone(),
             arguments,
+            source_inputs: Some(Arc::clone(&self.source_inputs)),
+            source_tool_args: Arc::new(self.table.tool_args.clone()),
             response: self.table.response.clone(),
             pagination: self.table.pagination.clone(),
             limit: limits.truncate,
@@ -286,48 +265,4 @@ fn invalid_filter_value_plan_error(
         "{source_schema}.{table_name} filter '{filter_name}' is declared as {declared} but value \
          '{value}' could not be parsed as {declared}"
     ))
-}
-
-fn classify_filter(
-    expr: &Expr,
-    allowed: &std::collections::HashSet<&str>,
-    filter_modes: &HashMap<&str, FilterMode>,
-) -> TableProviderFilterPushDown {
-    if let Expr::Column(col) = expr
-        && allowed.contains(col.name())
-    {
-        return TableProviderFilterPushDown::Exact;
-    }
-    if let Expr::Not(inner) = expr
-        && let Expr::Column(col) = inner.as_ref()
-        && allowed.contains(col.name())
-    {
-        return TableProviderFilterPushDown::Exact;
-    }
-    if let Expr::IsTrue(inner) | Expr::IsFalse(inner) = expr
-        && let Expr::Column(col) = inner.as_ref()
-        && allowed.contains(col.name())
-    {
-        return TableProviderFilterPushDown::Exact;
-    }
-    if let Expr::BinaryExpr(binary) = expr
-        && binary.op == Operator::Eq
-        && let Expr::Column(col) = binary.left.as_ref()
-        && allowed.contains(col.name())
-        && literal_to_string(binary.right.as_ref()).is_some()
-    {
-        return TableProviderFilterPushDown::Exact;
-    }
-    if let Expr::Like(like) = expr
-        && !like.negated
-        && let Expr::Column(col) = like.expr.as_ref()
-        && allowed.contains(col.name())
-        && literal_to_string(like.pattern.as_ref()).is_some()
-    {
-        let mode = filter_modes.get(col.name()).copied().unwrap_or_default();
-        if matches!(mode, FilterMode::Search | FilterMode::Contains) {
-            return TableProviderFilterPushDown::Inexact;
-        }
-    }
-    TableProviderFilterPushDown::Unsupported
 }
