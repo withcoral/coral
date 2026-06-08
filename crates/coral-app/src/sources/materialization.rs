@@ -702,13 +702,24 @@ fn discover_mcp_tool_catalog(
             .build()
             .map_err(AppError::from)?;
         runtime
-            .block_on(coral_engine::discover_mcp_tool_catalog(
-                &source_name,
-                server,
-                &declared_inputs,
-                variables,
-                secrets,
-            ))
+            .block_on(async {
+                tokio::time::timeout(
+                    DESCRIPTOR_FETCH_TIMEOUT,
+                    coral_engine::discover_mcp_tool_catalog(
+                        &source_name,
+                        server,
+                        &declared_inputs,
+                        variables,
+                        secrets,
+                    ),
+                )
+                .await
+            })
+            .map_err(|_elapsed| {
+                AppError::Unavailable(format!(
+                    "timed out discovering MCP tools for source '{source_name}'"
+                ))
+            })?
             .map_err(app_error_from_core)
     })
     .join()
@@ -1087,6 +1098,76 @@ paths:
 "
     }
 
+    fn mcp_server_script(dir: &TempDir) -> PathBuf {
+        let script = dir.path().join("mcp_server.py");
+        std::fs::write(
+            &script,
+            r#"
+import json
+import sys
+
+TOOLS = [{
+    "name": "list_items",
+    "description": "List items",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "cursor": {"type": "string"}
+        }
+    },
+    "outputSchema": {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"}
+                    }
+                }
+            },
+            "meta": {
+                "type": "object",
+                "properties": {
+                    "nextCursor": {"type": ["string", "null"]}
+                }
+            }
+        }
+    },
+    "annotations": {"readOnlyHint": True}
+}]
+
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    message = json.loads(line)
+    request_id = message.get("id")
+    if request_id is None:
+        continue
+    method = message.get("method")
+    if method == "initialize":
+        result = {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "test-mcp", "version": "1.0.0"}
+        }
+    elif method == "tools/list":
+        result = {"tools": TOOLS}
+    else:
+        result = {}
+    sys.stdout.write(json.dumps({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": result
+    }) + "\n")
+    sys.stdout.flush()
+"#,
+        )
+        .expect("write MCP server script");
+        script
+    }
+
     fn setup_materialization() -> (TempDir, TempDir, AppStateLayout, String, V4SourceManifest) {
         let descriptor_temp = TempDir::new().expect("descriptor temp dir");
         let openapi_file = descriptor_temp.path().join("openapi.yaml");
@@ -1126,6 +1207,77 @@ surfaces:
         replace_v4_materialization(&layout, &workspace_name(), &source_name(), &build.temp_dir)
             .expect("install materialization");
         (state_temp, descriptor_temp, layout, manifest_yaml, manifest)
+    }
+
+    #[test]
+    fn build_v4_materialization_tmp_materializes_mcp_surface() {
+        let script_temp = TempDir::new().expect("script temp dir");
+        let script = mcp_server_script(&script_temp);
+        let state_temp = TempDir::new().expect("state temp dir");
+        let layout =
+            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let manifest_yaml = format!(
+            r"
+name: mcp_materialization_test
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    server:
+      transport: stdio
+      command: python3
+      args:
+        - {}
+",
+            script.display()
+        );
+        let manifest = parse_source_manifest_yaml(&manifest_yaml)
+            .expect("parse v4 manifest")
+            .as_v4()
+            .expect("v4")
+            .clone();
+
+        let build = build_v4_materialization_tmp(
+            &layout,
+            &workspace_name(),
+            &SourceName::parse("mcp_materialization_test").expect("source"),
+            &manifest_yaml,
+            &manifest,
+            &MaterializationInputs::default(),
+            "test",
+        )
+        .expect("build MCP materialization");
+
+        let semantic_ir: SemanticIr = read_yaml(
+            &build
+                .temp_dir
+                .join("surfaces")
+                .join("mcp")
+                .join("semantic-ir.yaml"),
+        )
+        .expect("read semantic IR");
+        let operation = semantic_ir.operations.first().expect("operation");
+        let coral_spec::v4::IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
+            panic!("expected MCP execution");
+        };
+        let pagination = mcp.pagination.as_ref().expect("pagination");
+        assert_eq!(pagination.cursor_arg, "cursor");
+        assert_eq!(
+            pagination.response_cursor_path,
+            vec!["meta".to_string(), "nextCursor".to_string()]
+        );
+
+        let projections: ProjectionCatalog =
+            read_yaml(&build.temp_dir.join("projections.yaml")).expect("read projections");
+        let projection = projections.projections.first().expect("projection");
+        assert_eq!(projection.namespace, "mcp_materialization_test");
+        let column_names = projection
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(column_names, ["result", "result_json"]);
     }
 
     fn credential_method_hint_manifest(hint: &str) -> V4SourceManifest {

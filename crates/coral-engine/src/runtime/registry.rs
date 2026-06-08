@@ -106,7 +106,7 @@ async fn register_sources_inner(
     prepare_source_decorators(source_decorators, &selected_sources)?;
 
     let mut result = SourceRegistrationResult::default();
-    let mut seen_schemas = std::collections::HashSet::new();
+    let mut seen_schemas = catalog.schema_names().into_iter().collect();
     let registration_context = BackendRegistrationContext::default();
 
     for source in sources {
@@ -125,17 +125,15 @@ async fn register_sources_inner(
                 .await
                 {
                     Ok(registration) => {
-                        for schema_registration in registration.schemas {
-                            register_schema_registration(
-                                ctx,
-                                catalog.as_ref(),
-                                source_decorators,
-                                query_source,
-                                &source_name,
-                                schema_registration,
-                                &mut result,
-                            )?;
-                        }
+                        register_backend_registration(
+                            ctx,
+                            catalog.as_ref(),
+                            source_decorators,
+                            query_source,
+                            &source_name,
+                            registration,
+                            &mut result,
+                        )?;
                     }
                     Err(error) => {
                         let core_error = datafusion_to_core(&error, &[]);
@@ -200,14 +198,12 @@ async fn register_source(
     let registration = source.register(ctx, registration_context).await?;
     let mut registration_schemas = std::collections::HashSet::new();
     for schema in &registration.schemas {
-        check_reserved_schema(&schema.schema_name)?;
+        let schema_name = &schema.source.schema_name;
+        check_reserved_schema(schema_name)?;
 
-        if !registration_schemas.insert(schema.schema_name.clone())
-            || seen_schemas.contains(&schema.schema_name)
-        {
+        if !registration_schemas.insert(schema_name.clone()) || seen_schemas.contains(schema_name) {
             return Err(DataFusionError::Execution(format!(
-                "duplicate source schema '{}'",
-                schema.schema_name
+                "duplicate source schema '{schema_name}'"
             )));
         }
     }
@@ -216,38 +212,72 @@ async fn register_source(
     Ok(registration)
 }
 
-fn register_schema_registration(
+fn register_backend_registration(
     ctx: &SessionContext,
     catalog: &dyn datafusion::catalog::CatalogProvider,
     source_decorators: &mut [Box<dyn SourceDecorator>],
     query_source: &QuerySource,
     source_name: &str,
-    schema_registration: BackendSchemaRegistration,
+    registration: BackendRegistration,
     result: &mut SourceRegistrationResult,
 ) -> std::result::Result<(), CoreError> {
-    let BackendSchemaRegistration {
-        schema_name,
-        tables,
-        table_functions,
-        source: registered_source,
-    } = schema_registration;
-    let decorated_tables = decorate_source_tables(source_decorators, query_source, tables)?;
-    match catalog.register_schema(
-        &schema_name,
-        Arc::new(StaticSchemaProvider::new(decorated_tables)),
-    ) {
-        Ok(_) => {
-            register_table_functions(ctx, table_functions);
-            result.active_sources.push(registered_source);
-            Ok(())
-        }
-        Err(error) => {
-            let core_error = datafusion_to_core(&error, &[]);
-            if handle_source_registration_failure(source_decorators, query_source, &core_error)? {
-                return Err(core_error);
+    let mut staged = Vec::with_capacity(registration.schemas.len());
+    for schema_registration in registration.schemas {
+        let BackendSchemaRegistration {
+            tables,
+            table_functions,
+            source: registered_source,
+        } = schema_registration;
+        let schema_name = registered_source.schema_name.clone();
+        let decorated_tables = decorate_source_tables(source_decorators, query_source, tables)?;
+        staged.push((
+            schema_name,
+            decorated_tables,
+            table_functions,
+            registered_source,
+        ));
+    }
+
+    let mut registered_schema_names = Vec::with_capacity(staged.len());
+    for (schema_name, decorated_tables, _table_functions, _registered_source) in &mut staged {
+        match catalog.register_schema(
+            schema_name,
+            Arc::new(StaticSchemaProvider::new(std::mem::take(decorated_tables))),
+        ) {
+            Ok(_) => {
+                registered_schema_names.push(schema_name.clone());
             }
-            push_source_failure(result, source_name, &schema_name, core_error.to_string());
-            Ok(())
+            Err(error) => {
+                rollback_registered_schemas(catalog, &registered_schema_names);
+                let core_error = datafusion_to_core(&error, &[]);
+                if handle_source_registration_failure(source_decorators, query_source, &core_error)?
+                {
+                    return Err(core_error);
+                }
+                push_source_failure(result, source_name, schema_name, core_error.to_string());
+                return Ok(());
+            }
+        }
+    }
+
+    for (_schema_name, _decorated_tables, table_functions, registered_source) in staged {
+        register_table_functions(ctx, table_functions);
+        result.active_sources.push(registered_source);
+    }
+    Ok(())
+}
+
+fn rollback_registered_schemas(
+    catalog: &dyn datafusion::catalog::CatalogProvider,
+    schema_names: &[String],
+) {
+    for schema_name in schema_names.iter().rev() {
+        if let Err(error) = catalog.deregister_schema(schema_name, true) {
+            tracing::warn!(
+                schema_name,
+                detail = %error,
+                "failed to roll back source schema registration"
+            );
         }
     }
 }

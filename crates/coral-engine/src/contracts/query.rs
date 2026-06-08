@@ -103,6 +103,19 @@ impl QuerySource {
         variables: BTreeMap<String, String>,
         secrets: BTreeMap<String, String>,
     ) -> Result<Self, crate::CoreError> {
+        if package.source_name.trim().is_empty() {
+            return Err(crate::CoreError::InvalidInput(
+                "runtime source package source_name must not be empty".to_string(),
+            ));
+        }
+        for component in &package.components {
+            if component.source_name().trim().is_empty() {
+                return Err(crate::CoreError::InvalidInput(format!(
+                    "runtime source package '{}' has a component with an empty schema name",
+                    package.source_name
+                )));
+            }
+        }
         Ok(Self {
             source_name: package.source_name,
             authored_version: package.authored_version,

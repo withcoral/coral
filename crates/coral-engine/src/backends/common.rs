@@ -104,7 +104,6 @@ pub(crate) struct BackendRegistration {
 }
 
 pub(crate) struct BackendSchemaRegistration {
-    pub(crate) schema_name: String,
     pub(crate) tables: HashMap<String, Arc<dyn TableProvider>>,
     pub(crate) table_functions: SourceTableFunctions,
     pub(crate) source: RegisteredSource,

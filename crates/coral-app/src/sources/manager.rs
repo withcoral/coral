@@ -1190,7 +1190,6 @@ fn source_needs_stored_material_for_validation(
     let supplied_secrets = collect_unique_secrets(&bindings.secrets)?;
     Ok(candidate.inputs.iter().any(|input| {
         input.kind == ManifestInputKind::Secret
-            && input.required
             && !supplied_secrets.contains_key(&input.key)
             && !filled_secret_keys.contains(&input.key)
     }))
@@ -1411,7 +1410,7 @@ fn cleanup_empty_parent(root: &std::path::Path, path: Option<&std::path::Path>) 
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener as StdTcpListener;
     use std::path::Path;
@@ -1427,15 +1426,19 @@ mod tests {
     use super::{
         ImportSourceCommand, ImportSourceEventSender, ImportSourceWithCredentialsCommand,
         ImportSourceWithCredentialsEvent, PendingImportSourceWithCredentialsEvent, SourceBinding,
-        SourceBindings, SourceManager, SourceOAuthCredentialRetrieval, normalize_binding_key,
+        SourceBindings, SourceManager, SourceOAuthCredentialRetrieval, ValidatedBindings,
+        materialization_inputs_from_bindings, normalize_binding_key,
+        source_needs_stored_material_for_validation,
     };
     use crate::credentials::{
         CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
         CredentialStore,
     };
     use crate::sources::SourceName;
+    use crate::sources::model::{CandidateSource, SourceOrigin};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
+    use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
     fn default_workspace() -> WorkspaceName {
         WorkspaceName::default()
@@ -1718,6 +1721,54 @@ tables:
             ],
             secrets: Vec::new(),
         }
+    }
+
+    fn candidate_with_secret(key: &str, required: bool) -> CandidateSource {
+        CandidateSource {
+            name: SourceName::parse("secured_messages").expect("source"),
+            description: String::new(),
+            version: None,
+            inputs: vec![ManifestInputSpec {
+                key: key.to_string(),
+                kind: ManifestInputKind::Secret,
+                required,
+                default_value: String::new(),
+                hint: None,
+                credential: None,
+            }],
+            installed: true,
+            origin: SourceOrigin::Imported,
+            credential_storage: Some(CredentialStorageKind::File),
+        }
+    }
+
+    #[test]
+    fn materialization_inputs_include_persisted_optional_secrets() {
+        let candidate = candidate_with_secret("OPTIONAL_TOKEN", false);
+        let needs_stored = source_needs_stored_material_for_validation(
+            &candidate,
+            &SourceBindings::default(),
+            &BTreeSet::new(),
+        )
+        .expect("stored material check");
+        assert!(
+            needs_stored,
+            "optional persisted secrets can affect v4 materialization and should be loaded"
+        );
+
+        let bindings = ValidatedBindings {
+            variables: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            replaced_oauth_inputs: BTreeSet::new(),
+        };
+        let stored_material =
+            BTreeMap::from([("OPTIONAL_TOKEN".to_string(), "persisted-secret".to_string())]);
+
+        let inputs = materialization_inputs_from_bindings(&bindings, &stored_material);
+        assert_eq!(
+            inputs.secrets.get("OPTIONAL_TOKEN").map(String::as_str),
+            Some("persisted-secret")
+        );
     }
 
     #[test]

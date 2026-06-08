@@ -478,6 +478,60 @@ fn search_issues_mcp_catalog() -> McpToolCatalog {
 }
 
 #[test]
+fn rest_projection_input_names_keep_legacy_normalization() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let openapi = r"
+openapi: 3.0.3
+paths:
+  /issues:
+    get:
+      operationId: issues/search
+      parameters:
+        - name: perPage
+          in: query
+          schema: { type: integer }
+        - name: pullNumber
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: integer }
+";
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("surface");
+    let ir = import_openapi_surface(v4, surface, openapi.as_bytes()).expect("import");
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+    let sql_name_by_wire = projection
+        .inputs
+        .iter()
+        .map(|input| (input.wire_name.as_str(), input.name.as_str()))
+        .collect::<BTreeMap<_, _>>();
+
+    assert_eq!(sql_name_by_wire.get("perPage"), Some(&"perpage"));
+    assert_eq!(sql_name_by_wire.get("pullNumber"), Some(&"pullnumber"));
+}
+
+#[test]
 fn different_surface_namespaces_keep_colliding_projection_names() {
     let manifest = rest_mcp_collision_manifest();
     let v4 = manifest.as_v4().expect("v4");
@@ -565,8 +619,75 @@ fn generated_mcp_projection_exposes_current_row_result_columns() {
                 "result_json".to_string(),
                 ManifestDataType::Json,
                 Vec::new()
-            ),
+            )
         ]
+    );
+}
+
+#[test]
+fn generated_mcp_projection_keeps_pagination_cursor_internal() {
+    let manifest = rest_mcp_collision_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let mcp_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "mcp")
+        .expect("mcp surface");
+    let catalog = McpToolCatalog {
+        tools: vec![McpToolDescriptor {
+            name: "list_items".to_string(),
+            title: None,
+            description: None,
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cursor": {"type": "string"},
+                    "query": {"type": "string"}
+                },
+                "required": ["query"]
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"}
+                            }
+                        }
+                    },
+                    "meta": {
+                        "type": "object",
+                        "properties": {
+                            "nextCursor": {"type": ["string", "null"]}
+                        }
+                    }
+                }
+            })),
+            read_only_hint: Some(true),
+        }],
+    };
+    let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
+
+    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let projection = projections
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "list_items")
+        .expect("mcp projection");
+    let cursor = projection
+        .inputs
+        .iter()
+        .find(|input| input.wire_name == "cursor")
+        .expect("cursor input");
+
+    assert_eq!(cursor.sql_exposure, SqlInputExposure::Internal);
+    assert!(
+        mcp_projection_arg_specs(projection)
+            .iter()
+            .all(|arg| arg.bind.arg != "cursor")
     );
 }
 

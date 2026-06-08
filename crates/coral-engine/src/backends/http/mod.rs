@@ -173,7 +173,6 @@ impl CompiledBackendSource for HttpCompiledSource {
         let schema_name = self.manifest.common.name.clone();
         Ok(BackendRegistration {
             schemas: vec![BackendSchemaRegistration {
-                schema_name: schema_name.clone(),
                 tables,
                 table_functions,
                 source: RegisteredSource {

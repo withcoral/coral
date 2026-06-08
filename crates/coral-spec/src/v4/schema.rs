@@ -112,42 +112,14 @@ fn post_process_schema(schema: &mut Value) {
         Value::String("https://json-schema.org/draft/2020-12/schema".to_string())
     });
 
-    if let Some(dsl_version) = root
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-        .and_then(|properties| properties.get_mut("dsl_version"))
-        .and_then(Value::as_object_mut)
-    {
-        dsl_version.insert("const".to_string(), json!(4));
-    }
     if let Some(properties) = root.get_mut("properties").and_then(Value::as_object_mut) {
-        if let Some(name) = properties.get_mut("name").and_then(Value::as_object_mut) {
-            name.insert("minLength".to_string(), json!(1));
-        }
-        if let Some(description) = properties
-            .get_mut("description")
-            .and_then(Value::as_object_mut)
-        {
-            description.insert("type".to_string(), json!("string"));
-        }
-        if let Some(test_queries) = properties
-            .get_mut("test_queries")
-            .and_then(Value::as_object_mut)
-            && let Some(items) = test_queries.get_mut("items").and_then(Value::as_object_mut)
-        {
-            items.insert("minLength".to_string(), json!(1));
-        }
-        if let Some(surfaces) = properties
-            .get_mut("surfaces")
-            .and_then(Value::as_object_mut)
-        {
-            surfaces.insert("minItems".to_string(), json!(1));
-        }
+        post_process_root_properties(properties);
     }
 
     let Some(defs) = root.get_mut("$defs").and_then(Value::as_object_mut) else {
         return;
     };
+    post_process_flattened_value_source_defs(defs);
     if let Some(surface_schema) = defs.get_mut("V4SurfaceSchema") {
         post_process_surface_variants(surface_schema);
         return;
@@ -202,6 +174,37 @@ fn post_process_schema(schema: &mut Value) {
     }
 }
 
+fn post_process_root_properties(properties: &mut serde_json::Map<String, Value>) {
+    if let Some(dsl_version) = properties
+        .get_mut("dsl_version")
+        .and_then(Value::as_object_mut)
+    {
+        dsl_version.insert("const".to_string(), json!(4));
+    }
+    if let Some(name) = properties.get_mut("name").and_then(Value::as_object_mut) {
+        name.insert("minLength".to_string(), json!(1));
+    }
+    if let Some(description) = properties
+        .get_mut("description")
+        .and_then(Value::as_object_mut)
+    {
+        description.insert("type".to_string(), json!("string"));
+    }
+    if let Some(test_queries) = properties
+        .get_mut("test_queries")
+        .and_then(Value::as_object_mut)
+        && let Some(items) = test_queries.get_mut("items").and_then(Value::as_object_mut)
+    {
+        items.insert("minLength".to_string(), json!(1));
+    }
+    if let Some(surfaces) = properties
+        .get_mut("surfaces")
+        .and_then(Value::as_object_mut)
+    {
+        surfaces.insert("minItems".to_string(), json!(1));
+    }
+}
+
 fn post_process_surface_variants(surface_schema: &mut Value) {
     let Some(variants) = surface_schema
         .get_mut("oneOf")
@@ -251,6 +254,57 @@ fn post_process_surface_variants(surface_schema: &mut Value) {
     }
 }
 
+fn post_process_flattened_value_source_defs(defs: &mut serde_json::Map<String, Value>) {
+    compose_flattened_value_source_def(
+        defs,
+        "McpEnvSpec",
+        &json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" }
+            },
+            "required": ["name"]
+        }),
+    );
+    compose_flattened_value_source_def(
+        defs,
+        "McpHttpAuthSpec",
+        &json!({
+            "type": "object",
+            "properties": {
+                "type": { "type": "string", "const": "bearer" }
+            },
+            "required": ["type"]
+        }),
+    );
+}
+
+fn compose_flattened_value_source_def(
+    defs: &mut serde_json::Map<String, Value>,
+    name: &str,
+    required_properties: &Value,
+) {
+    let Some(definition) = defs.get_mut(name) else {
+        return;
+    };
+    let description = definition
+        .get("description")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut replacement = json!({
+        "allOf": [
+            { "$ref": "#/$defs/ValueSourceSpec" },
+            required_properties.clone()
+        ]
+    });
+    if !description.is_null()
+        && let Some(object) = replacement.as_object_mut()
+    {
+        object.insert("description".to_string(), description);
+    }
+    *definition = replacement;
+}
+
 fn post_process_surface_id(properties: &mut serde_json::Map<String, Value>) {
     if let Some(id) = properties.get_mut("id").and_then(Value::as_object_mut) {
         id.insert("pattern".to_string(), json!("^[a-z][a-z0-9_]*$"));
@@ -264,6 +318,7 @@ fn post_process_surface_namespace(properties: &mut serde_json::Map<String, Value
     {
         namespace.insert("type".to_string(), json!("string"));
         namespace.insert("minLength".to_string(), json!(1));
+        namespace.insert("pattern".to_string(), json!("^[a-z][a-z0-9_]*$"));
     }
 }
 
@@ -333,6 +388,47 @@ surfaces:
     }
 
     #[test]
+    fn generated_schema_accepts_flattened_mcp_value_sources() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: stdio_mcp
+    namespace: demo_stdio
+    type: mcp
+    inputs:
+      MCP_TOKEN:
+        kind: secret
+    server:
+      transport: stdio
+      command: demo-mcp-server
+      env:
+        - name: MCP_TOKEN
+          from: input
+          key: MCP_TOKEN
+  - id: http_mcp
+    namespace: demo_http
+    type: mcp
+    inputs:
+      HTTP_TOKEN:
+        kind: secret
+    server:
+      transport: streamable_http
+      url: https://mcp.example.com/mcp
+      auth:
+        type: bearer
+        from: input
+        key: HTTP_TOKEN
+";
+
+        if let Err(errors) = validator().validate(&manifest_json(raw)) {
+            let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
+            panic!("generated schema should accept flattened MCP value sources: {errors:?}");
+        }
+        parse_source_manifest_yaml(raw).expect("parser accepts flattened MCP value sources");
+    }
+
+    #[test]
     fn generated_schema_rejects_v3_only_fields_and_removed_snapshot_fields() {
         let invalid = [
             "version: 1.0.0\n",
@@ -387,5 +483,24 @@ surfaces:
             "empty surfaces should be rejected by generated schema"
         );
         parse_source_manifest_yaml(raw).expect_err("parser should reject empty surfaces");
+    }
+
+    #[test]
+    fn generated_schema_rejects_invalid_surface_namespace_and_parser_agrees() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    namespace: GitHubRest
+    type: openapi
+    url: https://example.com/openapi.yaml
+";
+
+        assert!(
+            validator().validate(&manifest_json(raw)).is_err(),
+            "mixed-case namespace should be rejected by generated schema"
+        );
+        parse_source_manifest_yaml(raw).expect_err("parser should reject mixed-case namespace");
     }
 }

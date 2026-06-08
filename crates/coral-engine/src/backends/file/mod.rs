@@ -26,7 +26,8 @@ use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
     BackendSchemaRegistration, CompiledBackendSource, RegisteredSource, RegisteredTable,
     build_registered_inputs, build_registered_table, registered_columns_from_schema,
-    registered_columns_from_specs, required_filter_names, validate_lookup_key_filter_backend_support,
+    registered_columns_from_specs, required_filter_names,
+    validate_lookup_key_filter_backend_support,
 };
 use coral_spec::SourceBackend;
 use coral_spec::backends::file::{FileFormat, FileSourceManifest, FileTableSpec};
@@ -147,7 +148,6 @@ impl CompiledBackendSource for FileCompiledSource {
         let schema_name = self.manifest.common.name.clone();
         Ok(BackendRegistration {
             schemas: vec![BackendSchemaRegistration {
-                schema_name: schema_name.clone(),
                 tables,
                 table_functions: HashMap::default(),
                 source: RegisteredSource {

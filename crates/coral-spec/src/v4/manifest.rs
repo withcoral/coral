@@ -374,12 +374,16 @@ fn default_surface_namespace(source_name: &str, surface_id: &str, surface_count:
 }
 
 fn validate_surface_namespace(source_name: &str, surface_id: &str, namespace: &str) -> Result<()> {
-    if namespace.trim().is_empty() {
-        return Err(ManifestError::validation(format!(
-            "source '{source_name}' surface '{surface_id}' namespace must not be empty"
-        )));
+    let mut chars = namespace.chars();
+    let valid = matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if valid {
+        Ok(())
+    } else {
+        Err(ManifestError::validation(format!(
+            "source '{source_name}' surface '{surface_id}' namespace '{namespace}' must match [a-z][a-z0-9_]*"
+        )))
     }
-    Ok(())
 }
 
 fn parse_openapi_descriptor(

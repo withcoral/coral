@@ -12,7 +12,7 @@
 //! custom HTTP headers so an instrumented MCP server can continue the
 //! trace.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -20,7 +20,9 @@ use async_trait::async_trait;
 use coral_spec::backends::mcp::McpServerSpec;
 use datafusion::error::{DataFusionError, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use rmcp::model::{CallToolRequestParams, ClientInfo, Implementation, JsonObject, Tool};
+use rmcp::model::{
+    CallToolRequestParams, ClientInfo, Implementation, JsonObject, PaginatedRequestParams, Tool,
+};
 use rmcp::transport::ConfigureCommandExt;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -40,6 +42,8 @@ use crate::backends::shared::trace::{
     inject_trace_context, record_processing_error, record_trace_http_endpoint, sanitize_trace_url,
     trace_http_endpoint,
 };
+
+const MAX_MCP_DISCOVERY_PAGES: usize = 100;
 
 #[derive(Debug)]
 pub(super) struct StdioMcpToolCaller {
@@ -84,10 +88,7 @@ impl StdioMcpToolCaller {
 
         let mut command = Command::new(program);
         command.args(args);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+        command.stdin(Stdio::piped()).stdout(Stdio::piped());
 
         for (name, value) in self.resolved_server_env().await? {
             command.env(name, value);
@@ -111,12 +112,13 @@ impl StdioMcpToolCaller {
                     detail: error.to_string(),
                 }))
             })?;
-        client.peer().list_all_tools().await.map_err(|error| {
-            DataFusionError::External(Box::new(McpProviderQueryError::Initialize {
-                source_schema: self.source_name.clone(),
+        list_tools_bounded(client.peer(), &self.source_name, |source_name, error| {
+            McpProviderQueryError::Initialize {
+                source_schema: source_name.to_string(),
                 detail: error.to_string(),
-            }))
+            }
         })
+        .await
     }
 }
 
@@ -180,10 +182,7 @@ impl StdioMcpToolCaller {
     ) -> Result<Value> {
         let mut command = Command::new(program);
         command.args(args);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+        command.stdin(Stdio::piped()).stdout(Stdio::piped());
 
         for (name, value) in self.resolved_server_env().await? {
             command.env(name, value);
@@ -278,12 +277,10 @@ impl StreamableHttpMcpToolCaller {
                     &error,
                 )))
             })?;
-        client.peer().list_all_tools().await.map_err(|error| {
-            DataFusionError::External(Box::new(mcp_http_initialize_error(
-                &self.source_name,
-                &error,
-            )))
+        list_tools_bounded(client.peer(), &self.source_name, |source_name, error| {
+            mcp_http_initialize_error(source_name, error)
         })
+        .await
     }
 }
 
@@ -436,6 +433,45 @@ fn value_to_env_string(value: Value) -> String {
         Value::String(value) => value,
         other => other.to_string(),
     }
+}
+
+async fn list_tools_bounded(
+    peer: &rmcp::service::Peer<rmcp::RoleClient>,
+    source_name: &str,
+    classify_error: impl Fn(&str, &(dyn std::error::Error + 'static)) -> McpProviderQueryError,
+) -> Result<Vec<Tool>> {
+    let mut tools = Vec::new();
+    let mut cursor = None;
+    let mut seen_cursors = BTreeSet::new();
+
+    for _page in 0..MAX_MCP_DISCOVERY_PAGES {
+        let result = peer
+            .list_tools(Some(PaginatedRequestParams::default().with_cursor(cursor)))
+            .await
+            .map_err(|error| {
+                DataFusionError::External(Box::new(classify_error(source_name, &error)))
+            })?;
+        tools.extend(result.tools);
+        let Some(next_cursor) = result.next_cursor else {
+            return Ok(tools);
+        };
+        if !seen_cursors.insert(next_cursor.clone()) {
+            return Err(DataFusionError::External(Box::new(
+                McpProviderQueryError::Initialize {
+                    source_schema: source_name.to_string(),
+                    detail: format!("MCP tools/list returned repeated next cursor '{next_cursor}'"),
+                },
+            )));
+        }
+        cursor = Some(next_cursor);
+    }
+
+    Err(DataFusionError::External(Box::new(
+        McpProviderQueryError::Initialize {
+            source_schema: source_name.to_string(),
+            detail: format!("MCP tools/list exceeded max_pages={MAX_MCP_DISCOVERY_PAGES}"),
+        },
+    )))
 }
 
 fn mcp_http_initialize_error(

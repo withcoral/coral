@@ -56,7 +56,7 @@ impl CompiledBackendSource for CompositeCompiledSource {
         for component in &self.components {
             let registration = component.register(ctx, registration_context).await?;
             for schema in registration.schemas {
-                let schema_name = schema.schema_name;
+                let schema_name = schema.source.schema_name.clone();
                 let target = schemas
                     .entry(schema_name.clone())
                     .or_insert_with(|| CompositeSchemaRegistration::new(schema_name.clone()));
@@ -126,7 +126,6 @@ impl CompositeSchemaRegistration {
 
     fn into_registration(self) -> BackendSchemaRegistration {
         BackendSchemaRegistration {
-            schema_name: self.schema_name.clone(),
             tables: self.tables,
             table_functions: self.table_functions,
             source: RegisteredSource {

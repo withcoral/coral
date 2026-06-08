@@ -177,7 +177,7 @@ pub struct McpTableSpec {
 }
 
 /// How `LIMIT` pushes into an MCP tool argument.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpLimitBinding {
     pub tool_arg: String,
@@ -186,7 +186,7 @@ pub struct McpLimitBinding {
 }
 
 /// Cursor pagination for MCP tool results.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct McpPaginationSpec {
     pub cursor_arg: String,

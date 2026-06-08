@@ -77,20 +77,21 @@ fn generate_projection(
     let pagination = rest.map_or_else(PaginationSpec::default, |rest| rest.pagination.clone());
     let pagination_query_params = pagination_query_param_names(&pagination);
     let mut used_input_names = HashSet::new();
+    let use_sql_input_normalization = matches!(operation.execution, IrExecutionAttachment::Mcp(_));
     let inputs = operation
         .inputs
         .iter()
         .map(|input| {
-            let (exposure, pagination_owned_query_input) = match &operation.execution {
+            let (exposure, pagination_owned_input) = match &operation.execution {
                 IrExecutionAttachment::Rest(_) => {
                     projection_input_sql_exposure(input, sql_exposure, &pagination_query_params)
                 }
+                IrExecutionAttachment::Mcp(mcp) if mcp_pagination_owns_input(mcp, input) => {
+                    (SqlInputExposure::Internal, true)
+                }
                 IrExecutionAttachment::Mcp(_) => (sql_exposure, false),
             };
-            if exposure == SqlInputExposure::Internal
-                && input.required
-                && !pagination_owned_query_input
-            {
+            if exposure == SqlInputExposure::Internal && input.required && !pagination_owned_input {
                 visibility = ProjectionVisibility::Hidden;
                 projection_diagnostics.push(Diagnostic::warning(
                     "PROJECTION_INPUT_UNSUPPORTED",
@@ -103,7 +104,11 @@ fn generate_projection(
                 ));
             }
             ProjectionInput {
-                name: projection_input_name(input, &mut used_input_names),
+                name: projection_input_name(
+                    input,
+                    &mut used_input_names,
+                    use_sql_input_normalization,
+                ),
                 sql_exposure: exposure,
                 source_location: input.location,
                 wire_name: input.name.clone(),
@@ -228,8 +233,27 @@ fn projection_input_sql_exposure(
     (exposure, pagination_owned_query_input)
 }
 
-fn projection_input_name(input: &IrOperationInput, used_names: &mut HashSet<String>) -> String {
-    let base = normalize_sql_identifier(&input.name, "input");
+fn mcp_pagination_owns_input(
+    mcp: &crate::v4::McpExecutionAttachment,
+    input: &IrOperationInput,
+) -> bool {
+    input.location == IrInputLocation::ToolArg
+        && mcp
+            .pagination
+            .as_ref()
+            .is_some_and(|pagination| input.name == pagination.cursor_arg)
+}
+
+fn projection_input_name(
+    input: &IrOperationInput,
+    used_names: &mut HashSet<String>,
+    use_sql_normalization: bool,
+) -> String {
+    let base = if use_sql_normalization {
+        normalize_sql_identifier(&input.name, "input")
+    } else {
+        normalize_identifier(&input.name, "input")
+    };
     if used_names.insert(base.clone()) {
         return base;
     }

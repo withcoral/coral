@@ -34,6 +34,7 @@ use crate::backends::{
     internal_table_function_name, registered_columns_from_specs, required_filter_names,
     validate_lookup_key_filter_backend_support,
 };
+use crate::runtime::error::datafusion_to_core;
 use crate::{
     CoreError, SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
 };
@@ -152,7 +153,7 @@ pub async fn discover_tool_catalog(
     let source_inputs = Arc::new(McpSourceInputs::static_inputs(resolved_inputs));
     catalog::inspect_tools(source_name.to_string(), server, source_inputs)
         .await
-        .map_err(|error| CoreError::Unavailable(error.to_string()))
+        .map_err(|error| datafusion_to_core(&error, &[]))
 }
 
 fn compile_source_with_caller(
@@ -250,7 +251,6 @@ impl CompiledBackendSource for McpCompiledSource {
         let schema_name = self.manifest.common.name.clone();
         Ok(BackendRegistration {
             schemas: vec![BackendSchemaRegistration {
-                schema_name: schema_name.clone(),
                 tables,
                 table_functions,
                 source: RegisteredSource {

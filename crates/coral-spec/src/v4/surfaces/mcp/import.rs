@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+use crate::backends::mcp::McpPaginationSpec;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
     IrEntityCandidate, IrExecutionAttachment, IrField, IrInputLocation, IrOperation,
@@ -92,6 +93,7 @@ impl<'a> McpImporter<'a> {
     fn import_tool(&mut self, tool: &McpToolDescriptor, operation_id: &str) -> IrOperation {
         let inputs = self.import_inputs(tool);
         let output = self.import_output(operation_id, tool.output_schema.as_ref());
+        let pagination = infer_mcp_pagination(&inputs, &output, tool.output_schema.as_ref());
         IrOperation {
             id: operation_id.to_string(),
             method_name: "tools/call".to_string(),
@@ -111,6 +113,7 @@ impl<'a> McpImporter<'a> {
             }),
             execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
                 tool_name: tool.name.clone(),
+                pagination,
             }),
             diagnostics: Vec::new(),
         }
@@ -173,7 +176,7 @@ impl<'a> McpImporter<'a> {
                 row_path: Vec::new(),
             };
         }
-        if let Some((array_property, item_schema)) = single_array_property(schema) {
+        if let Some((array_property, item_schema)) = wrapped_list_property(schema) {
             self.insert_row_type_from_schema(&row_type_id, item_schema);
             return IrOperationOutput {
                 cardinality: OutputCardinality::WrappedList,
@@ -341,7 +344,7 @@ fn property_default(schema: &Value) -> Option<String> {
     })
 }
 
-fn single_array_property(schema: &Value) -> Option<(&str, Option<&Value>)> {
+fn wrapped_list_property(schema: &Value) -> Option<(&str, Option<&Value>)> {
     if !schema_type_contains(schema, "object") {
         return None;
     }
@@ -353,7 +356,84 @@ fn single_array_property(schema: &Value) -> Option<(&str, Option<&Value>)> {
     if arrays.next().is_some() {
         return None;
     }
+    if properties.len() != 1 && find_response_cursor_path(schema).is_none() {
+        return None;
+    }
     Some((name.as_str(), property.get("items")))
+}
+
+fn infer_mcp_pagination(
+    inputs: &[IrOperationInput],
+    output: &IrOperationOutput,
+    output_schema: Option<&Value>,
+) -> Option<McpPaginationSpec> {
+    if !matches!(
+        output.cardinality,
+        OutputCardinality::List | OutputCardinality::WrappedList
+    ) {
+        return None;
+    }
+    let cursor_arg = cursor_input_name(inputs)?;
+    let response_cursor_path = find_response_cursor_path(output_schema?)?;
+    Some(McpPaginationSpec {
+        cursor_arg: cursor_arg.to_string(),
+        response_cursor_path,
+        max_pages: None,
+    })
+}
+
+fn cursor_input_name(inputs: &[IrOperationInput]) -> Option<&str> {
+    const CURSOR_INPUTS: &[&str] = &[
+        "cursor",
+        "after",
+        "page_token",
+        "pagetoken",
+        "next_cursor",
+        "nextcursor",
+        "next_token",
+        "nexttoken",
+    ];
+    inputs
+        .iter()
+        .filter(|input| !input.required)
+        .find(|input| {
+            let normalized = cursor_token(&input.name);
+            CURSOR_INPUTS.contains(&normalized.as_str())
+        })
+        .map(|input| input.name.as_str())
+}
+
+fn find_response_cursor_path(schema: &Value) -> Option<Vec<String>> {
+    let properties = schema.get("properties").and_then(Value::as_object)?;
+    for (name, property) in properties {
+        if is_response_cursor_property(name, property) {
+            return Some(vec![name.clone()]);
+        }
+    }
+    for (name, property) in properties {
+        if !schema_type_contains(property, "object") {
+            continue;
+        }
+        if let Some(mut path) = find_response_cursor_path(property) {
+            path.insert(0, name.clone());
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn is_response_cursor_property(name: &str, schema: &Value) -> bool {
+    const RESPONSE_CURSORS: &[&str] = &["nextcursor", "nextpagetoken", "nexttoken", "endcursor"];
+    RESPONSE_CURSORS.contains(&cursor_token(name).as_str())
+        && (schema_type_contains(schema, "string") || schema.get("type").is_none())
+}
+
+fn cursor_token(value: &str) -> String {
+    value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 #[cfg(test)]
@@ -582,6 +662,86 @@ surfaces:
         let generic_fields = row_fields(&ir, "no_schema_row");
         assert_eq!(field(generic_fields, "result").type_ref, "mcp_json");
         assert_eq!(field(generic_fields, "raw").type_ref, "mcp_json");
+    }
+
+    #[test]
+    fn infers_cursor_pagination_for_wrapped_list_envelopes() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "list-items",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "cursor": {"type": "string"},
+                        "limit": {"type": "integer"}
+                    }
+                }),
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string"}
+                                }
+                            }
+                        },
+                        "meta": {
+                            "type": "object",
+                            "properties": {
+                                "nextCursor": {"type": ["string", "null"]}
+                            }
+                        }
+                    }
+                })),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "list_items");
+        assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
+        assert_eq!(operation.output.row_path, vec!["items".to_string()]);
+        let IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
+            panic!("expected MCP execution");
+        };
+        let pagination = mcp.pagination.as_ref().expect("pagination");
+        assert_eq!(pagination.cursor_arg, "cursor");
+        assert_eq!(pagination.response_cursor_path, ["meta", "nextCursor"]);
+        assert_eq!(pagination.max_pages, None);
+    }
+
+    #[test]
+    fn object_with_sibling_array_without_cursor_stays_singleton() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "get-item",
+                json!({"type": "object", "properties": {}}),
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string"}
+                                }
+                            }
+                        }
+                    }
+                })),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "get_item");
+        assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+        assert!(operation.output.row_path.is_empty());
     }
 
     #[test]
