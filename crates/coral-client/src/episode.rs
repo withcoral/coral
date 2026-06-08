@@ -8,26 +8,20 @@
 
 use std::future::Future;
 
+use coral_api::{CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_ID_METADATA_KEY};
 use tonic::metadata::MetadataValue;
 use tonic::service::Interceptor;
 
-/// gRPC metadata key the Coral server reads to attribute a call to an episode.
-pub const CORAL_EPISODE_ID_METADATA_KEY: &str = "coral-episode-id";
-
-/// Maximum episode id length, in bytes. Kept in sync with the server contract
-/// (`coral-app` `episode/id.rs` `EpisodeId::parse`) and the `OpenEpisode` proto.
-const MAX_EPISODE_ID_LEN: usize = 128;
-
 /// Whether `id` satisfies the server's `coral-episode-id` contract: non-empty,
-/// at most [`MAX_EPISODE_ID_LEN`] bytes, and entirely graphic ASCII
+/// at most [`CORAL_EPISODE_ID_MAX_LEN`] bytes, and entirely graphic ASCII
 /// (`0x21..=0x7E` — no whitespace, control bytes, or non-ASCII).
 ///
-/// Mirrors `coral-app`'s `EpisodeId::parse` so the client drops ids the server
-/// would reject *before* sending them, rather than emitting metadata that gets
-/// ignored server-side.
+/// Validates against the shared coral-api contract so the client drops ids the
+/// server would reject *before* sending them, rather than emitting metadata that
+/// gets ignored server-side.
 fn is_valid_episode_id(id: &str) -> bool {
     !id.is_empty()
-        && id.len() <= MAX_EPISODE_ID_LEN
+        && id.len() <= CORAL_EPISODE_ID_MAX_LEN
         && id.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
@@ -88,9 +82,9 @@ impl Interceptor for EpisodeIdInterceptor {
 mod tests {
     use tonic::service::Interceptor as _;
 
-    use super::{
-        CORAL_EPISODE_ID_METADATA_KEY, EpisodeIdInterceptor, MAX_EPISODE_ID_LEN, with_episode_id,
-    };
+    use coral_api::{CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_ID_METADATA_KEY};
+
+    use super::{EpisodeIdInterceptor, with_episode_id};
 
     /// Runs the interceptor with `episode_id` in scope and returns the resulting
     /// `coral-episode-id` metadata value, if any.
@@ -115,7 +109,7 @@ mod tests {
             Some("ep_42")
         );
         // A maximum-length id is still valid and injected.
-        let max = "a".repeat(MAX_EPISODE_ID_LEN);
+        let max = "a".repeat(CORAL_EPISODE_ID_MAX_LEN);
         assert_eq!(
             tagged_value(max.clone()).await.as_deref(),
             Some(max.as_str())
@@ -125,12 +119,12 @@ mod tests {
     #[tokio::test]
     async fn drops_ids_violating_the_server_contract() {
         let invalid = [
-            String::new(),                      // empty
-            "   ".to_string(),                  // whitespace only
-            "has space".to_string(),            // embedded space
-            "tab\tid".to_string(),              // control byte
-            "épisode".to_string(),              // non-ASCII
-            "a".repeat(MAX_EPISODE_ID_LEN + 1), // over-long
+            String::new(),                            // empty
+            "   ".to_string(),                        // whitespace only
+            "has space".to_string(),                  // embedded space
+            "tab\tid".to_string(),                    // control byte
+            "épisode".to_string(),                    // non-ASCII
+            "a".repeat(CORAL_EPISODE_ID_MAX_LEN + 1), // over-long
         ];
         for id in invalid {
             assert_eq!(
