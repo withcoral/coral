@@ -30,6 +30,10 @@ use crate::episode::EpisodeId;
 use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
 
+/// gRPC metadata key carrying the originating episode id on every Coral call
+/// after `OpenEpisode` (see `crates/coral-api/proto/coral/v1/episode.proto`).
+const CORAL_EPISODE_ID_METADATA_KEY: &str = "coral-episode-id";
+
 struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
 
 impl Extractor for MetadataExtractor<'_> {
