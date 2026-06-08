@@ -4,14 +4,7 @@
 //! written once by `OpenEpisode` into the per-workspace episode log resolved by
 //! [`AppStateLayout`]. Minimal by design for PR 1: a private, locked JSONL append.
 //! JSONL→Parquet compaction, retention/eviction, and the queryable
-//! `coral.episodes` surface land in PR 2.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the store is consumed by the OpenEpisode handler — next PR in the stack"
-    )
-)]
+//! `coral.episodes` surface land in a later PR.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -95,6 +88,7 @@ pub(crate) enum EpisodeStoreError {
 
 /// Append-only, per-workspace JSONL episode store. Paths and the shared state
 /// lock are resolved through [`AppStateLayout`].
+#[derive(Clone)]
 pub(crate) struct EpisodeStore {
     layout: AppStateLayout,
 }

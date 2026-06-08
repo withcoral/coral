@@ -1,11 +1,4 @@
 //! Validated, client-minted episode identifier.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "EpisodeId is consumed by the store and the OpenEpisode handler — next PRs in the stack"
-    )
-)]
 
 use std::fmt;
 
