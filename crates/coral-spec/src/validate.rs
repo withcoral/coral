@@ -227,6 +227,11 @@ pub(crate) fn validate_filters_and_column_exprs(
 ) -> Result<HashSet<String>> {
     let mut known_filters = HashSet::new();
     for filter in filters {
+        if filter.name.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} filter name must not be empty"
+            )));
+        }
         if !known_filters.insert(filter.name.clone()) {
             return Err(ManifestError::validation(format!(
                 "{schema}.{table} has duplicate filter '{}'",
@@ -1336,6 +1341,35 @@ mod tests {
             error
                 .to_string()
                 .contains("references unknown filter 'missing'")
+        );
+    }
+
+    #[test]
+    fn validate_http_table_rejects_empty_filter_names() {
+        let filters = vec![FilterSpec {
+            name: "  ".to_string(),
+            ..test_filters()
+                .into_iter()
+                .next()
+                .expect("test filter fixture")
+        }];
+
+        let error = validate_http_table(
+            "demo",
+            "messages",
+            &filters,
+            &[test_column()],
+            &base_request(),
+            &[],
+            &PaginationSpec::default(),
+            None,
+            &[],
+        )
+        .expect_err("empty filter names should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "demo.messages filter name must not be empty"
         );
     }
 
