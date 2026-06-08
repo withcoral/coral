@@ -64,6 +64,7 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 
 ## Query Guidance
 
+- The `sql` tool returns small result sets inline as `rows`. Large result sets may return a `result_id`, column metadata, a preview page, and `next_call`. Use `result_get(result_id, offset, limit, columns?)` to fetch more rows or only the columns you need instead of rerunning broad SQL. Result handles are in-memory MCP session state; rerun the SQL if a handle is missing or expired.
 - Result values of type `Int64`/`BIGINT`, `UInt64`, and `Decimal*` are returned as JSON strings, not JSON numbers, so exact values survive JSON parsing in clients that decode numbers as IEEE-754 doubles. The declared column type is unchanged; read these values as strings.
 - Use each table's `sql_reference` from `list_catalog` or `coral://tables` in `FROM` and `JOIN` clauses, for example `slack.messages`.
 - Use each table function's `sql_call_example` from `list_catalog` or `search_catalog`, filling in the required arguments before querying it.

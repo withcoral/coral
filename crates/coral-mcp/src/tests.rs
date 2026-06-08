@@ -299,6 +299,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .collect::<Vec<_>>(),
         vec![
             "sql",
+            "result_get",
             "list_catalog",
             "search_catalog",
             "describe_table",
@@ -368,14 +369,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .contains("3 table(s) are currently visible")
     );
     assert!(
-        updated_tools[1]
+        list_catalog_tool
             .description
             .as_deref()
             .expect("catalog description")
             .contains("3 table(s) and 0 table function(s) are currently visible")
     );
     assert!(
-        updated_tools[2]
+        search_catalog_tool
             .description
             .as_deref()
             .expect("catalog search description")
@@ -903,6 +904,7 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             .collect::<Vec<_>>(),
         vec![
             "sql",
+            "result_get",
             "list_catalog",
             "search_catalog",
             "describe_table",
@@ -910,7 +912,10 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             "feedback"
         ]
     );
-    let feedback_annotations = tools[5].annotations.as_ref().expect("feedback annotations");
+    let feedback_annotations = tool_by_name(&tools, "feedback")
+        .annotations
+        .as_ref()
+        .expect("feedback annotations");
     assert_eq!(feedback_annotations.read_only_hint, Some(false));
     assert_eq!(feedback_annotations.destructive_hint, Some(false));
     assert_eq!(feedback_annotations.idempotent_hint, Some(false));
@@ -1103,6 +1108,132 @@ async fn mcp_sql_returns_large_int64_as_string() {
         rows[0]["user_id"],
         Value::String("-8504475857937456387".to_string()),
     );
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "This contract test verifies the full large-result handle and paging flow in one session."
+)]
+async fn mcp_sql_large_result_returns_handle_and_result_get_pages() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    let result_get_tool = tool_by_name(&tools, "result_get");
+    let values = (0..121)
+        .map(|idx| format!("({idx}, 'name-{idx}')"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql_text = format!(
+        "SELECT CAST(id AS BIGINT) AS id, name FROM (VALUES {values}) AS t(id, name) ORDER BY id"
+    );
+
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": sql_text
+            }))),
+        )
+        .await
+        .expect("sql");
+    assert_eq!(sql.is_error, Some(false));
+    let sql_text_content = sql.content[0]
+        .as_text()
+        .expect("sql text content")
+        .text
+        .as_str();
+    assert!(
+        !sql_text_content.contains('\n'),
+        "large sql result text content should be compact JSON"
+    );
+
+    let structured = sql.structured_content.expect("structured content");
+    let result_id = structured["result_id"]
+        .as_str()
+        .expect("result id")
+        .to_string();
+    assert!(result_id.starts_with("res_"));
+    assert_eq!(structured["row_count"], 121);
+    assert_eq!(structured["column_count"], 2);
+    assert_eq!(structured["columns"][0]["name"], "id");
+    assert_eq!(structured["columns"][1]["name"], "name");
+    assert_eq!(structured["preview"]["offset"], 0);
+    assert_eq!(structured["preview"]["limit"], 20);
+    assert_eq!(
+        structured["preview"]["rows"]
+            .as_array()
+            .expect("rows")
+            .len(),
+        20
+    );
+    assert_eq!(structured["preview"]["rows"][0]["id"], "0");
+    assert_eq!(structured["preview"]["rows"][0]["name"], "name-0");
+    assert_eq!(structured["preview"]["has_more"], true);
+    assert_eq!(structured["preview"]["next_offset"], 20);
+    assert_eq!(structured["next_call"]["tool"], "result_get");
+    assert_eq!(structured["next_call"]["arguments"]["result_id"], result_id);
+    assert_eq!(structured["next_call"]["arguments"]["offset"], 20);
+    assert_eq!(structured["next_call"]["arguments"]["limit"], 50);
+    assert!(structured.get("rows").is_none());
+
+    let page = client
+        .call_tool(
+            CallToolRequestParams::new("result_get").with_arguments(json_object(&json!({
+                "result_id": result_id,
+                "offset": 20,
+                "limit": 3,
+                "columns": ["name", "id"]
+            }))),
+        )
+        .await
+        .expect("result_get");
+    assert_eq!(page.is_error, Some(false));
+    let page_text_content = page.content[0]
+        .as_text()
+        .expect("result_get text content")
+        .text
+        .as_str();
+    assert!(
+        !page_text_content.contains('\n'),
+        "result_get text content should be compact JSON"
+    );
+    let page = page.structured_content.expect("structured page");
+    assert_matches_output_schema(result_get_tool, &page);
+    assert_eq!(page["row_count"], 121);
+    assert_eq!(page["offset"], 20);
+    assert_eq!(page["limit"], 3);
+    assert_eq!(page["has_more"], true);
+    assert_eq!(page["next_offset"], 23);
+    assert_eq!(
+        page["columns"]
+            .as_array()
+            .expect("columns")
+            .iter()
+            .map(|column| column["name"].as_str().expect("column name"))
+            .collect::<Vec<_>>(),
+        vec!["name", "id"]
+    );
+    assert_eq!(
+        page["rows"].as_array().expect("rows"),
+        &vec![
+            json!({"name": "name-20", "id": "20"}),
+            json!({"name": "name-21", "id": "21"}),
+            json!({"name": "name-22", "id": "22"})
+        ]
+    );
+
+    client
+        .call_tool(
+            CallToolRequestParams::new("result_get").with_arguments(json_object(&json!({
+                "result_id": "res_missing"
+            }))),
+        )
+        .await
+        .expect_err("unknown handle should fail");
 
     session.shutdown().await;
 }

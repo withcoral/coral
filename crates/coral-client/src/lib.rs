@@ -20,6 +20,7 @@ mod error;
 mod grpc;
 pub mod local;
 mod propagation;
+pub mod result_slice;
 mod sources;
 mod status_error;
 

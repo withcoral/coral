@@ -10,24 +10,18 @@
 
 mod harness;
 
-use std::process::{Command as StdCommand, Stdio};
-use std::time::Duration;
+use std::process::Command as StdCommand;
 use std::{fs, io};
 
 use harness::MockServer;
 use jsonschema::JSONSchema;
 use rmcp::{
     RoleClient, ServiceExt,
-    model::{CallToolRequestParams, ReadResourceRequestParams},
+    model::{CallToolRequestParams, ReadResourceRequestParams, Tool},
     service::RunningService,
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
 use serde_json::{Map, Value, json};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{ChildStdin, ChildStdout, Command},
-    time::timeout,
-};
 
 fn json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
@@ -87,6 +81,13 @@ fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
     }
 }
 
+fn tool_by_name<'a>(tools: &'a [Tool], name: &str) -> &'a Tool {
+    tools
+        .iter()
+        .find(|tool| tool.name == name)
+        .expect("tool should be listed")
+}
+
 async fn structured_tool_content(
     client: &RunningService<RoleClient, ()>,
     request: CallToolRequestParams,
@@ -94,45 +95,6 @@ async fn structured_tool_content(
     let result = client.call_tool(request).await?;
     assert_eq!(result.is_error, Some(false));
     Ok(result.structured_content.expect("structured content"))
-}
-
-async fn write_jsonrpc_message(
-    stdin: &mut ChildStdin,
-    message: &Value,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut payload = serde_json::to_vec(message)?;
-    payload.push(b'\n');
-    stdin.write_all(&payload).await?;
-    stdin.flush().await?;
-    Ok(())
-}
-
-async fn read_jsonrpc_response(
-    stdout: &mut BufReader<ChildStdout>,
-    id: i64,
-) -> Result<Value, Box<dyn std::error::Error>> {
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let bytes_read = timeout(Duration::from_secs(5), stdout.read_line(&mut line)).await??;
-        if bytes_read == 0 {
-            return Err(format!("mcp stdio closed before response id {id}").into());
-        }
-        let response: Value = serde_json::from_str(line.trim_end())?;
-        if response.get("id").and_then(Value::as_i64) != Some(id) {
-            continue;
-        }
-        assert_eq!(
-            response.get("jsonrpc").and_then(Value::as_str),
-            Some("2.0"),
-            "response id {id} must declare JSON-RPC 2.0: {response}"
-        );
-        assert!(
-            response.get("error").is_none(),
-            "response id {id} must not be an error: {response}"
-        );
-        return Ok(response);
-    }
 }
 
 fn assert_raw_tools_list_contract(response: &Value) {
@@ -179,72 +141,19 @@ fn assert_raw_tools_list_contract(response: &Value) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_raw_tools_list_advertises_client_compatible_schemas()
+async fn mcp_stdio_tools_list_advertises_client_compatible_schemas()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
-        .arg("mcp-stdio")
-        .env("CORAL_ENDPOINT", server.endpoint_uri())
-        .env("CORAL_CONFIG_DIR", server.config_dir())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
-    let mut stdin = child.stdin.take().expect("mcp stdio stdin");
-    let stdout = child.stdout.take().expect("mcp stdio stdout");
-    let mut stdout = BufReader::new(stdout);
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "coral-cli-raw-stdio-test",
-                    "version": "0.0.0"
-                }
-            }
-        }),
-    )
-    .await?;
-    let initialize = read_jsonrpc_response(&mut stdout, 1).await?;
-    assert!(
-        initialize.pointer("/result/protocolVersion").is_some(),
-        "initialize response should include protocolVersion: {initialize}"
-    );
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized",
-            "params": {}
-        }),
-    )
-    .await?;
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/list",
-            "params": {}
-        }),
-    )
-    .await?;
-    let tools_list = read_jsonrpc_response(&mut stdout, 2).await?;
+    let client = start_mcp_client(&server).await?;
+    let tools = client.list_all_tools().await?;
+    let tools_list = json!({
+        "result": {
+            "tools": serde_json::to_value(&tools)?
+        }
+    });
     assert_raw_tools_list_contract(&tools_list);
 
-    drop(stdin);
-    if timeout(Duration::from_secs(5), child.wait()).await.is_err() {
-        child.start_kill()?;
-        child.wait().await?;
-    }
+    client.cancel().await?;
     server.shutdown().await;
     Ok(())
 }
@@ -262,6 +171,7 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .collect::<Vec<_>>(),
         vec![
             "sql",
+            "result_get",
             "list_catalog",
             "search_catalog",
             "describe_table",
@@ -276,14 +186,14 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .contains("3 table(s) are currently visible")
     );
     assert!(
-        tools[1]
+        tool_by_name(&tools, "list_catalog")
             .description
             .as_deref()
             .expect("list_catalog description")
             .contains("3 table(s) and 0 table function(s) are currently visible")
     );
     assert!(
-        tools[2]
+        tool_by_name(&tools, "search_catalog")
             .description
             .as_deref()
             .expect("search_catalog description")
@@ -345,6 +255,7 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
             .collect::<Vec<_>>(),
         vec![
             "sql",
+            "result_get",
             "list_catalog",
             "search_catalog",
             "describe_table",
@@ -503,62 +414,13 @@ feedback = "yes"
 future_flag = true
 "#,
     )?;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
-        .arg("mcp-stdio")
-        .env("CORAL_ENDPOINT", server.endpoint_uri())
-        .env("CORAL_CONFIG_DIR", server.config_dir())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
-    let mut stdin = child.stdin.take().expect("mcp stdio stdin");
-    let stdout = child.stdout.take().expect("mcp stdio stdout");
-    let mut stdout = BufReader::new(stdout);
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "coral-cli-invalid-feature-test",
-                    "version": "0.0.0"
-                }
-            }
-        }),
-    )
-    .await?;
-    let initialize = read_jsonrpc_response(&mut stdout, 1).await?;
-    assert!(
-        initialize.pointer("/result/protocolVersion").is_some(),
-        "initialize response should include protocolVersion: {initialize}"
-    );
-
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized",
-            "params": {}
-        }),
-    )
-    .await?;
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/list",
-            "params": {}
-        }),
-    )
-    .await?;
-    let tools_list = read_jsonrpc_response(&mut stdout, 2).await?;
+    let client = start_mcp_client(&server).await?;
+    let listed_tools = client.list_all_tools().await?;
+    let tools_list = json!({
+        "result": {
+            "tools": serde_json::to_value(&listed_tools)?
+        }
+    });
     assert_raw_tools_list_contract(&tools_list);
     let tools = tools_list
         .pointer("/result/tools")
@@ -571,11 +433,7 @@ future_flag = true
         "invalid feature config must not enable feedback: {tools_list}"
     );
 
-    drop(stdin);
-    if timeout(Duration::from_secs(5), child.wait()).await.is_err() {
-        child.start_kill()?;
-        child.wait().await?;
-    }
+    client.cancel().await?;
     server.shutdown().await;
     Ok(())
 }

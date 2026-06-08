@@ -42,6 +42,20 @@ pub(crate) struct ListColumnsArguments {
     pub(crate) pagination: Pagination,
 }
 
+#[derive(Debug)]
+pub(crate) struct ResultGetArguments {
+    pub(crate) result_id: String,
+    pub(crate) offset: usize,
+    pub(crate) limit: usize,
+    pub(crate) columns: Option<Vec<String>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ToolTextFormat {
+    PrettyJson,
+    CompactJson,
+}
+
 pub(crate) fn sql_tool(visible_table_count: usize) -> Tool {
     Tool::new(
         "sql",
@@ -63,6 +77,50 @@ pub(crate) fn sql_tool(visible_table_count: usize) -> Tool {
             .destructive(false)
             .idempotent(true)
             .open_world(true),
+    )
+}
+
+pub(crate) fn result_get_tool() -> Tool {
+    Tool::new(
+        "result_get",
+        "Return a page from a SQL result handle previously returned by the sql tool.",
+        json_object_schema(&json!({
+            "type": "object",
+            "required": ["result_id"],
+            "properties": {
+                "result_id": {
+                    "type": "string",
+                    "description": "Opaque result handle returned by the sql tool."
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Zero-based row offset. Defaults to 0.",
+                    "minimum": 0,
+                    "default": 0
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum rows to return, from 0 to 500. Defaults to 50. Use 0 for schema/metadata only.",
+                    "minimum": 0,
+                    "maximum": 500,
+                    "default": 50
+                },
+                "columns": {
+                    "type": "array",
+                    "description": "Optional column names to return. Omit to return all columns.",
+                    "items": { "type": "string" },
+                    "minItems": 1
+                }
+            }
+        })),
+    )
+    .with_raw_output_schema(result_get_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("Get Result Page")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
     )
 }
 
@@ -370,11 +428,28 @@ pub(crate) fn list_columns_arguments(
     })
 }
 
-pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
-    let pretty = serde_json::to_string_pretty(&value)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+pub(crate) fn result_get_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<ResultGetArguments, ErrorData> {
+    Ok(ResultGetArguments {
+        result_id: required_string_argument(arguments, "result_id")?,
+        offset: optional_usize_argument(arguments, "offset", 0, 0, usize::MAX)?,
+        limit: optional_usize_argument(arguments, "limit", 50, 0, 500)?,
+        columns: optional_string_array_argument(arguments, "columns")?,
+    })
+}
+
+pub(crate) fn build_tool_result_with_format(
+    value: Value,
+    format: ToolTextFormat,
+) -> Result<CallToolResult, ErrorData> {
+    let text = match format {
+        ToolTextFormat::PrettyJson => serde_json::to_string_pretty(&value),
+        ToolTextFormat::CompactJson => serde_json::to_string(&value),
+    }
+    .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
     let mut result = CallToolResult::structured(value);
-    result.content = vec![Content::text(pretty)];
+    result.content = vec![Content::text(text)];
     Ok(result)
 }
 
@@ -668,6 +743,44 @@ fn list_columns_page_output_schema() -> Value {
     })
 }
 
+fn result_get_output_schema() -> Arc<Map<String, Value>> {
+    json_object_schema(&json!({
+        "type": "object",
+        "required": ["result_id", "row_count", "columns", "offset", "limit", "has_more", "rows"],
+        "additionalProperties": false,
+        "properties": {
+            "result_id": { "type": "string" },
+            "row_count": { "type": "integer", "minimum": 0 },
+            "columns": {
+                "type": "array",
+                "items": column_summary_output_schema()
+            },
+            "offset": { "type": "integer", "minimum": 0 },
+            "limit": { "type": "integer", "minimum": 0 },
+            "has_more": { "type": "boolean" },
+            "next_offset": { "type": "integer", "minimum": 0 },
+            "rows": {
+                "type": "array",
+                "items": { "type": "object" }
+            }
+        }
+    }))
+}
+
+fn column_summary_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["name", "data_type", "is_nullable", "ordinal_position"],
+        "additionalProperties": false,
+        "properties": {
+            "name": { "type": "string" },
+            "data_type": { "type": "string" },
+            "is_nullable": { "type": "boolean" },
+            "ordinal_position": { "type": "integer", "minimum": 0 }
+        }
+    })
+}
+
 fn missing_table_output_schema() -> Value {
     json!({
         "type": "object",
@@ -788,6 +901,79 @@ fn optional_bool_argument(
     })
 }
 
+fn optional_usize_argument(
+    arguments: Option<&Map<String, Value>>,
+    key: &str,
+    default: usize,
+    min: usize,
+    max: usize,
+) -> Result<usize, ErrorData> {
+    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
+        return Ok(default);
+    };
+    let value = value.as_i64().ok_or_else(|| {
+        ErrorData::invalid_params(format!("argument '{key}' must be an integer"), None)
+    })?;
+    if value < 0 {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must be between {min} and {max}"),
+            None,
+        ));
+    }
+    let value = usize::try_from(value).map_err(|_err| {
+        ErrorData::invalid_params(
+            format!("argument '{key}' must be between {min} and {max}"),
+            None,
+        )
+    })?;
+    if value < min || value > max {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must be between {min} and {max}"),
+            None,
+        ));
+    }
+    Ok(value)
+}
+
+fn optional_string_array_argument(
+    arguments: Option<&Map<String, Value>>,
+    key: &str,
+) -> Result<Option<Vec<String>>, ErrorData> {
+    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let values = value.as_array().ok_or_else(|| {
+        ErrorData::invalid_params(
+            format!("argument '{key}' must be an array of strings"),
+            None,
+        )
+    })?;
+    if values.is_empty() {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must contain at least one column name"),
+            None,
+        ));
+    }
+    let mut out = Vec::with_capacity(values.len());
+    for value in values {
+        let column = value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                ErrorData::invalid_params(
+                    format!("argument '{key}' must be an array of non-empty strings"),
+                    None,
+                )
+            })?;
+        out.push(column.to_string());
+    }
+    Ok(Some(out))
+}
+
 fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
     Arc::new(
         value
@@ -801,7 +987,7 @@ fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
 mod tests {
     use serde_json::{Map, Value};
 
-    use super::{list_catalog_arguments, search_catalog_arguments};
+    use super::{list_catalog_arguments, result_get_arguments, search_catalog_arguments};
 
     #[test]
     fn catalog_kind_argument_accepts_null_as_all_kinds() {
@@ -813,5 +999,30 @@ mod tests {
         arguments.insert("pattern".to_string(), Value::String("issue".to_string()));
         let search = search_catalog_arguments(Some(&arguments)).expect("search arguments");
         assert_eq!(search.kind, None);
+    }
+
+    #[test]
+    fn result_get_arguments_accept_limit_zero_and_columns() {
+        let mut arguments = Map::new();
+        arguments.insert("result_id".to_string(), Value::String("res_1".to_string()));
+        arguments.insert("limit".to_string(), Value::from(0));
+        arguments.insert("columns".to_string(), serde_json::json!(["name", "id"]));
+
+        let parsed = result_get_arguments(Some(&arguments)).expect("arguments");
+        assert_eq!(parsed.result_id, "res_1");
+        assert_eq!(parsed.limit, 0);
+        assert_eq!(
+            parsed.columns.expect("columns"),
+            vec!["name".to_string(), "id".to_string()]
+        );
+    }
+
+    #[test]
+    fn result_get_arguments_reject_empty_columns() {
+        let mut arguments = Map::new();
+        arguments.insert("result_id".to_string(), Value::String("res_1".to_string()));
+        arguments.insert("columns".to_string(), serde_json::json!([]));
+
+        result_get_arguments(Some(&arguments)).expect_err("empty columns should fail");
     }
 }

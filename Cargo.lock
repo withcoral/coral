@@ -1319,6 +1319,7 @@ dependencies = [
  "http-body 1.0.1",
  "opentelemetry",
  "opentelemetry_sdk",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tonic",
@@ -1370,6 +1371,7 @@ dependencies = [
 name = "coral-mcp"
 version = "0.4.2"
 dependencies = [
+ "arrow",
  "coral-api",
  "coral-app",
  "coral-client",

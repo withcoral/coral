@@ -14,6 +14,7 @@ arrow = { workspace = true, features = ["prettyprint"] }
 http-body.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tonic.workspace = true

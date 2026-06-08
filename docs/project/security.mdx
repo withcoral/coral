@@ -25,7 +25,7 @@ This release is intended for single-user local use:
   server binds to loopback, and the MCP server uses stdio transport.
 
 Coral reduces data exposure by keeping execution local and by exposing a narrow
-MCP surface: `sql`, `list_catalog`, `search_catalog`, `describe_table`,
+MCP surface: `sql`, `result_get`, `list_catalog`, `search_catalog`, `describe_table`,
 `list_columns`, optional `feedback`, `coral://guide`, and `coral://tables`.
 Secret values are not returned through `coral.inputs`; secret rows show only
 whether a value is configured.

@@ -15,6 +15,7 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Type     | Name             | Description                                             |
 | -------- | ---------------- | ------------------------------------------------------- |
 | Tool     | `sql`            | Execute read-only SQL against the Coral database        |
+| Tool     | `result_get`     | Page through a large SQL result handle                  |
 | Tool     | `list_catalog`   | List database tables and table functions with pagination |
 | Tool     | `search_catalog` | Search database catalog metadata with a Rust regex      |
 | Tool     | `describe_table` | Show compact metadata for one database table            |
@@ -60,7 +61,33 @@ Some sources expose native search endpoints (for example, GitHub issue search) a
 
 ## Query result format
 
-The `sql` tool returns rows as a JSON array of objects. To preserve exact values across JSON parsers, Coral encodes precision-sensitive numeric types as JSON **strings** rather than JSON numbers:
+For small results, the `sql` tool returns rows inline as a JSON array of objects:
+
+```json
+{"rows":[{"title":"Fix deploy","state":"open"}]}
+```
+
+For larger results, `sql` may return an in-memory result handle instead of every row. The response includes `result_id`, `row_count`, column metadata, a preview page, and a suggested `next_call`:
+
+```json
+{
+  "result_id": "res_...",
+  "row_count": 1200,
+  "column_count": 8,
+  "preview": {"offset": 0, "limit": 20, "has_more": true, "next_offset": 20, "rows": []},
+  "next_call": {"tool": "result_get", "arguments": {"result_id": "res_...", "offset": 20, "limit": 50}}
+}
+```
+
+Use `result_get` to page through the stored result or request only selected columns:
+
+```json
+{"result_id":"res_...","offset":20,"limit":50,"columns":["title","state"]}
+```
+
+Result handles are process-local MCP session state. They expire and can be evicted under memory pressure; if `result_get` reports a missing or expired handle, rerun the SQL with tighter filters, a smaller projection, or `LIMIT`.
+
+To preserve exact values across JSON parsers, Coral encodes precision-sensitive numeric types as JSON **strings** rather than JSON numbers:
 
 - `Int64` (`BIGINT`) and `UInt64`
 - `Decimal32`, `Decimal64`, `Decimal128`, and `Decimal256`
@@ -69,7 +96,7 @@ This applies wherever these types appear, including nested inside `Struct`, `Lis
 
 Coral does this because MCP uses JSON-RPC, and many clients — JavaScript/TypeScript `JSON.parse` and most MCP hosts — decode JSON numbers as IEEE-754 doubles. Values beyond 2^53 silently lose precision when read as a number.
 
-The CLI is unaffected: `coral sql --format json` keeps emitting these types as JSON numbers.
+The CLI is unaffected by MCP result handles: `coral sql` still prints complete query results, and `coral sql --format json` keeps emitting precision-sensitive numeric types as JSON numbers.
 
 ## Client setup
 
