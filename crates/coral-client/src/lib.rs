@@ -16,6 +16,7 @@
 //! bootstrap seams as the default client surface.
 
 mod client;
+mod episode;
 mod error;
 mod grpc;
 pub mod local;
@@ -43,6 +44,7 @@ pub use client::{
     AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, QueryClient, SourceClient,
     default_workspace,
 };
+pub use episode::{CORAL_EPISODE_ID_METADATA_KEY, EpisodeIdInterceptor, with_episode_id};
 pub use error::{ClientError, QueryResultError};
 pub use sources::{SourceInputDecodeError, manifest_input_from_proto};
 pub use status_error::{
