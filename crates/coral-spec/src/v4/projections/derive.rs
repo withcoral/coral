@@ -6,7 +6,7 @@ use crate::v4::ir::{
     IrScalarType, IrTypeShape, OutputCardinality, RestExecutionAttachment, SemanticIr,
 };
 use crate::v4::manifest::V4SourceManifest;
-use crate::v4::naming::{normalize_identifier, stable_suffix};
+use crate::v4::naming::{normalize_identifier, normalize_sql_identifier, stable_suffix};
 use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
 use crate::{
     ManifestDataType, ManifestError, PaginationSpec, Result, SearchLimitsSpec,
@@ -76,6 +76,7 @@ fn generate_projection(
     };
     let pagination = rest.map_or_else(PaginationSpec::default, |rest| rest.pagination.clone());
     let pagination_query_params = pagination_query_param_names(&pagination);
+    let mut used_input_names = HashSet::new();
     let inputs = operation
         .inputs
         .iter()
@@ -102,7 +103,7 @@ fn generate_projection(
                 ));
             }
             ProjectionInput {
-                name: normalize_identifier(&input.name, "input"),
+                name: projection_input_name(input, &mut used_input_names),
                 sql_exposure: exposure,
                 source_location: input.location,
                 wire_name: input.name.clone(),
@@ -225,6 +226,23 @@ fn projection_input_sql_exposure(
         }
     };
     (exposure, pagination_owned_query_input)
+}
+
+fn projection_input_name(input: &IrOperationInput, used_names: &mut HashSet<String>) -> String {
+    let base = normalize_sql_identifier(&input.name, "input");
+    if used_names.insert(base.clone()) {
+        return base;
+    }
+    let mut name = format!("{base}__{}", stable_suffix(&input.name));
+    let mut attempt = 0_u32;
+    while !used_names.insert(name.clone()) {
+        attempt += 1;
+        name = format!(
+            "{base}__{}",
+            stable_suffix(&format!("{}:{attempt}", input.name))
+        );
+    }
+    name
 }
 
 fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<ProjectionColumn> {

@@ -571,6 +571,69 @@ fn generated_mcp_projection_exposes_current_row_result_columns() {
 }
 
 #[test]
+fn generated_mcp_projection_snake_cases_camel_input_names() {
+    let manifest = rest_mcp_collision_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let mcp_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "mcp")
+        .expect("mcp surface");
+    let catalog = McpToolCatalog {
+        tools: vec![McpToolDescriptor {
+            name: "pull_request_read".to_string(),
+            title: None,
+            description: None,
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "perPage": {"type": "number"},
+                    "pullNumber": {"type": "number"},
+                    "alertNumber": {"type": "number"},
+                    "discussionNumber": {"type": "number"},
+                    "ghsaId": {"type": "string"},
+                    "notificationID": {"type": "string"}
+                },
+                "required": ["pullNumber"]
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"}
+                }
+            })),
+            read_only_hint: Some(true),
+        }],
+    };
+    let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
+
+    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let projection = projections
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "pull_request_read")
+        .expect("mcp projection");
+    let sql_name_by_wire = projection
+        .inputs
+        .iter()
+        .map(|input| (input.wire_name.as_str(), input.name.as_str()))
+        .collect::<BTreeMap<_, _>>();
+
+    assert_eq!(sql_name_by_wire.get("perPage"), Some(&"per_page"));
+    assert_eq!(sql_name_by_wire.get("pullNumber"), Some(&"pull_number"));
+    assert_eq!(sql_name_by_wire.get("alertNumber"), Some(&"alert_number"));
+    assert_eq!(
+        sql_name_by_wire.get("discussionNumber"),
+        Some(&"discussion_number")
+    );
+    assert_eq!(sql_name_by_wire.get("ghsaId"), Some(&"ghsa_id"));
+    assert_eq!(
+        sql_name_by_wire.get("notificationID"),
+        Some(&"notification_id")
+    );
+}
+
+#[test]
 fn same_type_surface_namespaces_keep_colliding_projection_names() {
     let manifest = two_rest_collision_manifest();
     let v4 = manifest.as_v4().expect("v4");
