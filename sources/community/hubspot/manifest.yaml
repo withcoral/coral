@@ -1,9 +1,9 @@
 name: hubspot
-version: 0.1.0
+version: 0.2.0
 dsl_version: 3
 backend: http
 description: >-
-  Query HubSpot CRM contacts, companies, deals, tickets, and owners from
+  Query HubSpot CRM contacts, companies, deals, tickets, owners, calls, emails, meetings, notes, tasks, products, line_items, quotes, and pipelines from
   HubSpot (Cloud). Join with bundled Stripe, Intercom, and Linear sources
   on email and company domain.
 inputs:
@@ -13,8 +13,7 @@ inputs:
     hint: |
       Private app access token (Bearer). Create a private app under
       Settings > Integrations > Private Apps with read scopes for CRM
-      objects you plan to query (contacts, companies, deals, tickets,
-      owners). See
+      objects you plan to query (e.g. crm.objects.contacts.read, crm.objects.companies.read, crm.objects.deals.read, crm.objects.line_items.read, crm.objects.products.read, crm.objects.quotes.read, crm.objects.owners.read, crm.objects.pipelines.read, and activity scopes). See
       [HubSpot private apps](https://developers.hubspot.com/docs/apps/legacy-apps/private-apps/overview).
 base_url: https://api.hubapi.com
 auth:
@@ -755,3 +754,996 @@ tables:
           path:
             - properties
             - hubspot_owner_id
+  - name: calls
+    description: HubSpot CRM calls (engagements).
+    guide: |
+      Phone calls logged in HubSpot CRM. Use `hubspot_owner_id` to join with `hubspot.owners`.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crm/v3/objects/calls
+      query:
+        - name: properties
+          from: literal
+          value: "hs_call_title,hs_call_body,hs_call_duration,hs_call_status,hs_call_disposition,hubspot_owner_id,hs_timestamp"
+        - name: archived
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - paging
+        - next
+        - after
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot calls record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Property hs_call_title
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_call_title
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Property hs_call_body
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_call_body
+      - name: duration
+        type: Utf8
+        nullable: true
+        description: Property hs_call_duration
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_call_duration
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Property hs_call_status
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_call_status
+      - name: disposition
+        type: Utf8
+        nullable: true
+        description: Property hs_call_disposition
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_call_disposition
+      - name: hubspot_owner_id
+        type: Utf8
+        nullable: true
+        description: Property hubspot_owner_id
+        expr:
+          kind: path
+          path:
+            - properties
+            - hubspot_owner_id
+      - name: activity_at
+        type: Timestamp
+        nullable: true
+        description: Activity occurrence time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - properties
+              - hs_timestamp
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Record creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Record last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+  - name: emails
+    description: HubSpot CRM emails (engagements).
+    guide: |
+      Emails sent/received in HubSpot CRM.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crm/v3/objects/emails
+      query:
+        - name: properties
+          from: literal
+          value: "hs_email_subject,hs_email_text,hs_email_status,hs_email_direction,hubspot_owner_id,hs_timestamp"
+        - name: archived
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - paging
+        - next
+        - after
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot emails record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Property hs_email_subject
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_email_subject
+      - name: text_body
+        type: Utf8
+        nullable: true
+        description: Property hs_email_text
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_email_text
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Property hs_email_status
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_email_status
+      - name: direction
+        type: Utf8
+        nullable: true
+        description: Property hs_email_direction
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_email_direction
+      - name: hubspot_owner_id
+        type: Utf8
+        nullable: true
+        description: Property hubspot_owner_id
+        expr:
+          kind: path
+          path:
+            - properties
+            - hubspot_owner_id
+      - name: activity_at
+        type: Timestamp
+        nullable: true
+        description: Activity occurrence time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - properties
+              - hs_timestamp
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Record creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Record last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+  - name: meetings
+    description: HubSpot CRM meetings (engagements).
+    guide: |
+      Meetings logged in HubSpot CRM.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crm/v3/objects/meetings
+      query:
+        - name: properties
+          from: literal
+          value: "hs_meeting_title,hs_meeting_body,hs_meeting_start_time,hs_meeting_end_time,hs_meeting_outcome,hubspot_owner_id,hs_timestamp"
+        - name: archived
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - paging
+        - next
+        - after
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot meetings record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Property hs_meeting_title
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_meeting_title
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Property hs_meeting_body
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_meeting_body
+      - name: start_time
+        type: Utf8
+        nullable: true
+        description: Property hs_meeting_start_time
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_meeting_start_time
+      - name: end_time
+        type: Utf8
+        nullable: true
+        description: Property hs_meeting_end_time
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_meeting_end_time
+      - name: outcome
+        type: Utf8
+        nullable: true
+        description: Property hs_meeting_outcome
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_meeting_outcome
+      - name: hubspot_owner_id
+        type: Utf8
+        nullable: true
+        description: Property hubspot_owner_id
+        expr:
+          kind: path
+          path:
+            - properties
+            - hubspot_owner_id
+      - name: activity_at
+        type: Timestamp
+        nullable: true
+        description: Activity occurrence time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - properties
+              - hs_timestamp
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Record creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Record last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+  - name: notes
+    description: HubSpot CRM notes (engagements).
+    guide: |
+      Notes left on CRM records.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crm/v3/objects/notes
+      query:
+        - name: properties
+          from: literal
+          value: "hs_note_body,hubspot_owner_id,hs_timestamp"
+        - name: archived
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - paging
+        - next
+        - after
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot notes record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Property hs_note_body
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_note_body
+      - name: hubspot_owner_id
+        type: Utf8
+        nullable: true
+        description: Property hubspot_owner_id
+        expr:
+          kind: path
+          path:
+            - properties
+            - hubspot_owner_id
+      - name: activity_at
+        type: Timestamp
+        nullable: true
+        description: Activity occurrence time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - properties
+              - hs_timestamp
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Record creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Record last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+  - name: tasks
+    description: HubSpot CRM tasks (engagements).
+    guide: |
+      Tasks logged in HubSpot CRM.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crm/v3/objects/tasks
+      query:
+        - name: properties
+          from: literal
+          value: "hs_task_subject,hs_task_body,hs_task_status,hs_task_priority,hs_task_type,hubspot_owner_id,hs_timestamp"
+        - name: archived
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - paging
+        - next
+        - after
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot tasks record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Property hs_task_subject
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_task_subject
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Property hs_task_body
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_task_body
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Property hs_task_status
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_task_status
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: Property hs_task_priority
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_task_priority
+      - name: task_type
+        type: Utf8
+        nullable: true
+        description: Property hs_task_type
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_task_type
+      - name: hubspot_owner_id
+        type: Utf8
+        nullable: true
+        description: Property hubspot_owner_id
+        expr:
+          kind: path
+          path:
+            - properties
+            - hubspot_owner_id
+      - name: activity_at
+        type: Timestamp
+        nullable: true
+        description: Activity occurrence time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - properties
+              - hs_timestamp
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Record creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Record last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+  - name: products
+    description: HubSpot CRM products (product catalog).
+    guide: |
+      Product catalog.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crm/v3/objects/products
+      query:
+        - name: properties
+          from: literal
+          value: "name,description,price,hs_sku,hs_cost_of_goods_sold"
+        - name: archived
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - paging
+        - next
+        - after
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot products record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Property name
+        expr:
+          kind: path
+          path:
+            - properties
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Property description
+        expr:
+          kind: path
+          path:
+            - properties
+            - description
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Property price
+        expr:
+          kind: path
+          path:
+            - properties
+            - price
+      - name: sku
+        type: Utf8
+        nullable: true
+        description: Property hs_sku
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_sku
+      - name: cost_of_goods_sold
+        type: Utf8
+        nullable: true
+        description: Property hs_cost_of_goods_sold
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_cost_of_goods_sold
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Record creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Record last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+  - name: line_items
+    description: HubSpot CRM line items.
+    guide: |
+      Standalone line items. (Associations to deals/quotes coming soon).
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crm/v3/objects/line_items
+      query:
+        - name: properties
+          from: literal
+          value: "name,quantity,price,discount,amount,hs_product_id"
+        - name: archived
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - paging
+        - next
+        - after
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot line_items record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Property name
+        expr:
+          kind: path
+          path:
+            - properties
+            - name
+      - name: quantity
+        type: Utf8
+        nullable: true
+        description: Property quantity
+        expr:
+          kind: path
+          path:
+            - properties
+            - quantity
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Property price
+        expr:
+          kind: path
+          path:
+            - properties
+            - price
+      - name: discount
+        type: Utf8
+        nullable: true
+        description: Property discount
+        expr:
+          kind: path
+          path:
+            - properties
+            - discount
+      - name: amount
+        type: Utf8
+        nullable: true
+        description: Property amount
+        expr:
+          kind: path
+          path:
+            - properties
+            - amount
+      - name: product_id
+        type: Utf8
+        nullable: true
+        description: Property hs_product_id
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_product_id
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Record creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Record last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+  - name: quotes
+    description: HubSpot CRM quotes.
+    guide: |
+      Quotes generated for customers.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crm/v3/objects/quotes
+      query:
+        - name: properties
+          from: literal
+          value: "hs_title,hs_status,hs_expiration_date,hs_quote_amount,hubspot_owner_id"
+        - name: archived
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path:
+        - paging
+        - next
+        - after
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot quotes record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Property hs_title
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_title
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Property hs_status
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_status
+      - name: expiration_date
+        type: Utf8
+        nullable: true
+        description: Property hs_expiration_date
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_expiration_date
+      - name: amount
+        type: Utf8
+        nullable: true
+        description: Property hs_quote_amount
+        expr:
+          kind: path
+          path:
+            - properties
+            - hs_quote_amount
+      - name: hubspot_owner_id
+        type: Utf8
+        nullable: true
+        description: Property hubspot_owner_id
+        expr:
+          kind: path
+          path:
+            - properties
+            - hubspot_owner_id
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Record creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Record last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+  - name: pipelines
+    description: HubSpot Deal Pipelines and their Stages.
+    guide: |
+      Definitions of pipelines and deal stages.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /crm/v3/pipelines/deals
+    response:
+      rows_path:
+        - results
+      allow_404_empty: false
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: HubSpot pipelines record ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: label
+        type: Utf8
+        nullable: true
+        description: Property label
+        expr:
+          kind: path
+          path:
+            - label
+      - name: display_order
+        type: Utf8
+        nullable: true
+        description: Property displayOrder
+        expr:
+          kind: path
+          path:
+            - displayOrder
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Record creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: stages
+        type: Json
+        nullable: true
+        description: JSON array of pipeline stages.
+        expr:
+          kind: path
+          path:
+            - stages
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Record last modified time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
