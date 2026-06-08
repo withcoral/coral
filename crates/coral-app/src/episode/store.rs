@@ -14,7 +14,7 @@
 )]
 
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -57,11 +57,13 @@ struct PersistedEpisode {
 }
 
 impl PersistedEpisode {
-    fn from_episode(episode: &Episode) -> Self {
+    /// Builds the on-disk record, storing the already-normalized `intent` (rather
+    /// than `episode.intent`) so persisted/compared values stay consistent.
+    fn from_episode(episode: &Episode, intent: &str) -> Self {
         Self {
             id: episode.id.as_str().to_string(),
             workspace: episode.workspace.as_str().to_string(),
-            intent: episode.intent.clone(),
+            intent: intent.to_string(),
             parent_episode_id: episode
                 .parent_episode_id
                 .as_ref()
@@ -118,7 +120,11 @@ impl EpisodeStore {
     /// permissions. The id is already validated ([`EpisodeId`]); intent is
     /// checked here as a safety net for callers that bypass the service boundary.
     pub(crate) fn open_episode(&self, episode: &Episode) -> Result<(), EpisodeStoreError> {
-        if episode.intent.trim().is_empty() || episode.intent.chars().count() > MAX_INTENT_CHARS {
+        // Normalize intent once so surrounding whitespace never becomes part of the
+        // immutable key — a retry with an accidental trailing space must stay
+        // idempotent, not conflict.
+        let intent = episode.intent.trim();
+        if intent.is_empty() || intent.chars().count() > MAX_INTENT_CHARS {
             return Err(EpisodeStoreError::InvalidIntent {
                 max: MAX_INTENT_CHARS,
             });
@@ -126,7 +132,7 @@ impl EpisodeStore {
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
         let path = self.layout.episodes_file(&episode.workspace);
         if let Some(existing) = read_episode(&path, episode.id.as_str())? {
-            return if existing.intent == episode.intent
+            return if existing.intent == intent
                 && existing.parent_episode_id.as_deref()
                     == episode.parent_episode_id.as_ref().map(EpisodeId::as_str)
             {
@@ -137,9 +143,17 @@ impl EpisodeStore {
                 })
             };
         }
-        let mut line = serde_json::to_vec(&PersistedEpisode::from_episode(episode))?;
-        line.push(b'\n');
-        storage_fs::append_file_private(&path, &line)?;
+        let record = serde_json::to_vec(&PersistedEpisode::from_episode(episode, intent))?;
+        let mut bytes = Vec::with_capacity(record.len() + 2);
+        // A prior torn append can leave the file without a trailing newline; start
+        // this record on its own line so the incomplete one stays separately
+        // skippable instead of merging with (and corrupting) this record.
+        if file_needs_leading_newline(&path)? {
+            bytes.push(b'\n');
+        }
+        bytes.extend_from_slice(&record);
+        bytes.push(b'\n');
+        storage_fs::append_file_private(&path, &bytes)?;
         Ok(())
     }
 }
@@ -167,12 +181,40 @@ fn read_episode(
         if line.trim().is_empty() {
             continue;
         }
-        let episode: PersistedEpisode = serde_json::from_str(&line)?;
-        if episode.id == episode_id {
-            found = Some(episode);
+        match serde_json::from_str::<PersistedEpisode>(&line) {
+            Ok(episode) => {
+                if episode.id == episode_id {
+                    found = Some(episode);
+                }
+            }
+            // A crash mid-append can leave a torn record; skip it rather than
+            // bricking every read for the workspace. An unacknowledged torn write
+            // is simply re-appended when the client retries `OpenEpisode`.
+            Err(error) => {
+                tracing::warn!(%error, "skipping unparsable episode record");
+            }
         }
     }
     Ok(found)
+}
+
+/// Whether an append to `path` must start with a newline: the file exists, is
+/// non-empty, and does not already end in one (e.g. after a torn append). Keeps
+/// an incomplete trailing record on its own line so it never merges with the
+/// next record.
+fn file_needs_leading_newline(path: &Path) -> Result<bool, EpisodeStoreError> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    if file.seek(SeekFrom::End(0))? == 0 {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0_u8; 1];
+    file.read_exact(&mut last)?;
+    Ok(last[0] != b'\n')
 }
 
 #[cfg(test)]
@@ -219,6 +261,68 @@ mod tests {
             .open_episode(&episode(&workspace, "ep_long", &overlong, None))
             .expect_err("overlong intent must be rejected");
         assert!(matches!(too_long, EpisodeStoreError::InvalidIntent { .. }));
+    }
+
+    #[test]
+    fn intent_whitespace_is_normalized_and_does_not_fork_the_key() {
+        let (_dir, layout) = layout();
+        let store = EpisodeStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        store
+            .open_episode(&episode(&workspace, "ep_1", "find the form", None))
+            .expect("open");
+        // A retry with accidental surrounding whitespace stays idempotent.
+        store
+            .open_episode(&episode(&workspace, "ep_1", "  find the form  ", None))
+            .expect("whitespace-only difference is idempotent");
+        let read = read_episode(&layout.episodes_file(&workspace), "ep_1")
+            .expect("read")
+            .expect("present");
+        assert_eq!(read.intent, "find the form", "stored intent is normalized");
+        let lines = fs::read_to_string(layout.episodes_file(&workspace))
+            .expect("read file")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count();
+        assert_eq!(
+            lines, 1,
+            "whitespace-only difference must not append a record"
+        );
+    }
+
+    #[test]
+    fn read_tolerates_a_torn_trailing_record() {
+        use std::io::Write as _;
+
+        let (_dir, layout) = layout();
+        let store = EpisodeStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        let path = layout.episodes_file(&workspace);
+        store
+            .open_episode(&episode(&workspace, "ep_1", "first intent", None))
+            .expect("open");
+        // Simulate a crash mid-append: a complete record followed by a torn line
+        // with no trailing newline.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open for append")
+            .write_all(b"{\"id\":\"ep_2\",\"workspace\":\"acme\"")
+            .expect("write torn record");
+        // The torn line is skipped, not fatal.
+        let read = read_episode(&path, "ep_1")
+            .expect("read tolerates the torn tail")
+            .expect("ep_1 present");
+        assert_eq!(read.intent, "first intent");
+        // The next append starts on a fresh line (no merge), so the new record is
+        // readable and the torn one stays isolated.
+        store
+            .open_episode(&episode(&workspace, "ep_2", "second intent", None))
+            .expect("open after torn tail");
+        let recovered = read_episode(&path, "ep_2")
+            .expect("read")
+            .expect("ep_2 present after recovery");
+        assert_eq!(recovered.intent, "second intent");
     }
 
     #[test]
