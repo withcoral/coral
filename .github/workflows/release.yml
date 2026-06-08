@@ -141,8 +141,8 @@ jobs:
           & $coral --version
           & $coral source discover
 
-      - name: Package Unix
-        if: runner.os != 'Windows'
+      - name: Package Linux
+        if: runner.os == 'Linux'
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -151,6 +151,17 @@ jobs:
           cd "target/${TARGET}/release"
           tar czf "../../../${archive}" coral
           cd ../../../
+
+      - name: Stage unsigned macOS binary
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          staging="unsigned-${TARGET}"
+          mkdir -p "$staging"
+          cp "target/${TARGET}/release/coral" "$staging/coral"
 
       - name: Package Windows
         if: runner.os == 'Windows'
@@ -166,6 +177,7 @@ jobs:
           Pop-Location
 
       - name: Upload artifact
+        if: runner.os != 'macOS'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: coral-${{ matrix.target }}
@@ -173,8 +185,162 @@ jobs:
             coral-${{ matrix.target }}.tar.gz
             coral-${{ matrix.target }}.zip
 
-  checksums:
+      - name: Upload unsigned macOS binary
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: macos-unsigned-${{ matrix.target }}
+          path: unsigned-${{ matrix.target }}/coral
+
+  sign-notarize-macos:
     needs: build
+    environment: release
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Download unsigned macOS binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: macos-unsigned-${{ matrix.target }}
+          path: unsigned-${{ matrix.target }}
+
+      - name: Install Apple signing assets
+        shell: bash
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          certificate_path="$RUNNER_TEMP/developer_id_application.p12"
+          key_path="$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+          keychain_path="$RUNNER_TEMP/coral-signing.keychain-db"
+
+          decode_base64_to_file() {
+            value="$1"
+            output="$2"
+
+            if base64 --help 2>&1 | grep -q -- '--decode'; then
+              printf '%s' "$value" | base64 --decode > "$output"
+            else
+              printf '%s' "$value" | base64 -D > "$output"
+            fi
+          }
+
+          decode_base64_to_file "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" "$certificate_path"
+          decode_base64_to_file "$APP_STORE_CONNECT_API_KEY_P8_BASE64" "$key_path"
+
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$certificate_path" \
+            -P "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple: -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security find-identity -p codesigning -v "$keychain_path"
+
+      - name: Sign macOS binary
+        shell: bash
+        env:
+          APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+
+          binary="unsigned-${TARGET}/coral"
+          chmod +x "$binary"
+          codesign \
+            --force \
+            --sign "$APPLE_CODESIGN_IDENTITY" \
+            --timestamp \
+            --options runtime \
+            --identifier com.withcoral.coral \
+            "$binary"
+
+          codesign --verify --strict --verbose=2 "$binary"
+          codesign -dv --verbose=4 "$binary"
+
+      - name: Package and notarize macOS ZIP
+        shell: bash
+        env:
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        run: |
+          set -euo pipefail
+
+          binary="unsigned-${TARGET}/coral"
+          archive="coral-${TARGET}.zip"
+          legacy_archive="coral-${TARGET}.tar.gz"
+          staging="$RUNNER_TEMP/package-${TARGET}"
+          key_path="$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+          notary_result="$RUNNER_TEMP/notary-${TARGET}.json"
+          notary_log="$RUNNER_TEMP/notary-${TARGET}-log.json"
+
+          mkdir -p "$staging"
+          cp "$binary" "$staging/coral"
+          chmod +x "$staging/coral"
+          (cd "$staging" && ditto -c -k --keepParent coral "$GITHUB_WORKSPACE/$archive")
+          (cd "$staging" && tar czf "$GITHUB_WORKSPACE/$legacy_archive" coral)
+
+          set +e
+          xcrun notarytool submit "$archive" \
+            --key "$key_path" \
+            --key-id "$APP_STORE_CONNECT_API_KEY_ID" \
+            --issuer "$APP_STORE_CONNECT_API_ISSUER_ID" \
+            --wait \
+            --output-format json > "$notary_result"
+          notary_status=$?
+          set -e
+
+          cat "$notary_result"
+          submission_id="$(plutil -extract id raw -o - "$notary_result" 2>/dev/null || true)"
+
+          if [ "$notary_status" -ne 0 ]; then
+            if [ -n "$submission_id" ]; then
+              xcrun notarytool log "$submission_id" \
+                --key "$key_path" \
+                --key-id "$APP_STORE_CONNECT_API_KEY_ID" \
+                --issuer "$APP_STORE_CONNECT_API_ISSUER_ID" \
+                "$notary_log" || true
+              cat "$notary_log" || true
+            fi
+            exit "$notary_status"
+          fi
+
+          spctl --assess --type exec --verbose=4 "$binary"
+
+      - name: Upload signed macOS artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coral-${{ matrix.target }}
+          path: |
+            coral-${{ matrix.target }}.zip
+            coral-${{ matrix.target }}.tar.gz
+
+      - name: Clean up Apple signing assets
+        if: always()
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/coral-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/developer_id_application.p12" "$RUNNER_TEMP"/AuthKey_*.p8
+
+  checksums:
+    needs:
+      - build
+      - sign-notarize-macos
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
