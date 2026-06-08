@@ -31,10 +31,10 @@ pub use artifacts::{
 };
 pub use diagnostics::{Diagnostic, DiagnosticSeverity};
 pub use ir::{
-    HttpMethod, IrEntityCandidate, IrExecutionAttachment, IrField, IrOperation, IrOperationInput,
-    IrOperationOutput, IrScalarType, IrType, IrTypeShape, OpenApiParameterLocation,
-    OutputCardinality, RestExecutionAttachment, RestParameterBinding, RestRequestBody,
-    RestResponseAttachment, SemanticIr,
+    HttpMethod, IrEntityCandidate, IrExecutionAttachment, IrField, IrInputLocation, IrOperation,
+    IrOperationInput, IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality,
+    RestExecutionAttachment, RestParameterBinding, RestRequestBody, RestResponseAttachment,
+    SemanticIr,
 };
 pub use manifest::{
     OpenApiRuntimeConfig, SurfaceDescriptor, SurfaceType, V4SourceCommon, V4SourceManifest,
