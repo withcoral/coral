@@ -137,8 +137,7 @@ interfaces:
 OpenAPI import preserves operation ids, parameters, request media types,
 response variants, security requirements, and provenance. Coral turns supported
 operations into capabilities. Read-like, row-shaped capabilities may also get
-SQL bindings; mutations remain discoverable and callable through TypeScript
-when the experimental mutation gate permits invocation.
+SQL bindings; mutation and action capabilities are callable through TypeScript.
 
 OpenAPI `url` and `base_url` values may be literal URLs or HTTPS templates
 using `{{input.KEY}}` tokens. Template tokens must reference declared

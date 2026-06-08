@@ -8,8 +8,6 @@ import "coral/v1/resources.proto";
 message InitializeCodeModeRequest {
   // Workspace bound to this Code Mode session.
   Workspace workspace = 1;
-  // Whether mutation/action invocation is enabled for the session.
-  bool experimental_mutations = 2;
 }
 
 // Initialized Code Mode session metadata.
@@ -18,8 +16,6 @@ message InitializeCodeModeResponse {
   uint32 protocol_version = 1;
   // Workspace id.
   string workspace_id = 2;
-  // Whether mutation/action invocation is enabled.
-  bool experimental_mutations = 3;
   // Whether search is available.
   bool supports_search = 4;
   // Whether describe is available.

@@ -56,8 +56,8 @@ trust boundary:
 - Provider output is treated as untrusted data. Coral may shape it into SQL
   rows, TypeScript results, or MCP responses, but provider content is not used
   as an authorization decision.
-- Mutation and action capabilities are discoverable, but invocation is blocked
-  before network unless the app-owned experimental mutation flag is enabled.
+- Query, mutation, and action capabilities are callable by default; source
+  manifests and provider auth determine what an installed source can do.
 - Source and workspace names are validated before they are used in local state
   paths.
 - MCP clients can discover installed source exports and run Code Mode, but they

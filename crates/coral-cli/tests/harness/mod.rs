@@ -629,7 +629,6 @@ impl CodeModeService for MockCodeModeService {
         Ok(Response::new(InitializeCodeModeResponse {
             protocol_version: 1,
             workspace_id: "default".to_string(),
-            experimental_mutations: false,
             supports_search: true,
             supports_describe: true,
             supports_sql: true,

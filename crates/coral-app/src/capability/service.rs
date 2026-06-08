@@ -12,9 +12,9 @@ use std::time::Duration;
 use coral_api::v1::capability_service_server::CapabilityService as CapabilityServiceApi;
 use coral_api::v1::{InvokeCapabilityError, InvokeCapabilityRequest, InvokeCapabilityResponse};
 use coral_capabilities::{
-    Capability, CapabilityId, CapabilityKind, FileArtifactRef, FileFormatDescriptor,
-    FileScanBinding, GraphqlOperationBinding, McpToolUpstreamBinding, RestParameterBinding,
-    RestParameterLocation, RestRequestBody, RestUpstreamBinding, ResultShapeHint, UpstreamBinding,
+    Capability, CapabilityId, FileArtifactRef, FileFormatDescriptor, FileScanBinding,
+    GraphqlOperationBinding, McpToolUpstreamBinding, RestParameterBinding, RestParameterLocation,
+    RestRequestBody, RestUpstreamBinding, ResultShapeHint, UpstreamBinding,
     code_mode_tool_input_schema, executable_schema_unresolved_refs,
 };
 use coral_exports::{Binding, CapabilityExport};
@@ -131,7 +131,6 @@ impl CapabilityInvoker {
                 workspace_name,
                 credentials: &self.credentials,
             }),
-            request.experimental_mutations,
         )
         .await)
     }
@@ -142,7 +141,6 @@ pub(crate) struct CapabilityInvocationRequest {
     pub(crate) binding_ref: String,
     pub(crate) binding_path: Vec<String>,
     pub(crate) args_json: String,
-    pub(crate) experimental_mutations: bool,
 }
 
 pub(crate) struct SqlProviderCapabilityInvocation {
@@ -177,7 +175,6 @@ pub(crate) async fn invoke_sql_provider_capability(
             workspace_name,
             credentials,
         }),
-        false,
     )
     .await;
     if response.ok {
@@ -215,7 +212,6 @@ impl CapabilityServiceApi for CapabilityService {
                     binding_ref: request.binding_ref,
                     binding_path: request.binding_path,
                     args_json: request.args_json,
-                    experimental_mutations: false,
                 },
             ))
             .await
@@ -453,25 +449,7 @@ async fn invoke_resolved(
     resolved: ResolvedInvocation,
     args: JsonMap<String, JsonValue>,
     runtime: Option<InvocationRuntime<'_>>,
-    experimental_mutations: bool,
 ) -> InvokeCapabilityResponse {
-    if resolved.capability.effect_profile.capability_kind != CapabilityKind::Query
-        && !experimental_mutations
-    {
-        return error_response(
-            "unsupported_mutation",
-            format!(
-                "capability '{}' is not a read-only query capability",
-                resolved.capability.capability_id
-            ),
-            json!({
-                "capability_id": resolved.capability.capability_id.as_str(),
-                "capability_kind": capability_kind_label(
-                    resolved.capability.effect_profile.capability_kind
-                ),
-            }),
-        );
-    }
     if let Err(response) = validate_invocation_args(&resolved.capability, &args) {
         return response;
     }
@@ -2347,14 +2325,6 @@ fn success_response(value: JsonValue, envelope: JsonValue) -> InvokeCapabilityRe
     }
 }
 
-fn capability_kind_label(kind: CapabilityKind) -> &'static str {
-    match kind {
-        CapabilityKind::Query => "query",
-        CapabilityKind::Mutation => "mutation",
-        CapabilityKind::Action => "action",
-    }
-}
-
 fn upstream_binding_label(binding: &UpstreamBinding) -> &'static str {
     match binding {
         UpstreamBinding::Rest(_) => "rest",
@@ -3817,7 +3787,7 @@ interfaces:
             args_json: "{}".to_string(),
         };
         let resolved = resolve_invocation(&workspace, &request).expect("resolve");
-        let response = invoke_resolved(resolved, JsonMap::new(), None, false).await;
+        let response = invoke_resolved(resolved, JsonMap::new(), None).await;
 
         assert!(response.ok);
         assert!(response.error.is_none());
@@ -3862,7 +3832,6 @@ interfaces:
             resolved,
             JsonMap::from_iter([("limit".to_string(), json!(1))]),
             None,
-            false,
         )
         .await;
 
@@ -3957,7 +3926,6 @@ interfaces:
             resolved,
             serde_json::from_str(&request.args_json).expect("args"),
             None,
-            false,
         )
         .await;
 
@@ -4026,7 +3994,6 @@ interfaces:
             resolved,
             serde_json::from_str(&request.args_json).expect("args"),
             None,
-            false,
         )
         .await;
 
@@ -4113,7 +4080,6 @@ interfaces:
             resolved,
             serde_json::from_str(&request.args_json).expect("args"),
             None,
-            false,
         )
         .await;
 
@@ -4222,7 +4188,6 @@ paths: {{}}
             resolved,
             serde_json::from_str(&request.args_json).expect("args"),
             None,
-            false,
         )
         .await;
 
@@ -4285,7 +4250,6 @@ paths: {}
             resolved,
             serde_json::from_str(&request.args_json).expect("args"),
             None,
-            false,
         )
         .await;
 
@@ -4375,7 +4339,6 @@ interfaces:
                 workspace_name: &workspace_name,
                 credentials: &credential_manager,
             }),
-            false,
         )
         .await;
 
@@ -4389,44 +4352,7 @@ interfaces:
     }
 
     #[tokio::test]
-    async fn rejects_mutation_without_experimental_gate_before_provider_io() {
-        let capability = mutation_rest_capability();
-        let capability_id = capability.capability_id.to_string();
-        let workspace = workspace_exports(
-            capability,
-            vec![
-                "github".to_string(),
-                "rest".to_string(),
-                "items".to_string(),
-                "getItem".to_string(),
-            ],
-            PathBuf::from("/nonexistent/materialized/source"),
-        );
-        let request = InvokeCapabilityRequest {
-            workspace: None,
-            capability_id,
-            binding_ref: "typescript:github.rest.items.getItem".to_string(),
-            binding_path: Vec::new(),
-            args_json: json!({ "path": { "id": 42 } }).to_string(),
-        };
-        let resolved = resolve_invocation(&workspace, &request).expect("resolve");
-        let response = invoke_resolved(
-            resolved,
-            serde_json::from_str(&request.args_json).expect("args"),
-            None,
-            false,
-        )
-        .await;
-
-        assert!(!response.ok);
-        assert_eq!(
-            response.error.expect("structured error").kind,
-            "unsupported_mutation"
-        );
-    }
-
-    #[tokio::test]
-    async fn invokes_mutation_when_experimental_gate_is_enabled() {
+    async fn invokes_mutation_by_default() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/items/42"))
@@ -4493,7 +4419,6 @@ interfaces:
             resolved,
             serde_json::from_str(&request.args_json).expect("args"),
             None,
-            true,
         )
         .await;
 
@@ -4573,7 +4498,7 @@ interfaces:
             args_json: "{}".to_string(),
         };
         let resolved = resolve_invocation(&workspace, &request).expect("resolve");
-        let response = invoke_resolved(resolved, JsonMap::new(), None, false).await;
+        let response = invoke_resolved(resolved, JsonMap::new(), None).await;
 
         assert!(response.ok, "response error: {:?}", response.error);
         assert_eq!(response_value(&response), json!({ "rateLimit": 42 }));
@@ -4617,7 +4542,7 @@ interfaces:
             args_json: "{}".to_string(),
         };
         let resolved = resolve_invocation(&workspace, &request).expect("resolve");
-        let response = invoke_resolved(resolved, JsonMap::new(), None, false).await;
+        let response = invoke_resolved(resolved, JsonMap::new(), None).await;
 
         assert!(response.ok, "response error: {:?}", response.error);
         assert_eq!(response_value(&response), JsonValue::Null);
@@ -4661,7 +4586,7 @@ interfaces:
             args_json: "{}".to_string(),
         };
         let resolved = resolve_invocation(&workspace, &request).expect("resolve");
-        let response = invoke_resolved(resolved, JsonMap::new(), None, false).await;
+        let response = invoke_resolved(resolved, JsonMap::new(), None).await;
 
         assert!(!response.ok, "pathless not-found errors must fail closed");
         let error = response.error.as_ref().expect("error");
@@ -4730,7 +4655,7 @@ interfaces:
             args_json: "{}".to_string(),
         };
         let resolved = resolve_invocation(&workspace, &request).expect("resolve");
-        let response = invoke_resolved(resolved, JsonMap::new(), None, false).await;
+        let response = invoke_resolved(resolved, JsonMap::new(), None).await;
 
         assert!(!response.ok, "mixed errors must fail closed");
         let error = response.error.as_ref().expect("error");
@@ -4821,7 +4746,7 @@ interfaces:
             args_json: "{}".to_string(),
         };
         let resolved = resolve_invocation(&workspace, &request).expect("resolve");
-        let response = invoke_resolved(resolved, JsonMap::new(), None, false).await;
+        let response = invoke_resolved(resolved, JsonMap::new(), None).await;
 
         assert!(!response.ok);
         let error = response.error.expect("structured error");
@@ -4879,7 +4804,7 @@ interfaces:
             args_json: "{}".to_string(),
         };
         let resolved = resolve_invocation(&workspace, &request).expect("resolve");
-        let response = invoke_resolved(resolved, JsonMap::new(), None, false).await;
+        let response = invoke_resolved(resolved, JsonMap::new(), None).await;
 
         assert!(!response.ok);
         let error = response.error.expect("structured error");
@@ -4941,7 +4866,7 @@ interfaces:
             args_json: "{}".to_string(),
         };
         let resolved = resolve_invocation(&workspace, &request).expect("resolve");
-        let response = invoke_resolved(resolved, JsonMap::new(), None, false).await;
+        let response = invoke_resolved(resolved, JsonMap::new(), None).await;
 
         assert!(!response.ok);
         let error = response.error.expect("structured error");

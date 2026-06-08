@@ -101,10 +101,7 @@ impl CodeModeServiceApi for CodeModeService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let initialized = InitializedSession {
-                workspace_name,
-                experimental_mutations: request.experimental_mutations,
-            };
+            let initialized = InitializedSession { workspace_name };
             runtime
                 .initialized_by_workspace
                 .lock()
@@ -113,7 +110,6 @@ impl CodeModeServiceApi for CodeModeService {
             Ok(Response::new(InitializeCodeModeResponse {
                 protocol_version: 1,
                 workspace_id: initialized.workspace_name.as_str().to_string(),
-                experimental_mutations: initialized.experimental_mutations,
                 supports_search: true,
                 supports_describe: true,
                 supports_sql: runtime_exposure.exposes_sql(),
@@ -133,7 +129,7 @@ impl CodeModeServiceApi for CodeModeService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let initialized = runtime.initialized_for_workspace(&workspace_name).await?;
+            runtime.initialized_for_workspace(&workspace_name).await?;
             let parsed = parse_exec_source(&request.source).map_err(Status::invalid_argument)?;
             let run_id = format!("run_{}", Uuid::new_v4());
             let cell_id = format!("cell_{}", runtime.engine.allocate_cell_id());
@@ -155,7 +151,6 @@ impl CodeModeServiceApi for CodeModeService {
                     CellContext {
                         run_id: run_id.clone(),
                         workspace_name: workspace_name.clone(),
-                        experimental_mutations: initialized.experimental_mutations,
                     },
                 )
                 .await;
@@ -489,14 +484,12 @@ fn stored_value_updates(response: &RuntimeResponse) -> HashMap<String, JsonValue
 #[derive(Clone)]
 struct InitializedSession {
     workspace_name: WorkspaceName,
-    experimental_mutations: bool,
 }
 
 #[derive(Clone)]
 struct CellContext {
     run_id: String,
     workspace_name: WorkspaceName,
-    experimental_mutations: bool,
 }
 
 struct AppCodeModeHost {
@@ -718,7 +711,6 @@ impl AppCodeModeHost {
                 binding_ref: binding_ref.clone(),
                 binding_path: Vec::new(),
                 args_json: serde_json::to_string(&args).map_err(|error| error.to_string())?,
-                experimental_mutations: context.experimental_mutations,
             },
         ))
         .await
@@ -2395,7 +2387,6 @@ return {
         let response = service
             .initialize(Request::new(InitializeCodeModeRequest {
                 workspace: Some(workspace("default")),
-                experimental_mutations: false,
             }))
             .await
             .expect("initialize")
@@ -2406,7 +2397,6 @@ return {
         let response = service
             .initialize(Request::new(InitializeCodeModeRequest {
                 workspace: Some(workspace("default")),
-                experimental_mutations: false,
             }))
             .await
             .expect("initialize")
@@ -2626,7 +2616,6 @@ return "ran";
         service
             .initialize(Request::new(InitializeCodeModeRequest {
                 workspace: Some(workspace(workspace_id)),
-                experimental_mutations: false,
             }))
             .await
             .expect("initialize");

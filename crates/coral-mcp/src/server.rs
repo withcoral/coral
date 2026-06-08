@@ -483,7 +483,6 @@ impl CoralMcpServer {
         code_mode_client
             .initialize(Request::new(InitializeCodeModeRequest {
                 workspace: Some(default_workspace()),
-                experimental_mutations: false,
             }))
             .await
             .map_err(|status| status_to_error_data(&status))?;

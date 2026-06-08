@@ -158,8 +158,8 @@ Capability invocation:
 
 1. A generated TypeScript method calls `CapabilityService.Invoke` with a
    captured capability id and binding ref from `search`/`describe` metadata.
-2. `coral-app` revalidates the capability, binding, source existence,
-   credentials, and mutation gate before network.
+2. `coral-app` revalidates the capability, binding, source existence, and
+   credentials before network.
 3. `coral-app` builds an `UpstreamInvocationPlan` or file-read plan.
 4. `coral-upstream` executes REST, upstream MCP, or GraphQL calls and returns a
    provider envelope.

@@ -20,7 +20,7 @@ message InvokeCapabilityRequest {
 
 // Structured invocation error.
 message InvokeCapabilityError {
-  // Stable error kind, such as invalid_args, unsupported_mutation, or not_found.
+  // Stable error kind, such as invalid_args, provider_error, or not_found.
   string kind = 1;
   // Human-readable message.
   string message = 2;
