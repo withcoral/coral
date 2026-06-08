@@ -36,27 +36,55 @@ coral source test lemon_squeezy
 | `variants`              | Legacy variant metadata and back-compat pricing/billing defaults - current price records live in `prices`       |
 | `prices`                | Current price records for variants, including billing scheme, tiers, trials, and price history                  |
 | `customers`             | Customers who have made purchases, with MRR and cumulative revenue                                              |
-| `orders`                | Individual purchase transactions with full price and tax breakdowns in store currency and USD                   |
-| `order_items`           | Line items within each order, with price and quantity per variant purchased                                     |
+| `orders`                | Individual purchase transactions with full price and tax breakdowns in the order currency and USD               |
+| `order_items`           | Line items within each order, with price and quantity per variant purchased (in the order currency)             |
 | `subscriptions`         | Active and historical subscriptions with billing status, renewal dates, and payment method                      |
-| `subscription_invoices` | Invoices generated per subscription billing cycle                                                               |
+| `subscription_invoices` | Invoices generated per subscription billing cycle, amounts in the invoice currency and USD                      |
 | `discounts`             | Coupon codes with validity windows, redemption limits, and subscription discount duration settings              |
 | `discount_redemptions`  | Individual records of each discount code being applied to an order - use this to count redemptions per discount |
 | `license_keys`          | License keys issued with purchases, tracking activation limit and current activation count                      |
 
-All monetary amounts are in **cents**. Most transactional columns
-(`subtotal`, `tax`, `total`, etc.) use the store's configured currency. The
-following aggregate fields are always in **USD cents** regardless of the
-store's currency: `stores.total_revenue`, `stores.thirty_day_revenue`,
-`customers.total_revenue_currency`, and `customers.mrr`. Columns explicitly
-suffixed `_usd` are also USD cents. Divide any cent value by 100 to get the
-decimal amount.
+All monetary amounts are in **cents**. The currency a given amount is expressed
+in depends on which column you are reading:
+
+**Per-row transactional currency** — these columns reflect the currency of the
+individual transaction, which may differ from the store's default currency when
+a customer pays in a different currency:
+
+- `orders`: `subtotal`, `setup_fee`, `discount_total`, `tax`, `total`,
+  `refunded_amount`, and their `_formatted` counterparts are in the
+  **order currency** (`orders.currency`).
+- `order_items`: `price` is in the **order currency** of the parent order
+  (the `order_items` table does not carry its own `currency` column; join to
+  `orders` on `order_id` to get the currency code).
+- `subscription_invoices`: `subtotal`, `discount_total`, `tax`, `total`,
+  `refunded_amount`, and their `_formatted` counterparts are in the
+  **invoice currency** (`subscription_invoices.currency`).
+- `discount_redemptions`: `amount` is the saving applied to that specific
+  order, expressed in the **order currency** of the parent order.
+
+**Always USD cents** — the following aggregate fields are always in USD cents
+regardless of per-row transaction currency: `stores.total_revenue`,
+`stores.thirty_day_revenue`, `customers.total_revenue_currency`, and
+`customers.mrr`.
+
+**Explicit USD columns** — columns suffixed `_usd` (e.g. `orders.total_usd`,
+`subscription_invoices.total_usd`) are always USD cents. Use these for
+cross-order aggregations so you do not accidentally mix currencies.
+
+Divide any cent value by 100 to get the decimal amount.
 
 Most price columns have a `_formatted` counterpart (e.g. `total_formatted`,
 `mrr_formatted`, `subtotal_formatted`) that returns a pre-formatted
-human-readable string in the store's currency (e.g. `"$9.99"`). Use the raw
-integer columns for arithmetic and aggregation; use the `_formatted` columns
-for display.
+human-readable string in the row's own currency (e.g. `"$9.99"` or
+`"£9.99"`). Use the raw integer columns for arithmetic and aggregation; use
+the `_formatted` columns for display only.
+
+> **Aggregating across multiple currencies:** Because `orders`, `order_items`,
+> `subscription_invoices`, and `discount_redemptions` can each contain rows in
+> different currencies, never `SUM` their non-`_usd` columns without grouping
+> or filtering by currency first. Use the `_usd` columns for multi-currency
+> aggregations, or `GROUP BY currency` when you need per-currency totals.
 
 > **Note on fetch limits:** High-cardinality tables (`orders`, `order_items`,
 > `customers`, `subscriptions`, `subscription_invoices`, `license_keys`,
@@ -99,7 +127,7 @@ FROM lemon_squeezy.stores
 ORDER BY total_revenue DESC;
 ```
 
-### Monthly revenue from paid orders
+### Monthly revenue from paid orders (use _usd columns to safely sum across currencies)
 
 ```sql
 SELECT
@@ -110,6 +138,20 @@ FROM lemon_squeezy.orders
 WHERE status = 'paid'
 GROUP BY 1
 ORDER BY 1 DESC;
+```
+
+### Monthly revenue from paid orders, broken out by order currency
+
+```sql
+SELECT
+  DATE_TRUNC('month', created_at)       AS month,
+  currency,
+  COUNT(*)                               AS orders,
+  ROUND(SUM(total) / 100.0, 2)          AS revenue
+FROM lemon_squeezy.orders
+WHERE status = 'paid'
+GROUP BY 1, 2
+ORDER BY 1 DESC, revenue DESC;
 ```
 
 ### Active subscriptions by product
@@ -138,7 +180,22 @@ ORDER BY mrr DESC
 LIMIT 20;
 ```
 
-### Revenue by product including quantity
+### Revenue by product including quantity (USD rollup, safe for multi-currency stores)
+
+```sql
+SELECT
+  oi.product_name,
+  oi.variant_name,
+  SUM(oi.quantity)                                      AS units_sold,
+  ROUND(SUM(o.total_usd) / 100.0, 2)                   AS gross_revenue_usd
+FROM lemon_squeezy.order_items oi
+JOIN lemon_squeezy.orders o ON o.id = CAST(oi.order_id AS VARCHAR)
+WHERE o.status = 'paid'
+GROUP BY 1, 2
+ORDER BY gross_revenue_usd DESC;
+```
+
+### Revenue by product including quantity, per order currency
 
 ```sql
 SELECT
@@ -183,17 +240,16 @@ SELECT
     WHEN 'percent' THEN CAST(d.amount AS VARCHAR) || '%'
     ELSE CAST(ROUND(d.amount / 100.0, 2) AS VARCHAR)
   END                               AS discount_value,
-  s.currency                        AS store_currency,
+  o.currency                        AS order_currency,
   COUNT(dr.id)                      AS redemptions,
-  ROUND(SUM(dr.amount) / 100.0, 2) AS total_savings,
-  d.status
+  ROUND(SUM(dr.amount) / 100.0, 2) AS total_savings
 FROM lemon_squeezy.discounts d
 LEFT JOIN lemon_squeezy.discount_redemptions dr
   ON dr.discount_id = CAST(d.id AS BIGINT)
-JOIN lemon_squeezy.stores s
-  ON s.id = CAST(d.store_id AS VARCHAR)
+JOIN lemon_squeezy.orders o
+  ON o.id = CAST(dr.order_id AS VARCHAR)
 WHERE d.status = 'published'
-GROUP BY d.id, d.code, d.amount_type, d.amount, d.status, s.currency
+GROUP BY d.id, d.code, d.amount_type, d.amount, o.currency
 ORDER BY redemptions DESC;
 ```
 
@@ -222,6 +278,7 @@ LIMIT 25;
 SELECT
   o.order_number,
   o.user_email,
+  o.currency,
   o.total_formatted,
   o.status,
   o.refunded_amount_formatted,
@@ -243,19 +300,34 @@ LIMIT 10;
   handles back-off automatically when the limit is reached.
 - All responses use the JSON:API format. Coral flattens the `attributes` object
   so each field is a direct SQL column.
+- **Currency of transactional columns:** `orders`, `order_items`,
+  `subscription_invoices`, and `discount_redemptions` each carry amounts in the
+  currency of the individual transaction, not a fixed store currency. Always
+  check the `currency` column on the parent row before aggregating, or use the
+  `_usd` columns to obtain a normalised USD value. Specifically:
+  - `orders.*` amounts (e.g. `subtotal`, `tax`, `total`, `refunded_amount`)
+    are in `orders.currency`.
+  - `order_items.price` is in the order currency of the parent order. The
+    `order_items` table does not have its own `currency` column; join to
+    `orders` on `order_id` to retrieve it.
+  - `subscription_invoices.*` amounts (e.g. `subtotal`, `tax`, `total`,
+    `refunded_amount`) are in `subscription_invoices.currency`.
+  - `discount_redemptions.amount` is the saving applied to a specific order,
+    expressed in the order currency of that order. Join to `orders` on
+    `order_id` to retrieve the currency.
 - Monetary values are almost always integers (cents). The only exceptions are
   `unit_price_decimal` and the `unit_price_decimal` field nested inside
   `prices.tiers` objects - both are string representations of the price
   **in cents** as a decimal (e.g. `"999.0"` for $9.99). When usage-based
   billing is enabled (`usage_aggregation` is non-null), `prices.unit_price`
   is null and `unit_price_decimal` is the authoritative price; cast it to a
-  numeric type for arithmetic (e.g. `CAST(unit_price_decimal AS DECIMAL) / 100`).. The same
-  applies to `unit_price_decimal` inside tier objects. For standard pricing
-  where `unit_price` is non-null, prefer that integer column for `SUM`, `AVG`,
-  and other aggregations.
+  numeric type for arithmetic (e.g. `CAST(unit_price_decimal AS DECIMAL) / 100`).
+  The same applies to `unit_price_decimal` inside tier objects. For standard
+  pricing where `unit_price` is non-null, prefer that integer column for
+  `SUM`, `AVG`, and other aggregations.
 - Most price columns have a `_formatted` counterpart returning a
   human-readable string (e.g. `total_formatted`, `setup_fee_formatted`,
-  `mrr_formatted`). These are for display only - always use the raw integer
+  `mrr_formatted`). These are for display only — always use the raw integer
   columns for `SUM`, `AVG`, and other aggregations.
 - `order_items.quantity` records how many units were purchased per line item.
   Multiply `price × quantity` to get the true line-item revenue; using `price`
