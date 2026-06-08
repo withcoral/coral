@@ -298,10 +298,6 @@
           "type": "string",
           "enum": ["none", "client_secret_basic", "client_secret_post"]
         },
-        "application_type": {
-          "type": "string",
-          "enum": ["native", "web"]
-        },
         "request_refresh_token_grant": { "type": "boolean" }
       }
     },

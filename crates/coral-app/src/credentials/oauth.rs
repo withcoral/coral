@@ -791,10 +791,10 @@ async fn register_dynamic_client(
         "client_name".to_string(),
         json!(registration.client_name.as_deref().unwrap_or("Coral")),
     );
-    payload.insert(
-        "application_type".to_string(),
-        json!(registration.application_type.label()),
-    );
+    // Coral always registers as a native client: it drives OAuth through loopback
+    // redirects (authorization_code) and device-code, both native-app flows. The
+    // RFC 7591 / OIDC default is "web", so send "native" explicitly.
+    payload.insert("application_type".to_string(), json!("native"));
     payload.insert(
         "token_endpoint_auth_method".to_string(),
         json!(registration.token_endpoint_auth_method.label()),
@@ -1882,7 +1882,6 @@ mod tests {
     use coral_spec::{
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
         ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
-        ManifestOAuthDynamicClientRegistrationApplicationType,
         ManifestOAuthDynamicClientRegistrationAuthMethod,
         ManifestOAuthDynamicClientRegistrationSpec, ManifestOAuthFlowKind, ManifestOAuthFlowSpec,
         ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
@@ -2557,7 +2556,6 @@ mod tests {
             initial_access_token_input: None,
             token_endpoint_auth_method:
                 ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretBasic,
-            application_type: ManifestOAuthDynamicClientRegistrationApplicationType::Native,
             request_refresh_token_grant: true,
         });
         let service = OAuthCredentialService::new();
@@ -3148,7 +3146,6 @@ mod tests {
                     initial_access_token_input: Some("OAUTH_INITIAL_ACCESS_TOKEN".to_string()),
                     token_endpoint_auth_method:
                         ManifestOAuthDynamicClientRegistrationAuthMethod::None,
-                    application_type: ManifestOAuthDynamicClientRegistrationApplicationType::Native,
                     request_refresh_token_grant: true,
                 }),
             },

@@ -317,8 +317,6 @@ pub struct ManifestOAuthDynamicClientRegistrationSpec {
     pub initial_access_token_input: Option<String>,
     /// Requested token endpoint authentication method.
     pub token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod,
-    /// OAuth client application type.
-    pub application_type: ManifestOAuthDynamicClientRegistrationApplicationType,
     /// Whether Coral requests the `refresh_token` grant type during registration.
     pub request_refresh_token_grant: bool,
 }
@@ -350,34 +348,6 @@ impl ManifestOAuthDynamicClientRegistrationAuthMethod {
             "none" => Some(Self::None),
             "client_secret_basic" => Some(Self::ClientSecretBasic),
             "client_secret_post" => Some(Self::ClientSecretPost),
-            _ => None,
-        }
-    }
-}
-
-/// Supported DCR application types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ManifestOAuthDynamicClientRegistrationApplicationType {
-    /// Native app such as a CLI or desktop process using loopback redirects.
-    Native,
-    /// Web application.
-    Web,
-}
-
-impl ManifestOAuthDynamicClientRegistrationApplicationType {
-    /// Canonical OAuth metadata label.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Native => "native",
-            Self::Web => "web",
-        }
-    }
-
-    /// Parse a canonical OAuth metadata label.
-    pub fn from_label(value: &str) -> Option<Self> {
-        match value {
-            "native" => Some(Self::Native),
-            "web" => Some(Self::Web),
             _ => None,
         }
     }
@@ -1105,11 +1075,6 @@ fn parse_oauth_dynamic_client_registration(
         .map(|value| parse_dynamic_client_registration_auth_method(input_key, value))
         .transpose()?
         .unwrap_or(ManifestOAuthDynamicClientRegistrationAuthMethod::None);
-    let application_type = registration
-        .get("application_type")
-        .map(|value| parse_dynamic_client_registration_application_type(input_key, value))
-        .transpose()?
-        .unwrap_or(ManifestOAuthDynamicClientRegistrationApplicationType::Native);
     let request_refresh_token_grant = registration
         .get("request_refresh_token_grant")
         .map(|value| {
@@ -1126,7 +1091,6 @@ fn parse_oauth_dynamic_client_registration(
         client_name,
         initial_access_token_input,
         token_endpoint_auth_method,
-        application_type,
         request_refresh_token_grant,
     })
 }
@@ -1144,23 +1108,6 @@ fn parse_dynamic_client_registration_auth_method(
             }),
         None => Err(ManifestError::validation(format!(
             "manifest input '{input_key}' oauth.client.dynamic_registration.token_endpoint_auth_method must be a string"
-        ))),
-    }
-}
-
-fn parse_dynamic_client_registration_application_type(
-    input_key: &str,
-    value: &Value,
-) -> Result<ManifestOAuthDynamicClientRegistrationApplicationType> {
-    match value.as_str() {
-        Some(value) => ManifestOAuthDynamicClientRegistrationApplicationType::from_label(value)
-            .ok_or_else(|| {
-                ManifestError::validation(format!(
-                    "manifest input '{input_key}' oauth.client.dynamic_registration.application_type has unsupported value '{value}'"
-                ))
-            }),
-        None => Err(ManifestError::validation(format!(
-            "manifest input '{input_key}' oauth.client.dynamic_registration.application_type must be a string"
         ))),
     }
 }
@@ -1531,10 +1478,10 @@ mod tests {
     use super::{
         ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec,
-        ManifestOAuthCredentialSpec, ManifestOAuthDynamicClientRegistrationApplicationType,
-        ManifestOAuthDynamicClientRegistrationAuthMethod, ManifestOAuthFlowKind,
-        ManifestOAuthFlowSpec, ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort,
-        ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, collect_source_inputs_value,
+        ManifestOAuthCredentialSpec, ManifestOAuthDynamicClientRegistrationAuthMethod,
+        ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
+        ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode,
+        ManifestOAuthScopeDelimiter, collect_source_inputs_value,
     };
     use crate::{ManifestError, Result};
     use std::collections::BTreeMap;
@@ -1877,7 +1824,6 @@ tables: []
                 client_name: Coral MCP
                 initial_access_token_input: OAUTH_INITIAL_ACCESS_TOKEN
                 token_endpoint_auth_method: client_secret_post
-                application_type: native
                 request_refresh_token_grant: true
 ",
             )
@@ -1913,10 +1859,6 @@ tables: []
         assert_eq!(
             registration.token_endpoint_auth_method,
             ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretPost
-        );
-        assert_eq!(
-            registration.application_type,
-            ManifestOAuthDynamicClientRegistrationApplicationType::Native
         );
         assert!(registration.request_refresh_token_grant);
     }

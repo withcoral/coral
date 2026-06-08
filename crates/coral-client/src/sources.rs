@@ -3,16 +3,14 @@
 use coral_api::v1::{
     OAuthCredentialMethod, OauthCredentialClientSecretTransport, OauthCredentialFlowType,
     OauthCredentialPkceMode, OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter,
-    OauthDynamicClientRegistrationApplicationType, OauthDynamicClientRegistrationAuthMethod,
-    SourceCredential, SourceCredentialMethod, SourceInputSpec,
-    source_credential_method::Method as ProtoCredentialMethod,
+    OauthDynamicClientRegistrationAuthMethod, SourceCredential, SourceCredentialMethod,
+    SourceInputSpec, source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
     ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
     ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
-    ManifestOAuthDynamicClientRegistrationApplicationType,
     ManifestOAuthDynamicClientRegistrationAuthMethod, ManifestOAuthDynamicClientRegistrationSpec,
     ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
     ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, ManifestOAuthScopeSpec,
@@ -55,9 +53,6 @@ pub enum SourceInputDecodeError {
     /// The OAuth dynamic client registration auth method was missing or unknown.
     #[error("unknown oauth dynamic client registration auth method")]
     UnknownOAuthDynamicClientRegistrationAuthMethod,
-    /// The OAuth dynamic client registration application type was missing or unknown.
-    #[error("unknown oauth dynamic client registration application type")]
-    UnknownOAuthDynamicClientRegistrationApplicationType,
     /// The OAuth scopes settings did not include a scope definition.
     #[error("oauth scopes is missing scope")]
     MissingOAuthScope,
@@ -269,9 +264,6 @@ fn dynamic_client_registration_from_proto(
         token_endpoint_auth_method: dynamic_client_registration_auth_method_from_proto(
             registration.token_endpoint_auth_method,
         )?,
-        application_type: dynamic_client_registration_application_type_from_proto(
-            registration.application_type,
-        )?,
         request_refresh_token_grant: registration.request_refresh_token_grant,
     })
 }
@@ -291,22 +283,6 @@ fn dynamic_client_registration_auth_method_from_proto(
         }
         Ok(OauthDynamicClientRegistrationAuthMethod::Unspecified) | Err(_) => {
             Err(SourceInputDecodeError::UnknownOAuthDynamicClientRegistrationAuthMethod)
-        }
-    }
-}
-
-fn dynamic_client_registration_application_type_from_proto(
-    application_type: i32,
-) -> Result<ManifestOAuthDynamicClientRegistrationApplicationType, SourceInputDecodeError> {
-    match OauthDynamicClientRegistrationApplicationType::try_from(application_type) {
-        Ok(OauthDynamicClientRegistrationApplicationType::Native) => {
-            Ok(ManifestOAuthDynamicClientRegistrationApplicationType::Native)
-        }
-        Ok(OauthDynamicClientRegistrationApplicationType::Web) => {
-            Ok(ManifestOAuthDynamicClientRegistrationApplicationType::Web)
-        }
-        Ok(OauthDynamicClientRegistrationApplicationType::Unspecified) | Err(_) => {
-            Err(SourceInputDecodeError::UnknownOAuthDynamicClientRegistrationApplicationType)
         }
     }
 }

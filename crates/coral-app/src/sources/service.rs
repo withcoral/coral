@@ -16,8 +16,8 @@ use coral_api::v1::{
     OAuthCredentialMethod, OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
     OAuthDynamicClientRegistration, OauthCredentialClientSecretTransport, OauthCredentialFlowType,
     OauthCredentialPkceMode, OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter,
-    OauthDynamicClientRegistrationApplicationType, OauthDynamicClientRegistrationAuthMethod,
-    Source, SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
+    OauthDynamicClientRegistrationAuthMethod, Source, SourceConfigCredentialMethod,
+    SourceCredential, SourceCredentialMethod,
     SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo, SourceInputSpec,
     SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
     SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
@@ -28,7 +28,6 @@ use coral_api::v1::{
 use coral_spec::{
     ManifestCredentialMethodKind, ManifestCredentialSpec, ManifestInputKind, ManifestInputSpec,
     ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec,
-    ManifestOAuthDynamicClientRegistrationApplicationType,
     ManifestOAuthDynamicClientRegistrationAuthMethod, ManifestOAuthFlowKind, ManifestOAuthPkceMode,
     ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
 };
@@ -654,9 +653,6 @@ fn oauth_to_proto(oauth: ManifestOAuthCredentialSpec) -> OAuthCredentialMethod {
                     token_endpoint_auth_method: proto_dynamic_client_registration_auth_method(
                         registration.token_endpoint_auth_method,
                     ) as i32,
-                    application_type: proto_dynamic_client_registration_application_type(
-                        registration.application_type,
-                    ) as i32,
                     request_refresh_token_grant: registration.request_refresh_token_grant,
                 }
             }),
@@ -725,19 +721,6 @@ fn proto_dynamic_client_registration_auth_method(
     }
 }
 
-fn proto_dynamic_client_registration_application_type(
-    application_type: ManifestOAuthDynamicClientRegistrationApplicationType,
-) -> OauthDynamicClientRegistrationApplicationType {
-    match application_type {
-        ManifestOAuthDynamicClientRegistrationApplicationType::Native => {
-            OauthDynamicClientRegistrationApplicationType::Native
-        }
-        ManifestOAuthDynamicClientRegistrationApplicationType::Web => {
-            OauthDynamicClientRegistrationApplicationType::Web
-        }
-    }
-}
-
 fn proto_oauth_scope_delimiter(
     delimiter: ManifestOAuthScopeDelimiter,
 ) -> OauthCredentialScopeDelimiter {
@@ -758,7 +741,6 @@ mod tests {
     use coral_spec::{
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
         ManifestOAuthClientIdSpec, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
-        ManifestOAuthDynamicClientRegistrationApplicationType,
         ManifestOAuthDynamicClientRegistrationAuthMethod,
         ManifestOAuthDynamicClientRegistrationSpec, ManifestOAuthFlowKind, ManifestOAuthFlowSpec,
         ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode,
@@ -906,14 +888,12 @@ mod tests {
                             secret: None,
                             dynamic_registration: Some(
                                 ManifestOAuthDynamicClientRegistrationSpec {
-                                    registration_url:
-                                        "https://provider.example.com/oauth/register".to_string(),
+                                    registration_url: "https://provider.example.com/oauth/register"
+                                        .to_string(),
                                     client_name: Some("Coral MCP".to_string()),
                                     initial_access_token_input: None,
                                     token_endpoint_auth_method:
                                         ManifestOAuthDynamicClientRegistrationAuthMethod::None,
-                                    application_type:
-                                        ManifestOAuthDynamicClientRegistrationApplicationType::Native,
                                     request_refresh_token_grant: false,
                                 },
                             ),

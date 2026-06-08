@@ -38,7 +38,6 @@ inputs:
                 registration_url: https://mcp.clickhouse.cloud/register
                 client_name: Coral ClickHouse Cloud MCP
                 token_endpoint_auth_method: none
-                application_type: native
                 request_refresh_token_grant: true
             scopes:
               scope:

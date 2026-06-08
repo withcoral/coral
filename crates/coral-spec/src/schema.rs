@@ -643,7 +643,6 @@ inputs:
                 client_name: Coral MCP
                 initial_access_token_input: OAUTH_INITIAL_ACCESS_TOKEN
                 token_endpoint_auth_method: none
-                application_type: native
                 request_refresh_token_grant: true
 server:
   transport: streamable_http

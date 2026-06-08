@@ -124,7 +124,10 @@ message SourceConfigCredentialMethod {
 
 // OAuth credential retrieval configuration.
 message OAuthCredentialMethod {
-  // Optional OAuth resource indicator parameter.
+  // Optional RFC 8707 resource indicator identifying the target API, such as an
+  // OAuth-protected MCP server. Coral sends it on the authorization, token, and
+  // refresh requests so the provider can audience-bind the issued token; the
+  // MCP authorization spec requires it for MCP sources.
   string resource = 9;
   // Loopback callback URI Coral binds during the OAuth session.
   string redirect_uri = 1;
@@ -232,16 +235,6 @@ enum OauthDynamicClientRegistrationAuthMethod {
   OAUTH_DYNAMIC_CLIENT_REGISTRATION_AUTH_METHOD_CLIENT_SECRET_POST = 3;
 }
 
-// Supported Dynamic Client Registration application types.
-enum OauthDynamicClientRegistrationApplicationType {
-  // Application type is unspecified. Producers should set an explicit value.
-  OAUTH_DYNAMIC_CLIENT_REGISTRATION_APPLICATION_TYPE_UNSPECIFIED = 0;
-  // Native app such as a CLI or desktop process using loopback redirects.
-  OAUTH_DYNAMIC_CLIENT_REGISTRATION_APPLICATION_TYPE_NATIVE = 1;
-  // Web application.
-  OAUTH_DYNAMIC_CLIENT_REGISTRATION_APPLICATION_TYPE_WEB = 2;
-}
-
 // OAuth 2.0 Dynamic Client Registration configuration.
 message OAuthDynamicClientRegistration {
   // OAuth client registration endpoint URL.
@@ -252,8 +245,9 @@ message OAuthDynamicClientRegistration {
   string initial_access_token_input = 3;
   // Requested token endpoint authentication method.
   OauthDynamicClientRegistrationAuthMethod token_endpoint_auth_method = 4;
-  // OAuth client application type.
-  OauthDynamicClientRegistrationApplicationType application_type = 5;
+  // Field 5 was application_type; Coral always registers as a native client.
+  reserved 5;
+  reserved "application_type";
   // Whether Coral requests the refresh_token grant type during registration.
   bool request_refresh_token_grant = 6;
 }
