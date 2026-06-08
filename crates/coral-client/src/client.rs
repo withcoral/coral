@@ -11,6 +11,7 @@ use coral_api::{
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Endpoint};
 
+use crate::episode::EpisodeIdInterceptor;
 use crate::error::ClientError;
 use crate::grpc::{GrpcClientEndpoint, InstrumentedGrpcService};
 use crate::propagation::TraceContextInterceptor;
@@ -26,7 +27,8 @@ pub fn default_workspace() -> Workspace {
     }
 }
 
-type RawGrpcService = InterceptedService<Channel, TraceContextInterceptor>;
+type TracedService = InterceptedService<Channel, TraceContextInterceptor>;
+type RawGrpcService = InterceptedService<TracedService, EpisodeIdInterceptor>;
 type GrpcService = InstrumentedGrpcService<RawGrpcService>;
 
 /// Public source-management gRPC client.
@@ -107,8 +109,9 @@ impl AppClient {
 }
 
 fn grpc_service(channel: Channel, endpoint: &GrpcClientEndpoint) -> GrpcService {
+    let traced = InterceptedService::new(channel, TraceContextInterceptor);
     InstrumentedGrpcService::new(
-        InterceptedService::new(channel, TraceContextInterceptor),
+        InterceptedService::new(traced, EpisodeIdInterceptor),
         endpoint.clone(),
     )
 }
