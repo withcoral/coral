@@ -1206,6 +1206,7 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "allow_404_empty": { "type": "boolean" },
+        "require_array_rows": { "type": "boolean" },
         "row_strategy": {
           "type": "string",
           "enum": ["direct", "series_point_list", "dict_entries"]

@@ -511,6 +511,12 @@ pub struct ResponseSpec {
     pub error_path: Vec<String>,
     #[serde(default)]
     pub allow_404_empty: bool,
+    /// When `true`, a non-array value at `rows_path` is treated as a provider
+    /// error (surfaced via `error_path`) instead of being coerced into rows.
+    /// Use for APIs that return HTTP 200 with a data array on success but an
+    /// error scalar at the same path on failure (e.g. Etherscan's `result`).
+    #[serde(default)]
+    pub require_array_rows: bool,
     #[serde(default)]
     pub row_strategy: RowStrategy,
 }

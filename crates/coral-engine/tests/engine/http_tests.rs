@@ -2160,3 +2160,102 @@ async fn legacy_json_body_array_form_still_works() {
 
     assert_eq!(rows, users_rows());
 }
+
+/// A source whose `rows_path` holds a data array on success but an error scalar
+/// on failure (the Etherscan shape), guarded by `require_array_rows`.
+fn require_array_rows_manifest(base_url: &str) -> Value {
+    json!({
+        "name": "arr_src",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "tables": [{
+            "name": "items",
+            "description": "rows array on success, error scalar on failure",
+            "request": { "method": "GET", "path": "/api/items" },
+            "response": {
+                "rows_path": ["result"],
+                "require_array_rows": true,
+                "error_path": ["result"]
+            },
+            "columns": [
+                {
+                    "name": "hash",
+                    "type": "Utf8",
+                    "nullable": true,
+                    "expr": { "kind": "path", "path": ["hash"] }
+                }
+            ]
+        }]
+    })
+}
+
+#[tokio::test]
+async fn require_array_rows_returns_rows_for_array_result() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "status": "1", "message": "OK", "result": [{ "hash": "0xabc" }] }),
+        ))
+        .mount(&server)
+        .await;
+
+    let source = build_source(require_array_rows_manifest(&server.uri()));
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(&[source], test_runtime(), "SELECT hash FROM arr_src.items")
+            .await
+            .expect("array result should succeed"),
+    );
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["hash"], "0xabc");
+}
+
+#[tokio::test]
+async fn require_array_rows_allows_empty_array_result() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "status": "0", "message": "No transactions found", "result": [] }),
+        ))
+        .mount(&server)
+        .await;
+
+    let source = build_source(require_array_rows_manifest(&server.uri()));
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(&[source], test_runtime(), "SELECT hash FROM arr_src.items")
+            .await
+            .expect("empty array result should succeed with zero rows"),
+    );
+
+    assert!(
+        rows.is_empty(),
+        "empty array must yield zero rows, got: {rows:?}"
+    );
+}
+
+#[tokio::test]
+async fn require_array_rows_fails_closed_on_scalar_result() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "status": "0", "message": "NOTOK", "result": "Invalid API Key" }),
+        ))
+        .mount(&server)
+        .await;
+
+    let source = build_source(require_array_rows_manifest(&server.uri()));
+    let error =
+        CoralQuery::execute_sql(&[source], test_runtime(), "SELECT hash FROM arr_src.items")
+            .await
+            .expect_err("a scalar `result` must fail closed instead of becoming a row");
+
+    assert!(
+        format!("{error:?}").contains("Invalid API Key"),
+        "provider error detail should surface; got: {error:?}"
+    );
+}

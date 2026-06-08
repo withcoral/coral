@@ -993,6 +993,7 @@ The `response` object controls how Coral extracts rows from an HTTP response bod
 | `ok_path`         | list of strings | `[]`     | JSON path to a field indicating success                                                                                                                                                                                                  |
 | `error_path`      | list of strings | `[]`     | JSON path to a field containing an error message                                                                                                                                                                                         |
 | `allow_404_empty` | boolean         | `false`  | Treat HTTP 404 as an empty result set instead of an error                                                                                                                                                                                |
+| `require_array_rows` | boolean      | `false`  | Fail closed when the value at `rows_path` is not a JSON array. Use for providers that return HTTP 200 with a data array on success but an error scalar at the same path on failure; the error is surfaced via `error_path`.               |
 | `row_strategy`    | string          | `direct` | How to convert the selected value into rows. `direct` uses the array or object as-is. `dict_entries` maps a JSON object's key-value pairs into rows. `series_point_list` flattens specialized timeseries arrays (e.g., Datadog metrics). |
 
 Example with `rows_path`:
@@ -1002,6 +1003,34 @@ response:
   rows_path:
     - data
     - items
+  row_strategy: direct
+```
+
+#### `require_array_rows`
+
+Some providers return HTTP 200 for failures, placing an error string where the
+data array normally goes. For example, Etherscan returns `result` as an array
+on success (including an empty array when there are no matches) but as an error
+string on failure:
+
+```json
+{ "status": "1", "message": "OK", "result": [ /* … */ ] }      // success
+{ "status": "0", "message": "No transactions found", "result": [] }  // empty, still success
+{ "status": "0", "message": "NOTOK", "result": "Invalid API Key" }   // failure
+```
+
+A boolean `ok_path` can't model this (the status is the string `"0"` for both
+the empty and failure cases). Set `require_array_rows: true` so a non-array at
+`rows_path` is treated as a provider error, with the detail taken from
+`error_path`, while a legitimately empty array still yields zero rows:
+
+```yaml
+response:
+  rows_path:
+    - result
+  require_array_rows: true
+  error_path:
+    - result
   row_strategy: direct
 ```
 

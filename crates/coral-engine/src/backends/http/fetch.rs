@@ -174,31 +174,39 @@ pub(super) async fn fetch_rows(
             break;
         };
 
+        let provider_failure = |detail: String| {
+            DataFusionError::External(Box::new(ProviderQueryError::ApiRequest {
+                source_schema: client.source_schema.clone(),
+                table: target.name().to_string(),
+                status: None,
+                method: None,
+                url: None,
+                filters: filter_values.clone(),
+                detail,
+            }))
+        };
+
         if !target.response().ok_path.is_empty() {
             let ok = get_path_value(&payload, &target.response().ok_path)
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             if !ok {
-                let err = if target.response().error_path.is_empty() {
-                    "unknown source API error".to_string()
-                } else {
-                    get_path_value(&payload, &target.response().error_path)
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown source API error")
-                        .to_string()
-                };
-                return Err(DataFusionError::External(Box::new(
-                    ProviderQueryError::ApiRequest {
-                        source_schema: client.source_schema.clone(),
-                        table: target.name().to_string(),
-                        status: None,
-                        method: None,
-                        url: None,
-                        filters: filter_values.clone(),
-                        detail: err,
-                    },
+                return Err(provider_failure(response_error_detail(
+                    &target.response().error_path,
+                    &payload,
                 )));
             }
+        }
+
+        // Fail closed when the provider returns HTTP 200 with a non-array value
+        // at `rows_path` (e.g. an error string where a data array is expected).
+        if target.response().require_array_rows
+            && !get_path_value(&payload, &target.response().rows_path).is_some_and(Value::is_array)
+        {
+            return Err(provider_failure(response_error_detail(
+                &target.response().error_path,
+                &payload,
+            )));
         }
 
         let mut rows = extract_rows(target.response(), &payload);
@@ -284,5 +292,19 @@ fn resolve_fetch_limits(target: &HttpFetchTarget, sql_limit: Option<usize>) -> F
         effective_limit: Some(requested_top_k.min(max_candidates)),
         page_size_limit: Some(requested_top_k.min(search_limits.max_top_k)),
         max_search_calls: Some(search_limits.max_calls_per_query),
+    }
+}
+
+/// Builds the error-detail string for a provider failure: the value at
+/// `error_path` rendered as a string, or a generic message when `error_path`
+/// is empty or missing.
+fn response_error_detail(error_path: &[String], payload: &Value) -> String {
+    if error_path.is_empty() {
+        "unknown source API error".to_string()
+    } else {
+        get_path_value(payload, error_path)
+            .and_then(Value::as_str)
+            .unwrap_or("unknown source API error")
+            .to_string()
     }
 }
