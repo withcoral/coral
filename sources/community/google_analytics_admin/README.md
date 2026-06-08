@@ -1,14 +1,13 @@
-# Google Analytics GA4 (Community)
+# Google Analytics Admin API (Community)
 
 **Version:** 0.1.0
 **Backend:** HTTP (Analytics Admin API v1beta)
 **Tables:** 3
 **Base URL:** `https://analyticsadmin.googleapis.com`
 
-Query Google Analytics GA4 account structure, properties, and data streams via
-the Analytics Admin API v1beta. Authenticates with Google OAuth
-(authorization_code + PKCE) using the same credential pattern as the core Gmail
-source.
+Inventory Google Analytics GA4 accounts, properties, and data streams via the
+Analytics Admin API v1beta. Authenticates with Google OAuth
+(authorization_code + PKCE).
 
 ## Install
 
@@ -16,7 +15,7 @@ Community sources are not bundled with the Coral binary. Add the manifest from
 this directory:
 
 ```bash
-coral source add --file sources/community/google_analytics/manifest.yaml
+coral source add --file sources/community/google_analytics_admin/manifest.yaml
 ```
 
 Or copy `manifest.yaml` into your workspace and pass that path to
@@ -33,18 +32,20 @@ Requires a Google OAuth client ID and client secret with the
 3. Run the interactive setup:
 
 ```bash
-coral source add --interactive --file sources/community/google_analytics/manifest.yaml
+coral source add --interactive --file sources/community/google_analytics_admin/manifest.yaml
 ```
 
 Choose **Connect with Google**, then paste your `GOOGLE_OAUTH_CLIENT_ID` and
 `GOOGLE_OAUTH_CLIENT_SECRET` when prompted. Coral completes the PKCE OAuth
-flow locally and stores the token.
+flow locally and stores the token. The flow requests offline access and fresh
+consent so Google can return a refresh token; Coral uses it to refresh
+short-lived access tokens automatically.
 
 To paste an access token directly instead:
 
 ```bash
 export GOOGLE_ANALYTICS_TOKEN=ya29.a0...
-coral source add --file sources/community/google_analytics/manifest.yaml
+coral source add --file sources/community/google_analytics_admin/manifest.yaml
 ```
 
 ## Tables
@@ -52,7 +53,7 @@ coral source add --file sources/community/google_analytics/manifest.yaml
 | Table | Required filters | Description |
 | --- | --- | --- |
 | `accounts` | none | All GA4 accounts accessible to the authenticated user |
-| `properties` | `account_id` | GA4 properties under an account |
+| `properties` | `account_id` | GA4 properties under an account, including descendant subproperties |
 | `data_streams` | `property_id` | Data streams attached to a property |
 
 IDs use the resource name form:
@@ -66,7 +67,7 @@ IDs use the resource name form:
 
 ```sql
 SELECT account_id, display_name, region_code, create_time
-FROM google_analytics.accounts
+FROM google_analytics_admin.accounts
 LIMIT 10;
 ```
 
@@ -74,7 +75,7 @@ LIMIT 10;
 
 ```sql
 SELECT property_id, display_name, time_zone, currency_code, industry_category, service_level
-FROM google_analytics.properties
+FROM google_analytics_admin.properties
 WHERE account_id = 'accounts/123456789'
 ORDER BY display_name
 LIMIT 20;
@@ -84,7 +85,7 @@ LIMIT 20;
 
 ```sql
 SELECT stream_id, stream_type, display_name, web_uri, measurement_id
-FROM google_analytics.data_streams
+FROM google_analytics_admin.data_streams
 WHERE property_id = 'properties/987654321'
 LIMIT 10;
 ```
@@ -97,7 +98,7 @@ per property ID returned by the step above.
 
 ```sql
 SELECT stream_id, stream_type, display_name, web_uri, measurement_id
-FROM google_analytics.data_streams
+FROM google_analytics_admin.data_streams
 WHERE property_id = 'properties/987654321'
   AND stream_type = 'WEB_DATA_STREAM'
 LIMIT 20;
@@ -109,7 +110,7 @@ LIMIT 20;
 
 ```sql
 SELECT p.display_name AS ga4_property, sp.slug AS sentry_project
-FROM google_analytics.properties p
+FROM google_analytics_admin.properties p
 JOIN sentry.projects sp
   ON LOWER(sp.slug) = LOWER(REPLACE(p.display_name, ' ', '-'))
 WHERE p.account_id = 'accounts/123456789'
@@ -121,11 +122,17 @@ LIMIT 20;
 ```bash
 # YAML style check
 make lint-sources
+coral source lint sources/community/google_analytics_admin/manifest.yaml
 
-# Add interactively and run test queries (output sanitized — real IDs and token redacted)
-coral source add --interactive --file sources/community/google_analytics/manifest.yaml
-# coral source test google_analytics produces the same output
+# Add interactively and run test queries
+coral source add --interactive --file sources/community/google_analytics_admin/manifest.yaml
+coral source test google_analytics_admin
 ```
+
+The following sanitized live output was captured before the source was renamed
+from `google_analytics` to `google_analytics_admin`. The provider requests and
+authentication scope are unchanged; rerun the commands above with the final
+source name in your environment.
 
 ```text
   ✓ google_analytics connected successfully
@@ -145,7 +152,7 @@ coral source add --interactive --file sources/community/google_analytics/manifes
 
 ```bash
 # Representative query — list accounts (output sanitized)
-coral sql "SELECT account_id, display_name, region_code FROM google_analytics.accounts LIMIT 3"
+coral sql "SELECT account_id, display_name, region_code FROM google_analytics_admin.accounts LIMIT 3"
 ```
 
 ```text
@@ -161,23 +168,24 @@ coral sql "SELECT account_id, display_name, region_code FROM google_analytics.ac
 
 ## Limitations
 
-- **Admin API only (v1)** — account, property, and stream metadata only. GA4
+- **Admin API only** — account, property, and stream metadata only. GA4
   reporting data (sessions, events, conversions) requires the GA4 Data API
-  (`analyticsdata.googleapis.com`) with a POST-based report body; that is a
-  natural follow-on for v2.
+  (`analyticsdata.googleapis.com`). Coral HTTP sources use one base URL, so
+  reporting belongs in a separate source.
 - **No UA properties** — Universal Analytics (UA-*) properties are sunset and
   not supported; this source targets GA4 only.
 - **Soft-deleted items hidden** — `showDeleted: false` is the default; deleted
   accounts and properties are excluded from results.
 - **data_streams requires property_id** — Coral cannot derive required filters
-  from join predicates. Query `google_analytics.properties` first, then query
-  `google_analytics.data_streams` with a specific `property_id`.
+  from join predicates. Query `google_analytics_admin.properties` first, then
+  query `google_analytics_admin.data_streams` with a specific `property_id`.
 - **Resource name IDs** — all IDs use the API resource name format
   (`accounts/123456789`, `properties/987654321`), not bare numeric IDs.
 - **Rate limits and quotas** — the Analytics Admin API applies per-project and
-  per-user quotas. Default limits are 200 requests/minute/user for list
-  operations. If you hit quota, reduce `LIMIT` values or add delays between
-  queries. See the [Admin API quota guide](https://developers.google.com/analytics/devguides/config/admin/v1/quotas)
+  per-user quotas. The documented defaults are 1,200 requests/minute/project
+  and 600 requests/minute/user. If you hit quota, wait for the 60-second refill
+  window, reduce `LIMIT` values, or add delays between queries. See the
+  [Admin API quota guide](https://developers.google.com/analytics/devguides/config/admin/v1/quotas)
   for current limits.
 - Community sources are maintained separately from bundled core sources.
 
@@ -193,4 +201,4 @@ coral sql "SELECT account_id, display_name, region_code FROM google_analytics.ac
 Follow [CONTRIBUTING.md](../../../CONTRIBUTING.md): discuss on the linked issue
 first, sign the CLA if this is your first contribution, run `make lint-sources`,
 and open a focused PR titled
-`feat(sources/community/google_analytics): add google analytics GA4 community source`.
+`feat(sources/community/google_analytics_admin): add Google Analytics Admin source`.

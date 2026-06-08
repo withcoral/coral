@@ -1,12 +1,11 @@
-name: google_analytics
+name: google_analytics_admin
 version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query Google Analytics GA4 account structure, properties, and data streams
-  via the Analytics Admin API v1beta. Authenticates with Google OAuth
-  (authorization_code + PKCE). Join with GitHub deploys, Sentry errors, or
-  PagerDuty incidents to correlate analytics coverage with engineering activity.
+  Inventory Google Analytics GA4 accounts, properties, and data streams via
+  the Analytics Admin API v1beta. Authenticates with Google OAuth
+  (authorization_code + PKCE).
 base_url: https://analyticsadmin.googleapis.com
 
 inputs:
@@ -17,13 +16,13 @@ inputs:
       `https://www.googleapis.com/auth/analytics.readonly` scope.
 
       To connect interactively, choose "Connect with Google" and provide a
-      Google OAuth client ID and client secret when prompted. Access tokens
-      expire; re-add the source with
-      `coral source add --interactive --file sources/community/google_analytics/manifest.yaml`
-      when the stored token needs to be replaced.
+      Google OAuth client ID and client secret when prompted. Google returns a
+      refresh token when offline access and consent are granted, and Coral uses
+      it to refresh short-lived access tokens automatically.
 
       To paste a token manually instead, obtain one from your own OAuth flow
-      with the same read-only Analytics scope.
+      with the same read-only Analytics scope. Manually pasted access tokens
+      must be replaced when they expire.
     credential:
       methods:
         - type: oauth
@@ -70,18 +69,18 @@ rate_limit:
   retry_after_header: Retry-After
 
 test_queries:
-  - SELECT account_id, display_name FROM google_analytics.accounts LIMIT 1
+  - SELECT account_id, display_name FROM google_analytics_admin.accounts LIMIT 1
 
 tables:
   - name: accounts
     description: >-
       Lists all Google Analytics GA4 accounts accessible to the authenticated
-      user. Returns account resource name, numeric account ID, display name,
-      region code, and creation and update timestamps.
+      user. Returns account resource name, display name, region code, and
+      creation and update timestamps.
     guide: |
       Start here to discover account IDs for use with the `properties` table.
       The `account_id` value is in the form `accounts/123456789`; pass it as
-      the `account_id` filter on `google_analytics.properties`.
+      the `account_id` filter on `google_analytics_admin.properties`.
     request:
       method: GET
       path: /v1beta/accounts
@@ -107,7 +106,7 @@ tables:
         nullable: false
         description: >-
           Account resource name in the form `accounts/123456789`. Use as
-          the `account_id` filter on `google_analytics.properties`.
+          the `account_id` filter on `google_analytics_admin.properties`.
         expr:
           kind: path
           path:
@@ -152,17 +151,33 @@ tables:
           kind: path
           path:
             - deleted
+      - name: gmp_organization
+        type: Utf8
+        nullable: true
+        description: >-
+          Google Marketing Platform organization URI when the account is
+          connected to one.
+        expr:
+          kind: path
+          path:
+            - gmpOrganization
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Analytics Admin API account object.
+        expr:
+          kind: current_row
 
   - name: properties
     description: >-
       Lists GA4 properties under a given account. Returns the property resource
-      name, numeric property ID, display name, time zone, currency code,
-      industry category, and service level.
+      name, type, parent, display name, time zone, currency code, industry
+      category, and service level.
     guide: |
       Requires the `account_id` filter in the form `accounts/123456789`.
-      Obtain account IDs from `google_analytics.accounts`. The `property_id`
+      Obtain account IDs from `google_analytics_admin.accounts`. The `property_id`
       value is in the form `properties/987654321`; pass it as the `property_id`
-      filter on `google_analytics.data_streams`.
+      filter on `google_analytics_admin.data_streams`.
     filters:
       - name: account_id
         required: true
@@ -172,7 +187,7 @@ tables:
       query:
         - name: filter
           from: template
-          template: "parent:{{filter.account_id}}"
+          template: "ancestor:{{filter.account_id}}"
         - name: showDeleted
           from: literal
           value: "false"
@@ -192,7 +207,7 @@ tables:
       - name: account_id
         type: Utf8
         nullable: false
-        description: Parent account resource name; echoes the filter value.
+        description: Account ancestor resource name; echoes the filter value.
         expr:
           kind: from_filter
           key: account_id
@@ -202,11 +217,29 @@ tables:
         nullable: false
         description: >-
           Property resource name in the form `properties/987654321`. Use as
-          the `property_id` filter on `google_analytics.data_streams`.
+          the `property_id` filter on `google_analytics_admin.data_streams`.
         expr:
           kind: path
           path:
             - name
+      - name: property_type
+        type: Utf8
+        nullable: true
+        description: >-
+          Property type, such as PROPERTY_TYPE_ORDINARY,
+          PROPERTY_TYPE_SUBPROPERTY, or PROPERTY_TYPE_ROLLUP.
+        expr:
+          kind: path
+          path:
+            - propertyType
+      - name: parent_resource
+        type: Utf8
+        nullable: true
+        description: Logical parent resource name for the property.
+        expr:
+          kind: path
+          path:
+            - parent
       - name: display_name
         type: Utf8
         nullable: true
@@ -285,15 +318,21 @@ tables:
           kind: path
           path:
             - expireTime
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Analytics Admin API property object.
+        expr:
+          kind: current_row
 
   - name: data_streams
     description: >-
       Lists data streams attached to a GA4 property. Returns stream resource
-      name, numeric stream ID, stream type, display name, and type-specific
-      details such as the web URI, Android app bundle ID, or iOS bundle ID.
+      name, stream type, display name, and type-specific details such as the web
+      URI, Android app bundle ID, or iOS bundle ID.
     guide: |
       Requires the `property_id` filter in the form `properties/987654321`.
-      Obtain property IDs from `google_analytics.properties`. Stream type is
+      Obtain property IDs from `google_analytics_admin.properties`. Stream type is
       one of WEB_DATA_STREAM, ANDROID_APP_DATA_STREAM, or IOS_APP_DATA_STREAM.
       Use `web_uri` to identify which web domain a WEB_DATA_STREAM covers.
     filters:
@@ -401,3 +440,9 @@ tables:
           kind: path
           path:
             - updateTime
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Analytics Admin API data stream object.
+        expr:
+          kind: current_row
