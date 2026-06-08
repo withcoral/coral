@@ -9,11 +9,12 @@ use coral_engine::{
     EngineExtensions, QuerySource, RequestAuthenticator, SourceInputResolutionContext,
     SourceInputResolver, SourceInputResolverError,
 };
-use coral_spec::ManifestInputKind;
+use coral_spec::{ManifestInputKind, ManifestInputSpec};
+use tokio::sync::Mutex;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
-use crate::sources::SourceName;
+use crate::sources::model::InstalledSource;
 use crate::state::ConfigStore;
 use crate::workspaces::WorkspaceName;
 
@@ -52,11 +53,28 @@ impl EngineExtensionsProvider for AwsEngineExtensionsProvider {
     }
 }
 
+type SourceCredentialMaterial = BTreeMap<String, String>;
+type SharedSourceCredentialMaterial = Arc<Mutex<SourceCredentialMaterial>>;
+type SourceCredentialSnapshotByName = BTreeMap<String, SharedSourceCredentialSnapshot>;
+
+#[derive(Clone)]
+pub(crate) struct SourceCredentialSnapshot {
+    pub(crate) source: InstalledSource,
+    pub(crate) material: SourceCredentialMaterial,
+}
+
+#[derive(Clone)]
+struct SharedSourceCredentialSnapshot {
+    source: InstalledSource,
+    material: SharedSourceCredentialMaterial,
+}
+
 #[derive(Clone)]
 pub(crate) struct CredentialRefreshingInputResolver {
     workspace_name: WorkspaceName,
     config_store: ConfigStore,
     credential_manager: CredentialManager,
+    source_credentials: Arc<SourceCredentialSnapshotByName>,
     delegate: Option<Arc<dyn SourceInputResolver>>,
 }
 
@@ -65,12 +83,26 @@ impl CredentialRefreshingInputResolver {
         workspace_name: WorkspaceName,
         config_store: ConfigStore,
         credential_manager: CredentialManager,
+        source_credentials: BTreeMap<String, SourceCredentialSnapshot>,
         delegate: Option<Arc<dyn SourceInputResolver>>,
     ) -> Self {
+        let source_credentials = source_credentials
+            .into_iter()
+            .map(|(source_name, snapshot)| {
+                (
+                    source_name,
+                    SharedSourceCredentialSnapshot {
+                        source: snapshot.source,
+                        material: Arc::new(Mutex::new(snapshot.material)),
+                    },
+                )
+            })
+            .collect();
         Self {
             workspace_name,
             config_store,
             credential_manager,
+            source_credentials: Arc::new(source_credentials),
             delegate,
         }
     }
@@ -79,7 +111,7 @@ impl CredentialRefreshingInputResolver {
 impl fmt::Debug for CredentialRefreshingInputResolver {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CredentialRefreshingInputResolver")
-            .field("workspace_name", &self.workspace_name)
+            .field("source_count", &self.source_credentials.len())
             .field("has_delegate", &self.delegate.is_some())
             .finish_non_exhaustive()
     }
@@ -91,24 +123,12 @@ impl SourceInputResolver for CredentialRefreshingInputResolver {
         &self,
         source: &SourceInputResolutionContext,
     ) -> Result<BTreeMap<String, String>, SourceInputResolverError> {
-        let source_name = SourceName::parse(source.source_name())
-            .map_err(|error| SourceInputResolverError::invalid_input(error.to_string()))?;
-        let credential_set_id = CredentialSetId::for_source(&source_name);
-        let installed_source = self
-            .config_store
-            .get_source(&self.workspace_name, &source_name)
-            .map_err(source_input_error)?;
         let material =
-            if let Some(credential_storage) = installed_source.credential_storage_for_material() {
-                self.credential_manager
-                    .read_material_for_inputs(
-                        &self.workspace_name,
-                        &credential_set_id,
-                        credential_storage,
-                        source.declared_inputs(),
-                    )
-                    .await
-                    .map_err(source_input_error)?
+            if let Some(source_credentials) = self.source_credentials.get(source.source_name()) {
+                let mut material = source_credentials.material.lock().await;
+                self.refresh_source_material(source, source_credentials, &mut material)
+                    .await?;
+                material.clone()
             } else {
                 BTreeMap::new()
             };
@@ -139,11 +159,88 @@ impl SourceInputResolver for CredentialRefreshingInputResolver {
     }
 }
 
+impl CredentialRefreshingInputResolver {
+    async fn refresh_source_material(
+        &self,
+        source: &SourceInputResolutionContext,
+        snapshot: &SharedSourceCredentialSnapshot,
+        material: &mut BTreeMap<String, String>,
+    ) -> Result<(), SourceInputResolverError> {
+        if !has_oauth_credential_inputs(source.declared_inputs()) {
+            return Ok(());
+        }
+        let Some(storage) = snapshot.source.credential_storage_for_material() else {
+            return self
+                .credential_manager
+                .refresh_material_for_inputs(source.declared_inputs(), material)
+                .await
+                .map_err(source_input_error);
+        };
+
+        let credential_set_id = CredentialSetId::for_source(&snapshot.source.name);
+        let _refresh_lock = self
+            .credential_manager
+            .credential_refresh_lock(&self.workspace_name, &credential_set_id)
+            .await
+            .map_err(source_input_error)?;
+        if !self.source_config_still_matches_snapshot(&snapshot.source)? {
+            return self
+                .credential_manager
+                .refresh_material_for_inputs(source.declared_inputs(), material)
+                .await
+                .map_err(source_input_error);
+        }
+
+        let mut current_material = self
+            .credential_manager
+            .read_material(&self.workspace_name, &credential_set_id, storage)
+            .map_err(source_input_error)?;
+        self.credential_manager
+            .refresh_and_persist_material_for_inputs_with_refresh_lock_held(
+                &self.workspace_name,
+                &credential_set_id,
+                storage,
+                source.declared_inputs(),
+                &mut current_material,
+            )
+            .await
+            .map_err(source_input_error)?;
+        *material = current_material;
+        Ok(())
+    }
+
+    fn source_config_still_matches_snapshot(
+        &self,
+        snapshot: &InstalledSource,
+    ) -> Result<bool, SourceInputResolverError> {
+        match self
+            .config_store
+            .get_source(&self.workspace_name, &snapshot.name)
+        {
+            Ok(current) => Ok(current == *snapshot),
+            Err(AppError::SourceNotFound(_)) => Ok(false),
+            Err(error) => Err(source_input_error(error)),
+        }
+    }
+}
+
 fn resolve_from_material(
     source: &SourceInputResolutionContext,
     material: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
     coral_spec::resolve_inputs(source.declared_inputs(), material, source.variables())
+}
+
+fn has_oauth_credential_inputs(inputs: &[ManifestInputSpec]) -> bool {
+    inputs.iter().any(|input| {
+        input.kind == ManifestInputKind::Secret
+            && input.credential.as_ref().is_some_and(|credential| {
+                credential
+                    .methods
+                    .iter()
+                    .any(|method| method.oauth.is_some())
+            })
+    })
 }
 
 fn source_with_refreshed_secrets(

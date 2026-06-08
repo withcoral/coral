@@ -339,6 +339,7 @@ impl CredentialStore {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn snapshot_material(
         &self,
         workspace_name: &WorkspaceName,
@@ -379,6 +380,7 @@ impl CredentialStore {
         .map_err(Into::into)
     }
 
+    #[cfg(test)]
     pub(crate) fn restore_material(
         &self,
         workspace_name: &WorkspaceName,
@@ -422,6 +424,7 @@ impl CredentialStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn remove_material(
         &self,
         workspace_name: &WorkspaceName,

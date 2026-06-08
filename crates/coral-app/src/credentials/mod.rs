@@ -151,33 +151,39 @@ impl CredentialManager {
             .read_material(workspace_name, credential_set_id, storage)
     }
 
-    /// Read persisted credential material for the declared inputs, refreshing
-    /// provider-managed credentials before returning when needed.
-    pub(crate) async fn read_material_for_inputs(
+    /// Refresh provider-managed credentials already captured for a runtime.
+    ///
+    /// This updates the supplied material in memory only. Runtime input
+    /// resolution uses source snapshots, so it must not re-read or write live
+    /// source credential material after query-source loading has finished.
+    pub(crate) async fn refresh_material_for_inputs(
+        &self,
+        inputs: &[ManifestInputSpec],
+        material: &mut BTreeMap<String, String>,
+    ) -> Result<(), AppError> {
+        for input in inputs {
+            self.refresh_oauth_input_material(input, material).await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn refresh_and_persist_material_for_inputs_with_refresh_lock_held(
         &self,
         workspace_name: &WorkspaceName,
         credential_set_id: &CredentialSetId,
         storage: CredentialStorageKind,
         inputs: &[ManifestInputSpec],
-    ) -> Result<BTreeMap<String, String>, AppError> {
-        if !has_oauth_credential_inputs(inputs) {
-            return self.read_material(workspace_name, credential_set_id, storage);
-        }
-
-        let _refresh_file_lock = self
-            .credential_refresh_lock(workspace_name, credential_set_id)
-            .await?;
-        let mut material = self.read_material(workspace_name, credential_set_id, storage)?;
+        material: &mut BTreeMap<String, String>,
+    ) -> Result<(), AppError> {
         self.refresh_and_persist_oauth_material(
             workspace_name,
             credential_set_id,
             storage,
             inputs,
-            &mut material,
+            material,
         )
         .await
-        .map_err(credential_refresh_error)?;
-        Ok(material)
+        .map_err(credential_refresh_error)
     }
 
     pub(crate) fn default_write_storage(&self) -> Result<CredentialStorageKind, AppError> {
@@ -199,6 +205,32 @@ impl CredentialManager {
         })
     }
 
+    async fn refresh_oauth_input_material(
+        &self,
+        input: &ManifestInputSpec,
+        material: &mut BTreeMap<String, String>,
+    ) -> Result<bool, AppError> {
+        if input.kind != ManifestInputKind::Secret {
+            return Ok(false);
+        }
+        let Some(credential) = input.credential.as_ref() else {
+            return Ok(false);
+        };
+        let Some(oauth) = credential
+            .methods
+            .iter()
+            .find_map(|method| method.oauth.as_ref())
+        else {
+            return Ok(false);
+        };
+        self.oauth_credential_service
+            .refresh_if_needed(
+                RefreshOAuthCredentialRequest::for_source_input(&input.key, oauth),
+                material,
+            )
+            .await
+    }
+
     async fn refresh_and_persist_oauth_material(
         &self,
         workspace_name: &WorkspaceName,
@@ -208,27 +240,7 @@ impl CredentialManager {
         material: &mut BTreeMap<String, String>,
     ) -> Result<(), AppError> {
         for input in inputs {
-            if input.kind != ManifestInputKind::Secret {
-                continue;
-            }
-            let Some(credential) = input.credential.as_ref() else {
-                continue;
-            };
-            let Some(oauth) = credential
-                .methods
-                .iter()
-                .find_map(|method| method.oauth.as_ref())
-            else {
-                continue;
-            };
-            if self
-                .oauth_credential_service
-                .refresh_if_needed(
-                    RefreshOAuthCredentialRequest::for_source_input(&input.key, oauth),
-                    material,
-                )
-                .await?
-            {
+            if self.refresh_oauth_input_material(input, material).await? {
                 *material = self.persist_refreshed_oauth_material(
                     workspace_name,
                     credential_set_id,
@@ -265,7 +277,7 @@ impl CredentialManager {
         )
     }
 
-    async fn credential_refresh_lock(
+    pub(crate) async fn credential_refresh_lock(
         &self,
         workspace_name: &WorkspaceName,
         credential_set_id: &CredentialSetId,
@@ -309,7 +321,7 @@ impl CredentialMaterialGuard<'_> {
         })
     }
 
-    pub(crate) fn update_material_or_empty_on_parse_with_state_lock_held<F>(
+    pub(crate) fn update_material_with_state_lock<F>(
         &self,
         storage: CredentialStorageKind,
         update: F,
@@ -354,15 +366,6 @@ impl CredentialMaterialGuard<'_> {
         })
     }
 
-    pub(crate) fn snapshot_material(
-        &self,
-        storage: CredentialStorageKind,
-    ) -> Result<CredentialMaterialSnapshot, AppError> {
-        self.manager
-            .store
-            .snapshot_material(self.workspace_name, self.credential_set_id, storage)
-    }
-
     pub(crate) fn snapshot_material_with_state_lock_held(
         &self,
         storage: CredentialStorageKind,
@@ -372,15 +375,6 @@ impl CredentialMaterialGuard<'_> {
             self.credential_set_id,
             storage,
         )
-    }
-
-    pub(crate) fn restore_material(
-        &self,
-        snapshot: &CredentialMaterialSnapshot,
-    ) -> Result<(), AppError> {
-        self.manager
-            .store
-            .restore_material(self.workspace_name, self.credential_set_id, snapshot)
     }
 
     pub(crate) fn restore_material_with_state_lock_held(
@@ -394,6 +388,7 @@ impl CredentialMaterialGuard<'_> {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn remove_material(&self, storage: CredentialStorageKind) -> Result<(), AppError> {
         self.manager
             .store
@@ -412,16 +407,12 @@ impl CredentialMaterialGuard<'_> {
     }
 }
 
-fn has_oauth_credential_inputs(inputs: &[ManifestInputSpec]) -> bool {
-    inputs.iter().any(|input| {
-        input.kind == ManifestInputKind::Secret
-            && input.credential.as_ref().is_some_and(|credential| {
-                credential
-                    .methods
-                    .iter()
-                    .any(|method| method.oauth.is_some())
-            })
-    })
+fn visible_material_keys(material: &BTreeMap<String, String>) -> Vec<String> {
+    material
+        .keys()
+        .filter(|key| !is_internal_material_key(key))
+        .cloned()
+        .collect()
 }
 
 fn replace_provider_input_material(
@@ -440,14 +431,6 @@ fn replace_provider_input_material(
 
 fn provider_input_material_key(key: &str, input_key: &str) -> bool {
     key == input_key || self::oauth::material_key_belongs_to_input(key, input_key)
-}
-
-fn visible_material_keys(material: &BTreeMap<String, String>) -> Vec<String> {
-    material
-        .keys()
-        .filter(|key| !is_internal_material_key(key))
-        .cloned()
-        .collect()
 }
 
 fn credential_refresh_error(error: AppError) -> AppError {

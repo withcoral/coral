@@ -425,11 +425,6 @@ impl ConfigStore {
         self.load_unlocked()
     }
 
-    pub(crate) fn load_config(&self) -> Result<AppConfig, AppError> {
-        let _lock = self.state_lock_shared()?;
-        self.load_config_unlocked()
-    }
-
     /// Loads the source catalog without taking the app state lock.
     ///
     /// Callers must already hold the state lock in shared or exclusive mode
@@ -456,6 +451,7 @@ impl ConfigStore {
         Ok(result)
     }
 
+    #[cfg(test)]
     fn update_catalog<T>(
         &self,
         update: impl FnOnce(&mut SourceCatalog) -> T,
@@ -514,6 +510,7 @@ impl ConfigStore {
         self.update_catalog_unlocked(|catalog| catalog.upsert_source(workspace_name, source))
     }
 
+    #[cfg(test)]
     pub(crate) fn upsert_source(
         &self,
         workspace_name: &WorkspaceName,
@@ -522,12 +519,15 @@ impl ConfigStore {
         self.update_catalog(|catalog| catalog.upsert_source(workspace_name, source))
     }
 
-    pub(crate) fn remove_source(
+    /// Removes one installed source without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in exclusive mode.
+    pub(crate) fn remove_source_unlocked(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<(), AppError> {
-        self.update_catalog(|catalog| {
+        self.update_catalog_unlocked(|catalog| {
             catalog.remove_source(workspace_name, source_name);
         })
     }

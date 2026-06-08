@@ -21,7 +21,8 @@ use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::episode::EpisodeId;
 use crate::query::QueryAttribution;
 use crate::query::extensions::{
-    CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
+    CredentialRefreshingInputResolver, EngineExtensionsProvider, SourceCredentialSnapshot,
+    engine_extensions_for_providers,
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
@@ -42,6 +43,13 @@ pub(crate) enum QueryManagerError {
 pub(crate) struct ValidatedSource {
     pub(crate) source: InstalledSource,
     pub(crate) report: SourceValidationReport,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedQuerySource {
+    source: InstalledSource,
+    query_source: QuerySource,
+    credential_material: BTreeMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -84,12 +92,13 @@ impl QueryManager {
             &trace_sql,
             attribution.episode_id.as_ref(),
             async {
-                let (sources, config) = self
-                    .load_query_sources_with_config(workspace_name)
+                let (loaded_sources, config) = self
+                    .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config(workspace_name, &sources, &config)
+                    .runtime_config(workspace_name, &loaded_sources, &config)
                     .map_err(QueryManagerError::App)?;
+                let sources = query_sources_from_loaded(&loaded_sources);
                 CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -113,12 +122,13 @@ impl QueryManager {
             &trace_sql,
             attribution.episode_id.as_ref(),
             async {
-                let (sources, config) = self
-                    .load_query_sources_with_config(workspace_name)
+                let (loaded_sources, config) = self
+                    .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config(workspace_name, &sources, &config)
+                    .runtime_config(workspace_name, &loaded_sources, &config)
                     .map_err(QueryManagerError::App)?;
+                let sources = query_sources_from_loaded(&loaded_sources);
                 CoralQuery::list_catalog(&sources, runtime, schema_filter)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -153,12 +163,13 @@ impl QueryManager {
             &trace_sql,
             attribution.episode_id.as_ref(),
             async {
-                let (sources, config) = self
-                    .load_query_sources_with_config(workspace_name)
+                let (loaded_sources, config) = self
+                    .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config(workspace_name, &sources, &config)
+                    .runtime_config(workspace_name, &loaded_sources, &config)
                     .map_err(QueryManagerError::App)?;
+                let sources = query_sources_from_loaded(&loaded_sources);
                 CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -181,12 +192,13 @@ impl QueryManager {
             sql,
             attribution.episode_id.as_ref(),
             async {
-                let (sources, config) = self
-                    .load_query_sources_with_config(workspace_name)
+                let (loaded_sources, config) = self
+                    .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config(workspace_name, &sources, &config)
+                    .runtime_config(workspace_name, &loaded_sources, &config)
                     .map_err(QueryManagerError::App)?;
+                let sources = query_sources_from_loaded(&loaded_sources);
                 CoralQuery::execute_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -209,12 +221,13 @@ impl QueryManager {
             sql,
             attribution.episode_id.as_ref(),
             async {
-                let (sources, config) = self
-                    .load_query_sources_with_config(workspace_name)
+                let (loaded_sources, config) = self
+                    .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config(workspace_name, &sources, &config)
+                    .runtime_config(workspace_name, &loaded_sources, &config)
                     .map_err(QueryManagerError::App)?;
+                let sources = query_sources_from_loaded(&loaded_sources);
                 CoralQuery::explain_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -230,7 +243,7 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<ValidatedSource, QueryManagerError> {
-        let (source, query_source, version, config) = {
+        let (source, loaded_source, version, config) = {
             let _state_lock = self
                 .config_store
                 .state_lock_shared()
@@ -243,49 +256,56 @@ impl QueryManager {
                 .get_source(workspace_name, source_name)
                 .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
                 .map_err(QueryManagerError::App)?;
-            let (query_source, version) = self
+            let (loaded_source, version) = self
                 .load_query_source(workspace_name, &source)
                 .map_err(QueryManagerError::App)?;
-            (source, query_source, version, config)
+            (source, loaded_source, version, config)
         };
         let runtime = self
-            .runtime_config(workspace_name, std::slice::from_ref(&query_source), &config)
+            .runtime_config(
+                workspace_name,
+                std::slice::from_ref(&loaded_source),
+                &config,
+            )
             .map_err(QueryManagerError::App)?;
-        let report =
-            CoralQuery::validate_source(&query_source, runtime, query_source.test_queries())
-                .await
-                .map_err(QueryManagerError::Core)?;
+        let report = CoralQuery::validate_source(
+            &loaded_source.query_source,
+            runtime,
+            loaded_source.query_source.test_queries(),
+        )
+        .await
+        .map_err(QueryManagerError::Core)?;
         let mut source = source;
         source.version = version;
 
         Ok(ValidatedSource { source, report })
     }
 
-    fn load_query_sources_with_config(
-        &self,
-        workspace_name: &WorkspaceName,
-    ) -> Result<(Vec<QuerySource>, AppConfig), AppError> {
-        let _state_lock = self.config_store.state_lock_shared()?;
-        let config = self.config_store.load_config_unlocked()?;
-        let sources = self.load_query_sources(workspace_name, &config)?;
-        Ok((sources, config))
-    }
-
     fn load_query_sources(
         &self,
         workspace_name: &WorkspaceName,
+    ) -> Result<(Vec<LoadedQuerySource>, AppConfig), AppError> {
+        let _state_lock = self.config_store.state_lock_shared()?;
+        let config = self.config_store.load_config_unlocked()?;
+        let sources = self.load_query_sources_from_config(workspace_name, &config)?;
+        Ok((sources, config))
+    }
+
+    fn load_query_sources_from_config(
+        &self,
+        workspace_name: &WorkspaceName,
         config: &AppConfig,
-    ) -> Result<Vec<QuerySource>, AppError> {
+    ) -> Result<Vec<LoadedQuerySource>, AppError> {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
             workspace = %workspace_name,
             source.count = tracing::field::Empty,
         );
         let _guard = span.enter();
-        let mut query_sources = Vec::new();
+        let mut loaded_sources = Vec::new();
         for source in config.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
-                Ok((query_source, _version)) => query_sources.push(query_source),
+                Ok((loaded_source, _version)) => loaded_sources.push(loaded_source),
                 Err(
                     error @ (AppError::Credentials(CredentialsError::Unavailable(_))
                     | AppError::MissingOrIncompatibleV4Materialization { .. }),
@@ -301,15 +321,15 @@ impl QueryManager {
                 }
             }
         }
-        span.record("source.count", query_sources.len());
-        Ok(query_sources)
+        span.record("source.count", loaded_sources.len());
+        Ok(loaded_sources)
     }
 
     fn load_query_source(
         &self,
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
-    ) -> Result<(QuerySource, Option<String>), AppError> {
+    ) -> Result<(LoadedQuerySource, Option<String>), AppError> {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
         let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
@@ -382,22 +402,42 @@ impl QueryManager {
         } else {
             QuerySource::from_manifest(&source_spec, source.variables.clone(), resolved_secrets)
         };
-        Ok((query_source, installed.candidate.version))
+        Ok((
+            LoadedQuerySource {
+                source: source.clone(),
+                query_source,
+                credential_material: stored_secrets,
+            },
+            installed.candidate.version,
+        ))
     }
 
     fn runtime_config(
         &self,
         workspace_name: &WorkspaceName,
-        selected_sources: &[QuerySource],
+        selected_sources: &[LoadedQuerySource],
         config: &AppConfig,
     ) -> Result<QueryRuntimeConfig, AppError> {
+        let query_sources = query_sources_from_loaded(selected_sources);
         let mut extensions =
-            engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources);
+            engine_extensions_for_providers(&self.engine_extensions_providers, &query_sources);
         let provider_input_resolver = extensions.source_input_resolver.take();
         extensions.source_input_resolver = Some(Arc::new(CredentialRefreshingInputResolver::new(
             workspace_name.clone(),
             self.config_store.clone(),
             self.credential_manager.clone(),
+            selected_sources
+                .iter()
+                .map(|source| {
+                    (
+                        source.query_source.source_name().to_string(),
+                        SourceCredentialSnapshot {
+                            source: source.source.clone(),
+                            material: source.credential_material.clone(),
+                        },
+                    )
+                })
+                .collect(),
             provider_input_resolver,
         )));
         let mut runtime_context = self.runtime_context.clone();
@@ -405,12 +445,19 @@ impl QueryManager {
         let mut runtime = QueryRuntimeConfig::new(runtime_context, extensions);
         let selected_source_names = selected_sources
             .iter()
-            .map(|source| source.source_name().to_string())
+            .map(|source| source.query_source.source_name().to_string())
             .collect::<Vec<_>>();
         runtime.memory = config.memory_config()?;
         runtime.dependent_join = config.dependent_join_config(&selected_source_names)?;
         Ok(runtime)
     }
+}
+
+fn query_sources_from_loaded(loaded_sources: &[LoadedQuerySource]) -> Vec<QuerySource> {
+    loaded_sources
+        .iter()
+        .map(|source| source.query_source.clone())
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -1081,13 +1128,13 @@ tables:
             )
             .expect("persist secret material");
 
-        let (query_source, _) = fixture
+        let (loaded_source, _) = fixture
             .manager
             .load_query_source(&workspace_name, &source)
             .expect("optional secret should load when present");
 
         assert_eq!(
-            query_source.secrets(),
+            loaded_source.query_source.secrets(),
             &BTreeMap::from([("OAUTH_TOKEN".to_string(), "oauth-token".to_string())])
         );
     }
@@ -1219,14 +1266,9 @@ surfaces:
             )
             .expect("persist source");
 
-        let config = fixture
-            .manager
-            .config_store
-            .load_config()
-            .expect("load config");
         let error = fixture
             .manager
-            .load_query_sources(&workspace_name, &config)
+            .load_query_sources(&workspace_name)
             .expect_err("missing materialization should fail closed");
 
         assert!(
@@ -1271,10 +1313,8 @@ surfaces:
             layout,
             Vec::new(),
         );
-        let config = manager.config_store.load_config().expect("load config");
-
         let error = manager
-            .load_query_sources(&workspace_name, &config)
+            .load_query_sources(&workspace_name)
             .expect_err("unavailable keychain should fail closed");
 
         assert!(
@@ -1332,6 +1372,103 @@ surfaces:
     }
 
     #[tokio::test]
+    async fn runtime_input_resolver_uses_loaded_credential_snapshot() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("secured_messages").expect("source name");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let installed_source = InstalledSource {
+            name: source_name.clone(),
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: vec!["API_TOKEN".to_string()],
+            credential_storage: Some(CredentialStorageKind::File),
+            origin: SourceOrigin::Bundled,
+        };
+        fixture
+            .manager
+            .config_store
+            .upsert_source(&workspace_name, installed_source.clone())
+            .expect("persist live source");
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "live-token".to_string())]),
+            )
+            .expect("write live credential material");
+        let source_spec = parse_source_manifest_yaml(
+            r"
+name: secured_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+inputs:
+  API_TOKEN:
+    kind: secret
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Secured messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect("parse source manifest");
+        let loaded_source = LoadedQuerySource {
+            source: installed_source,
+            query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
+            credential_material: BTreeMap::from([(
+                "API_TOKEN".to_string(),
+                "snapshot-token".to_string(),
+            )]),
+        };
+        let runtime = fixture
+            .manager
+            .runtime_config(
+                &workspace_name,
+                std::slice::from_ref(&loaded_source),
+                &AppConfig::default(),
+            )
+            .expect("runtime config");
+        let input_resolver = runtime
+            .extensions
+            .source_input_resolver
+            .expect("runtime installs input resolver");
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "changed-live-token".to_string())]),
+            )
+            .expect("replace live credential material");
+
+        let resolved_inputs = input_resolver
+            .resolve_inputs(&SourceInputResolutionContext::from_query_source(
+                &loaded_source.query_source,
+            ))
+            .await
+            .expect("resolve source inputs");
+
+        assert_eq!(
+            resolved_inputs.get("API_TOKEN").map(String::as_str),
+            Some("snapshot-token")
+        );
+    }
+
+    #[tokio::test]
     async fn runtime_config_composes_provider_input_resolver_with_refreshed_inputs() {
         let calls = Arc::new(AtomicUsize::new(0));
         let observed_token = Arc::new(Mutex::new(None));
@@ -1342,34 +1479,6 @@ surfaces:
                 observed_token: Arc::clone(&observed_token),
             })],
         );
-        let source_name = SourceName::parse("secured_messages").expect("source name");
-        let workspace_name = WorkspaceName::default();
-        let credential_set_id = CredentialSetId::for_source(&source_name);
-        fixture
-            .manager
-            .config_store
-            .upsert_source(
-                &workspace_name,
-                InstalledSource {
-                    name: source_name.clone(),
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: vec!["API_TOKEN".to_string()],
-                    credential_storage: Some(CredentialStorageKind::File),
-                    origin: SourceOrigin::Bundled,
-                },
-            )
-            .expect("persist source");
-        fixture
-            .manager
-            .credential_manager
-            .replace_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-                &BTreeMap::from([("API_TOKEN".to_string(), "stored-token".to_string())]),
-            )
-            .expect("write credential material");
         let source_spec = parse_source_manifest_yaml(
             r#"
 name: secured_messages
@@ -1396,12 +1505,26 @@ tables:
 "#,
         )
         .expect("parse source manifest");
-        let source = QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new());
+        let loaded_source = LoadedQuerySource {
+            source: InstalledSource {
+                name: SourceName::parse("secured_messages").expect("source name"),
+                version: None,
+                variables: BTreeMap::new(),
+                secrets: vec!["API_TOKEN".to_string()],
+                credential_storage: None,
+                origin: SourceOrigin::Bundled,
+            },
+            query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
+            credential_material: BTreeMap::from([(
+                "API_TOKEN".to_string(),
+                "stored-token".to_string(),
+            )]),
+        };
         let runtime = fixture
             .manager
             .runtime_config(
-                &workspace_name,
-                std::slice::from_ref(&source),
+                &WorkspaceName::default(),
+                std::slice::from_ref(&loaded_source),
                 &AppConfig::default(),
             )
             .expect("runtime config");
@@ -1411,7 +1534,9 @@ tables:
             .expect("runtime installs input resolver");
 
         let resolved_inputs = input_resolver
-            .resolve_inputs(&SourceInputResolutionContext::from_query_source(&source))
+            .resolve_inputs(&SourceInputResolutionContext::from_query_source(
+                &loaded_source.query_source,
+            ))
             .await
             .expect("resolve source inputs");
 
