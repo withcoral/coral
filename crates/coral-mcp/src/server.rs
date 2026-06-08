@@ -26,13 +26,13 @@ use tonic::Request;
 use crate::{
     McpOptions,
     surface::{
-        CatalogToolKind, build_tool_result, describe_table_arguments, describe_table_tool,
-        describe_table_value, feedback_tool, guide_resource, guide_resource_content,
-        initial_instructions, list_catalog_arguments, list_catalog_tool, list_catalog_value,
-        list_columns_arguments, list_columns_tool, list_columns_value, required_string_argument,
-        search_catalog_arguments, search_catalog_tool, search_catalog_value, sql_tool,
-        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
-        tool_error_result,
+        CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
+        describe_table_tool, describe_table_value, feedback_tool, guide_resource,
+        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_tool,
+        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
+        required_string_argument, search_catalog_arguments, search_catalog_tool,
+        search_catalog_value, sql_tool, status_to_error_data, tables_resource,
+        tables_resource_content, tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -461,10 +461,25 @@ impl ServerHandler for CoralMcpServer {
                 .load_catalog_counts()
                 .await
                 .map_err(|status| status_to_error_data(&status))?;
+            let source_names = match self.load_sources().await {
+                Ok(sources) => sources.into_iter().map(|source| source.name).collect(),
+                Err(status) => {
+                    tracing::warn!(
+                        error = %status,
+                        "failed to load source names for MCP tool descriptions"
+                    );
+                    Vec::new()
+                }
+            };
+            let tool_context = ToolDescriptionContext::new(
+                visible_table_count,
+                visible_function_count,
+                source_names,
+            );
             let mut tools = vec![
-                sql_tool(visible_table_count),
-                list_catalog_tool(visible_table_count, visible_function_count),
-                search_catalog_tool(visible_table_count, visible_function_count),
+                sql_tool(&tool_context),
+                list_catalog_tool(&tool_context),
+                search_catalog_tool(&tool_context),
                 describe_table_tool(),
                 list_columns_tool(),
             ];
