@@ -22,14 +22,20 @@ service EpisodeService {
 message OpenEpisodeRequest {
   // Workspace that scopes the episode (per-tenant isolation).
   Workspace workspace = 1;
-  // Client-minted, opaque episode id (e.g. a UUID). Carried on every subsequent
-  // call as the `coral-episode-id` metadata key.
+  // Client-minted, opaque episode id (e.g. a UUID or ULID). Carried on every
+  // subsequent call as the `coral-episode-id` gRPC metadata value, so it must be
+  // a valid ASCII metadata value: graphic ASCII only (0x21–0x7E — no spaces,
+  // control bytes, or non-ASCII) and at most 128 bytes. The server validates and
+  // rejects ids outside this contract with `INVALID_ARGUMENT`.
   string episode_id = 2;
   // Natural-language task description — the retrieval handle. Possibly PII;
   // persisted only in the episode store, never on spans, headers, or logs.
+  // Required and non-empty, bounded in length; not carried as metadata.
   string intent = 3;
   // Set for a child episode (a sub-task); links to the open parent episode.
-  optional string parent_episode_id = 4;
+  // Empty when there is no parent (a root episode); otherwise the same format
+  // contract as `episode_id`.
+  string parent_episode_id = 4;
 }
 
 // Acknowledgement; intentionally empty for v1.
