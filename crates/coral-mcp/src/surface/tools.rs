@@ -56,10 +56,10 @@ pub(crate) enum ToolTextFormat {
     CompactJson,
 }
 
-pub(crate) fn sql_tool(visible_table_count: usize) -> Tool {
+pub(crate) fn sql_tool() -> Tool {
     Tool::new(
         "sql",
-        sql_tool_description(visible_table_count),
+        "Execute read-only SQL against the Coral database. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates to combine tables in one statement.",
         json_object_schema(&json!({
             "type": "object",
             "required": ["sql"],
@@ -124,12 +124,10 @@ pub(crate) fn result_get_tool() -> Tool {
     )
 }
 
-pub(crate) fn list_catalog_tool(visible_table_count: usize, visible_function_count: usize) -> Tool {
+pub(crate) fn list_catalog_tool() -> Tool {
     Tool::new(
         "list_catalog",
-        format!(
-            "List database catalog items. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
-        ),
+        "List database catalog items.",
         json_object_schema(&json!({
             "type": "object",
             "properties": {
@@ -176,13 +174,10 @@ pub(crate) fn list_catalog_tool(visible_table_count: usize, visible_function_cou
     )
 }
 
-pub(crate) fn search_catalog_tool(
-    visible_table_count: usize,
-    visible_function_count: usize,
-) -> Tool {
+pub(crate) fn search_catalog_tool() -> Tool {
     Tool::new(
         "search_catalog",
-        search_catalog_description(visible_table_count, visible_function_count),
+        "Search database catalog metadata with a Rust regex.",
         json_object_schema(&json!({
             "type": "object",
             "required": ["pattern"],
@@ -451,23 +446,6 @@ pub(crate) fn build_tool_result_with_format(
     let mut result = CallToolResult::structured(value);
     result.content = vec![Content::text(text)];
     Ok(result)
-}
-
-fn sql_tool_description(visible_table_count: usize) -> String {
-    if visible_table_count == 0 {
-        "Execute read-only SQL against the Coral database. No user tables are currently visible."
-            .to_string()
-    } else {
-        format!(
-            "Execute read-only SQL against the Coral database. {visible_table_count} table(s) are currently visible. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates to combine tables in one statement."
-        )
-    }
-}
-
-fn search_catalog_description(visible_table_count: usize, visible_function_count: usize) -> String {
-    format!(
-        "Search database catalog metadata with a Rust regex. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
-    )
 }
 
 fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
