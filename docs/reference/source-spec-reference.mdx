@@ -27,7 +27,7 @@ test_queries:
 
 | Field         | Description                                        |
 | ------------- | -------------------------------------------------- |
-| `name`        | Source name, also used as the SQL schema name for DSL v3 and single-surface DSL v4 sources |
+| `name`        | Source name, also used as the SQL schema name      |
 | `version`     | Source spec version string                         |
 | `dsl_version` | Coral source spec DSL version (currently `3`)      |
 | `backend`     | How data is fetched: `http`, `file`, or `mcp` |
@@ -621,38 +621,9 @@ query. Values must be positive. `default_top_k` and `max_top_k` are capped at
 ### MCP sources
 
 MCP sources expose Model Context Protocol tools as SQL tables and source-scoped
-table functions. For DSL v3 MCP sources, the manifest remains the contract for
-SQL names, filters, arguments, response shape, and columns; Coral does not
-introspect MCP tools at query time.
-
-DSL v4 preview manifests can also declare MCP surfaces. In v4, Coral discovers
-the MCP server's tool catalog during `coral source add`, materializes generated
-projections, and then queries only those installed artifacts. Each surface has
-an optional `namespace` field that becomes the SQL schema for generated
-projections. If omitted, the namespace defaults to the source `name` for a
-single-surface source, or `{source.name}_{surface.id}` for a multi-surface
-source. Two surfaces in the same source cannot declare the same namespace;
-`coral source add` rejects that manifest. Re-add the source when the server's
-tool catalog changes.
-
-```yaml
-name: github_v4
-dsl_version: 4
-surfaces:
-  - id: mcp
-    namespace: github_tools
-    type: mcp
-    inputs:
-      GITHUB_TOKEN:
-        kind: secret
-    server:
-      transport: streamable_http
-      url: https://api.githubcopilot.com/mcp/x/all/readonly
-      auth:
-        type: bearer
-        from: input
-        key: GITHUB_TOKEN
-```
+table functions. The manifest remains the contract for SQL names, filters,
+arguments, response shape, and columns; Coral does not introspect MCP tools at
+query time.
 
 Stdio MCP servers run as child processes:
 
