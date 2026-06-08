@@ -127,7 +127,7 @@ FROM lemon_squeezy.stores
 ORDER BY total_revenue DESC;
 ```
 
-### Monthly revenue from paid orders (use _usd columns to safely sum across currencies)
+### Monthly revenue from paid orders (use \_usd columns to safely sum across currencies)
 
 ```sql
 SELECT
@@ -180,19 +180,20 @@ ORDER BY mrr DESC
 LIMIT 20;
 ```
 
-### Revenue by product including quantity (USD rollup, safe for multi-currency stores)
+### Revenue by product including quantity
 
 ```sql
 SELECT
   oi.product_name,
   oi.variant_name,
-  SUM(oi.quantity)                                      AS units_sold,
-  ROUND(SUM(o.total_usd) / 100.0, 2)                   AS gross_revenue_usd
+  SUM(oi.quantity)                               AS units_sold,
+  ROUND(SUM(oi.price * oi.quantity) / 100.0, 2) AS gross_revenue
 FROM lemon_squeezy.order_items oi
-JOIN lemon_squeezy.orders o ON o.id = CAST(oi.order_id AS VARCHAR)
+JOIN lemon_squeezy.orders o
+  ON o.id = CAST(oi.order_id AS VARCHAR)
 WHERE o.status = 'paid'
 GROUP BY 1, 2
-ORDER BY gross_revenue_usd DESC;
+ORDER BY gross_revenue DESC;
 ```
 
 ### Revenue by product including quantity, per order currency
@@ -239,17 +240,14 @@ SELECT
   CASE d.amount_type
     WHEN 'percent' THEN CAST(d.amount AS VARCHAR) || '%'
     ELSE CAST(ROUND(d.amount / 100.0, 2) AS VARCHAR)
-  END                               AS discount_value,
-  o.currency                        AS order_currency,
-  COUNT(dr.id)                      AS redemptions,
-  ROUND(SUM(dr.amount) / 100.0, 2) AS total_savings
+  END AS discount_value,
+  COUNT(dr.id) AS redemptions,
+  ROUND(COALESCE(SUM(dr.amount), 0) / 100.0, 2) AS total_savings
 FROM lemon_squeezy.discounts d
 LEFT JOIN lemon_squeezy.discount_redemptions dr
   ON dr.discount_id = CAST(d.id AS BIGINT)
-JOIN lemon_squeezy.orders o
-  ON o.id = CAST(dr.order_id AS VARCHAR)
 WHERE d.status = 'published'
-GROUP BY d.id, d.code, d.amount_type, d.amount, o.currency
+GROUP BY d.id, d.code, d.amount_type, d.amount
 ORDER BY redemptions DESC;
 ```
 
