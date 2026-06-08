@@ -57,10 +57,16 @@ coral source add --file sources/community/chromium/manifest.yaml
 
    The test query hits `chromium.health`, which resolves the first installed browser among Chrome, Edge, and Brave and reads its real bookmark data. It passes as long as **any one** of the three browsers is installed with a resolvable profile — no specific browser is required — so Chrome-only, Edge-only, and Brave-only setups all succeed.
 
-5. Run a representative query:
+5. Run a representative query. First check which browser resolved, then query that browser's tables:
 
    ```bash
-   coral sql "SELECT title, url FROM chromium.chrome_history ORDER BY last_visit_time DESC LIMIT 10"
+   coral sql "SELECT browser FROM chromium.health LIMIT 1"
+   ```
+
+   Use the returned prefix (`chrome`, `edge`, or `brave`) in place of `[browser]`:
+
+   ```bash
+   coral sql "SELECT title, url FROM chromium.[browser]_history ORDER BY last_visit_time DESC LIMIT 10"
    ```
 
 6. Stop the server with `Ctrl-C` in the server terminal.
