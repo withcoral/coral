@@ -49,7 +49,16 @@ pub(crate) fn append_file_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = open_append_file_private(path)?;
     set_file_permissions_private(path)?;
     file.write_all(bytes)?;
-    file.sync_all()
+    file.sync_all()?;
+    // Durably link the (possibly freshly created) file into its directory so a
+    // crash after we return `Ok` cannot lose the file or its newest record —
+    // mirrors `replace_atomic`'s parent-directory fsync.
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        drop(dir.sync_all());
+    }
+    Ok(())
 }
 
 pub(crate) fn replace_atomic(from: &Path, to: &Path) -> io::Result<()> {
