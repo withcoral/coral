@@ -20,9 +20,11 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Tool     | `describe_table` | Show compact metadata for one database table            |
 | Tool     | `list_columns`   | List columns for one database table with pagination     |
 | Resource | `coral://guide`  | Database workflow guide for agents                     |
-| Resource | `coral://tables` | JSON summaries of database tables and required filters  |
+| Resource | `coral://tables` | JSON summaries of query-visible database tables, including Coral catalog tables and required filters |
 
 Clients see the same database catalog and query results as `coral sql`. You set up sources with the CLI, then agents query Coral over MCP as SQL schemas and tables.
+
+The `coral` system schema is part of that catalog. No-schema `list_catalog` and `coral://tables` include both configured source tables and Coral catalog tables: `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs`. Agents can also call `describe_table` and `list_columns` on those system tables.
 
 Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. For data questions, prefer a single `sql` call using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over multiple tool calls that fetch rows and combine them in the agent.
 

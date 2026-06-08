@@ -280,6 +280,86 @@ fn assert_matches_output_schema(tool: &Tool, value: &Value) {
 }
 
 #[tokio::test]
+async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+    let expected_tables = ["columns", "filters", "inputs", "table_functions", "tables"];
+
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": "SELECT table_name FROM coral.tables WHERE schema_name = 'coral' ORDER BY table_name"
+            }))),
+        )
+        .await
+        .expect("sql system catalog");
+    let sql_rows = sql.structured_content.as_ref().expect("structured sql")["rows"]
+        .as_array()
+        .expect("sql rows");
+    assert_eq!(
+        sql_rows
+            .iter()
+            .map(|row| row["table_name"].as_str().expect("table_name"))
+            .collect::<Vec<_>>(),
+        expected_tables
+    );
+
+    let catalog = client
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "schema": "coral",
+                "kind": "table"
+            }))),
+        )
+        .await
+        .expect("list system catalog")
+        .structured_content
+        .expect("structured catalog");
+    assert_eq!(catalog["total"], expected_tables.len());
+    assert_eq!(
+        catalog["items"]
+            .as_array()
+            .expect("catalog items")
+            .iter()
+            .map(|item| item["table"]["table_name"].as_str().expect("table name"))
+            .collect::<Vec<_>>(),
+        expected_tables
+    );
+
+    let described = client
+        .call_tool(
+            CallToolRequestParams::new("describe_table").with_arguments(json_object(&json!({
+                "schema": "coral",
+                "table": "columns"
+            }))),
+        )
+        .await
+        .expect("describe system table")
+        .structured_content
+        .expect("structured describe");
+    assert_eq!(described["found"], true);
+    assert_eq!(described["name"], "coral.columns");
+    assert_eq!(described["column_count"], 10);
+
+    let columns = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "coral",
+                "table": "tables"
+            }))),
+        )
+        .await
+        .expect("list system columns")
+        .structured_content
+        .expect("structured columns");
+    assert_eq!(columns["total"], 6);
+    assert_eq!(columns["columns"][0]["column_name"], "schema_name");
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "This focused session test still verifies multiple discovery and resource refresh assertions in one end-to-end flow."
@@ -310,7 +390,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("sql description")
-            .contains("No user tables are currently visible")
+            .contains("5 table(s) are currently visible")
     );
     for tool in &initial_tools {
         let Some(output_schema) = &tool.output_schema else {
@@ -339,7 +419,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("guide description")
-            .contains("0 visible table")
+            .contains("5 visible table")
     );
 
     let initial_guide = client
@@ -365,21 +445,21 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("sql description")
-            .contains("3 table(s) are currently visible")
+            .contains("8 table(s) are currently visible")
     );
     assert!(
         updated_tools[1]
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("3 table(s) and 0 table function(s) are currently visible")
+            .contains("8 table(s) and 0 table function(s) are currently visible")
     );
     assert!(
         updated_tools[2]
             .description
             .as_deref()
             .expect("catalog search description")
-            .contains("3 table(s) and 0 table function(s) are currently visible")
+            .contains("8 table(s) and 0 table function(s) are currently visible")
     );
 
     let updated_resources = client
@@ -401,10 +481,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let tables_text = text_content(&tables_resource);
     let tables_json =
         serde_json::from_str::<serde_json::Value>(tables_text).expect("parse tables resource");
-    assert_eq!(tables_json["tables"][0]["name"], "local_messages.events");
-    assert_eq!(
-        tables_json["tables"][0]["sql_reference"],
-        "local_messages.events"
+    assert_eq!(tables_json["tables"][0]["name"], "coral.columns");
+    assert_eq!(tables_json["tables"][0]["sql_reference"], "coral.columns");
+    assert!(
+        tables_json["tables"]
+            .as_array()
+            .expect("tables")
+            .iter()
+            .any(|table| table["name"] == "local_messages.events")
     );
 
     let updated_guide = client
@@ -426,14 +510,11 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .await
         .expect("list catalog");
     let catalog = catalog.structured_content.expect("structured catalog");
-    assert_eq!(catalog["total"], 3);
+    assert_eq!(catalog["total"], 8);
     assert_eq!(catalog["items"][0]["kind"], "table");
-    assert_eq!(catalog["items"][0]["name"], "local_messages.events");
-    assert_eq!(
-        catalog["items"][0]["sql_reference"],
-        "local_messages.events"
-    );
-    assert_eq!(catalog["items"][0]["table"]["table_name"], "events");
+    assert_eq!(catalog["items"][0]["name"], "coral.columns");
+    assert_eq!(catalog["items"][0]["sql_reference"], "coral.columns");
+    assert_eq!(catalog["items"][0]["table"]["table_name"], "columns");
     assert_matches_output_schema(list_catalog_tool, &catalog);
 
     let catalog_page = client
@@ -800,7 +881,7 @@ async fn list_catalog_surfaces_table_functions() {
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("1 table(s) and 2 table function(s) are currently visible")
+            .contains("6 table(s) and 2 table function(s) are currently visible")
     );
     assert!(tools.iter().all(|tool| tool.name != "list_tables"));
     assert!(tools.iter().all(|tool| tool.name != "search_tables"));
@@ -808,7 +889,11 @@ async fn list_catalog_surfaces_table_functions() {
     let catalog_tool = tool_by_name(&tools, "list_catalog");
     let search_tool = tool_by_name(&tools, "search_catalog");
     let catalog = client
-        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "schema": "searchy"
+            }))),
+        )
         .await
         .expect("list catalog")
         .structured_content
@@ -1060,7 +1145,11 @@ async fn mcp_tool_error_does_not_end_session() {
     );
 
     let catalog_after_error = client
-        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "schema": "local_messages"
+            }))),
+        )
         .await
         .expect("list catalog after error");
     let structured_catalog_after_error = catalog_after_error
