@@ -15,6 +15,7 @@ use axum::body::Body as AxumBody;
 use axum::extract::Request as AxumRequest;
 use axum::response::Response as AxumResponse;
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
+use coral_api::v1::episode_service_server::EpisodeServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
@@ -40,6 +41,8 @@ use crate::EngineExtensionsProvider;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
+use crate::episode::service::EpisodeService;
+use crate::episode::store::EpisodeStore;
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
@@ -269,6 +272,7 @@ impl ServerBuilder {
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
+        let episode_store = EpisodeStore::new(layout.clone());
         let body_capture_max_bytes = telemetry_config
             .trace_history
             .http_body_recording_max_bytes();
@@ -292,6 +296,7 @@ impl ServerBuilder {
             source_manager,
             query_manager,
             feedback_manager,
+            episode_store,
             trace_service,
             self.config.mode,
         )
@@ -373,6 +378,7 @@ async fn start_server(
     source_manager: SourceManager,
     query_manager: QueryManager,
     feedback_manager: FeedbackManager,
+    episode_store: EpisodeStore,
     trace_service: Option<TraceService>,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
@@ -380,6 +386,7 @@ async fn start_server(
     let catalog_service = CatalogService::new(query_manager.clone());
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
+    let episode_service = EpisodeService::new(episode_store);
     let mut routes = Routes::default()
         .add_service(GrpcMethodAnnotatedService::new(SourceServiceServer::new(
             source_service,
@@ -390,6 +397,9 @@ async fn start_server(
         ))
         .add_service(GrpcMethodAnnotatedService::new(FeedbackServiceServer::new(
             feedback_service,
+        )))
+        .add_service(GrpcMethodAnnotatedService::new(EpisodeServiceServer::new(
+            episode_service,
         )))
         .add_service(GrpcMethodAnnotatedService::new(
             QueryServiceServer::new(query_service)
@@ -637,6 +647,7 @@ mod tests {
         is_native_grpc_content_type, start_server,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
+    use crate::episode::store::EpisodeStore;
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
@@ -708,6 +719,7 @@ enabled = false
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let episode_store = EpisodeStore::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -721,6 +733,7 @@ enabled = false
             source_manager,
             query_manager,
             feedback_manager,
+            episode_store,
             Some(trace_service),
             ServerMode::NativeGrpc,
         )
@@ -1086,6 +1099,7 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let episode_store = EpisodeStore::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1100,6 +1114,7 @@ tables:
             source_manager,
             query_manager,
             feedback_manager,
+            episode_store,
             None,
             ServerMode::NativeGrpc,
         )
@@ -1188,6 +1203,7 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let episode_store = EpisodeStore::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1199,6 +1215,7 @@ tables:
             source_manager,
             query_manager,
             feedback_manager,
+            episode_store,
             None,
             ServerMode::NativeGrpc,
         )
@@ -1287,6 +1304,7 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
+        let episode_store = EpisodeStore::new(layout.clone());
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1298,6 +1316,7 @@ tables:
             source_manager,
             query_manager,
             feedback_manager,
+            episode_store,
             None,
             ServerMode::NativeGrpc,
         )
