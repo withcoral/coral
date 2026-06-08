@@ -3,7 +3,7 @@
 use std::future::Future;
 
 use coral_api::{
-    CORAL_ERROR_DOMAIN, grpc_response_status_code,
+    CORAL_EPISODE_ID_METADATA_KEY, CORAL_ERROR_DOMAIN, grpc_response_status_code,
     v1::{
         CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
         ColumnSearchResult as ProtoColumnSearchResult,
@@ -29,10 +29,6 @@ use crate::catalog::discovery::{
 use crate::episode::EpisodeId;
 use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
-
-/// gRPC metadata key carrying the originating episode id on every Coral call
-/// after `OpenEpisode` (see `crates/coral-api/proto/coral/v1/episode.proto`).
-const CORAL_EPISODE_ID_METADATA_KEY: &str = "coral-episode-id";
 
 struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
 
