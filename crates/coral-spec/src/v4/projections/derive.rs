@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
-    HttpMethod, IrExecutionAttachment, IrOperation, IrOperationInput, IrScalarType, IrTypeShape,
-    OpenApiParameterLocation, OutputCardinality, SemanticIr,
+    HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
+    IrScalarType, IrTypeShape, OutputCardinality, SemanticIr,
 };
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, stable_suffix};
@@ -32,7 +32,11 @@ pub fn generate_projection_catalog(
         }
         diagnostics.extend(ir.diagnostics.clone());
     }
-    resolve_projection_name_collisions(manifest, surfaces, &mut projections);
+    diagnostics.extend(resolve_projection_name_collisions(
+        manifest,
+        surfaces,
+        &mut projections,
+    ));
     Ok(ProjectionCatalog {
         artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
         source_name: manifest.common.name.clone(),
@@ -106,7 +110,7 @@ fn generate_projection(
                 sql_exposure: exposure,
                 source_location: input.location,
                 wire_name: input.name.clone(),
-                required: input.required && input.default_value.is_none(),
+                required: projection_input_required(input),
                 data_type: manifest_type(input.data_type),
                 default_value: input.default_value.clone(),
                 description: input.description.clone(),
@@ -142,21 +146,23 @@ fn generate_projection(
     projection
 }
 
+fn projection_input_required(input: &IrOperationInput) -> bool {
+    input.required && (input.location == IrInputLocation::Path || input.default_value.is_none())
+}
+
 fn projection_input_sql_exposure(
     input: &IrOperationInput,
     default_exposure: SqlInputExposure,
     pagination_query_params: &HashSet<&str>,
 ) -> (SqlInputExposure, bool) {
-    let pagination_owned_query_input = input.location == OpenApiParameterLocation::Query
+    let pagination_owned_query_input = input.location == IrInputLocation::Query
         && pagination_query_params.contains(input.name.as_str());
     let exposure = match input.location {
-        OpenApiParameterLocation::Query if pagination_owned_query_input => {
+        IrInputLocation::Query if pagination_owned_query_input => SqlInputExposure::Internal,
+        IrInputLocation::Path | IrInputLocation::Query => default_exposure,
+        IrInputLocation::Header | IrInputLocation::Cookie | IrInputLocation::Body => {
             SqlInputExposure::Internal
         }
-        OpenApiParameterLocation::Path | OpenApiParameterLocation::Query => default_exposure,
-        OpenApiParameterLocation::Header
-        | OpenApiParameterLocation::Cookie
-        | OpenApiParameterLocation::Body => SqlInputExposure::Internal,
     };
     (exposure, pagination_owned_query_input)
 }

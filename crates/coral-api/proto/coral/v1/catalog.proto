@@ -47,7 +47,7 @@ message Column {
 
 // A query-visible table in one workspace.
 message Table {
-  // Workspace whose source set makes this table visible.
+  // Workspace whose query catalog makes this table visible.
   Workspace workspace = 1;
   // The schema name used for SQL qualification.
   string schema_name = 2;
@@ -67,7 +67,8 @@ message Table {
 message TableSummary {
   // Workspace that scopes this table.
   Workspace workspace = 1;
-  // Source schema that owns the table.
+  // SQL schema that contains the table, including source schemas and the Coral
+  // system catalog schema.
   string schema_name = 2;
   // Table name within the schema.
   string name = 3;
@@ -79,7 +80,7 @@ message TableSummary {
   string guide = 6;
 }
 
-// An argument accepted by a source-scoped table function.
+// An argument accepted by a query-visible table function.
 message TableFunctionArgument {
   // Argument name as used in a named SQL function call.
   string name = 1;
@@ -89,7 +90,7 @@ message TableFunctionArgument {
   repeated string values = 3;
 }
 
-// A result column returned by a source-scoped table function.
+// A result column returned by a query-visible table function.
 message TableFunctionResultColumn {
   // Column name returned by the table function.
   string name = 1;
@@ -101,9 +102,9 @@ message TableFunctionResultColumn {
   string description = 4;
 }
 
-// A source-scoped table function in one workspace.
+// A query-visible table function in one workspace.
 message TableFunction {
-  // Workspace whose source set makes this function visible.
+  // Workspace whose query catalog makes this function visible.
   Workspace workspace = 1;
   // The schema name used for SQL qualification.
   string schema_name = 2;
@@ -121,7 +122,7 @@ message TableFunction {
 enum CatalogItemKind {
   // Return every currently supported catalog item kind.
   CATALOG_ITEM_KIND_UNSPECIFIED = 0;
-  // Ordinary query-visible tables.
+  // Ordinary query-visible tables, including Coral system catalog tables.
   CATALOG_ITEM_KIND_TABLE = 1;
   // Query-visible table functions.
   CATALOG_ITEM_KIND_TABLE_FUNCTION = 2;
@@ -151,7 +152,7 @@ message CatalogCounts {
 message ListCatalogRequest {
   // Workspace whose current queryable catalog should be listed.
   Workspace workspace = 1;
-  // Optional exact schema/source name.
+  // Optional exact SQL schema name.
   string schema_name = 2;
   // Optional item kind. Unspecified lists every currently supported kind.
   CatalogItemKind kind = 3;
@@ -177,7 +178,7 @@ message SearchCatalogRequest {
   string pattern = 2;
   // Whether regex matching should ignore case.
   bool ignore_case = 3;
-  // Optional exact schema/source name.
+  // Optional exact SQL schema name.
   string schema_name = 4;
   // Optional item kind. Unspecified searches every currently supported kind.
   CatalogItemKind kind = 5;
@@ -205,7 +206,7 @@ message SearchCatalogResponse {
 message DescribeTableRequest {
   // Workspace whose current query-visible tables should be inspected.
   Workspace workspace = 1;
-  // Exact schema/source name.
+  // Exact SQL schema name.
   string schema_name = 2;
   // Exact table name.
   string table_name = 3;
@@ -227,7 +228,7 @@ message DescribeTableResponse {
 message ListColumnsRequest {
   // Workspace whose current query-visible tables should be inspected.
   Workspace workspace = 1;
-  // Exact schema/source name.
+  // Exact SQL schema name.
   string schema_name = 2;
   // Exact table name.
   string table_name = 3;
@@ -257,7 +258,8 @@ message ListColumnsResponse {
   PaginationResponse pagination = 2;
 }
 
-// Catalog discovery APIs.
+// Catalog discovery APIs over query-visible source-backed items and Coral
+// system catalog metadata.
 service CatalogService {
   // Lists queryable catalog items for one workspace.
   rpc ListCatalog(ListCatalogRequest) returns (ListCatalogResponse);

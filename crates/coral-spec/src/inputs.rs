@@ -477,7 +477,14 @@ fn credential_like_input_key(key: &str) -> bool {
     })
 }
 
-fn validate_oauth_endpoint_templates(inputs: &[ManifestInputSpec]) -> Result<()> {
+pub(crate) fn validate_oauth_endpoint_templates(inputs: &[ManifestInputSpec]) -> Result<()> {
+    validate_oauth_endpoint_templates_with_scope(inputs, "top-level inputs")
+}
+
+pub(crate) fn validate_oauth_endpoint_templates_with_scope(
+    inputs: &[ManifestInputSpec],
+    input_scope: &str,
+) -> Result<()> {
     let declared = inputs
         .iter()
         .map(|input| (input.key.as_str(), input))
@@ -490,7 +497,12 @@ fn validate_oauth_endpoint_templates(inputs: &[ManifestInputSpec]) -> Result<()>
             let Some(oauth) = method.oauth.as_ref() else {
                 continue;
             };
-            validate_oauth_endpoint_templates_for_method(&input.key, oauth, &declared)?;
+            validate_oauth_endpoint_templates_for_method(
+                &input.key,
+                oauth,
+                &declared,
+                input_scope,
+            )?;
         }
     }
     Ok(())
@@ -500,9 +512,16 @@ fn validate_oauth_endpoint_templates_for_method(
     input_key: &str,
     oauth: &ManifestOAuthCredentialSpec,
     declared: &BTreeMap<&str, &ManifestInputSpec>,
+    input_scope: &str,
 ) -> Result<()> {
     if let Some(template) = oauth.authorization_url.as_deref() {
-        validate_oauth_endpoint_template(input_key, "authorization_url", template, declared)?;
+        validate_oauth_endpoint_template(
+            input_key,
+            "authorization_url",
+            template,
+            declared,
+            input_scope,
+        )?;
     }
     if let Some(template) = oauth.device_authorization_url.as_deref() {
         validate_oauth_endpoint_template(
@@ -510,9 +529,16 @@ fn validate_oauth_endpoint_templates_for_method(
             "device_authorization_url",
             template,
             declared,
+            input_scope,
         )?;
     }
-    validate_oauth_endpoint_template(input_key, "token_url", &oauth.token_url, declared)
+    validate_oauth_endpoint_template(
+        input_key,
+        "token_url",
+        &oauth.token_url,
+        declared,
+        input_scope,
+    )
 }
 
 fn validate_oauth_endpoint_template(
@@ -520,6 +546,7 @@ fn validate_oauth_endpoint_template(
     field: &str,
     raw_template: &str,
     declared: &BTreeMap<&str, &ManifestInputSpec>,
+    input_scope: &str,
 ) -> Result<()> {
     let template = ParsedTemplate::parse(raw_template)?;
     let mut rendered = String::with_capacity(template.raw().len());
@@ -537,13 +564,13 @@ fn validate_oauth_endpoint_template(
                 }
                 if token.default_value().is_some() {
                     return Err(ManifestError::validation(format!(
-                        "manifest input '{}' must declare defaults under top-level inputs",
+                        "manifest input '{}' must declare defaults under {input_scope}",
                         token.key()
                     )));
                 }
                 let Some(input) = declared.get(token.key()) else {
                     return Err(ManifestError::validation(format!(
-                        "manifest input '{}' is referenced but not declared under top-level inputs",
+                        "manifest input '{}' is referenced but not declared under {input_scope}",
                         token.key()
                     )));
                 };

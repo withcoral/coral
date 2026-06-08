@@ -78,11 +78,7 @@ impl OpenApiImporter<'_> {
             }
         } else if let Some(values) = resolved.get("enum").and_then(Value::as_array) {
             IrTypeShape::Enum {
-                values: values
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(ToString::to_string)
-                    .collect(),
+                values: values.iter().map(enum_value).collect(),
             }
         } else {
             match resolved
@@ -104,15 +100,19 @@ impl OpenApiImporter<'_> {
                             ),
                         }
                     } else if let Some(additional) = resolved.get("additionalProperties") {
-                        let value_type_ref = self
-                            .import_schema(
-                                additional,
-                                &format!("{type_id}_value"),
-                                operation_id,
-                                diagnostics,
-                            )
-                            .unwrap_or_else(|| "json".to_string());
-                        IrTypeShape::Map { value_type_ref }
+                        if additional.as_bool() == Some(false) {
+                            IrTypeShape::Object { fields: Vec::new() }
+                        } else {
+                            let value_type_ref = self
+                                .import_schema(
+                                    additional,
+                                    &format!("{type_id}_value"),
+                                    operation_id,
+                                    diagnostics,
+                                )
+                                .unwrap_or_else(|| "json".to_string());
+                            IrTypeShape::Map { value_type_ref }
+                        }
                     } else {
                         IrTypeShape::Json
                     }
@@ -175,14 +175,28 @@ impl OpenApiImporter<'_> {
                     type_ref,
                     required: required.contains(name),
                     nullable: true,
-                    description: schema
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
+                    description: self.field_description(schema),
                 }
             })
             .collect()
+    }
+
+    fn field_description(&self, schema: &Value) -> String {
+        if let Some(description) = schema.get("description").and_then(Value::as_str) {
+            return description.to_string();
+        }
+        let Some(reference) = schema.get("$ref").and_then(Value::as_str) else {
+            return String::new();
+        };
+        let Some(pointer) = reference.strip_prefix('#') else {
+            return String::new();
+        };
+        self.document
+            .pointer(pointer)
+            .and_then(|resolved| resolved.get("description"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
     }
 }
 
@@ -195,6 +209,12 @@ fn required_fields(schema: &Value) -> BTreeSet<String> {
         .filter_map(Value::as_str)
         .map(ToString::to_string)
         .collect()
+}
+
+fn enum_value(value: &Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), ToString::to_string)
 }
 
 fn type_id_from_ref(reference: &str) -> String {
