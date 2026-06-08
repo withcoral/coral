@@ -180,22 +180,6 @@ ORDER BY mrr DESC
 LIMIT 20;
 ```
 
-### Revenue by product including quantity
-
-```sql
-SELECT
-  oi.product_name,
-  oi.variant_name,
-  SUM(oi.quantity)                               AS units_sold,
-  ROUND(SUM(oi.price * oi.quantity) / 100.0, 2) AS gross_revenue
-FROM lemon_squeezy.order_items oi
-JOIN lemon_squeezy.orders o
-  ON o.id = CAST(oi.order_id AS VARCHAR)
-WHERE o.status = 'paid'
-GROUP BY 1, 2
-ORDER BY gross_revenue DESC;
-```
-
 ### Revenue by product including quantity, per order currency
 
 ```sql
@@ -241,13 +225,16 @@ SELECT
     WHEN 'percent' THEN CAST(d.amount AS VARCHAR) || '%'
     ELSE CAST(ROUND(d.amount / 100.0, 2) AS VARCHAR)
   END AS discount_value,
+  o.currency,
   COUNT(dr.id) AS redemptions,
   ROUND(COALESCE(SUM(dr.amount), 0) / 100.0, 2) AS total_savings
 FROM lemon_squeezy.discounts d
 LEFT JOIN lemon_squeezy.discount_redemptions dr
   ON dr.discount_id = CAST(d.id AS BIGINT)
+LEFT JOIN lemon_squeezy.orders o
+  ON o.id = CAST(dr.order_id AS VARCHAR)
 WHERE d.status = 'published'
-GROUP BY d.id, d.code, d.amount_type, d.amount
+GROUP BY d.id, d.code, d.amount_type, d.amount, o.currency
 ORDER BY redemptions DESC;
 ```
 
