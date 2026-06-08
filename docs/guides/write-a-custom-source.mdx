@@ -5,7 +5,7 @@ description: "Extend Coral by adding any API or dataset as a queryable source."
 
 Coral ships with [popular data sources](/reference/bundled-sources), but you are not limited to them. Before writing a new spec, check whether a [community source](/reference/community-sources) already exists. If the data source you need is not available out of the box or in the community catalog, you can write a source spec in YAML and import it.
 
-A source spec tells Coral how to connect to an API or read a local dataset, what tables to expose, and what columns each table has. Once added, the source works exactly like a bundled one: same SQL, same `coral.tables`, `coral.columns` and `coral.inputs`, same MCP surface.
+A source spec tells Coral how to connect to an API or read a local dataset, what tables to expose, and what columns each table has. Once added, the source works exactly like a bundled one: same SQL, same Coral metadata tables, same MCP surface.
 
 <Tip>
   Install the [Coral source spec authoring
@@ -25,7 +25,7 @@ API-backed sources vary in difficulty. The source spec model is designed for API
 - **Structured, accessible documentation** — an OpenAPI spec, GraphQL schema, or clearly organized REST docs that describe endpoints, response shapes, authentication, scopes, and OAuth client settings
 - **Real data to validate against** — actual records in the account so you can confirm the source is returning the expected results during development
 
-OAuth-backed services can work well when the provider supports device-code flow, or when it supports an authorization-code loopback redirect URI such as `http://127.0.0.1:<port>/oauth/callback` or `http://localhost:<port>/oauth/callback`. Coral can run the OAuth flow during `coral source add --interactive`, store the returned access token as the source secret, and use that secret through the normal `auth` or request-header fields. When the provider returns a refresh token, Coral stores the refresh metadata and refreshes short-lived access tokens at runtime. Without a refresh token, the access token remains usable until it expires, then users must reconnect the source.
+OAuth-backed APIs are good candidates when they support device-code flow or authorization-code flow with a local loopback redirect, such as `http://127.0.0.1:<port>/oauth/callback`. During `coral source add --interactive`, Coral can collect an access token and store it as a source secret. If the provider returns a refresh token, Coral can refresh access later; otherwise users reconnect after the access token expires.
 
 If you are unsure whether your API is a good candidate, ask us in [Discord](https://withcoral.com/discord) before getting started.
 
@@ -36,43 +36,21 @@ Source authoring works well as an agent-driven workflow. Point your coding agent
 1. The agent writes or updates the source spec YAML
 2. Lints the file with `coral source lint ./my-source.yaml` to catch errors before installing
 3. Adds it with `coral source add --file ./my-source.yaml`
-4. Validates with `coral source test my_source`
+4. Runs strict validation with `coral source test my_source`
 5. Inspects `coral.tables`, `coral.table_functions`, `coral.columns`, `coral.filters` and `coral.inputs` to check the shape
 6. Refines and repeats until the tables look right
 
-## Search and retrieval endpoints
+## How to validate your source spec
 
-Model provider-native search as a source-scoped table function, not as a normal table filter. If an API endpoint accepts a query string and returns provider-ranked candidates, declare it under `functions` with `kind: search`, `search_limits`, explicit arguments, and result columns. Search functions are called from SQL with named arguments:
+Use the validation loop while authoring:
 
-```sql
-SELECT id, title, url
-FROM github.search_issues(q => 'repo:withcoral/coral source functions')
-LIMIT 10
-```
+1. Run `coral source lint ./my-source.yaml` before installing.
+2. Add or update the source with `coral source add --file ./my-source.yaml`.
+3. Run strict validation with `coral source test <source_name>`.
+4. Query the new tables with `coral sql`.
+5. Inspect `coral.tables`, `coral.table_functions`, `coral.columns`, `coral.filters`, and `coral.inputs`.
 
-Search functions are retrieval surfaces, not exhaustive tables. They preserve provider ranking and may return only the best candidates for a query. Use result columns such as `id`, `url`, `title`, `score`, `rank`, or provider timestamps so users and agents can decide which candidate to inspect next. If the search row is intentionally thin, expose enough stable identifiers for follow-up queries against ordinary detail tables.
-
-Table functions are more general than search. Use the default table function kind for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.
-
-Use ordinary table filters for exact lookup, required scoping, or provider-side filtering on list endpoints. Use `mode: contains` only when the provider has normal substring matching for a table filter. Provider-ranked retrieval belongs in a `kind: search` function with `search_limits`; table filters are not retrieval surfaces.
-
-## Column naming for nested fields
-
-When a source exposes nested API fields as separate SQL columns, use double underscores (`__`) to flatten the path into a single column name.
-
-- `assignee__name` means "the `name` field under `assignee`"
-- `repository__owner__login` means `repository.owner.login`
-
-This matches the naming convention used across bundled sources and keeps the mapping easy to read in both SQL and `coral.columns`. Treat the full flattened name as the column name in queries; it is not dot notation.
-
-```sql
-SELECT title, assignee__name
-FROM github.issues
-WHERE owner = 'withcoral' AND repo = 'coral'
-LIMIT 5
-```
-
-If you are consuming a source, inspect `coral.columns` to see the exact names Coral exposes. If you are authoring a source, prefer `parent__child` style names for flattened fields so users can recognize related data consistently.
+Add top-level `test_queries` for cheap, read-only checks that should run during validation. For execution behavior, failure handling, and credentialed-source checks, see [Test queries](/reference/source-spec-reference#test-queries).
 
 ## Example: local JSONL source
 
@@ -117,7 +95,7 @@ tables:
 
 Replace `/absolute/path/to/demo-data/` with the real absolute path on your machine.
 
-The optional top-level `test_queries` field lets you declare read-only SQL checks that Coral runs during `coral source test`. Prefer cheap `SELECT` queries that confirm the source connects correctly and the table mapping looks right.
+The optional top-level `test_queries` field lets you declare read-only SQL checks that Coral runs during post-install validation and strict `coral source test`. `coral source lint` validates the field without executing the queries. Prefer cheap `SELECT` queries that confirm the source connects correctly and the table mapping looks right.
 
 ### 3. Add and validate
 
@@ -138,37 +116,13 @@ coral sql "
 "
 ```
 
-## How to validate
-
-When you add `test_queries` to a source spec, treat them as a lightweight validation contract for that source.
-
-1. Run `coral source lint ./my-source.yaml` first. It catches schema and semantic issues without touching your workspace or asking for secrets.
-2. Add or update the source with `coral source add --file ./my-source.yaml`.
-3. Confirm the install-time validation output:
-   - the source exposes the expected tables
-   - each declared `test_queries` entry runs successfully
-   - successful queries show a pass status and row count
-   - failing queries surface the SQL text plus an error message
-4. Run real `coral sql` queries against the new tables to confirm the shape is useful beyond the validation checks.
-5. If you want a strict rerun later, or you are debugging a failure, run `coral source test <source_name>`.
-6. If a query fails, fix either the source spec or the upstream credentials/configuration, then rerun `coral source test <source_name>`.
-
-If you are validating a credentialed source end-to-end, it is useful to try both:
-
-- a correctly configured source, which should pass table validation and all declared query tests
-- an intentionally misconfigured source, which should still install but fail `coral source test` with a non-zero exit code
-
-This gives you confidence that the source spec works in the happy path and that `test_queries` catch broken credentials or runtime regressions in a predictable way.
-
-Use read-only SQL in `test_queries`. Prefer bounded checks such as `SELECT * FROM schema.table LIMIT 1` over expensive scans like `SELECT COUNT(*)`, especially for HTTP-backed sources or large datasets. Coral rejects DDL, DML, and other non-read-only statements as failed validation queries instead of applying them.
-
 ## Example: HTTP API source
 
-To connect an HTTP API, the source spec declares the base URL, auth, endpoints, and response shape.
+To connect an HTTP API, the source spec declares the base URL, auth, endpoints, and response shape. If the API has search endpoints, table functions, filters, or nested response fields, see [HTTP table functions](/reference/source-spec-reference#http-table-functions), [Table filters](/reference/source-spec-reference#table-filters), and [Nested field naming](/reference/source-spec-reference#nested-field-naming).
 
 ### Basic token auth
 
-Authentication has two separate parts. The `inputs` block defines the values Coral collects and stores when you add the source. The `auth` block defines how those stored values are used on outgoing HTTP requests. The example below collects `API_TOKEN` as a secret, then uses it to build the `Authorization` header with `HeaderAuth`. For the full auth field reference and additional examples, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
+Authentication has two parts: `inputs` defines the values Coral collects and stores when you add the source, while `auth` defines how those stored values are used on outgoing HTTP requests. The example below collects `API_TOKEN` as a secret, then sends it as a bearer token. For field-level input and auth rules, see [Source inputs](/reference/source-spec-reference#source-inputs) and [HTTP authentication](/reference/source-spec-reference#http-authentication).
 
 ```yaml
 name: demo_api
@@ -216,90 +170,17 @@ tables:
 
 ### OAuth credential setup
 
-When a source should offer OAuth setup, keep the runtime auth shape the same and add `credential.methods` to the secret input. The OAuth method controls how Coral obtains the secret during setup; the `auth` block still decides how that stored secret is sent to the API.
+When a source should offer OAuth setup, add `credential.methods` to the secret input while keeping runtime `auth` focused on how the stored secret is sent to the API. Use `type: oauth` for device-code or authorization-code setup, and add a `type: source_config` fallback when users can paste an existing token.
 
-Give each method its own `hint` rather than one input-level hint: the field shown below the hint changes with the selected method, so scope each method's guidance to the inputs that method collects.
+For field-level details and examples, see [Credential methods](/reference/source-spec-reference#credential-methods), [OAuth flow and client settings](/reference/source-spec-reference#oauth-flow-and-client-settings), [OAuth redirect URIs](/reference/source-spec-reference#oauth-redirect-uris), and [`HeaderAuth`](/reference/source-spec-reference#headerauth) for `from: bearer` and `from: one_of`.
 
-```yaml
-inputs:
-  DEMO_API_TOKEN:
-    kind: secret
-    credential:
-      methods:
-        - type: oauth
-          label: Connect with Demo
-          description: Open a browser and authorize Coral to read Demo API data.
-          hint: |
-            Signs you in through Demo in your browser and requests the
-            `read:data` scope. To use your own app, set DEMO_OAUTH_CLIENT_ID
-            to its Client ID.
-          oauth:
-            flow:
-              type: authorization_code
-              pkce: required
-            redirect_uri: http://127.0.0.1:0/oauth/callback
-            redirect_uri_port_mode: random
-            endpoints:
-              authorization_url: https://demo.example.com/oauth/authorize
-              token_url: https://demo.example.com/oauth/token
-            client:
-              id:
-                input: DEMO_OAUTH_CLIENT_ID
-            scopes:
-              scope:
-                delimiter: space
-                values:
-                  - read:data
-        - type: source_config
-          label: Paste token
-          hint: Paste a Demo API token with read access to the data you query.
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: bearer
-      key: DEMO_API_TOKEN
-```
+Keep each method's `hint` scoped to the fields that method collects. If OAuth endpoint URLs need non-secret install-time configuration, declare those values as source variables; see [Source inputs](/reference/source-spec-reference#source-inputs).
 
-When an API supports either a complete pasted API-key header or an OAuth access
-token, declare both credential inputs as optional secrets, then use
-`from: one_of` and put the pasted header first, followed by a `from: bearer`
-fallback for the raw OAuth token.
-
-```yaml
-inputs:
-  DEMO_API_KEY:
-    kind: secret
-    required: false
-  DEMO_OAUTH_ACCESS_TOKEN:
-    kind: secret
-    required: false
-```
-
-### OAuth client and redirect options
-
-Choose OAuth client settings from the provider's OAuth app and token endpoint requirements:
-
-- Use `pkce: required` for public clients when the provider supports it. Use `pkce: disabled` only for providers that do not support PKCE.
-- When the token endpoint requires client authentication with a client secret, prompt for both OAuth client values: set `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`) to match the token endpoint.
-- When the provider requires pre-registered redirect URIs with exact ports, use `redirect_uri_port_mode: fixed` with a non-zero port and tell users to register that exact URI in the OAuth app.
-- When OAuth endpoint URLs need non-secret install-time configuration, such as a Microsoft tenant ID, declare that value as a `kind: variable` input and reference it with `{{input.KEY}}` in `endpoints.authorization_url`, `endpoints.token_url`, or `endpoints.device_authorization_url`. OAuth endpoint templates do not support secrets, filters, function arguments, state, or inline defaults.
-
-### Install-time input collection
-
-When you run `coral source add --file`, Coral reads each declared `input` from an environment variable of the same name, or prompts for it when you pass `--interactive`. `kind: variable` values go to source variables; `kind: secret` values go to the secret store. API keys, bearer tokens, OAuth access tokens, passwords, private keys, and authorization values must be secrets, even when the credential is read-only. Declaring an input only configures storage; it does not send the value to the API. Runtime request fields such as `auth.headers`, `BasicAuth`, `CustomAuth`, and request headers decide where stored inputs are used. For secret inputs, `credential.methods` controls how the secret is collected: `type: source_config` means environment-variable lookup by default or an interactive prompt with `--interactive`; OAuth device-code and authorization-code methods describe alternative install-time retrieval choices.
-
-For OAuth credential methods, Coral stores provider refresh metadata when it is
-returned and uses it to keep short-lived access tokens usable without asking
-users to reconnect. Coral can only refresh when the token response includes a
-refresh token, so choose OAuth scopes accordingly and document any provider or
-client settings that are required to issue refresh tokens.
-
-For the full set of HTTP response, pagination, auth, and column fields, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
+For the full set of HTTP response, pagination, auth, input, and column fields, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 
 ## Tips
 
 - **Lint before installing.** `coral source lint ./my-source.yaml` is a fast local precheck because it does not install the source or require credentials.
-- **Start small.** Begin with one table and a few columns. Validate with `coral source test`, check `coral.columns` and `coral.inputs`, then expand.
+- **Start small.** Begin with one table and a few columns. Validate with `coral source test`, check Coral metadata tables, then expand.
 - **Use `coral.tables`, `coral.table_functions`, `coral.columns`, `coral.filters`, and `coral.inputs`.** They show you exactly what Coral sees after adding a source — including required filters, search functions, and column metadata.
 - **Look at bundled sources for patterns.** The bundled source specs in the repo under `sources/core/` are working examples of HTTP pagination, response parsing, auth, and inputs.

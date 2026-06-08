@@ -78,7 +78,11 @@ Show metadata for a source: whether it is installed, its origin, version, descri
 coral source info datadog
 ```
 
-Pass `-v/--verbose` for more detailed output.
+#### Options
+
+| Option           | Type | Default | Description                                      |
+| ---------------- | ---- | ------- | ------------------------------------------------ |
+| `-v`, `--verbose` | flag | `false` | Show additional details, such as input hints     |
 
 ```shellscript
 coral source info datadog --verbose
@@ -86,13 +90,23 @@ coral source info datadog --verbose
 
 ### `coral source add <NAME>`
 
-Add a bundled source or update its credentials.
-
-By default, Coral reads each declared input from an environment variable of the same name. If a required input is missing, the command exits with an error listing the missing keys.
+Add a bundled source, update its credentials, or import a custom source spec.
 
 ```shellscript
 GITHUB_TOKEN=ghp_... coral source add github
+coral source add --file ./local-messages.yaml
 ```
+
+#### Options
+
+| Option          | Type | Default                  | Description                                                   |
+| --------------- | ---- | ------------------------ | ------------------------------------------------------------- |
+| `--file <PATH>` | path | required unless `<NAME>` | Source spec YAML file to import                               |
+| `--interactive` | flag | `false`                  | Prompt for source inputs instead of reading environment variables |
+
+By default, Coral reads each declared input from an environment variable of the
+same name. If a required input is missing, the command exits with an error
+listing the missing keys.
 
 Pass `--interactive` to be prompted for variables and secrets instead. If a
 missing secret declares credential methods, Coral shows those choices in the
@@ -120,14 +134,6 @@ delete a keychain probe item. If the keychain is unavailable in `auto` mode,
 Coral stores the source secrets in plaintext file storage and shows
 `file (plaintext)` in source output. Sources with no stored secret material show
 `none`.
-
-### `coral source add --file <PATH>`
-
-Add a custom source spec from a YAML file. Input values come from environment variables by default; add `--interactive` to be prompted.
-
-```shellscript
-coral source add --file ./local-messages.yaml
-```
 
 ### `coral source lint <FILE>`
 
@@ -205,6 +211,13 @@ Open the local Coral UI in your browser.
 coral ui
 ```
 
+### Options
+
+| Option      | Type | Default | Description                                      |
+| ----------- | ---- | ------- | ------------------------------------------------ |
+| `--port`    | port | `1457`  | Loopback port for the local browser-facing server |
+| `--no-open` | flag | `false` | Start the server without opening a browser       |
+
 The UI opens at `http://127.0.0.1:1457` by default, which only accepts connections from your machine. The command keeps running until you press `Ctrl-C`.
 
 The host is fixed to `127.0.0.1`. Use `--port` to bind a different loopback port:
@@ -229,22 +242,26 @@ coral mcp-stdio
 
 This command is intended to be launched by an MCP-capable client rather than used directly in an interactive shell.
 
-This server exposes:
+By default, this server exposes:
 
-| Type     | Name             | Description                      |
-| -------- | ---------------- | -------------------------------- |
-| Tool     | `sql`            | Execute read-only SQL against the Coral database |
-| Tool     | `list_catalog`   | List database tables and table functions |
-| Tool     | `search_catalog` | Search database catalog metadata by regex |
-| Tool     | `describe_table` | Show compact database table metadata |
-| Tool     | `list_columns`   | List columns for one database table |
-| Resource | `coral://guide`  | Database workflow guide for agents |
-| Resource | `coral://tables` | Database table summaries         |
+| Type     | Name             | Description                                             |
+| -------- | ---------------- | ------------------------------------------------------- |
+| Tool     | `sql`            | Execute read-only SQL against the Coral database        |
+| Tool     | `list_catalog`   | List database tables and table functions with pagination |
+| Tool     | `search_catalog` | Search database catalog metadata with a Rust regex      |
+| Tool     | `describe_table` | Show compact metadata for one database table            |
+| Tool     | `list_columns`   | List columns for one database table with pagination     |
+| Resource | `coral://guide`  | Database workflow guide for agents                     |
+| Resource | `coral://tables` | JSON summaries of query-visible database tables, including Coral catalog tables and required filters |
+
+When the `feedback` feature is enabled, the server also exposes a non-read-only `feedback` tool for blocked-agent reports. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.
 
 Catalog helpers include the `coral` system schema, so `list_catalog`,
-`describe_table`, `list_columns`, and `coral://tables` can discover
+`search_catalog`, `describe_table`, `list_columns`, and `coral://tables` can discover
 `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and
 `coral.inputs`.
+
+For client setup and MCP result-format details, see [Use Coral over MCP](/guides/use-coral-over-mcp).
 
 ## `coral completion <SHELL>`
 
