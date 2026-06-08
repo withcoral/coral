@@ -11,7 +11,7 @@ Query Klaviyo email marketing data as SQL tables. Inspect subscriber lists, camp
 | Table | Description | Required filters | Optional filters |
 |-------|-------------|-----------------|-----------------|
 | `klaviyo.lists` | Subscriber lists with opt-in configuration | — | `filter` |
-| `klaviyo.campaigns` | Email and SMS campaigns with status and send time | `channel` | — |
+| `klaviyo.campaigns` | Email and SMS campaigns with status and send time | `channel` | `filter` |
 | `klaviyo.flows` | Automation flow definitions with status | — | `filter` |
 | `klaviyo.metrics` | Event metric definitions with integration source | — | `filter` |
 
@@ -24,9 +24,10 @@ Requires `KLAVIYO_API_KEY`.
 1. Log in to your Klaviyo dashboard
 2. Go to **Settings** → **API Keys**
 3. Click **Create Private API Key**
-4. Select read-only scopes for the resources you plan to query
+4. Grant `lists:read`, `campaigns:read`, `flows:read`, and `metrics:read` to
+   query every table exposed by this source
 
-The connector uses an `Authorization: Klaviyo-API-Key {key}` header and the API revision `2023-12-15`.
+The connector uses an `Authorization: Klaviyo-API-Key {key}` header and the API revision `2026-04-15`.
 
 ## Install
 
@@ -46,7 +47,7 @@ KLAVIYO_API_KEY=your-key coral source add --file manifest.yaml
 
 ### Lists
 
-All subscriber lists (up to 100):
+First page of subscriber lists (up to 10):
 
 ```sql
 SELECT id, name, opt_in_process, created
@@ -54,16 +55,16 @@ FROM klaviyo.lists
 ORDER BY created DESC;
 ```
 
-Lists matching a name pattern (API-level filter — use to narrow below 100):
+Match a list name exactly (API-level filter):
 
 ```sql
 SELECT id, name, opt_in_process, created
 FROM klaviyo.lists
-WHERE filter = 'contains(name,"newsletter")'
+WHERE filter = 'equals(name,"Newsletter")'
 ORDER BY created DESC;
 ```
 
-Lists created after a date (combine with SQL WHERE to slice large accounts):
+Lists created after a date (API-level filter):
 
 ```sql
 SELECT id, name, opt_in_process, created
@@ -76,7 +77,7 @@ ORDER BY created DESC;
 
 `channel` is required by the Klaviyo API. Valid values: `email`, `sms`, `mobile_push`.
 
-Email campaigns (up to 100, most recently updated):
+Email campaigns (first page of up to 100, most recently updated):
 
 ```sql
 SELECT id, name, status, channel, send_time
@@ -94,30 +95,29 @@ WHERE channel = 'sms'
 ORDER BY send_time DESC;
 ```
 
-Sent email campaigns only (SQL `WHERE` applied after fetch):
+Sent email campaigns only (additional API-level filter):
 
 ```sql
 SELECT id, name, send_time
 FROM klaviyo.campaigns
 WHERE channel = 'email'
-  AND status = 'Sent'
+  AND filter = 'equals(status,"Sent")'
 ORDER BY send_time DESC;
 ```
 
-Email campaigns in a specific year (narrow below 100 with date range):
+Email campaigns updated after a date (additional API-level filter):
 
 ```sql
 SELECT id, name, status, send_time
 FROM klaviyo.campaigns
 WHERE channel = 'email'
-  AND send_time >= '2024-01-01T00:00:00+00:00'
-  AND send_time < '2025-01-01T00:00:00+00:00'
+  AND filter = 'greater-or-equal(updated_at,"2026-01-01T00:00:00+00:00")'
 ORDER BY send_time DESC;
 ```
 
 ### Flows
 
-All automation flows (up to 100):
+First page of automation flows (up to 50):
 
 ```sql
 SELECT id, name, status, created
@@ -145,7 +145,7 @@ ORDER BY created DESC;
 
 ### Metrics
 
-All event metrics (up to 100):
+First page of event metrics (up to 200):
 
 ```sql
 SELECT id, name, integration_name, integration_category
@@ -194,7 +194,10 @@ ORDER BY date DESC;
 
 ## Klaviyo Filter Syntax
 
-`klaviyo.lists`, `klaviyo.flows`, and `klaviyo.metrics` accept an optional `filter` SQL parameter whose value is a Klaviyo filter expression. String values must be double-quoted inside the expression; wrap the whole expression in single quotes in SQL.
+All four tables accept an optional `filter` SQL parameter whose value is a
+Klaviyo filter expression. For `klaviyo.campaigns`, the source combines this
+expression with the required channel filter. String values must be double-quoted
+inside the expression; wrap the whole expression in single quotes in SQL.
 
 | Pattern | Example |
 |---------|---------|
@@ -204,7 +207,14 @@ ORDER BY date DESC;
 | Less-than | `less-than(field,"value")` |
 | Combine | `and(expr1,expr2)` |
 
-`klaviyo.campaigns` takes a plain `channel` filter (`email`, `sms`, or `mobile_push`) — the connector automatically constructs the required Klaviyo filter expression.
+Each endpoint permits only specific filter fields and operators. See Klaviyo's
+[API reference](https://developers.klaviyo.com/en/reference/api-overview#filtering)
+before composing a filter. For example, lists support `equals(name,...)` but
+not `contains(name,...)`.
+
+`klaviyo.campaigns` also takes a required plain `channel` filter (`email`,
+`sms`, or `mobile_push`); the connector automatically constructs and combines
+the required `messages.channel` expression.
 
 ## Status Reference
 
@@ -230,8 +240,14 @@ ORDER BY date DESC;
 ## Notes
 
 - All tables are strictly read-only.
-- Each table returns up to 100 records per query (Klaviyo's maximum `page[size]`). Klaviyo uses URL-embedded cursor pagination which is not supported by the Coral HTTP backend. Use the `filter` parameter on `lists`, `flows`, and `metrics` to narrow results with Klaviyo filter expressions (name, status, date range, etc.). For `campaigns`, query each channel separately and apply SQL `WHERE` conditions on `status`, `send_time`, and other columns to slice within the 100-record window.
-- `klaviyo.campaigns` requires a `channel` value (`email`, `sms`, or `mobile_push`) — the Klaviyo API mandates a channel selector on this endpoint and returns an error without one. The connector automatically constructs `equals(messages.channel,"<value>")` from the `channel` filter.
-- The `revision: 2023-12-15` header is sent automatically with every request as required by the Klaviyo API.
+- Klaviyo returns cursor links as full URLs in the JSON response body, which
+  Coral's HTTP backend cannot currently follow. Each query therefore returns
+  the first API page: up to 10 lists, 100 campaigns, 50 flows, or 200 metrics.
+  Use provider-level `filter` expressions to retrieve narrow, reliable subsets.
+- `klaviyo.campaigns` requires a `channel` value (`email`, `sms`, or
+  `mobile_push`) and accepts an optional additional provider filter. The source
+  automatically constructs and combines the required
+  `equals(messages.channel,"<value>")` expression.
+- The `revision: 2026-04-15` header is sent automatically with every request.
 - All timestamp fields use ISO 8601 format with timezone offset (e.g. `2024-01-15T10:30:00+00:00`).
 - Rate limit handling: `429` responses are retried automatically via `Retry-After`.

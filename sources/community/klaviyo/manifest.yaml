@@ -15,7 +15,8 @@ inputs:
     hint: |
       Your Klaviyo private API key. Find it in the Klaviyo dashboard under
       Settings → API Keys → Create Private API Key.
-      Use a key with read-only access to the resources you plan to query.
+      Grant the lists:read, campaigns:read, flows:read, and metrics:read scopes
+      to query every table exposed by this source.
       See https://developers.klaviyo.com/en/docs/retrieve_api_credentials
 
 auth:
@@ -28,7 +29,7 @@ auth:
 request_headers:
   - name: revision
     from: literal
-    value: "2023-12-15"
+    value: "2026-04-15"
 
 rate_limit:
   extra_statuses:
@@ -37,44 +38,47 @@ rate_limit:
 
 test_queries:
   - SELECT id, name FROM klaviyo.lists LIMIT 1
+  - SELECT id, name, channel FROM klaviyo.campaigns WHERE channel = 'email' LIMIT 1
+  - SELECT id, name, status FROM klaviyo.flows LIMIT 1
+  - SELECT id, name, integration_name FROM klaviyo.metrics LIMIT 1
 
 tables:
   - name: lists
     description: >-
       Klaviyo subscriber lists. Each row is one list with its name and
-      opt-in configuration. Returns up to 100 lists per query — use the
-      filter parameter to narrow results for large accounts.
+      opt-in configuration. Returns the first API page; use the filter
+      parameter to narrow results for large accounts.
     guide: |
       Optional filter parameter accepts Klaviyo filter expressions.
-      Returns up to 100 lists (Klaviyo's page[size] maximum).
+      Returns up to 10 lists (Klaviyo's page[size] maximum).
 
       opt_in_process values:
         double_opt_in  — subscriber must confirm via email
         single_opt_in  — subscriber is added immediately
 
-      All lists (up to 100):
+      All lists (first 10):
         SELECT id, name, opt_in_process, created
         FROM klaviyo.lists
         ORDER BY created DESC
 
-      Narrow by name:
+      Match a list name:
         SELECT id, name, opt_in_process, created
         FROM klaviyo.lists
-        WHERE filter = 'contains(name,"newsletter")'
+        WHERE filter = 'equals(name,"Newsletter")'
         ORDER BY created DESC
     filters:
       - name: filter
         required: false
     request:
       method: GET
-      path: /api/lists/
+      path: /api/lists
       query:
         - name: filter
           from: filter
           key: filter
         - name: "page[size]"
           from: literal
-          value: "100"
+          value: "10"
     response:
       rows_path:
         - data
@@ -131,12 +135,13 @@ tables:
       Klaviyo campaigns. Each row is one campaign with its name, channel,
       status, and send time. Requires a channel filter (email, sms, or
       mobile_push) — the Klaviyo API mandates a channel selector on this
-      endpoint. Returns up to 100 campaigns per query, sorted by most recently
-      updated.
+      endpoint. Returns the first API page, sorted by most recently updated;
+      use the optional filter parameter to narrow large channel inventories.
     guide: |
       channel is required. Valid values: email, sms, mobile_push.
-      Returns up to 100 campaigns per query (Klaviyo's page[size] maximum),
-      sorted by most recently updated.
+      Optional filter accepts an additional Klaviyo filter expression, which
+      the source combines with the required channel expression. Returns up to
+      100 campaigns per query, sorted by most recently updated.
 
       Email campaigns:
         SELECT id, name, status, channel, send_time
@@ -151,26 +156,27 @@ tables:
         WHERE channel = 'sms'
         ORDER BY send_time DESC
 
-      Sent email campaigns (SQL WHERE applied after fetch):
+      Sent email campaigns (provider-filtered):
         SELECT id, name, send_time
         FROM klaviyo.campaigns
         WHERE channel = 'email'
-          AND status = 'Sent'
+          AND filter = 'equals(status,"Sent")'
         ORDER BY send_time DESC
 
-      Email campaigns in a date range:
+      Email campaigns updated after a date:
         SELECT id, name, status, send_time
         FROM klaviyo.campaigns
         WHERE channel = 'email'
-          AND send_time >= '2024-01-01T00:00:00+00:00'
-          AND send_time < '2025-01-01T00:00:00+00:00'
+          AND filter = 'greater-or-equal(updated_at,"2026-01-01T00:00:00+00:00")'
         ORDER BY send_time DESC
     filters:
       - name: channel
         required: true
+      - name: filter
+        required: false
     request:
       method: GET
-      path: /api/campaigns/
+      path: /api/campaigns
       query:
         - name: filter
           from: template
@@ -181,6 +187,22 @@ tables:
         - name: sort
           from: literal
           value: "-updated_at"
+    requests:
+      - when_filters:
+          - channel
+          - filter
+        method: GET
+        path: /api/campaigns
+        query:
+          - name: filter
+            from: template
+            template: 'and(equals(messages.channel,"{{filter.channel}}"),{{filter.filter}})'
+          - name: "page[size]"
+            from: literal
+            value: "100"
+          - name: sort
+            from: literal
+            value: "-updated_at"
     response:
       rows_path:
         - data
@@ -215,13 +237,12 @@ tables:
             - status
       - name: channel
         type: Utf8
-        nullable: true
-        description: Delivery channel — email or sms
+        nullable: false
+        virtual: true
+        description: Delivery channel requested by the required channel filter
         expr:
-          kind: path
-          path:
-            - attributes
-            - channel
+          kind: from_filter
+          key: channel
       - name: archived
         type: Boolean
         nullable: true
@@ -272,15 +293,15 @@ tables:
     description: >-
       Klaviyo automation flows (sequences). Each row is one flow with its name
       and status. Flows are triggered email or SMS sequences sent to subscribers
-      based on events or list membership. Returns up to 100 flows per query —
-      use the filter parameter to narrow results for large accounts.
+      based on events or list membership. Returns the first API page; use the
+      filter parameter to narrow results for large accounts.
     guide: |
       Optional filter parameter accepts Klaviyo filter expressions.
-      Returns up to 100 flows (Klaviyo's page[size] maximum).
+      Returns up to 50 flows (Klaviyo's page[size] maximum).
 
       status values: draft, live, manual, archived
 
-      All flows (up to 100):
+      All flows (first 50):
         SELECT id, name, status, created
         FROM klaviyo.flows
         ORDER BY created DESC
@@ -301,14 +322,14 @@ tables:
         required: false
     request:
       method: GET
-      path: /api/flows/
+      path: /api/flows
       query:
         - name: filter
           from: filter
           key: filter
         - name: "page[size]"
           from: literal
-          value: "100"
+          value: "50"
     response:
       rows_path:
         - data
@@ -373,16 +394,16 @@ tables:
     description: >-
       Klaviyo event metric definitions. Each row is one metric type such as
       Placed Order, Opened Email, or Clicked SMS. Use metric names to
-      understand what events are tracked in the account. Returns up to 100
-      metric definitions per query.
+      understand what events are tracked in the account. Returns the first API
+      page; use the filter parameter to narrow results by integration.
     guide: |
       Optional filter parameter accepts Klaviyo filter expressions.
-      Returns up to 100 metric definitions (Klaviyo's page[size] maximum).
+      Returns the first API page (up to 200 metric definitions).
 
       integration.name shows the source that generates this metric
       (e.g. API, Shopify, Mailchimp).
 
-      All metrics (up to 100):
+      All metrics (first API page):
         SELECT id, name, integration_name, integration_category, created
         FROM klaviyo.metrics
         ORDER BY name ASC
@@ -397,14 +418,11 @@ tables:
         required: false
     request:
       method: GET
-      path: /api/metrics/
+      path: /api/metrics
       query:
         - name: filter
           from: filter
           key: filter
-        - name: "page[size]"
-          from: literal
-          value: "100"
     response:
       rows_path:
         - data
