@@ -55,7 +55,7 @@ coral source add --file sources/community/chromium/manifest.yaml
    coral source test chromium
    ```
 
-   Expected: the test query succeeds against `chromium.chrome_bookmarks`. If Chrome is not installed or no profile can be resolved, the server returns HTTP 503 with an actionable profile message.
+   Expected: the test query hits `chromium.status` and returns `status = ok`. This endpoint is browser-agnostic, so the test passes whether Chrome, Edge, or Brave is installed.
 
 5. Run a representative query:
 
@@ -81,14 +81,13 @@ By default, the server reads each browser's `Local State` file and uses `profile
 
 ## Available Tables
 
-Replace `[browser]` with `chrome`, `edge`, or `brave`.
-
 | Table | Description |
 | --- | --- |
-| `chromium.[browser]_bookmarks` | Bookmarks and folders. |
+| `chromium.status` | Server liveness check. Returns `status = ok`. Used as the test query — not browser-specific. |
+| `chromium.[browser]_bookmarks` | Bookmarks and folders. Replace `[browser]` with `chrome`, `edge`, or `brave`. |
 | `chromium.[browser]_history` | Most recent 5,000 history records. |
 | `chromium.[browser]_downloads` | Most recent 2,000 download records. |
-| `chromium.[browser]_extensions` | Installed extensions and versions. |
+| `chromium.[browser]_extensions` | Installed extensions and versions. Localized extension names are resolved via `_locales`. |
 | `chromium.[browser]_top_sites` | Top 100 browser-ranked frequently visited sites. |
 | `chromium.[browser]_tabs` | URLs from persisted browser session files. |
 
@@ -158,7 +157,7 @@ Added source chromium
 
   ✓ chromium connected successfully
 
-    chromium (18 tables)
+    chromium (19 tables)
     ├─ brave_bookmarks
     ├─ brave_downloads
     ├─ brave_extensions
@@ -176,11 +175,12 @@ Added source chromium
     ├─ edge_extensions
     ├─ edge_history
     ├─ edge_tabs
-    └─ edge_top_sites
+    ├─ edge_top_sites
+    └─ status
     Query tests
     1 declared · 1 passed · 0 failed
 
-    ✓ SELECT id, title FROM chromium.chrome_bookmarks LIMIT 1
+    ✓ SELECT status FROM chromium.status LIMIT 1
       1 row
 ```
 
@@ -193,7 +193,7 @@ chromium
     Query tests
     1 declared · 1 passed · 0 failed
 
-    ✓ SELECT id, title FROM chromium.chrome_bookmarks LIMIT 1
+    ✓ SELECT status FROM chromium.status LIMIT 1
       1 row
 ```
 
@@ -237,7 +237,7 @@ LIMIT 5;
 
 ## Security Notes
 
-The server enforces loopback-only binding: `CHROMIUM_BASE_URL` must resolve to `127.0.0.1`, `localhost`, or `::1`. Any other host is rejected at startup with a clear error, so the server cannot be exposed on a LAN or external interface.
+The server enforces loopback-only binding: `CHROMIUM_BASE_URL` must resolve to `127.0.0.1` or `localhost`. Any other host is rejected at startup with a clear error, so the server cannot be exposed on a LAN or external interface.
 
 Every request must include `Authorization: Bearer <CHROMIUM_API_KEY>`. The server also validates `Host`, `Origin`, and `Sec-Fetch-Site` headers and sends `Cache-Control: no-store` plus `X-Content-Type-Options: nosniff` on all responses.
 

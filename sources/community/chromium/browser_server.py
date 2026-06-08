@@ -45,7 +45,7 @@ BROWSERS = {
 CACHE_TTL = 60
 MAX_HISTORY_ROWS = 5000
 MAX_DOWNLOAD_ROWS = 2000
-_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 _cached_profiles = {browser: None for browser in BROWSERS}
 _cache_times = {browser: 0.0 for browser in BROWSERS}
 _cache_errors = {browser: "" for browser in BROWSERS}
@@ -166,30 +166,40 @@ def get_active_profile(browser):
 
 
 def query_sqlite(db_name, profile_path, query):
+    """
+    Return a list of row dicts on success.
+    Return [] when the DB file is absent — it is optional for that browser.
+    Raise RuntimeError when the DB exists but cannot be read or queried so
+    callers can surface the failure as an HTTP error instead of empty data.
+    """
     original_path = os.path.join(profile_path, db_name)
     if not os.path.exists(original_path):
         return []
 
     temp_dir = tempfile.mkdtemp()
     temp_path = os.path.join(temp_dir, db_name)
-    conn = None
+    src_conn = None
+    dst_conn = None
     try:
-        for ext in ["", "-wal", "-shm"]:
-            src = original_path + ext
-            if os.path.exists(src):
-                shutil.copy2(src, temp_path + ext)
-
-        conn = sqlite3.connect(temp_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        # sqlite3.Connection.backup() uses the SQLite Online Backup API,
+        # which produces a consistent snapshot even when the browser has the
+        # DB open in WAL mode — no manual WAL/SHM copy required.
+        src_conn = sqlite3.connect(original_path)
+        dst_conn = sqlite3.connect(temp_path)
+        src_conn.backup(dst_conn)
+        dst_conn.row_factory = sqlite3.Row
+        cursor = dst_conn.cursor()
         cursor.execute(query)
         return [dict(row) for row in cursor.fetchall()]
-    except Exception as exc:
-        print(f"SQLite error reading {db_name}: {exc}", file=sys.stderr)
-        return []
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"Failed to read {db_name}: {exc}") from exc
     finally:
-        if conn is not None:
-            conn.close()
+        for conn in (src_conn, dst_conn):
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
@@ -259,6 +269,39 @@ def extract_top_sites(profile_path):
     return query_sqlite("Top Sites", profile_path, query)
 
 
+def _resolve_localized_name(ext_version_dir, msg_name):
+    """
+    Resolve a Chrome __MSG_<name>__ localized extension name.
+    Reads default_locale from manifest.json, then looks up msg_name in
+    _locales/<locale>/messages.json (keys are matched case-insensitively
+    per the Chrome extension spec).
+    Returns the resolved string, or None if resolution fails at any step.
+    """
+    manifest_path = os.path.join(ext_version_dir, "manifest.json")
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+    except Exception:
+        return None
+
+    locale = manifest.get("default_locale")
+    if not locale:
+        return None
+
+    messages_path = os.path.join(ext_version_dir, "_locales", locale, "messages.json")
+    try:
+        with open(messages_path, "r", encoding="utf-8") as f:
+            messages = json.load(f)
+    except Exception:
+        return None
+
+    key_lower = msg_name.lower()
+    for k, v in messages.items():
+        if k.lower() == key_lower:
+            return v.get("message") or None
+    return None
+
+
 def extract_extensions(profile_path):
     ext_path = os.path.join(profile_path, "Extensions")
     if not os.path.exists(ext_path):
@@ -275,7 +318,8 @@ def extract_extensions(profile_path):
             continue
 
         versions.sort(key=lambda v: os.path.getmtime(os.path.join(id_path, v)), reverse=True)
-        manifest_path = os.path.join(id_path, versions[0], "manifest.json")
+        ext_version_dir = os.path.join(id_path, versions[0])
+        manifest_path = os.path.join(ext_version_dir, "manifest.json")
         if not os.path.exists(manifest_path):
             continue
 
@@ -284,7 +328,9 @@ def extract_extensions(profile_path):
                 manifest = json.load(f)
             name = manifest.get("name", "")
             if name.startswith("__MSG_"):
-                name = ext_id
+                # Strip __MSG_ prefix and trailing __ to get the message key
+                msg_name = name[6:].rstrip("_")
+                name = _resolve_localized_name(ext_version_dir, msg_name) or ext_id
             results.append({"id": ext_id, "name": name, "version": manifest.get("version", "")})
         except Exception as exc:
             print(f"Error reading extension manifest {manifest_path}: {exc}", file=sys.stderr)
@@ -351,6 +397,13 @@ class BrowserAPIHandler(BaseHTTPRequestHandler):
             return
 
         parsed_path = urlparse(self.path).path
+
+        # Browser-agnostic liveness check — used as the manifest test query
+        # so coral source test succeeds regardless of which browser is installed.
+        if parsed_path == "/status":
+            self.send_success({"status": "ok"})
+            return
+
         path_parts = parsed_path.strip("/").split("/")
         if len(path_parts) != 2:
             self.send_error(404, "Not found.")
@@ -378,7 +431,11 @@ class BrowserAPIHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Unknown table.")
             return
 
-        data = funcs[data_type](profile_path)
+        try:
+            data = funcs[data_type](profile_path)
+        except RuntimeError as exc:
+            self.send_error(503, str(exc))
+            return
         self.send_success({"data": data})
 
     def end_headers(self):
@@ -411,7 +468,7 @@ if __name__ == "__main__":
         print(
             f"Error: CHROMIUM_BASE_URL host '{host}' is not a loopback address. "
             "This server reads sensitive browser data and must only bind to "
-            "127.0.0.1, localhost, or ::1.",
+            "127.0.0.1 or localhost.",
             file=sys.stderr,
         )
         sys.exit(1)
