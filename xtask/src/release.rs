@@ -298,6 +298,9 @@ fn set_user_keychains(keychains: &[PathBuf]) -> Result<()> {
 
 fn write_base64_secret(env_name: &str, value: &str, path: &Path) -> Result<()> {
     let normalized: String = value.split_whitespace().collect();
+    if normalized.is_empty() {
+        bail!("{env_name} is empty");
+    }
     let decoded = STANDARD
         .decode(normalized.as_bytes())
         .with_context(|| format!("decoding {env_name}"))?;
@@ -334,7 +337,7 @@ fn install_developer_id_g2_ca(path: &Path) -> Result<()> {
         .arg(login_keychain_path()?)
         .status()
         .context("importing Apple Developer ID G2 certificate")?;
-    if status.success() || developer_id_g2_ca_is_installed()? {
+    if developer_id_g2_ca_is_installed()? {
         Ok(())
     } else {
         bail!("importing Apple Developer ID G2 certificate failed with {status}")
@@ -342,7 +345,7 @@ fn install_developer_id_g2_ca(path: &Path) -> Result<()> {
 }
 
 fn developer_id_g2_ca_is_installed() -> Result<bool> {
-    let output = run_command_output(
+    let output = run_command_output_allow_failure(
         Command::new("security")
             .arg("find-certificate")
             .arg("-Z")
@@ -351,6 +354,9 @@ fn developer_id_g2_ca_is_installed() -> Result<bool> {
             .arg(login_keychain_path()?),
         "checking Apple Developer ID G2 certificate",
     )?;
+    if !output.status.success() {
+        return Ok(false);
+    }
     let stdout = String::from_utf8(output.stdout).context("security output was not UTF-8")?;
     Ok(stdout.contains(DEVELOPER_ID_G2_CA_SHA256))
 }
@@ -663,10 +669,13 @@ fn print_output(output: &Output) {
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};
+    use std::fs;
     use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        NotarySubmission, macos_zip_args, output_path, parse_keychain_list, parse_notary_submission,
+        NotarySubmission, macos_zip_args, output_path, parse_keychain_list,
+        parse_notary_submission, write_base64_secret,
     };
 
     #[test]
@@ -730,6 +739,28 @@ mod tests {
             output_path(Path::new("/tmp/coral-aarch64-apple-darwin.zip"))
                 .expect("resolve absolute output path"),
             Path::new("/tmp/coral-aarch64-apple-darwin.zip")
+        );
+    }
+
+    #[test]
+    fn write_base64_secret_rejects_whitespace_only_values() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "coral-empty-base64-secret-{}-{unique}",
+            std::process::id()
+        ));
+
+        let error =
+            write_base64_secret("TEST_SECRET", " \n\t ", &path).expect_err("reject empty secret");
+
+        assert_eq!(error.to_string(), "TEST_SECRET is empty");
+        assert!(
+            fs::metadata(&path).is_err(),
+            "empty secrets must fail before creating {}",
+            path.display()
         );
     }
 }
