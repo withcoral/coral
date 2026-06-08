@@ -3,11 +3,6 @@ on:
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to (re)build and upload artifacts for (e.g. v0.1.4)"
-        required: true
-        type: string
 permissions:
   contents: read
 concurrency:
@@ -15,16 +10,68 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-ui:
+  validate-release-ref:
     runs-on: ubuntu-latest
     env:
-      TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG_NAME: ${{ github.event.release.tag_name || github.ref_name }}
+    outputs:
+      commit-sha: ${{ steps.verified-ref.outputs.commit-sha }}
+      tag-name: ${{ steps.verified-ref.outputs.tag-name }}
+    steps:
+      - name: Validate release ref
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must look like vX.Y.Z, got '${TAG_NAME}'." >&2
+            exit 1
+          fi
+
+          expected_ref="refs/tags/${TAG_NAME}"
+          if [ "$GITHUB_REF" != "$expected_ref" ]; then
+            echo "Release workflow must run on ${expected_ref}, got ${GITHUB_REF}." >&2
+            echo "For a manual rerun, choose the release tag in the workflow ref picker." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.TAG_NAME }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release tag is reachable from main
+        id: verified-ref
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          tag_commit="$(git rev-parse "${TAG_NAME}^{commit}")"
+          checked_out_commit="$(git rev-parse HEAD)"
+          if [ "$checked_out_commit" != "$tag_commit" ]; then
+            echo "Checked-out commit ${checked_out_commit} does not match ${TAG_NAME} (${tag_commit})." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$tag_commit" origin/main; then
+            echo "Release tag ${TAG_NAME} (${tag_commit}) is not reachable from origin/main." >&2
+            exit 1
+          fi
+          echo "commit-sha=${tag_commit}" >> "$GITHUB_OUTPUT"
+          echo "tag-name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+
+  build-ui:
+    needs: validate-release-ref
+    runs-on: ubuntu-latest
+    env:
+      TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
     outputs:
       has-ui: ${{ steps.detect-ui.outputs.has-ui }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ env.TAG_NAME }}
+          ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
           persist-credentials: false
       - name: Detect UI package
         id: detect-ui
@@ -57,7 +104,9 @@ jobs:
           path: ui/dist
 
   build:
-    needs: build-ui
+    needs:
+      - validate-release-ref
+      - build-ui
     strategy:
       matrix:
         include:
@@ -74,11 +123,11 @@ jobs:
             os: windows-latest
     runs-on: ${{ matrix.os }}
     env:
-      TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ env.TAG_NAME }}
+          ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup show
@@ -193,7 +242,9 @@ jobs:
           path: unsigned-${{ matrix.target }}/coral
 
   sign-notarize-macos:
-    needs: build
+    needs:
+      - validate-release-ref
+      - build
     environment: release
     runs-on: macos-latest
     strategy:
@@ -204,155 +255,49 @@ jobs:
           - aarch64-apple-darwin
     env:
       TARGET: ${{ matrix.target }}
+      TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
       - name: Download unsigned macOS binary
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: macos-unsigned-${{ matrix.target }}
           path: unsigned-${{ matrix.target }}
 
-      - name: Install Apple signing assets
-        shell: bash
-        env:
-          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
-          APP_STORE_CONNECT_API_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
-          APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
-          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
-          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
-        run: |
-          set -euo pipefail
+      - name: Build release helper
+        run: cargo build --locked -p xtask
 
-          certificate_path="$RUNNER_TEMP/developer_id_application.p12"
-          developer_id_ca_path="$RUNNER_TEMP/DeveloperIDG2CA.cer"
-          key_path="$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
-          keychain_path="$RUNNER_TEMP/coral-signing.keychain-db"
-          original_keychains_path="$RUNNER_TEMP/original-keychains.txt"
-
-          decode_base64_to_file() {
-            value="$1"
-            output="$2"
-
-            if base64 --help 2>&1 | grep -q -- '--decode'; then
-              printf '%s' "$value" | base64 --decode > "$output"
-            else
-              printf '%s' "$value" | base64 -D > "$output"
-            fi
-          }
-
-          decode_base64_to_file "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" "$certificate_path"
-          decode_base64_to_file "$APP_STORE_CONNECT_API_KEY_P8_BASE64" "$key_path"
-          security list-keychains -d user \
-            | sed -e 's/^ *//' -e 's/^"//' -e 's/"$//' > "$original_keychains_path"
-          curl --fail --location --retry 3 --output "$developer_id_ca_path" \
-            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
-          if ! security import "$developer_id_ca_path" \
-            -k "$HOME/Library/Keychains/login.keychain-db"; then
-            security find-certificate -Z \
-              -c "Developer ID Certification Authority" \
-              "$HOME/Library/Keychains/login.keychain-db" \
-              | grep -q "SHA-256 hash: F16CD3C54C7F83CEA4BF1A3E6A0819C8AAA8E4A1528FD144715F350643D2DF3A"
-          fi
-
-          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
-          security import "$certificate_path" \
-            -P "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" \
-            -A \
-            -f pkcs12 \
-            -T /usr/bin/codesign \
-            -k "$keychain_path"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
-
-          keychains=("$keychain_path")
-          while IFS= read -r existing_keychain; do
-            [ -n "$existing_keychain" ] && keychains+=("$existing_keychain")
-          done < "$original_keychains_path"
-          security list-keychains -d user -s "${keychains[@]}"
-          security find-identity -p codesigning -v "$keychain_path"
-
-      - name: Sign macOS binary
-        shell: bash
-        env:
-          APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
-        run: |
-          set -euo pipefail
-
-          binary="unsigned-${TARGET}/coral"
-          chmod +x "$binary"
-          codesign \
-            --force \
-            --sign "$APPLE_CODESIGN_IDENTITY" \
-            --timestamp \
-            --options runtime \
-            --identifier com.withcoral.coral \
-            "$binary"
-
-          codesign --verify --strict --verbose=2 "$binary"
-          codesign -dv --verbose=4 "$binary"
-
-      - name: Package and notarize macOS ZIP
+      - name: Sign, package, and notarize macOS artifact
         shell: bash
         env:
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
+          APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
-
-          binary="unsigned-${TARGET}/coral"
-          archive="coral-${TARGET}.zip"
-          legacy_archive="coral-${TARGET}.tar.gz"
-          staging="$RUNNER_TEMP/package-${TARGET}"
-          key_path="$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
-          notary_result="$RUNNER_TEMP/notary-${TARGET}.json"
-          notary_log="$RUNNER_TEMP/notary-${TARGET}-log.json"
-
-          mkdir -p "$staging"
-          cp "$binary" "$staging/coral"
-          chmod +x "$staging/coral"
-          (cd "$staging" && ditto -c -k --keepParent coral "$GITHUB_WORKSPACE/$archive")
-          (cd "$staging" && tar czf "$GITHUB_WORKSPACE/$legacy_archive" coral)
-
-          set +e
-          xcrun notarytool submit "$archive" \
-            --key "$key_path" \
-            --key-id "$APP_STORE_CONNECT_API_KEY_ID" \
-            --issuer "$APP_STORE_CONNECT_API_ISSUER_ID" \
-            --wait \
-            --output-format json > "$notary_result"
-          notary_status=$?
-          set -e
-
-          cat "$notary_result"
-          submission_id="$(plutil -extract id raw -o - "$notary_result" 2>/dev/null || true)"
-
-          if [ "$notary_status" -ne 0 ]; then
-            if [ -n "$submission_id" ]; then
-              xcrun notarytool log "$submission_id" \
-                --key "$key_path" \
-                --key-id "$APP_STORE_CONNECT_API_KEY_ID" \
-                --issuer "$APP_STORE_CONNECT_API_ISSUER_ID" \
-                "$notary_log" || true
-              cat "$notary_log" || true
-            fi
-            exit "$notary_status"
-          fi
-
-          spctl --assess --type exec --verbose=4 "$binary"
-
-      - name: Upload signed macOS artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: coral-${{ matrix.target }}
-          path: |
-            coral-${{ matrix.target }}.zip
-            coral-${{ matrix.target }}.tar.gz
+          ./target/debug/xtask release-macos-sign-notarize \
+            --target "$TARGET" \
+            --binary "unsigned-${TARGET}/coral" \
+            --zip "coral-${TARGET}.zip" \
+            --tar "coral-${TARGET}.tar.gz" \
+            --work-dir "$RUNNER_TEMP/coral-signing-${TARGET}"
 
       - name: Clean up Apple signing assets
         if: always()
         shell: bash
         run: |
-          original_keychains_path="$RUNNER_TEMP/original-keychains.txt"
+          work_dir="$RUNNER_TEMP/coral-signing-${TARGET}"
+          original_keychains_path="$work_dir/original-keychains.txt"
           if [ -s "$original_keychains_path" ]; then
             keychains=()
             while IFS= read -r existing_keychain; do
@@ -362,12 +307,16 @@ jobs:
               security list-keychains -d user -s "${keychains[@]}" || true
             fi
           fi
-          security delete-keychain "$RUNNER_TEMP/coral-signing.keychain-db" || true
-          rm -f \
-            "$RUNNER_TEMP/developer_id_application.p12" \
-            "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
-            "$RUNNER_TEMP/original-keychains.txt" \
-            "$RUNNER_TEMP"/AuthKey_*.p8
+          security delete-keychain "$work_dir/coral-signing.keychain-db" || true
+          rm -rf "$work_dir"
+
+      - name: Upload signed macOS artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coral-${{ matrix.target }}
+          path: |
+            coral-${{ matrix.target }}.zip
+            coral-${{ matrix.target }}.tar.gz
 
   checksums:
     needs:
@@ -394,13 +343,15 @@ jobs:
           path: artifacts/checksums.sha256
 
   publish-version:
-    needs: checksums
+    needs:
+      - validate-release-ref
+      - checksums
     environment: release
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
-      TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -466,7 +417,7 @@ jobs:
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ env.TAG_NAME }}
+          ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
           fetch-depth: 0
           token: ${{ steps.github-app-token.outputs.token }}
           persist-credentials: false
@@ -477,12 +428,12 @@ jobs:
       - name: Point docs branch at released commit
         env:
           GH_APP_TOKEN: ${{ steps.github-app-token.outputs.token }}
+          RELEASE_COMMIT_SHA: ${{ needs.validate-release-ref.outputs.commit-sha }}
         run: |
           set -euo pipefail
-          released_commit="$(git rev-parse "${TAG_NAME}^{commit}")"
           git push --force \
             "https://x-access-token:${GH_APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            "${released_commit}:refs/heads/docs"
+            "${RELEASE_COMMIT_SHA}:refs/heads/docs"
 
       # Dispatch the tap workflow after publishing the release:
       # https://octokit.github.io/rest.js/v22/#repos-create-dispatch-event
