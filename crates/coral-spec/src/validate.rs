@@ -135,6 +135,12 @@ pub(crate) fn validate_http_table(input: HttpTableValidation<'_>) -> Result<()> 
         detail_hints,
         columns,
     )?;
+    validate_bindable_filters_compatible_with_search_limits(
+        schema,
+        table_name,
+        filters,
+        search_limits,
+    )?;
 
     validate_request_bindings(schema, table_name, request, &known_filters)?;
 
@@ -417,6 +423,26 @@ fn validate_search_limits(limits: &SearchLimitsSpec, context: &str) -> Result<()
             "{context}.max_top_k * max_calls_per_query must be <= {MAX_SEARCH_CANDIDATES_PER_QUERY}"
         )));
     }
+    Ok(())
+}
+
+fn validate_bindable_filters_compatible_with_search_limits(
+    schema: &str,
+    table: &str,
+    filters: &[FilterSpec],
+    search_limits: Option<&SearchLimitsSpec>,
+) -> Result<()> {
+    if search_limits.is_none() {
+        return Ok(());
+    }
+
+    if let Some(filter) = filters.iter().find(|filter| filter.bindable) {
+        return Err(ManifestError::validation(format!(
+            "{schema}.{table} filter '{}': bindable filters require complete filtered result sets, but this table declares search_limits",
+            filter.name
+        )));
+    }
+
     Ok(())
 }
 
@@ -1769,6 +1795,38 @@ mod tests {
             detail_hints: &detail_hints,
         })
         .expect("search metadata should validate");
+    }
+
+    #[test]
+    fn validate_search_limited_http_table_rejects_bindable_filters() {
+        let search_limits = SearchLimitsSpec {
+            default_top_k: 10,
+            max_top_k: 100,
+            max_calls_per_query: 1,
+        };
+        let filters = vec![bindable_filter("id")];
+        let columns = [test_column()];
+        let request = base_request();
+
+        let error = validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "search",
+            filters: &filters,
+            columns: &columns,
+            request: &request,
+            requests: &[],
+            pagination: &PaginationSpec::default(),
+            search_limits: Some(&search_limits),
+            detail_hints: &[],
+        })
+        .expect_err("search-limited tables should not allow bindable filters");
+
+        assert!(
+            error.to_string().contains(
+                "demo.search filter 'id': bindable filters require complete filtered result sets, but this table declares search_limits"
+            ),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
