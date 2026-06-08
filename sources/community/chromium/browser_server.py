@@ -158,10 +158,14 @@ def _resolve_active_profile(browser):
     env_profile, env_error = _resolve_env_profile(browser)
     if env_profile:
         return env_profile, ""
-    local_state_profile, local_state_error = _resolve_from_local_state(browser)
-    if local_state_profile:
-        return local_state_profile, ""
-    return None, env_error or local_state_error
+    if env_error:
+        # The profile-path env var is set but points at an invalid directory.
+        # Treat explicit configuration as authoritative: surface the error
+        # instead of silently auto-discovering and querying a different
+        # profile of the same browser.
+        return None, env_error
+    # Env var not set — fall back to Local State / auto-discovery.
+    return _resolve_from_local_state(browser)
 
 
 def get_active_profile(browser):
@@ -378,12 +382,15 @@ def build_health():
     extraction path the advertised tables use, so the source test verifies
     live browser access without requiring any specific browser.
 
-    Returns a single-row list for the first resolvable browser, or [] when no
-    supported browser has a resolvable profile. Raises RuntimeError (surfaced
-    as HTTP 503) if the chosen browser's data exists but cannot be read.
+    Returns a single-row list for the first resolvable browser. Raises
+    RuntimeError (surfaced as HTTP 503) when no supported browser profile can
+    be resolved, or when the chosen browser's data exists but cannot be read.
+    A zero-row success is never returned, so the health test query cannot pass
+    without proving that real browser data is readable.
     """
+    errors = []
     for browser in BROWSERS:
-        profile_path, _ = get_active_profile(browser)
+        profile_path, error = get_active_profile(browser)
         if profile_path:
             bookmarks = extract_bookmarks(profile_path)
             return [
@@ -394,7 +401,15 @@ def build_health():
                     "bookmark_count": len(bookmarks),
                 }
             ]
-    return []
+        if error:
+            errors.append(f"{BROWSERS[browser]['display']}: {error}")
+
+    detail = " | ".join(errors) if errors else "no supported browser found."
+    raise RuntimeError(
+        "No Chrome, Edge, or Brave profile could be resolved. Install a "
+        "supported browser or set CHROME_PROFILE_PATH, EDGE_PROFILE_PATH, or "
+        f"BRAVE_PROFILE_PATH to a valid profile directory. Details: {detail}"
+    )
 
 
 class BrowserAPIHandler(BaseHTTPRequestHandler):
