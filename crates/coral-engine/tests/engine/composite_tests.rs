@@ -152,6 +152,43 @@ async fn multi_component_source_can_register_multiple_schemas() {
     );
 }
 
+#[tokio::test]
+async fn validate_source_reports_only_component_schemas_for_multi_schema_source() {
+    let server = MockServer::start().await;
+    let issues = http_component(&server.uri(), "github_rest", "issues", "/issues");
+    let pulls = http_component(&server.uri(), "github_mcp", "pulls", "/pulls");
+    let source = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github".to_string(),
+            authored_version: None,
+            description: "Composite GitHub runtime package".to_string(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            components: vec![
+                RuntimeSourceComponent::Http(issues),
+                RuntimeSourceComponent::Http(pulls),
+            ],
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("runtime package");
+
+    let report = CoralQuery::validate_source(&source, test_runtime(), &[])
+        .await
+        .expect("source should validate");
+
+    assert_eq!(
+        report
+            .tables
+            .iter()
+            .map(|table| (table.schema_name.as_str(), table.table_name.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("github_mcp", "pulls"), ("github_rest", "issues")]
+    );
+    assert!(report.table_functions.is_empty());
+}
+
 fn http_component(
     base_url: &str,
     schema_name: &str,

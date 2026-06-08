@@ -288,6 +288,31 @@ impl QueryRuntimeAdapter {
         }
     }
 
+    pub(crate) fn catalog_info_for_schemas(&self, schema_filters: &[&str]) -> CatalogInfo {
+        CatalogInfo {
+            tables: self
+                .tables
+                .iter()
+                .filter(|table| {
+                    schema_filters
+                        .iter()
+                        .any(|schema| table.schema_name == *schema)
+                })
+                .cloned()
+                .collect(),
+            table_functions: self
+                .table_functions
+                .iter()
+                .filter(|function| {
+                    schema_filters
+                        .iter()
+                        .any(|schema| function.schema_name == *schema)
+                })
+                .cloned()
+                .collect(),
+        }
+    }
+
     pub(crate) fn describe_table(&self, schema_name: &str, table_name: &str) -> DescribeTableInfo {
         if let Some(table) = self
             .tables

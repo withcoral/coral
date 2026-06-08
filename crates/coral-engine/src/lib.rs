@@ -216,12 +216,13 @@ impl CoralQuery {
         let query_runtime =
             runtime::query::build_runtime(std::slice::from_ref(source), runtime).await?;
         let source_name = source.source_name();
-        let catalog = query_runtime.catalog_info(None);
+        let schema_names = source.schema_names();
+        let catalog = query_runtime.catalog_info_for_schemas(&schema_names);
         if catalog.tables.is_empty() && catalog.table_functions.is_empty() {
             if let Some(failure) = query_runtime.registration_failure(source_name) {
                 return Err(CoreError::FailedPrecondition(failure.detail.clone()));
             }
-            for schema_name in source.schema_names() {
+            for schema_name in schema_names {
                 if let Some(failure) = query_runtime.registration_failure(schema_name) {
                     return Err(CoreError::FailedPrecondition(failure.detail.clone()));
                 }
