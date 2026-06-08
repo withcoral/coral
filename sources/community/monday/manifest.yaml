@@ -4,8 +4,7 @@ dsl_version: 3
 backend: http
 description: >-
   Query monday.com boards, items, columns, and users via the monday.com
-  GraphQL API v2. Join with GitHub PRs, Linear issues, and PagerDuty incidents
-  for cross-source project management and engineering intelligence.
+  GraphQL API v2 for project management and engineering analysis.
 base_url: https://api.monday.com
 
 inputs:
@@ -45,7 +44,7 @@ test_queries:
 tables:
   - name: boards
     description: >-
-      Active monday.com boards accessible to the authenticated token, up to 500.
+      Up to 500 active monday.com boards accessible to the authenticated token.
       Returns board ID, name, description, kind (public/private/share), state,
       and workspace metadata.
     guide: |
@@ -166,12 +165,13 @@ tables:
 
   - name: users
     description: >-
-      Non-guest users in the monday.com account, up to 500. Returns user ID,
+      Up to 500 non-guest users in the monday.com account. Returns user ID,
       name, email, title, role flags, time zone, and creation timestamp.
     guide: |
-      Use `email` to join with GitHub PR authors, Linear assignees, and
-      PagerDuty users for cross-source engineer identity resolution. Filter by
-      `is_admin = true` to scope results to admins only.
+      Use `email` to join with other sources that expose user email addresses,
+      such as Linear assignees. GitHub user emails may be absent when users keep
+      their addresses private. Filter by `is_admin = true` to scope results to
+      admins only.
     request:
       method: POST
       path: /v2
@@ -221,7 +221,7 @@ tables:
       - name: email
         type: Utf8
         nullable: true
-        description: User email address; join key with GitHub, Linear, and PagerDuty.
+        description: User email address; useful as a cross-source identity key.
         expr:
           kind: path
           path:

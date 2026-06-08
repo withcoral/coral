@@ -6,8 +6,7 @@
 **Base URL:** `https://api.monday.com`
 
 Query monday.com boards, items, columns, and users via the GraphQL API v2.
-Join with GitHub PRs, Linear issues, and PagerDuty incidents for cross-source
-project management and engineering intelligence.
+Use them for project management and cross-source engineering analysis.
 
 ## Install
 
@@ -36,8 +35,8 @@ prefix.
 
 | Table | Description |
 | --- | --- |
-| `boards` | All active boards with ID, name, kind, state, and workspace |
-| `users` | All non-guest account users with email, title, and role flags |
+| `boards` | Up to 500 accessible active boards with ID, name, kind, state, and workspace |
+| `users` | Up to 500 non-guest account users with email, title, and role flags |
 
 ### Table functions
 
@@ -50,7 +49,7 @@ Obtain `board_id` values from `monday.boards`.
 
 ## Example queries
 
-### List all active boards
+### List active boards
 
 ```sql
 SELECT id, name, board_kind, workspace_name
@@ -77,7 +76,7 @@ FROM monday.board_columns('1234567890')
 ORDER BY title;
 ```
 
-### All users
+### List users
 
 ```sql
 SELECT id, name, email, title, is_admin, time_zone
@@ -87,7 +86,7 @@ ORDER BY name;
 
 ## Cross-source examples
 
-### Engineers with open GitHub PRs
+### Engineers with open GitHub PRs by matching login
 
 ```sql
 WITH open_prs AS (
@@ -104,7 +103,10 @@ ORDER BY open_prs DESC
 LIMIT 20;
 ```
 
-The bundled GitHub source exposes `github.pulls` (requires `owner` and `repo` filters) and the author column `user__login`.
+The bundled GitHub source exposes `github.pulls` (requires `owner` and `repo`
+filters) and the author column `user__login`. This example assumes each GitHub
+login matches the local part of the engineer's monday.com email address; adjust
+the join when your organization uses a different identity mapping.
 
 ### monday.com active items matched against Linear issues
 
@@ -156,12 +158,15 @@ coral sql "SELECT id, name, state, group_title FROM monday.board_items('<board_i
 
 - **GraphQL POST only** — all requests are POST to `https://api.monday.com/v2`;
   monday.com has no REST API.
+- **Account-wide table limit** — `boards` and `users` return up to 500 records.
+  Coral's HTTP source DSL cannot currently inject monday.com's page number into
+  a GraphQL JSON body.
 - **Page size** — `board_items` fetches 100 items per request by default (max
   500) and follows monday's `items_page` cursor automatically, so all items on
   a board are returned across pages.
-- **No column values** — item column values (status labels, dates, assignees)
-  are not decoded in v1; use the `raw` column and DataFusion JSON functions to
-  extract them.
+- **Raw column values** — item column values are fetched but not decoded into
+  typed columns in v1. Use the `raw` column and DataFusion JSON functions to
+  extract the `column_values` entries.
 - **Active boards only** — the `boards` table returns `state: active` boards
   by default; archived boards are excluded.
 - **Rate limits** — monday.com enforces complexity-based rate limits; avoid
@@ -169,6 +174,14 @@ coral sql "SELECT id, name, state, group_title FROM monday.board_items('<board_i
 - **API-Version header** — pinned to `2026-04`; update when a new stable
   version is released.
 - Community sources are maintained separately from bundled core sources.
+
+## API references
+
+- [Authentication](https://developer.monday.com/api-reference/docs/authentication)
+- [API versioning](https://developer.monday.com/api-reference/docs/api-versioning)
+- [Boards](https://developer.monday.com/api-reference/reference/boards)
+- [Users](https://developer.monday.com/api-reference/reference/users)
+- [Items page](https://developer.monday.com/api-reference/reference/items-page)
 
 ## Contributing
 
