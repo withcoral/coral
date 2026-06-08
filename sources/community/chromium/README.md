@@ -55,7 +55,7 @@ coral source add --file sources/community/chromium/manifest.yaml
    coral source test chromium
    ```
 
-   Expected: the test query hits `chromium.status` and returns `status = ok`. This endpoint is browser-agnostic, so the test passes whether Chrome, Edge, or Brave is installed.
+   Two test queries run: the browser-agnostic `chromium.status` liveness check, and `chromium.chrome_bookmarks`. The second query requires Chrome to be installed and a resolvable profile. If you only have Edge or Brave, `coral source test` will fail on the bookmarks query — use `coral sql` to verify those browser tables manually.
 
 5. Run a representative query:
 
@@ -140,19 +140,25 @@ Then run:
 coral source test chromium
 ```
 
-### Live validation output
+### Validation output
 
-Captured on Windows 11 with Google Chrome 125, profile `Default` auto-resolved
-from `Local State`. Server started without a pre-set `CHROMIUM_API_KEY`; generated
-token pasted into the Coral shell before running these commands.
+Run these three commands with the server running to confirm the source is wired up correctly. Replace the `coral source lint` output shown here with what you see on your machine before submitting a PR.
+
+```bash
+coral source lint sources/community/chromium/manifest.yaml
+coral source add --file sources/community/chromium/manifest.yaml
+coral source test chromium
+```
+
+Expected `coral source lint` output:
 
 ```text
-$ coral source lint sources/community/chromium/manifest.yaml
 Manifest is valid
 ```
 
+Expected `coral source add` output (Chrome installed, `Default` profile auto-resolved):
+
 ```text
-$ coral source add --file sources/community/chromium/manifest.yaml
 Added source chromium
 
   ✓ chromium connected successfully
@@ -178,42 +184,22 @@ Added source chromium
     ├─ edge_top_sites
     └─ status
     Query tests
-    1 declared · 1 passed · 0 failed
+    2 declared · 2 passed · 0 failed
 
     ✓ SELECT status FROM chromium.status LIMIT 1
       1 row
-```
 
-```text
-$ coral source test chromium
-chromium
-
-  ✓ chromium connected successfully
-
-    Query tests
-    1 declared · 1 passed · 0 failed
-
-    ✓ SELECT status FROM chromium.status LIMIT 1
+    ✓ SELECT id, title FROM chromium.chrome_bookmarks LIMIT 1
       1 row
 ```
+
+Verify browser data tables return rows using `coral sql`. Actual values depend on your browser data:
 
 ```sql
 SELECT title, url, last_visit_time
 FROM chromium.chrome_history
 ORDER BY last_visit_time DESC
 LIMIT 5;
-```
-
-```text
-+------------------------------------+----------------------------------------------+---------------------+
-| title                              | url                                          | last_visit_time     |
-+------------------------------------+----------------------------------------------+---------------------+
-| GitHub                             | https://github.com/                          | 2024-05-14T10:32:01Z |
-| coral/sources at main              | https://github.com/coraldata/coral/tree/main | 2024-05-14T10:31:44Z |
-| Stack Overflow                     | https://stackoverflow.com/                   | 2024-05-14T09:15:22Z |
-| Python Docs                        | https://docs.python.org/3/                   | 2024-05-13T18:44:10Z |
-| Google                             | https://www.google.com/                      | 2024-05-13T17:02:55Z |
-+------------------------------------+----------------------------------------------+---------------------+
 ```
 
 ```sql
@@ -223,25 +209,13 @@ ORDER BY name ASC
 LIMIT 5;
 ```
 
-```text
-+-----------------------------+---------+
-| name                        | version |
-+-----------------------------+---------+
-| Dark Reader                 | 4.9.86  |
-| Google Docs Offline         | 1.80.0  |
-| Privacy Badger              | 2024.2.6|
-| uBlock Origin               | 1.57.2  |
-| Wappalyzer                  | 6.10.68 |
-+-----------------------------+---------+
-```
-
 ## Security Notes
 
-The server enforces loopback-only binding: `CHROMIUM_BASE_URL` must resolve to `127.0.0.1` or `localhost`. Any other host is rejected at startup with a clear error, so the server cannot be exposed on a LAN or external interface.
+The server enforces loopback-only binding: `CHROMIUM_BASE_URL` must resolve to `127.0.0.1`, `localhost`, or `::1` (IPv6 loopback). Any other host is rejected at startup with a clear error, so the server cannot be exposed on a LAN or external interface. IPv6 loopback is handled by a dedicated server class with `address_family = AF_INET6`.
 
 Every request must include `Authorization: Bearer <CHROMIUM_API_KEY>`. The server also validates `Host`, `Origin`, and `Sec-Fetch-Site` headers and sends `Cache-Control: no-store` plus `X-Content-Type-Options: nosniff` on all responses.
 
-SQLite browser databases are copied to a temporary file before querying so Chrome, Edge, and Brave can remain open while Coral reads history, downloads, and top sites.
+SQLite browser databases (history, downloads, top sites) are opened **read-only** and snapshotted into a temporary database via SQLite's online backup API before querying. Your live browser data is never written to, so Chrome, Edge, and Brave can stay open while Coral reads. A read or query failure on a database that exists is returned as an HTTP 503 error rather than as empty results, so a corrupt or unreadable database is never silently presented as "no data".
 
 ## Troubleshooting
 

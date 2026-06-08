@@ -25,13 +25,13 @@ auth:
       template: Bearer {{input.CHROMIUM_API_KEY}}
 test_queries:
   - SELECT status FROM chromium.status LIMIT 1
+  - SELECT id, title FROM chromium.chrome_bookmarks LIMIT 1
 
 tables:
   - name: status
     description: >-
       Server liveness check. Returns a single row with status = ok when the
-      local server is running. Not tied to any browser profile, so coral source
-      test succeeds regardless of which browser is installed.
+      local server is running. Not tied to any browser profile.
     request:
       method: GET
       path: /status
@@ -43,7 +43,6 @@ tables:
       - name: status
         type: Utf8
         nullable: false
-
 
   - name: chrome_bookmarks
     description: Lists Google Chrome bookmarks and folders.

@@ -2,6 +2,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -9,6 +10,7 @@ import time
 import secrets
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlparse
 
 
@@ -45,7 +47,14 @@ BROWSERS = {
 CACHE_TTL = 60
 MAX_HISTORY_ROWS = 5000
 MAX_DOWNLOAD_ROWS = 2000
-_LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+class _IPv6HTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with IPv6 address family for ::1 bindings."""
+    address_family = socket.AF_INET6
+
+
 _cached_profiles = {browser: None for browser in BROWSERS}
 _cache_times = {browser: 0.0 for browser in BROWSERS}
 _cache_errors = {browser: "" for browser in BROWSERS}
@@ -181,10 +190,13 @@ def query_sqlite(db_name, profile_path, query):
     src_conn = None
     dst_conn = None
     try:
-        # sqlite3.Connection.backup() uses the SQLite Online Backup API,
-        # which produces a consistent snapshot even when the browser has the
-        # DB open in WAL mode — no manual WAL/SHM copy required.
-        src_conn = sqlite3.connect(original_path)
+        # Open the live browser DB read-only (mode=ro) so we never write to,
+        # checkpoint, or roll back the user's real browser database. The
+        # SQLite Online Backup API then produces a consistent snapshot even
+        # while the browser holds the DB open in WAL mode — no manual
+        # WAL/SHM file copy required.
+        src_uri = f"{Path(original_path).as_uri()}?mode=ro"
+        src_conn = sqlite3.connect(src_uri, uri=True)
         dst_conn = sqlite3.connect(temp_path)
         src_conn.backup(dst_conn)
         dst_conn.row_factory = sqlite3.Row
@@ -208,12 +220,14 @@ def extract_bookmarks(profile_path):
     if not os.path.exists(path):
         return []
 
+    # The file exists, so a read/parse failure is a real error, not "no
+    # bookmarks". Raise so do_GET surfaces it as HTTP 503 instead of
+    # presenting a failed read as an empty result set.
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except Exception as exc:
-        print(f"Error parsing JSON in {path}: {exc}", file=sys.stderr)
-        return []
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Failed to read Bookmarks: {exc}") from exc
 
     results = []
 
@@ -367,8 +381,13 @@ class BrowserAPIHandler(BaseHTTPRequestHandler):
 
         server_host = self.server.server_address[0]
         server_port = self.server.server_port
+        # IPv6 addresses use bracket notation in HTTP Host headers: [::1]:port
+        if ":" in server_host:
+            bound_host_header = f"[{server_host}]:{server_port}"
+        else:
+            bound_host_header = f"{server_host}:{server_port}"
         expected_hosts = {
-            f"{server_host}:{server_port}",
+            bound_host_header,
             f"localhost:{server_port}",
         }
         if self.headers.get("Host") not in expected_hosts:
@@ -468,12 +487,14 @@ if __name__ == "__main__":
         print(
             f"Error: CHROMIUM_BASE_URL host '{host}' is not a loopback address. "
             "This server reads sensitive browser data and must only bind to "
-            "127.0.0.1 or localhost.",
+            "127.0.0.1, localhost, or ::1.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    server = ThreadingHTTPServer((host, port), BrowserAPIHandler)
+    # Use an IPv6-capable server class when binding to the IPv6 loopback address.
+    server_cls = _IPv6HTTPServer if host == "::1" else ThreadingHTTPServer
+    server = server_cls((host, port), BrowserAPIHandler)
 
     token = os.environ.get("CHROMIUM_API_KEY")
     if not token:
