@@ -19,7 +19,7 @@ use crate::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
     validate_columns, validate_declared_relation_namespace, validate_filters_and_column_exprs,
-    validate_identifier, validate_test_queries, validate_unique_values,
+    validate_identifier, validate_source_name, validate_test_queries, validate_unique_values,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -397,6 +397,7 @@ impl McpSourceManifest {
                 "source '{name}' must define at least one function or table"
             )));
         }
+        validate_source_name(&name)?;
         validate_test_queries(&name, &test_queries)?;
         validate_server(&name, &server, &declared_inputs)?;
         validate_declared_relation_namespace(
@@ -915,6 +916,11 @@ fn validate_function_binding<'a>(
     binding: &'a FunctionArgBinding,
     request_arg_names: &mut HashSet<&'a str>,
 ) -> Result<()> {
+    if binding.arg.trim().is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' function '{function_name}' tool arg name must not be empty"
+        )));
+    }
     if !request_arg_names.insert(binding.arg.as_str()) {
         return Err(ManifestError::validation(format!(
             "source '{source_name}' function '{function_name}' has multiple bindings for tool arg '{}'",
@@ -1000,6 +1006,61 @@ mod tests {
             error.to_string(),
             "source 'demo' function 'lookup' must define columns"
         );
+    }
+
+    #[test]
+    fn rejects_mcp_function_with_empty_tool_arg_bindings() {
+        for arg in ["", "   "] {
+            let error = McpSourceManifest::parse_manifest_value(json!({
+                "dsl_version": 3,
+                "name": "demo",
+                "version": "0.1.0",
+                "backend": "mcp",
+                "server": {
+                    "transport": "stdio",
+                    "command": "demo-mcp-server"
+                },
+                "functions": [{
+                    "name": "lookup",
+                    "tool": "lookup",
+                    "args": [{
+                        "name": "query",
+                        "bind": { "arg": arg }
+                    }],
+                    "columns": [{ "name": "title", "type": "Utf8" }]
+                }]
+            }))
+            .expect_err("empty tool arg binding should fail");
+
+            assert_eq!(
+                error.to_string(),
+                "source 'demo' function 'lookup' tool arg name must not be empty"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_mcp_function_with_non_empty_tool_arg_binding() {
+        McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "stdio",
+                "command": "demo-mcp-server"
+            },
+            "functions": [{
+                "name": "lookup",
+                "tool": "lookup",
+                "args": [{
+                    "name": "query",
+                    "bind": { "arg": "query" }
+                }],
+                "columns": [{ "name": "title", "type": "Utf8" }]
+            }]
+        }))
+        .expect("non-empty tool arg binding should remain valid");
     }
 
     #[test]

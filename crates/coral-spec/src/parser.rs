@@ -13,7 +13,7 @@ use crate::backends::http::HttpSourceManifest;
 use crate::backends::mcp::McpSourceManifest;
 use crate::schema::validate_manifest_schema_for_dsl_version;
 use crate::v4::V4SourceManifest;
-use crate::{ManifestError, ManifestInputSpec, Result, SourceBackend};
+use crate::{ManifestError, ManifestInputSpec, Result, SourceBackend, validate_source_name};
 
 /// Validated top-level source spec for one registered source.
 ///
@@ -215,6 +215,9 @@ pub fn parse_source_manifest_yaml(raw: &str) -> Result<ValidatedSourceManifest> 
 /// rules.
 pub fn parse_source_manifest_value(value: Value) -> Result<ValidatedSourceManifest> {
     let dsl_version = parse_dsl_version(&value)?;
+    if let Some(source_name) = value.get("name").and_then(Value::as_str) {
+        validate_source_name(source_name)?;
+    }
     validate_manifest_schema_for_dsl_version(&value, dsl_version)?;
     if dsl_version == 4 {
         return Ok(ValidatedSourceManifest {
@@ -287,6 +290,58 @@ tables:
         .expect("manifest should parse");
 
         assert_eq!(manifest.test_queries(), &["SELECT 1", "SELECT 2"]);
+    }
+
+    #[test]
+    fn parse_source_manifest_rejects_empty_source_names() {
+        for name in [r#""""#, r#""   ""#] {
+            let manifest = format!(
+                r#"
+name: {name}
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+"#
+            );
+
+            let error =
+                parse_source_manifest_yaml(&manifest).expect_err("empty source name should fail");
+
+            assert_eq!(error.to_string(), "source name must not be empty");
+        }
+    }
+
+    #[test]
+    fn parse_source_manifest_accepts_non_empty_source_names() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect("non-empty source name should remain valid");
+
+        assert_eq!(manifest.schema_name(), "demo");
     }
 
     #[test]

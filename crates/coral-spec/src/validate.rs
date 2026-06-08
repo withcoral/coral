@@ -20,12 +20,7 @@ impl DeclaredRelationKind {
     fn validate_name(self, source_name: &str, name: &str) -> Result<()> {
         match self {
             Self::Table => {
-                if name.trim().is_empty() {
-                    return Err(ManifestError::validation(format!(
-                        "source '{source_name}' table name must not be empty"
-                    )));
-                }
-                Ok(())
+                validate_non_empty_name(name, &format!("source '{source_name}' table name"))
             }
             Self::Function => {
                 validate_identifier(name, &format!("source '{source_name}' function name"))
@@ -91,6 +86,10 @@ pub(crate) fn validate_declared_relation_namespace<'a>(
     Ok(())
 }
 
+pub(crate) fn validate_source_name(name: &str) -> Result<()> {
+    validate_non_empty_name(name, "source name")
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "HTTP table validation mirrors the source-spec fields it validates."
@@ -128,7 +127,12 @@ pub(crate) fn validate_http_table(
     validate_request_bindings(schema, table_name, request, &known_filters)?;
 
     for route in requests {
-        for filter_name in &route.when_filters {
+        for (index, filter_name) in route.when_filters.iter().enumerate() {
+            if filter_name.trim().is_empty() {
+                return Err(ManifestError::validation(format!(
+                    "{schema}.{table_name} requests.when_filters[{index}] must not be empty"
+                )));
+            }
             if !known_filters.contains(filter_name) {
                 return Err(ManifestError::validation(format!(
                     "{schema}.{table_name} requests.when_filters references unknown filter '{filter_name}'"
@@ -227,6 +231,7 @@ pub(crate) fn validate_filters_and_column_exprs(
 ) -> Result<HashSet<String>> {
     let mut known_filters = HashSet::new();
     for filter in filters {
+        validate_non_empty_name(&filter.name, &format!("{schema}.{table} filter name"))?;
         if !known_filters.insert(filter.name.clone()) {
             return Err(ManifestError::validation(format!(
                 "{schema}.{table} has duplicate filter '{}'",
@@ -470,6 +475,7 @@ pub(crate) fn validate_unique_values(values: &[String], context: &str) -> Result
 pub(crate) fn validate_columns(columns: &[ColumnSpec], schema: &str, table: &str) -> Result<()> {
     let mut seen_columns = HashSet::new();
     for col in columns {
+        validate_non_empty_name(&col.name, &format!("{schema}.{table} column name"))?;
         col.manifest_data_type().map_err(|error| {
             ManifestError::validation(format!(
                 "{schema}.{table} column '{}' has invalid type '{}': {error}",
@@ -600,6 +606,11 @@ fn validate_function_binding<'a>(
     binding: &'a FunctionArgBinding,
     request_arg_names: &mut HashSet<&'a str>,
 ) -> Result<()> {
+    if binding.arg.trim().is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' function '{function_name}' request arg name must not be empty"
+        )));
+    }
     if !request_arg_names.insert(binding.arg.as_str()) {
         return Err(ManifestError::validation(format!(
             "source '{source_name}' function '{function_name}' has multiple bindings for request arg '{}'",
@@ -764,7 +775,17 @@ fn validate_arg_template(
     Ok(())
 }
 
+fn validate_non_empty_name(value: &str, context: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(ManifestError::validation(format!(
+            "{context} must not be empty"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_identifier(value: &str, context: &str) -> Result<()> {
+    validate_non_empty_name(value, context)?;
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
         return Err(ManifestError::validation(format!(
@@ -978,6 +999,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validate_columns_rejects_empty_column_names() {
+        for name in ["", "   "] {
+            let mut column = test_column();
+            column.name = name.to_string();
+
+            let error = validate_columns(&[column], "demo", "messages")
+                .expect_err("empty column names should be rejected");
+
+            assert_eq!(
+                error.to_string(),
+                "demo.messages column name must not be empty"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_columns_accepts_non_empty_column_names() {
+        validate_columns(&[test_column()], "demo", "messages")
+            .expect("non-empty column name should remain valid");
+    }
+
+    #[test]
+    fn validate_filters_rejects_empty_filter_names() {
+        for name in ["", "   "] {
+            let filters = vec![FilterSpec {
+                name: name.to_string(),
+                data_type: "Utf8".to_string(),
+                required: false,
+                mode: FilterMode::Equality,
+                description: String::new(),
+            }];
+
+            let error =
+                validate_filters_and_column_exprs(&filters, &[test_column()], "demo", "messages")
+                    .expect_err("empty filter names should be rejected");
+
+            assert_eq!(
+                error.to_string(),
+                "demo.messages filter name must not be empty"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_filters_accepts_non_empty_filter_names() {
+        validate_filters_and_column_exprs(&test_filters(), &[test_column()], "demo", "messages")
+            .expect("non-empty filter name should remain valid");
+    }
+
     fn base_request() -> RequestSpec {
         RequestSpec {
             path: ParsedTemplate::parse("/messages").expect("request path"),
@@ -1094,6 +1165,32 @@ mod tests {
         }
     }
 
+    fn function_with_binding_arg(binding_arg: &str) -> SourceTableFunctionSpec {
+        SourceTableFunctionSpec {
+            name: "lookup".to_string(),
+            kind: SourceTableFunctionKind::Table,
+            description: String::new(),
+            fetch_limit_default: None,
+            search_limits: None,
+            detail_hints: Vec::new(),
+            args: vec![TableFunctionArgSpec {
+                name: "query".to_string(),
+                required: true,
+                values: vec![],
+                bind: FunctionArgBinding {
+                    arg: binding_arg.to_string(),
+                },
+            }],
+            request: RequestSpec {
+                path: ParsedTemplate::parse("/lookup").expect("request path"),
+                ..RequestSpec::default()
+            },
+            response: crate::ResponseSpec::default(),
+            pagination: PaginationSpec::default(),
+            columns: vec![test_column()],
+        }
+    }
+
     #[test]
     fn validate_declared_relation_namespace_rejects_duplicate_tables_that_differ_only_by_case() {
         let relations = [
@@ -1177,19 +1274,33 @@ mod tests {
 
     #[test]
     fn validate_declared_relation_namespace_rejects_empty_table_names() {
-        let relations = [DeclaredRelation::table("  ")];
+        for name in ["", "   "] {
+            let relations = [DeclaredRelation::table(name)];
 
-        let error = validate_declared_relation_namespace("demo", relations)
-            .expect_err("expected empty table name to be rejected");
+            let error = validate_declared_relation_namespace("demo", relations)
+                .expect_err("expected empty table name to be rejected");
 
-        assert_eq!(
-            error.to_string(),
-            "source 'demo' table name must not be empty"
-        );
+            assert_eq!(
+                error.to_string(),
+                "source 'demo' table name must not be empty"
+            );
+        }
     }
 
     #[test]
     fn validate_declared_relation_namespace_rejects_invalid_function_names() {
+        for name in ["", "   "] {
+            let relations = [DeclaredRelation::function(name)];
+
+            let error = validate_declared_relation_namespace("demo", relations)
+                .expect_err("expected empty function name to be rejected");
+
+            assert_eq!(
+                error.to_string(),
+                "source 'demo' function name must not be empty"
+            );
+        }
+
         let relations = [DeclaredRelation::function("1search")];
 
         let error = validate_declared_relation_namespace("demo", relations)
@@ -1198,6 +1309,78 @@ mod tests {
         assert!(error.to_string().contains(
             "source 'demo' function name '1search' must start with a letter or underscore"
         ));
+    }
+
+    #[test]
+    fn validate_http_table_rejects_empty_route_filter_bindings() {
+        for filter_name in ["", "   "] {
+            let route = RequestRouteSpec {
+                when_filters: vec![filter_name.to_string()],
+                request: base_request(),
+            };
+
+            let error = validate_http_table(
+                "demo",
+                "messages",
+                &test_filters(),
+                &[test_column()],
+                &base_request(),
+                &[route],
+                &PaginationSpec::default(),
+                None,
+                &[],
+            )
+            .expect_err("empty route filter binding should be rejected");
+
+            assert_eq!(
+                error.to_string(),
+                "demo.messages requests.when_filters[0] must not be empty"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_http_table_accepts_non_empty_route_filter_bindings() {
+        let route = RequestRouteSpec {
+            when_filters: vec!["id".to_string()],
+            request: base_request(),
+        };
+
+        validate_http_table(
+            "demo",
+            "messages",
+            &test_filters(),
+            &[test_column()],
+            &base_request(),
+            &[route],
+            &PaginationSpec::default(),
+            None,
+            &[],
+        )
+        .expect("non-empty route filter binding should remain valid");
+    }
+
+    #[test]
+    fn validate_http_function_rejects_empty_request_arg_bindings() {
+        for binding_arg in ["", "   "] {
+            let function = function_with_binding_arg(binding_arg);
+
+            let error = validate_http_function("demo", &function)
+                .expect_err("empty request arg binding should be rejected");
+
+            assert_eq!(
+                error.to_string(),
+                "source 'demo' function 'lookup' request arg name must not be empty"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_http_function_accepts_non_empty_request_arg_bindings() {
+        let function = function_with_binding_arg("query");
+
+        validate_http_function("demo", &function)
+            .expect("non-empty request arg binding should remain valid");
     }
 
     #[test]
