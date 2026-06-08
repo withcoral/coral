@@ -4,4 +4,7 @@
 //! by default). PR 1 lands the store; the `OpenEpisode` handler and the
 //! `coral-episode-id` span attribution stack on top.
 
+pub(crate) mod id;
 mod store;
+
+pub(crate) use id::EpisodeId;
