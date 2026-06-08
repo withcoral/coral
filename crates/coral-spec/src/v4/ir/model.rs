@@ -33,7 +33,7 @@ pub struct IrOperation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrOperationInput {
     pub name: String,
-    pub location: OpenApiParameterLocation,
+    pub location: IrInputLocation,
     pub required: bool,
     pub data_type: IrScalarType,
     pub default_value: Option<String>,
@@ -106,7 +106,7 @@ pub enum IrScalarType {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub enum OpenApiParameterLocation {
+pub enum IrInputLocation {
     Path,
     Query,
     Header,
@@ -136,8 +136,8 @@ pub enum IrExecutionAttachment {
 #[cfg(test)]
 mod tests {
     use super::{
-        HttpMethod, IrExecutionAttachment, IrOperation, IrOperationOutput, IrScalarType, IrType,
-        IrTypeShape, OutputCardinality, SemanticIr,
+        HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
+        IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality, SemanticIr,
     };
     use crate::PaginationSpec;
     use crate::v4::diagnostics::Diagnostic;
@@ -240,5 +240,30 @@ diagnostics: []
             error.to_string().contains("shape") || error.to_string().contains("type"),
             "unexpected legacy local tag error: {error}"
         );
+    }
+
+    #[test]
+    fn input_location_serialization_preserves_artifact_shape() {
+        let input = IrOperationInput {
+            name: "owner".to_string(),
+            location: IrInputLocation::Path,
+            required: true,
+            data_type: IrScalarType::String,
+            default_value: None,
+            description: String::new(),
+        };
+
+        let yaml = serde_yaml::to_string(&input).expect("serialize input");
+        assert!(
+            yaml.contains("location: path"),
+            "unexpected serialized input: {yaml}"
+        );
+        assert!(
+            !yaml.contains("OpenApi"),
+            "Rust type names must not leak into artifacts: {yaml}"
+        );
+
+        let decoded: IrOperationInput = serde_yaml::from_str(&yaml).expect("deserialize input");
+        assert_eq!(decoded.location, IrInputLocation::Path);
     }
 }

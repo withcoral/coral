@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use serde_json::Value;
 
-use crate::v4::ir::{IrExecutionAttachment, IrOperation, OpenApiParameterLocation};
+use crate::v4::ir::{IrExecutionAttachment, IrInputLocation, IrOperation};
 use crate::{
     ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, ManifestDataType,
     ParsedTemplate, RequestSpec, Result, TableFunctionArgSpec,
@@ -106,7 +106,7 @@ pub fn request_spec_for_projection(
     let pagination_query_params = pagination_query_param_names(&projection.pagination);
     let mut path = rest.path_template.clone();
     for input in &projection.inputs {
-        if input.source_location == OpenApiParameterLocation::Path {
+        if input.source_location == IrInputLocation::Path {
             let replacement = match input.sql_exposure {
                 SqlInputExposure::Filter => format!("{{{{filter.{}}}}}", input.name),
                 SqlInputExposure::FunctionArg => format!("{{{{arg.{}}}}}", input.name),
@@ -118,7 +118,7 @@ pub fn request_spec_for_projection(
     let query = projection
         .inputs
         .iter()
-        .filter(|input| input.source_location == OpenApiParameterLocation::Query)
+        .filter(|input| input.source_location == IrInputLocation::Query)
         .filter(|input| !pagination_owns_input(input, &pagination_query_params))
         .filter_map(|input| {
             let value = match input.sql_exposure {
