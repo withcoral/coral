@@ -12,8 +12,11 @@ use coral_spec::backends::http::HttpTableSpec;
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use wiremock::matchers::{method, path, path_regex, query_param, query_param_is_missing};
-use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tokio::task::JoinHandle;
+use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::harness::{build_source, dir_url, execution_to_rows, test_runtime, write_jsonl_file};
 
@@ -1199,49 +1202,17 @@ async fn dependent_fetches_honor_config_max_concurrency() {
     let max_active = Arc::new(AtomicUsize::new(0));
     let delay = Duration::from_millis(250);
 
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path_regex(r"^/repos/withcoral/coral/pulls/[1-5]$"))
-        .respond_with({
-            let active = Arc::clone(&active);
-            let max_active = Arc::clone(&max_active);
-            move |request: &Request| {
-                let in_flight = active.fetch_add(1, Ordering::AcqRel) + 1;
-                max_active.fetch_max(in_flight, Ordering::AcqRel);
-
-                let active = Arc::clone(&active);
-                tokio::spawn(async move {
-                    tokio::time::sleep(delay).await;
-                    active.fetch_sub(1, Ordering::AcqRel);
-                });
-
-                let number = request
-                    .url
-                    .path_segments()
-                    .and_then(Iterator::last)
-                    .and_then(|segment| segment.parse::<i64>().ok())
-                    .expect("mocked pull request path should end with a number");
-
-                ResponseTemplate::new(200)
-                    .set_delay(delay)
-                    .set_body_json(json!({
-                        "data": [{
-                            "owner": "withcoral",
-                            "repo": "coral",
-                            "number": number,
-                            "state": "open"
-                        }]
-                    }))
-            }
-        })
-        .expect(5)
-        .mount(&server)
-        .await;
+    let (server_uri, server_task) = spawn_concurrency_tracking_github_server(
+        delay,
+        Arc::clone(&active),
+        Arc::clone(&max_active),
+    )
+    .await;
 
     let execution = CoralQuery::execute_sql(
         &[
             build_source(issues_manifest(temp.path())),
-            build_source(github_manifest(&server.uri())),
+            build_source(github_manifest(&server_uri)),
         ],
         runtime_with_dependent_join(DependentJoinConfig {
             max_concurrency: 2,
@@ -1254,6 +1225,7 @@ async fn dependent_fetches_honor_config_max_concurrency() {
 
     assert_eq!(execution_to_rows(&execution).len(), 5);
     assert_eq!(max_active.load(Ordering::Acquire), 2);
+    server_task.abort();
 }
 
 #[tokio::test]
@@ -2873,6 +2845,77 @@ fn first_table_object_mut(manifest: &mut Value) -> &mut serde_json::Map<String, 
         .and_then(|tables| tables.first_mut())
         .and_then(Value::as_object_mut)
         .expect("test manifest should contain one table object")
+}
+
+async fn spawn_concurrency_tracking_github_server(
+    delay: Duration,
+    active: Arc<AtomicUsize>,
+    max_active: Arc<AtomicUsize>,
+) -> (String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind concurrency tracking github server");
+    let addr = listener.local_addr().expect("server local addr");
+
+    let task = tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+
+            tokio::spawn(async move {
+                let mut buffer = vec![0_u8; 4096];
+                let Ok(read) = socket.read(&mut buffer).await else {
+                    return;
+                };
+                let request_bytes = buffer
+                    .get(..read)
+                    .expect("read byte count should fit inside request buffer");
+                let request = String::from_utf8_lossy(request_bytes);
+                let request_path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or_default();
+                let path_without_query = request_path.split('?').next().unwrap_or(request_path);
+                let number = path_without_query
+                    .strip_prefix("/repos/withcoral/coral/pulls/")
+                    .and_then(|segment| segment.parse::<i64>().ok());
+
+                let matched = matches!(number, Some(1..=5));
+                let body = if let Some(number @ 1..=5) = number {
+                    let in_flight = active.fetch_add(1, Ordering::AcqRel) + 1;
+                    max_active.fetch_max(in_flight, Ordering::AcqRel);
+                    tokio::time::sleep(delay).await;
+                    active.fetch_sub(1, Ordering::AcqRel);
+
+                    json!({
+                        "data": [{
+                            "owner": "withcoral",
+                            "repo": "coral",
+                            "number": number,
+                            "state": "open"
+                        }]
+                    })
+                    .to_string()
+                } else {
+                    json!({ "error": "not found" }).to_string()
+                };
+                let status = if matched { "200 OK" } else { "404 Not Found" };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                match socket.write_all(response.as_bytes()).await {
+                    Ok(()) | Err(_) => {}
+                }
+            });
+        }
+    });
+
+    (format!("http://{addr}"), task)
 }
 
 fn github_manifest_with_filters(

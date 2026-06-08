@@ -19,8 +19,8 @@ use crate::runtime::dependent_join::error::resolver_rows_exceeded;
 use crate::runtime::dependent_join::optimizer;
 use crate::runtime::dependent_join::planner::DependentJoinExtensionPlanner;
 use crate::runtime::error::{
-    datafusion_to_core, datafusion_to_core_with_sql_and_table_functions,
-    query_result_observer_error_to_core,
+    datafusion_to_core, datafusion_to_core_with_sql,
+    datafusion_to_core_with_sql_and_table_functions, query_result_observer_error_to_core,
 };
 use crate::runtime::json::register_json_support;
 use crate::runtime::pattern_validator::register_pattern_validator;
