@@ -370,6 +370,33 @@ def extract_tabs(profile_path):
     return [{"url": url} for url in sorted(urls)]
 
 
+def build_health():
+    """
+    First-available browser health check, used as the browser-agnostic test
+    query. Resolves the first installed browser among Chrome, Edge, and Brave
+    (in that priority order) and reads its real bookmark data via the same
+    extraction path the advertised tables use, so the source test verifies
+    live browser access without requiring any specific browser.
+
+    Returns a single-row list for the first resolvable browser, or [] when no
+    supported browser has a resolvable profile. Raises RuntimeError (surfaced
+    as HTTP 503) if the chosen browser's data exists but cannot be read.
+    """
+    for browser in BROWSERS:
+        profile_path, _ = get_active_profile(browser)
+        if profile_path:
+            bookmarks = extract_bookmarks(profile_path)
+            return [
+                {
+                    "browser": browser,
+                    "display_name": BROWSERS[browser]["display"],
+                    "profile_path": profile_path,
+                    "bookmark_count": len(bookmarks),
+                }
+            ]
+    return []
+
+
 class BrowserAPIHandler(BaseHTTPRequestHandler):
     server_version = "ChromiumLocalSource/0.1"
 
@@ -417,10 +444,14 @@ class BrowserAPIHandler(BaseHTTPRequestHandler):
 
         parsed_path = urlparse(self.path).path
 
-        # Browser-agnostic liveness check — used as the manifest test query
-        # so coral source test succeeds regardless of which browser is installed.
-        if parsed_path == "/status":
-            self.send_success({"status": "ok"})
+        # Browser-agnostic health check — used as the manifest test query so
+        # coral source test verifies real browser data for whichever of Chrome,
+        # Edge, or Brave is installed, without requiring a specific browser.
+        if parsed_path == "/health":
+            try:
+                self.send_success({"data": build_health()})
+            except RuntimeError as exc:
+                self.send_error(503, str(exc))
             return
 
         path_parts = parsed_path.strip("/").split("/")

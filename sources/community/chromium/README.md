@@ -55,7 +55,7 @@ coral source add --file sources/community/chromium/manifest.yaml
    coral source test chromium
    ```
 
-   Two test queries run: the browser-agnostic `chromium.status` liveness check, and `chromium.chrome_bookmarks`. The second query requires Chrome to be installed and a resolvable profile. If you only have Edge or Brave, `coral source test` will fail on the bookmarks query — use `coral sql` to verify those browser tables manually.
+   The test query hits `chromium.health`, which resolves the first installed browser among Chrome, Edge, and Brave and reads its real bookmark data. It passes as long as **any one** of the three browsers is installed with a resolvable profile — no specific browser is required — so Chrome-only, Edge-only, and Brave-only setups all succeed.
 
 5. Run a representative query:
 
@@ -83,7 +83,7 @@ By default, the server reads each browser's `Local State` file and uses `profile
 
 | Table | Description |
 | --- | --- |
-| `chromium.status` | Server liveness check. Returns `status = ok`. Used as the test query — not browser-specific. |
+| `chromium.health` | First-available browser check. Resolves the first installed browser (Chrome, Edge, or Brave) and returns its `browser`, `display_name`, `profile_path`, and `bookmark_count`. Used as the test query — not browser-specific. |
 | `chromium.[browser]_bookmarks` | Bookmarks and folders. Replace `[browser]` with `chrome`, `edge`, or `brave`. |
 | `chromium.[browser]_history` | Most recent 5,000 history records. |
 | `chromium.[browser]_downloads` | Most recent 2,000 download records. |
@@ -156,7 +156,7 @@ Expected `coral source lint` output:
 Manifest is valid
 ```
 
-Expected `coral source add` output (Chrome installed, `Default` profile auto-resolved):
+Expected `coral source add` output (any one of Chrome, Edge, or Brave installed with a resolvable profile):
 
 ```text
 Added source chromium
@@ -182,14 +182,11 @@ Added source chromium
     ├─ edge_history
     ├─ edge_tabs
     ├─ edge_top_sites
-    └─ status
+    └─ health
     Query tests
-    2 declared · 2 passed · 0 failed
+    1 declared · 1 passed · 0 failed
 
-    ✓ SELECT status FROM chromium.status LIMIT 1
-      1 row
-
-    ✓ SELECT id, title FROM chromium.chrome_bookmarks LIMIT 1
+    ✓ SELECT browser, bookmark_count FROM chromium.health LIMIT 1
       1 row
 ```
 
