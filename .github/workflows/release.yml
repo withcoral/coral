@@ -223,8 +223,10 @@ jobs:
           set -euo pipefail
 
           certificate_path="$RUNNER_TEMP/developer_id_application.p12"
+          developer_id_ca_path="$RUNNER_TEMP/DeveloperIDG2CA.cer"
           key_path="$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
           keychain_path="$RUNNER_TEMP/coral-signing.keychain-db"
+          original_keychains_path="$RUNNER_TEMP/original-keychains.txt"
 
           decode_base64_to_file() {
             value="$1"
@@ -239,6 +241,17 @@ jobs:
 
           decode_base64_to_file "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" "$certificate_path"
           decode_base64_to_file "$APP_STORE_CONNECT_API_KEY_P8_BASE64" "$key_path"
+          security list-keychains -d user \
+            | sed -e 's/^ *//' -e 's/^"//' -e 's/"$//' > "$original_keychains_path"
+          curl --fail --location --retry 3 --output "$developer_id_ca_path" \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          if ! security import "$developer_id_ca_path" \
+            -k "$HOME/Library/Keychains/login.keychain-db"; then
+            security find-certificate -Z \
+              -c "Developer ID Certification Authority" \
+              "$HOME/Library/Keychains/login.keychain-db" \
+              | grep -q "SHA-256 hash: F16CD3C54C7F83CEA4BF1A3E6A0819C8AAA8E4A1528FD144715F350643D2DF3A"
+          fi
 
           security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
           security set-keychain-settings -lut 21600 "$keychain_path"
@@ -246,11 +259,16 @@ jobs:
           security import "$certificate_path" \
             -P "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" \
             -A \
-            -t cert \
             -f pkcs12 \
+            -T /usr/bin/codesign \
             -k "$keychain_path"
-          security set-key-partition-list -S apple-tool:,apple: -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
-          security list-keychains -d user -s "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+
+          keychains=("$keychain_path")
+          while IFS= read -r existing_keychain; do
+            [ -n "$existing_keychain" ] && keychains+=("$existing_keychain")
+          done < "$original_keychains_path"
+          security list-keychains -d user -s "${keychains[@]}"
           security find-identity -p codesigning -v "$keychain_path"
 
       - name: Sign macOS binary
@@ -334,8 +352,22 @@ jobs:
         if: always()
         shell: bash
         run: |
+          original_keychains_path="$RUNNER_TEMP/original-keychains.txt"
+          if [ -s "$original_keychains_path" ]; then
+            keychains=()
+            while IFS= read -r existing_keychain; do
+              [ -n "$existing_keychain" ] && keychains+=("$existing_keychain")
+            done < "$original_keychains_path"
+            if [ "${#keychains[@]}" -gt 0 ]; then
+              security list-keychains -d user -s "${keychains[@]}" || true
+            fi
+          fi
           security delete-keychain "$RUNNER_TEMP/coral-signing.keychain-db" || true
-          rm -f "$RUNNER_TEMP/developer_id_application.p12" "$RUNNER_TEMP"/AuthKey_*.p8
+          rm -f \
+            "$RUNNER_TEMP/developer_id_application.p12" \
+            "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
+            "$RUNNER_TEMP/original-keychains.txt" \
+            "$RUNNER_TEMP"/AuthKey_*.p8
 
   checksums:
     needs:
