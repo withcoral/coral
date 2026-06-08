@@ -235,17 +235,17 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
         return vec![
             ProjectionColumn {
                 name: "result".to_string(),
-                data_type: ManifestDataType::Json,
-                source_path: vec!["result".to_string()],
+                data_type: ManifestDataType::Utf8,
+                source_path: Vec::new(),
                 nullable: true,
-                description: "Tool result field when the server returns one.".to_string(),
+                description: "Full decoded tool response row rendered as text.".to_string(),
             },
             ProjectionColumn {
-                name: "raw".to_string(),
+                name: "result_json".to_string(),
                 data_type: ManifestDataType::Json,
                 source_path: Vec::new(),
                 nullable: true,
-                description: "Full decoded tool response row.".to_string(),
+                description: "Full decoded tool response row rendered as JSON.".to_string(),
             },
         ];
     }

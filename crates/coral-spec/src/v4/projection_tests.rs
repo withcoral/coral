@@ -5,7 +5,9 @@ use serde_json::json;
 use super::naming::{pluralize, singularize};
 use super::test_support::github_openapi;
 use super::*;
-use crate::{PaginationMode, SourceTableFunctionKind, parse_source_manifest_yaml};
+use crate::{
+    ManifestDataType, PaginationMode, SourceTableFunctionKind, parse_source_manifest_yaml,
+};
 
 #[test]
 fn imports_and_generates_github_issue_slice() {
@@ -520,6 +522,51 @@ fn different_surface_namespaces_keep_colliding_projection_names() {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
+    );
+}
+
+#[test]
+fn generated_mcp_projection_exposes_current_row_result_columns() {
+    let manifest = rest_mcp_collision_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let mcp_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "mcp")
+        .expect("mcp surface");
+    let mcp_ir =
+        import_mcp_surface(v4, mcp_surface, &search_issues_mcp_catalog()).expect("mcp import");
+
+    let catalog = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let projection = catalog
+        .projections
+        .iter()
+        .find(|projection| {
+            projection.surface_id == "mcp" && projection.operation_id == "search_issues"
+        })
+        .expect("mcp search projection");
+
+    let columns = projection
+        .columns
+        .iter()
+        .map(|column| {
+            (
+                column.name.clone(),
+                column.data_type,
+                column.source_path.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        columns,
+        vec![
+            ("result".to_string(), ManifestDataType::Utf8, Vec::new()),
+            (
+                "result_json".to_string(),
+                ManifestDataType::Json,
+                Vec::new()
+            ),
+        ]
     );
 }
 
