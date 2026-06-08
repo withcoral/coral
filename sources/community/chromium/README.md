@@ -140,28 +140,23 @@ Then run:
 coral source test chromium
 ```
 
-### Validation output
+### Live validation output
 
-Run these three commands with the server running to confirm the source is wired up correctly. Replace the `coral source lint` output shown here with what you see on your machine before submitting a PR.
-
-```bash
-coral source lint sources/community/chromium/manifest.yaml
-coral source add --file sources/community/chromium/manifest.yaml
-coral source test chromium
-```
-
-Expected `coral source lint` output:
+The output below was **captured from a real run** on Windows 11 with Chrome,
+Edge, and Brave installed (each with a resolvable `Default` profile) and the
+local server running on `http://127.0.0.1:8765`. Counts reflect the test
+machine; no URLs, titles, or profile paths are included.
 
 ```text
+$ coral source lint sources/community/chromium/manifest.yaml
 Manifest is valid
 ```
 
-Expected `coral source add` output (any one of Chrome, Edge, or Brave installed with a resolvable profile):
-
 ```text
-Added source chromium
+$ coral source test chromium
 
   ✓ chromium connected successfully
+  Secrets: keychain
 
     chromium (19 tables)
     ├─ brave_bookmarks
@@ -190,20 +185,24 @@ Added source chromium
       1 row
 ```
 
-Verify browser data tables return rows using `coral sql`. Actual values depend on your browser data:
+Representative `coral sql` runs against the live profiles:
 
-```sql
-SELECT title, url, last_visit_time
-FROM chromium.chrome_history
-ORDER BY last_visit_time DESC
-LIMIT 5;
+```text
+$ coral sql "SELECT browser, display_name, bookmark_count FROM chromium.health LIMIT 1"
++---------+---------------+----------------+
+| browser | display_name  | bookmark_count |
++---------+---------------+----------------+
+| chrome  | Google Chrome | 3              |
++---------+---------------+----------------+
 ```
 
-```sql
-SELECT name, version
-FROM chromium.chrome_extensions
-ORDER BY name ASC
-LIMIT 5;
+```text
+$ coral sql "SELECT count(*) AS chrome_history_rows FROM chromium.chrome_history"
++---------------------+
+| chrome_history_rows |
++---------------------+
+| 116                 |
++---------------------+
 ```
 
 ## Security Notes

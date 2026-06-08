@@ -382,32 +382,42 @@ def build_health():
     extraction path the advertised tables use, so the source test verifies
     live browser access without requiring any specific browser.
 
-    Returns a single-row list for the first resolvable browser. Raises
-    RuntimeError (surfaced as HTTP 503) when no supported browser profile can
-    be resolved, or when the chosen browser's data exists but cannot be read.
-    A zero-row success is never returned, so the health test query cannot pass
+    Returns a single-row list for the first browser that both resolves a
+    profile and can read its bookmark data. If a resolved browser's data
+    cannot be read, that error is recorded and the remaining browsers are
+    tried, so a single unreadable profile does not fail the browser-agnostic
+    check when another browser is usable. Raises RuntimeError (surfaced as
+    HTTP 503) only when no supported browser can both resolve and read. A
+    zero-row success is never returned, so the health test query cannot pass
     without proving that real browser data is readable.
     """
     errors = []
     for browser in BROWSERS:
         profile_path, error = get_active_profile(browser)
-        if profile_path:
+        if not profile_path:
+            if error:
+                errors.append(f"{BROWSERS[browser]['display']}: {error}")
+            continue
+        try:
             bookmarks = extract_bookmarks(profile_path)
-            return [
-                {
-                    "browser": browser,
-                    "display_name": BROWSERS[browser]["display"],
-                    "profile_path": profile_path,
-                    "bookmark_count": len(bookmarks),
-                }
-            ]
-        if error:
-            errors.append(f"{BROWSERS[browser]['display']}: {error}")
+        except RuntimeError as exc:
+            # Profile resolved but its bookmark data could not be read. Record
+            # it and try the next browser instead of failing the whole check.
+            errors.append(f"{BROWSERS[browser]['display']}: {exc}")
+            continue
+        return [
+            {
+                "browser": browser,
+                "display_name": BROWSERS[browser]["display"],
+                "profile_path": profile_path,
+                "bookmark_count": len(bookmarks),
+            }
+        ]
 
     detail = " | ".join(errors) if errors else "no supported browser found."
     raise RuntimeError(
-        "No Chrome, Edge, or Brave profile could be resolved. Install a "
-        "supported browser or set CHROME_PROFILE_PATH, EDGE_PROFILE_PATH, or "
+        "No Chrome, Edge, or Brave profile could be resolved and read. Install "
+        "a supported browser or set CHROME_PROFILE_PATH, EDGE_PROFILE_PATH, or "
         f"BRAVE_PROFILE_PATH to a valid profile directory. Details: {detail}"
     )
 
