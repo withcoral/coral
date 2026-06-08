@@ -17,13 +17,14 @@ inputs:
       `https://www.googleapis.com/auth/spreadsheets.readonly` scope.
 
       To connect interactively, choose "Connect with Google" and provide a
-      Google Sheets OAuth client ID and client secret when prompted. Access
-      tokens expire; re-add the source with
-      `coral source add --interactive --file sources/community/google_sheets/manifest.yaml`
-      when the stored token needs to be replaced.
+      Google Sheets OAuth client ID and client secret when prompted. Google
+      returns a refresh token because the authorization request asks for
+      offline access and consent, and Coral refreshes the access token
+      automatically.
 
       To paste a token manually instead, obtain one from your own OAuth flow
-      with the same read-only Sheets scope.
+      with the same read-only Sheets scope. Manually pasted access tokens must
+      be replaced when they expire.
     credential:
       methods:
         - type: oauth
@@ -356,21 +357,9 @@ functions:
       spreadsheet row in the range. Each `row_data` column is a JSON array of
       FORMATTED_VALUE strings — use `json_get_str(row_data, 0)` to extract
       individual cells by zero-based column index. Specify the range in A1
-      notation such as `Sheet1!A1:D10` or a named range.
-    guide: |
-      Both spreadsheet_id and range arguments are required. The range uses A1
-      notation: Sheet1!A1:D10, or just A1:D10 for the first sheet, or a named
-      range. Results always use ROWS as the major dimension (one array per row).
-
-      spreadsheet_id echoes the argument; range echoes the requested range.
-      The Sheets API may return a narrower range than requested when the sheet
-      has fewer rows or columns — the actual returned range and majorDimension
-      are response-envelope fields outside the per-row values array and cannot
-      be surfaced as additional columns by the Coral DSL. They are always ROWS.
-
-      Extract individual cells from row_data by zero-based column index:
-        json_get_str(row_data, 0)  -- first column
-        json_get_str(row_data, 1)  -- second column
+      notation such as `Sheet1!A1:D10` or a named range. The spreadsheet_id and
+      range columns echo the required function arguments; the API's actual
+      returned range is an envelope field that cannot be surfaced per row.
     args:
       - name: spreadsheet_id
         required: true
@@ -402,7 +391,7 @@ functions:
         description: Spreadsheet ID passed as the first argument.
         expr:
           kind: from_arg
-          arg: spreadsheet_id
+          key: spreadsheet_id
         virtual: true
       - name: range
         type: Utf8
@@ -410,7 +399,7 @@ functions:
         description: Range argument passed to the function (A1 notation).
         expr:
           kind: from_arg
-          arg: range
+          key: range
         virtual: true
       - name: row_data
         type: Json

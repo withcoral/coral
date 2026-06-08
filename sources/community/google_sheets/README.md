@@ -32,7 +32,9 @@ coral source add --interactive --file sources/community/google_sheets/manifest.y
 
 Choose **Connect with Google**, then paste your `GOOGLE_SHEETS_OAUTH_CLIENT_ID` and
 `GOOGLE_SHEETS_OAUTH_CLIENT_SECRET` when prompted. Coral completes the PKCE OAuth
-flow locally and stores the token in the system keyring as `GOOGLE_SHEETS_ACCESS_TOKEN`.
+flow locally, stores the token in the system keyring as
+`GOOGLE_SHEETS_ACCESS_TOKEN`, and automatically refreshes it. The authorization
+request asks Google for offline access and a refresh token.
 
 > **Reusing a Google OAuth client:** these inputs use source-specific keys
 > (`GOOGLE_SHEETS_OAUTH_*`), matching the per-source convention the Gmail source
@@ -47,6 +49,8 @@ To paste an access token directly instead:
 export GOOGLE_SHEETS_ACCESS_TOKEN=ya29.a0...
 coral source add --file sources/community/google_sheets/manifest.yaml
 ```
+
+Manually pasted access tokens must be replaced when they expire.
 
 ## Tables and functions
 
@@ -66,6 +70,9 @@ coral source add --file sources/community/google_sheets/manifest.yaml
 
 The `spreadsheet_id` is the value between `/d/` and `/edit` in the spreadsheet
 URL: `https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit`.
+`get_values` accepts a sheet-qualified A1 range such as `Sheet1!A1:D10`, an
+unqualified range such as `A1:D10`, or a named range. It always requests rows as
+the major dimension, so each result row contains one JSON array in `row_data`.
 
 ## Validation
 
