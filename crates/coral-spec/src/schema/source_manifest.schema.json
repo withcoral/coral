@@ -293,7 +293,6 @@
       "properties": {
         "registration_url": { "type": "string", "minLength": 1 },
         "client_name": { "type": "string", "minLength": 1 },
-        "initial_access_token_input": { "type": "string", "minLength": 1 },
         "token_endpoint_auth_method": {
           "type": "string",
           "enum": ["none", "client_secret_basic", "client_secret_post"]

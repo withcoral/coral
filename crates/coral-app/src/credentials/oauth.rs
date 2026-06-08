@@ -550,11 +550,6 @@ fn reject_unknown_credential_inputs(
     if let Some(secret) = oauth.client.secret.as_ref() {
         expected.insert(secret.input.as_str());
     }
-    if let Some(registration) = oauth.client.dynamic_registration.as_ref()
-        && let Some(input) = registration.initial_access_token_input.as_deref()
-    {
-        expected.insert(input);
-    }
     for key in inputs.keys() {
         if !expected.contains(key.as_str()) {
             return Err(AppError::InvalidInput(format!(
@@ -573,32 +568,10 @@ fn validate_oauth_client_inputs(
         let _client_secret = resolve_client_secret(oauth, inputs)?;
         return Ok(());
     }
-    let Some(registration) = oauth.client.dynamic_registration.as_ref() else {
+    if oauth.client.dynamic_registration.is_none() {
         return Err(missing_client_id_error(oauth));
-    };
-    resolve_initial_access_token(registration, inputs)?;
+    }
     Ok(())
-}
-
-/// Resolve the optional initial access token a dynamic client registration
-/// endpoint requires, erroring when the declared input is missing or empty.
-fn resolve_initial_access_token<'a>(
-    registration: &coral_spec::ManifestOAuthDynamicClientRegistrationSpec,
-    inputs: &'a BTreeMap<String, String>,
-) -> Result<Option<&'a str>, AppError> {
-    let Some(input) = registration.initial_access_token_input.as_deref() else {
-        return Ok(None);
-    };
-    let token = inputs
-        .get(input)
-        .map(String::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            AppError::FailedPrecondition(format!(
-                "missing OAuth dynamic client registration initial access token input '{input}'"
-            ))
-        })?;
-    Ok(Some(token))
 }
 
 fn maybe_resolve_client_id(
@@ -666,15 +639,8 @@ async fn resolve_oauth_client(
     let Some(registration) = oauth.client.dynamic_registration.as_ref() else {
         return Err(missing_client_id_error(oauth));
     };
-    let registered = register_dynamic_client(
-        http,
-        oauth,
-        registration,
-        source_inputs,
-        credential_inputs,
-        redirect_uri,
-    )
-    .await?;
+    let registered =
+        register_dynamic_client(http, oauth, registration, source_inputs, redirect_uri).await?;
     Ok(ResolvedOAuthClient {
         client_id: registered.client_id,
         client_secret: registered.client_secret,
@@ -780,7 +746,6 @@ async fn register_dynamic_client(
     oauth: &ManifestOAuthCredentialSpec,
     registration: &coral_spec::ManifestOAuthDynamicClientRegistrationSpec,
     source_inputs: &BTreeMap<String, String>,
-    credential_inputs: &BTreeMap<String, String>,
     redirect_uri: Option<&str>,
 ) -> Result<DynamicClientRegistrationResponse, AppError> {
     let registration_url = registration
@@ -836,13 +801,10 @@ async fn register_dynamic_client(
         );
     }
 
-    let mut request = http
+    let request = http
         .post(registration_url)
         .header(ACCEPT, "application/json")
         .json(&payload);
-    if let Some(token) = resolve_initial_access_token(registration, credential_inputs)? {
-        request = request.bearer_auth(token);
-    }
     let response = request.send().await.map_err(|error| {
         AppError::FailedPrecondition(format!(
             "OAuth dynamic client registration request failed: {error}"
@@ -2391,10 +2353,7 @@ mod tests {
                 input_key: "MCP_ACCESS_TOKEN",
                 oauth: &oauth,
                 source_inputs: &EMPTY_SOURCE_INPUTS,
-                credential_inputs: vec![(
-                    "OAUTH_INITIAL_ACCESS_TOKEN".to_string(),
-                    "initial-access".to_string(),
-                )],
+                credential_inputs: Vec::new(),
             },
             move |authorization| async move {
                 authorization_tx
@@ -2553,7 +2512,6 @@ mod tests {
         oauth.client.dynamic_registration = Some(ManifestOAuthDynamicClientRegistrationSpec {
             registration_url: registration_fixture.registration_url.clone(),
             client_name: Some("Coral MCP".to_string()),
-            initial_access_token_input: None,
             token_endpoint_auth_method:
                 ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretBasic,
             request_refresh_token_grant: true,
@@ -3143,7 +3101,6 @@ mod tests {
                 dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
                     registration_url: registration_url.to_string(),
                     client_name: Some("Coral MCP".to_string()),
-                    initial_access_token_input: Some("OAUTH_INITIAL_ACCESS_TOKEN".to_string()),
                     token_endpoint_auth_method:
                         ManifestOAuthDynamicClientRegistrationAuthMethod::None,
                     request_refresh_token_grant: true,
@@ -3158,10 +3115,7 @@ mod tests {
         registration: &CapturedTokenRequest,
         redirect_port: u16,
     ) {
-        assert_eq!(
-            registration.authorization.as_deref(),
-            Some("Bearer initial-access")
-        );
+        assert_eq!(registration.authorization, None);
         assert_eq!(
             registration.headers.get("content-type").map(String::as_str),
             Some("application/json")

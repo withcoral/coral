@@ -313,8 +313,6 @@ pub struct ManifestOAuthDynamicClientRegistrationSpec {
     pub registration_url: String,
     /// Optional client display name sent during registration.
     pub client_name: Option<String>,
-    /// Optional credential-retrieval input key for an initial access token.
-    pub initial_access_token_input: Option<String>,
     /// Requested token endpoint authentication method.
     pub token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod,
     /// Whether Coral requests the `refresh_token` grant type during registration.
@@ -1058,18 +1056,6 @@ fn parse_oauth_dynamic_client_registration(
         input_key,
         "oauth.client.dynamic_registration",
     )?;
-    let initial_access_token_input = optional_string(
-        registration,
-        "initial_access_token_input",
-        input_key,
-        "oauth.client.dynamic_registration",
-    )?;
-    if let Some(input) = initial_access_token_input.as_deref() {
-        validate_input_key(
-            "oauth dynamic client registration initial access token input key",
-            input,
-        )?;
-    }
     let token_endpoint_auth_method = registration
         .get("token_endpoint_auth_method")
         .map(|value| parse_dynamic_client_registration_auth_method(input_key, value))
@@ -1089,7 +1075,6 @@ fn parse_oauth_dynamic_client_registration(
     Ok(ManifestOAuthDynamicClientRegistrationSpec {
         registration_url,
         client_name,
-        initial_access_token_input,
         token_endpoint_auth_method,
         request_refresh_token_grant,
     })
@@ -1822,7 +1807,6 @@ tables: []
               dynamic_registration:
                 registration_url: https://provider.example.com/oauth/register
                 client_name: Coral MCP
-                initial_access_token_input: OAUTH_INITIAL_ACCESS_TOKEN
                 token_endpoint_auth_method: client_secret_post
                 request_refresh_token_grant: true
 ",
@@ -1852,10 +1836,6 @@ tables: []
             "https://provider.example.com/oauth/register"
         );
         assert_eq!(registration.client_name.as_deref(), Some("Coral MCP"));
-        assert_eq!(
-            registration.initial_access_token_input.as_deref(),
-            Some("OAUTH_INITIAL_ACCESS_TOKEN")
-        );
         assert_eq!(
             registration.token_endpoint_auth_method,
             ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretPost

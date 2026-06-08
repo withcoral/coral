@@ -259,8 +259,6 @@ fn dynamic_client_registration_from_proto(
         registration_url: registration.registration_url.clone(),
         client_name: (!registration.client_name.is_empty())
             .then(|| registration.client_name.clone()),
-        initial_access_token_input: (!registration.initial_access_token_input.is_empty())
-            .then(|| registration.initial_access_token_input.clone()),
         token_endpoint_auth_method: dynamic_client_registration_auth_method_from_proto(
             registration.token_endpoint_auth_method,
         )?,

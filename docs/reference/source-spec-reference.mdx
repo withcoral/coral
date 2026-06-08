@@ -1209,10 +1209,7 @@ client ID, optional client secret, and token endpoint auth method for the
 OAuth flow. Coral always sends `application_type: native` during Dynamic Client
 Registration because Coral OAuth setup uses native-app flows: loopback
 authorization-code redirects or device code. Source specs cannot configure a
-`web` Dynamic Client Registration application type. Use
-`initial_access_token_input` when the registration endpoint requires an initial
-access token; Coral collects that value during OAuth setup and sends it as
-bearer auth to the registration endpoint. Set
+`web` Dynamic Client Registration application type. Set
 `request_refresh_token_grant: true` only when the provider supports registering
 clients for refresh-token grants and the source should request refresh-token
 support; otherwise Coral registers only the primary OAuth flow grant and still

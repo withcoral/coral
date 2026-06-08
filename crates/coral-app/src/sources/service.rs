@@ -647,9 +647,6 @@ fn oauth_to_proto(oauth: ManifestOAuthCredentialSpec) -> OAuthCredentialMethod {
                 OAuthDynamicClientRegistration {
                     registration_url: registration.registration_url,
                     client_name: registration.client_name.unwrap_or_default(),
-                    initial_access_token_input: registration
-                        .initial_access_token_input
-                        .unwrap_or_default(),
                     token_endpoint_auth_method: proto_dynamic_client_registration_auth_method(
                         registration.token_endpoint_auth_method,
                     ) as i32,
@@ -891,7 +888,6 @@ mod tests {
                                     registration_url: "https://provider.example.com/oauth/register"
                                         .to_string(),
                                     client_name: Some("Coral MCP".to_string()),
-                                    initial_access_token_input: None,
                                     token_endpoint_auth_method:
                                         ManifestOAuthDynamicClientRegistrationAuthMethod::None,
                                     request_refresh_token_grant: false,

@@ -241,8 +241,6 @@ message OAuthDynamicClientRegistration {
   string registration_url = 1;
   // Optional client display name sent during registration.
   string client_name = 2;
-  // Optional credential-retrieval input key for an initial access token.
-  string initial_access_token_input = 3;
   // Requested token endpoint authentication method.
   OauthDynamicClientRegistrationAuthMethod token_endpoint_auth_method = 4;
   // Field 5 was application_type; Coral always registers as a native client.

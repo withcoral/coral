@@ -641,7 +641,6 @@ inputs:
               dynamic_registration:
                 registration_url: https://provider.example.com/oauth/register
                 client_name: Coral MCP
-                initial_access_token_input: OAUTH_INITIAL_ACCESS_TOKEN
                 token_endpoint_auth_method: none
                 request_refresh_token_grant: true
 server:
