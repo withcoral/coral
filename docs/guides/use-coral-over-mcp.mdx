@@ -26,7 +26,7 @@ Clients see the same database catalog and query results as `coral sql`. You set 
 
 The `coral` system schema is part of that catalog. No-schema `list_catalog` and `coral://tables` include both configured source tables and Coral catalog tables: `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs`. Agents can also call `describe_table` and `list_columns` on those system tables.
 
-Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. For data questions, prefer a single `sql` call using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over multiple tool calls that fetch rows and combine them in the agent.
+Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. Tool descriptions include connected source/schema names, such as `github` or `slack`, to help clients route provider-specific prompts to Coral. For data questions, prefer a single `sql` call using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over multiple tool calls that fetch rows and combine them in the agent.
 
 ### Discovery tools
 
