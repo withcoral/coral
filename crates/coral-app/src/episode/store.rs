@@ -20,21 +20,26 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use super::EpisodeId;
 use crate::state::AppStateLayout;
 use crate::storage::fs::{self as storage_fs, FileLock};
 use crate::workspaces::WorkspaceName;
 
+/// Maximum intent length, in characters — generous for a task description while
+/// bounding the per-record size of the append-only log.
+const MAX_INTENT_CHARS: usize = 4096;
+
 /// A registered episode — one task-attempt's intent and lineage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Episode {
-    /// Client-minted, opaque episode id.
-    pub(crate) id: String,
+    /// Client-minted, validated episode id.
+    pub(crate) id: EpisodeId,
     /// Workspace that scopes the episode (per-tenant isolation).
     pub(crate) workspace: WorkspaceName,
     /// Natural-language task description — the retrieval handle.
     pub(crate) intent: String,
     /// Parent episode id for a child sub-task; `None` for a root.
-    pub(crate) parent_episode_id: Option<String>,
+    pub(crate) parent_episode_id: Option<EpisodeId>,
     /// Registration time, unix nanoseconds.
     pub(crate) created_at_unix_nanos: u128,
 }
@@ -54,10 +59,13 @@ struct PersistedEpisode {
 impl PersistedEpisode {
     fn from_episode(episode: &Episode) -> Self {
         Self {
-            id: episode.id.clone(),
+            id: episode.id.as_str().to_string(),
             workspace: episode.workspace.as_str().to_string(),
             intent: episode.intent.clone(),
-            parent_episode_id: episode.parent_episode_id.clone(),
+            parent_episode_id: episode
+                .parent_episode_id
+                .as_ref()
+                .map(|parent| parent.as_str().to_string()),
             created_at_unix_nanos: episode.created_at_unix_nanos,
         }
     }
@@ -77,6 +85,12 @@ pub(crate) enum EpisodeStoreError {
     Conflict {
         /// The conflicting episode id.
         episode_id: String,
+    },
+    /// The intent is empty or exceeds the maximum length.
+    #[error("episode intent must be non-empty and at most {max} characters")]
+    InvalidIntent {
+        /// The configured maximum intent length, in characters.
+        max: usize,
     },
 }
 
@@ -101,18 +115,25 @@ impl EpisodeStore {
     /// The shared state lock is held across the read-then-append so the
     /// idempotency/conflict check and the write are atomic against concurrent
     /// opens. Intent may be PII, so the log is written with private (0600)
-    /// permissions.
+    /// permissions. The id is already validated ([`EpisodeId`]); intent is
+    /// checked here as a safety net for callers that bypass the service boundary.
     pub(crate) fn open_episode(&self, episode: &Episode) -> Result<(), EpisodeStoreError> {
+        if episode.intent.trim().is_empty() || episode.intent.chars().count() > MAX_INTENT_CHARS {
+            return Err(EpisodeStoreError::InvalidIntent {
+                max: MAX_INTENT_CHARS,
+            });
+        }
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
         let path = self.layout.episodes_file(&episode.workspace);
-        if let Some(existing) = read_episode(&path, &episode.id)? {
+        if let Some(existing) = read_episode(&path, episode.id.as_str())? {
             return if existing.intent == episode.intent
-                && existing.parent_episode_id == episode.parent_episode_id
+                && existing.parent_episode_id.as_deref()
+                    == episode.parent_episode_id.as_ref().map(EpisodeId::as_str)
             {
                 Ok(())
             } else {
                 Err(EpisodeStoreError::Conflict {
-                    episode_id: episode.id.clone(),
+                    episode_id: episode.id.as_str().to_string(),
                 })
             };
         }
@@ -160,7 +181,10 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{Episode, EpisodeStore, EpisodeStoreError, now_unix_nanos, read_episode};
+    use super::{
+        Episode, EpisodeId, EpisodeStore, EpisodeStoreError, MAX_INTENT_CHARS, now_unix_nanos,
+        read_episode,
+    };
     use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
 
@@ -173,12 +197,28 @@ mod tests {
 
     fn episode(workspace: &WorkspaceName, id: &str, intent: &str, parent: Option<&str>) -> Episode {
         Episode {
-            id: id.to_string(),
+            id: EpisodeId::parse(id).expect("valid episode id"),
             workspace: workspace.clone(),
             intent: intent.to_string(),
-            parent_episode_id: parent.map(str::to_string),
+            parent_episode_id: parent.map(|parent| EpisodeId::parse(parent).expect("valid parent")),
             created_at_unix_nanos: now_unix_nanos(),
         }
+    }
+
+    #[test]
+    fn open_rejects_blank_and_overlong_intent() {
+        let (_dir, layout) = layout();
+        let store = EpisodeStore::new(layout);
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        let blank = store
+            .open_episode(&episode(&workspace, "ep_blank", "   ", None))
+            .expect_err("blank intent must be rejected");
+        assert!(matches!(blank, EpisodeStoreError::InvalidIntent { .. }));
+        let overlong = "x".repeat(MAX_INTENT_CHARS + 1);
+        let too_long = store
+            .open_episode(&episode(&workspace, "ep_long", &overlong, None))
+            .expect_err("overlong intent must be rejected");
+        assert!(matches!(too_long, EpisodeStoreError::InvalidIntent { .. }));
     }
 
     #[test]
