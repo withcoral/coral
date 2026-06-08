@@ -132,13 +132,13 @@ of Coral to your first SQL query. If you prefer an interactive wizard, you can r
 
 ### 1. Install Coral
 
-On macOS, use Homebrew:
+On macOS:
 
 ```bash
 brew install withcoral/tap/coral
 ```
 
-Or use the direct installer on macOS or Linux:
+Or on Linux:
 
 ```bash
 curl -fsSL https://withcoral.com/install.sh | sh
