@@ -9,11 +9,9 @@
 
 use std::fmt;
 
-use crate::bootstrap::AppError;
+use coral_api::CORAL_EPISODE_ID_MAX_LEN;
 
-/// Maximum length of an episode id, in bytes — generous for a UUID/ULID while
-/// bounding the `coral-episode-id` metadata value and per-record on-disk size.
-const MAX_EPISODE_ID_LEN: usize = 128;
+use crate::bootstrap::AppError;
 
 /// App-owned identity for one validated, client-minted episode id.
 ///
@@ -28,15 +26,15 @@ pub(crate) struct EpisodeId(String);
 
 impl EpisodeId {
     /// Parse and validate a client-minted episode id. Rejects an empty id, one
-    /// longer than [`MAX_EPISODE_ID_LEN`] bytes, or one containing any byte
+    /// longer than [`CORAL_EPISODE_ID_MAX_LEN`] bytes, or one containing any byte
     /// outside graphic ASCII (`0x21..=0x7E`) — see the `OpenEpisode` proto.
     pub(crate) fn parse(id: &str) -> Result<Self, AppError> {
         if id.is_empty() {
             return Err(AppError::InvalidInput("missing episode id".to_string()));
         }
-        if id.len() > MAX_EPISODE_ID_LEN {
+        if id.len() > CORAL_EPISODE_ID_MAX_LEN {
             return Err(AppError::InvalidInput(format!(
-                "episode id must be at most {MAX_EPISODE_ID_LEN} bytes"
+                "episode id must be at most {CORAL_EPISODE_ID_MAX_LEN} bytes"
             )));
         }
         if !id.bytes().all(|byte| byte.is_ascii_graphic()) {
@@ -64,7 +62,9 @@ impl fmt::Display for EpisodeId {
 
 #[cfg(test)]
 mod tests {
-    use super::{EpisodeId, MAX_EPISODE_ID_LEN};
+    use coral_api::CORAL_EPISODE_ID_MAX_LEN;
+
+    use super::EpisodeId;
 
     #[test]
     fn accepts_uuid_and_ulid() {
@@ -83,8 +83,8 @@ mod tests {
 
     #[test]
     fn enforces_max_length() {
-        EpisodeId::parse(&"a".repeat(MAX_EPISODE_ID_LEN)).expect("max length is valid");
-        EpisodeId::parse(&"a".repeat(MAX_EPISODE_ID_LEN + 1))
+        EpisodeId::parse(&"a".repeat(CORAL_EPISODE_ID_MAX_LEN)).expect("max length is valid");
+        EpisodeId::parse(&"a".repeat(CORAL_EPISODE_ID_MAX_LEN + 1))
             .expect_err("over-long id must be rejected");
     }
 }

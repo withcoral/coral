@@ -76,6 +76,16 @@ pub const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
 /// Canonical default workspace name used across local Coral surfaces.
 pub const DEFAULT_WORKSPACE_ID: &str = "default";
 
+/// gRPC metadata key carrying the originating episode id on Coral calls after
+/// `EpisodeService.OpenEpisode`. The single source of truth for the wire
+/// contract; consumed by both the server (`coral-app`) and clients
+/// (`coral-client`).
+pub const CORAL_EPISODE_ID_METADATA_KEY: &str = "coral-episode-id";
+
+/// Maximum length of a `coral-episode-id` value, in bytes. Validated identically
+/// server- and client-side so the contract stays in one place.
+pub const CORAL_EPISODE_ID_MAX_LEN: usize = 128;
+
 /// Machine-readable reason for a configured source lookup miss.
 pub const CORAL_ERROR_REASON_SOURCE_NOT_FOUND: &str = "SOURCE_NOT_FOUND";
 
