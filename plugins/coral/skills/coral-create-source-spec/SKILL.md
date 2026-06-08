@@ -141,11 +141,18 @@ interfaces:
   - id: rest
     type: openapi
     file: ./openapi.yaml
+    overlays:
+      - file: ./openapi-fixes.overlay.yaml
     base_url: https://api.example.com
     auth:
       kind: bearer_input
       key: API_TOKEN
 ```
+
+Use `overlays` only for repeatable OpenAPI Overlay corrections to provider
+descriptors. Coral applies overlay files before import and currently supports
+`update` and `remove` actions with simple JSONPath targets; do not use `copy`
+actions or JSONPath filters.
 
 Read `references/http-source-checklist.md` for OpenAPI import checks.
 

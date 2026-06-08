@@ -304,6 +304,10 @@ struct SourceAddArgs {
     /// environment variables matching each input key.
     #[arg(long)]
     interactive: bool,
+
+    /// Comma-separated interface ids to install. Empty installs every declared interface.
+    #[arg(long, value_delimiter = ',', value_name = "ID")]
+    interfaces: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -938,11 +942,15 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
                         source.name,
                         source_ops::display_version(&source.version),
                         source_ops::source_origin_label(source.origin).to_string(),
+                        source_ops::format_interface_ids(&source.interface_ids),
                         source_ops::source_credential_storage_label(source.credential_storage)
                             .to_string(),
                     ]
                 });
-                print_text_table(["Source", "Version", "Origin", "Secrets"], rows);
+                print_text_table(
+                    ["Source", "Version", "Origin", "Interfaces", "Secrets"],
+                    rows,
+                );
             }
         }
         SourceCommand::Info { name, verbose } => {
@@ -950,7 +958,7 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
         }
         SourceCommand::Add(args) => run_source_add(app, args).await?,
         SourceCommand::Lint { file } => {
-            source_ops::load_validated_manifest_file(&file)?;
+            source_ops::load_validated_manifest_file(&file, &[])?;
             println!("Manifest is valid");
         }
         SourceCommand::Test { name } => {
@@ -1061,6 +1069,7 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
         name,
         file,
         interactive,
+        interfaces,
     } = args;
     if interactive {
         source_ops::require_interactive()?;
@@ -1073,6 +1082,11 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
                 .into_iter()
                 .find(|source| source.name == bundled_name)
                 .ok_or_else(|| anyhow::anyhow!("unknown bundled source '{bundled_name}'"))?;
+            let available = if interfaces.is_empty() {
+                available
+            } else {
+                source_ops::source_info(app, &available.name, &interfaces, true).await?
+            };
             let inputs = available
                 .inputs
                 .iter()
@@ -1081,32 +1095,38 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
                 .map_err(anyhow::Error::from)?;
             if interactive {
                 let inputs = source_ops::prompt_for_inputs_with_credential_methods(&inputs)?;
-                source_ops::add_bundled_source_with_credentials(app, &available.name, inputs)
-                    .await?
+                source_ops::add_bundled_source_with_credentials(
+                    app,
+                    &available.name,
+                    inputs,
+                    interfaces,
+                )
+                .await?
             } else {
                 let (variables, secrets) = source_ops::collect_inputs_from_env(
                     &inputs,
-                    format!("coral source add --interactive {}", available.name),
+                    source_add_interactive_command(Some(&available.name), None, &interfaces),
                 )?;
-                source_ops::add_bundled_source(app, &available.name, variables, secrets).await?
+                source_ops::add_bundled_source(app, &available.name, variables, secrets, interfaces)
+                    .await?
             }
         }
         (None, Some(file)) => {
-            let (manifest_yaml, manifest) = source_ops::load_validated_manifest_file(&file)?;
+            let (manifest_yaml, manifest) =
+                source_ops::load_validated_manifest_file(&file, &interfaces)?;
             if interactive {
                 let inputs = source_ops::prompt_for_inputs_with_credential_methods(
                     &manifest.declared_inputs,
                 )?;
-                source_ops::import_source_with_credentials(app, manifest_yaml, inputs).await?
+                source_ops::import_source_with_credentials(app, manifest_yaml, inputs, interfaces)
+                    .await?
             } else {
                 let (variables, secrets) = source_ops::collect_inputs_from_env(
                     &manifest.declared_inputs,
-                    format!(
-                        "coral source add --interactive --file {}",
-                        source_ops::shell_quote_arg(&file.display().to_string())
-                    ),
+                    source_add_interactive_command(None, Some(&file), &interfaces),
                 )?;
-                source_ops::import_source(app, manifest_yaml, variables, secrets).await?
+                source_ops::import_source(app, manifest_yaml, variables, secrets, interfaces)
+                    .await?
             }
         }
         _ => unreachable!("clap enforces exactly one of name or file"),
@@ -1119,6 +1139,27 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
     source_ops::validate_and_warn(app, &response.name, source_ops::TableDisplayLimit::DEFAULT)
         .await
         .map_err(Into::into)
+}
+
+fn source_add_interactive_command(
+    name: Option<&str>,
+    file: Option<&PathBuf>,
+    interfaces: &[String],
+) -> String {
+    let mut command = String::from("coral source add --interactive");
+    if let Some(name) = name {
+        command.push(' ');
+        command.push_str(&source_ops::shell_quote_arg(name));
+    }
+    if let Some(file) = file {
+        command.push_str(" --file ");
+        command.push_str(&source_ops::shell_quote_arg(&file.display().to_string()));
+    }
+    if !interfaces.is_empty() {
+        command.push_str(" --interfaces ");
+        command.push_str(&source_ops::shell_quote_arg(&interfaces.join(",")));
+    }
+    command
 }
 
 #[cfg(test)]

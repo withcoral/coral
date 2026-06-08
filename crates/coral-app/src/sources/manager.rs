@@ -1,6 +1,7 @@
 //! Owns the source lifecycle workflow for the local app.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path, PathBuf};
 
 use crate::bootstrap::AppError;
 use crate::credentials::oauth::{
@@ -13,7 +14,8 @@ use crate::credentials::{
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::{
-    describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
+    BundledSourceAsset, BundledSourceManifest, describe_manifest, list_bundled_sources,
+    load_bundled_source, resolve_installed_manifest,
 };
 use crate::sources::materialization::{
     MaterializationBuild, SourceMaterializationBuildRequest, build_source_materialization_tmp,
@@ -29,7 +31,7 @@ use crate::workspaces::WorkspaceName;
 use coral_spec::{
     GraphqlSchemaDescriptor, ManifestCredentialMethodKind, ManifestInputKind,
     ManifestOAuthCredentialSpec, OpenApiDescriptor, SourceInterface, SourceSpec,
-    parse_source_manifest_yaml,
+    filter_source_manifest_yaml_interfaces, parse_source_manifest_yaml,
 };
 use tokio::{
     sync::{mpsc, oneshot},
@@ -49,23 +51,27 @@ pub(crate) struct SourceManager {
 pub(crate) struct CreateBundledSourceCommand {
     pub(crate) name: SourceName,
     pub(crate) bindings: SourceBindings,
+    pub(crate) interface_ids: Vec<String>,
 }
 
 pub(crate) struct CreateBundledSourceWithOAuthCommand {
     pub(crate) name: SourceName,
     pub(crate) bindings: SourceBindings,
     pub(crate) oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
+    pub(crate) interface_ids: Vec<String>,
 }
 
 pub(crate) struct ImportSourceCommand {
     pub(crate) manifest_yaml: String,
     pub(crate) bindings: SourceBindings,
+    pub(crate) interface_ids: Vec<String>,
 }
 
 pub(crate) struct ImportSourceWithCredentialsCommand {
     pub(crate) manifest_yaml: String,
     pub(crate) bindings: SourceBindings,
     pub(crate) oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
+    pub(crate) interface_ids: Vec<String>,
 }
 
 #[derive(Default)]
@@ -163,6 +169,7 @@ struct OAuthInstallTail {
     has_stored_material: bool,
     manifest_yaml: Option<String>,
     materialization_manifest_yaml: String,
+    bundled_assets: Vec<BundledSourceAsset>,
     origin: SourceOrigin,
 }
 
@@ -213,19 +220,40 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
+        interface_ids: &[String],
+        catalog_only: bool,
     ) -> Result<CandidateSource, AppError> {
-        match self.config_store.get_source(workspace_name, source_name) {
-            Ok(source) => {
-                return Ok(
-                    resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate,
-                );
+        if !catalog_only {
+            match self.config_store.get_source(workspace_name, source_name) {
+                Ok(source) => {
+                    let manifest =
+                        resolve_installed_manifest(workspace_name, &source, &self.layout)?;
+                    if interface_ids.is_empty() {
+                        return Ok(manifest.candidate);
+                    }
+                    let mut candidate = self.describe_candidate_from_yaml(
+                        workspace_name,
+                        &manifest.manifest_yaml,
+                        source.origin,
+                        true,
+                        interface_ids,
+                    )?;
+                    candidate.credential_storage = manifest.candidate.credential_storage;
+                    return Ok(candidate);
+                }
+                Err(AppError::SourceNotFound(_)) => {}
+                Err(error) => return Err(error),
             }
-            Err(AppError::SourceNotFound(_)) => {}
-            Err(error) => return Err(error),
         }
 
         match load_bundled_source(source_name) {
-            Ok(bundled) => self.describe_bundled_source(workspace_name, &bundled.manifest_yaml),
+            Ok(bundled) => self.describe_candidate_from_yaml(
+                workspace_name,
+                &bundled.manifest_yaml,
+                SourceOrigin::Bundled,
+                false,
+                interface_ids,
+            ),
             Err(AppError::InvalidInput(_)) => {
                 Err(AppError::SourceNotFound(source_name.to_string()))
             }
@@ -265,13 +293,17 @@ impl SourceManager {
         command: &CreateBundledSourceCommand,
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;
+        let bundled = filtered_bundled_source(&bundled, &command.interface_ids)?;
+        let materialization_manifest_yaml =
+            self.bundled_materialization_manifest_yaml(workspace_name, &bundled)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
         self.install_validated_source(
             workspace_name,
             &candidate,
             &command.bindings,
-            Some(&bundled.manifest_yaml),
-            &bundled.manifest_yaml,
+            Some(&materialization_manifest_yaml),
+            &materialization_manifest_yaml,
+            Some(&bundled.assets),
             SourceOrigin::Bundled,
         )
     }
@@ -283,6 +315,9 @@ impl SourceManager {
         events: ImportSourceEventSender,
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;
+        let bundled = filtered_bundled_source(&bundled, &command.interface_ids)?;
+        let materialization_manifest_yaml =
+            self.bundled_materialization_manifest_yaml(workspace_name, &bundled)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
         self.install_source_with_oauth(
             workspace_name,
@@ -290,8 +325,9 @@ impl SourceManager {
             &command.bindings,
             command.oauth_credential_retrievals,
             events,
-            Some(&bundled.manifest_yaml),
-            &bundled.manifest_yaml,
+            Some(&materialization_manifest_yaml),
+            &materialization_manifest_yaml,
+            bundled.assets,
             SourceOrigin::Bundled,
         )
         .await
@@ -302,9 +338,11 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         command: &ImportSourceCommand,
     ) -> Result<InstalledSource, AppError> {
-        let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
+        let filtered_manifest_yaml =
+            filtered_manifest_yaml(&command.manifest_yaml, &command.interface_ids)?;
+        let manifest = parse_source_manifest_yaml(&filtered_manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
+        let manifest_yaml = durable_import_manifest_yaml(&filtered_manifest_yaml, &manifest)?;
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         self.install_validated_source(
@@ -313,6 +351,7 @@ impl SourceManager {
             &command.bindings,
             Some(&manifest_yaml),
             &manifest_yaml,
+            None,
             SourceOrigin::Imported,
         )
     }
@@ -323,9 +362,11 @@ impl SourceManager {
         command: ImportSourceWithCredentialsCommand,
         events: ImportSourceEventSender,
     ) -> Result<InstalledSource, AppError> {
-        let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
+        let filtered_manifest_yaml =
+            filtered_manifest_yaml(&command.manifest_yaml, &command.interface_ids)?;
+        let manifest = parse_source_manifest_yaml(&filtered_manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
+        let manifest_yaml = durable_import_manifest_yaml(&filtered_manifest_yaml, &manifest)?;
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         self.install_source_with_oauth(
@@ -336,6 +377,7 @@ impl SourceManager {
             events,
             Some(&manifest_yaml),
             &manifest_yaml,
+            Vec::new(),
             SourceOrigin::Imported,
         )
         .await
@@ -345,6 +387,10 @@ impl SourceManager {
     /// the source. Shared tail of the non-OAuth install entry points; the
     /// caller supplies the resolved `candidate` plus the per-origin
     /// `manifest_yaml`/`origin`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Shared source install tail needs both persisted and materialization manifests plus optional bundled assets."
+    )]
     fn install_validated_source(
         &self,
         workspace_name: &WorkspaceName,
@@ -352,6 +398,7 @@ impl SourceManager {
         bindings: &SourceBindings,
         manifest_yaml: Option<&str>,
         materialization_manifest_yaml: &str,
+        bundled_assets: Option<&[BundledSourceAsset]>,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
         let stored_material = self.source_stored_material_for_validation(
@@ -377,6 +424,7 @@ impl SourceManager {
             &identity,
             "tmp",
             &materialization_credentials,
+            bundled_assets,
         )?;
         self.persist_source(
             workspace_name,
@@ -409,6 +457,7 @@ impl SourceManager {
         events: ImportSourceEventSender,
         manifest_yaml: Option<&str>,
         materialization_manifest_yaml: &str,
+        bundled_assets: Vec<BundledSourceAsset>,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
         let oauth_input_keys = oauth_credential_retrievals
@@ -440,6 +489,7 @@ impl SourceManager {
             has_stored_material,
             manifest_yaml: manifest_yaml.map(str::to_string),
             materialization_manifest_yaml: materialization_manifest_yaml.to_string(),
+            bundled_assets,
             origin,
         })
         .await
@@ -468,6 +518,7 @@ impl SourceManager {
             has_stored_material,
             manifest_yaml,
             materialization_manifest_yaml,
+            bundled_assets,
             origin,
         } = request;
         let credential_storage = self.source_persist_storage(
@@ -486,6 +537,7 @@ impl SourceManager {
             &identity,
             "tmp",
             &materialization_credentials,
+            Some(&bundled_assets),
         )?;
         self.persist_source(
             &workspace_name,
@@ -595,6 +647,37 @@ impl SourceManager {
         let mut candidate = describe_manifest(manifest_yaml, SourceOrigin::Bundled, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         Ok(candidate)
+    }
+
+    fn describe_candidate_from_yaml(
+        &self,
+        workspace_name: &WorkspaceName,
+        manifest_yaml: &str,
+        origin: SourceOrigin,
+        installed: bool,
+        interface_ids: &[String],
+    ) -> Result<CandidateSource, AppError> {
+        let manifest_yaml = filtered_manifest_yaml(manifest_yaml, interface_ids)?;
+        let mut candidate = describe_manifest(&manifest_yaml, origin, installed)?;
+        if !installed {
+            candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
+        }
+        Ok(candidate)
+    }
+
+    fn bundled_materialization_manifest_yaml(
+        &self,
+        workspace_name: &WorkspaceName,
+        bundled: &BundledSourceManifest,
+    ) -> Result<String, AppError> {
+        let manifest = parse_source_manifest_yaml(&bundled.manifest_yaml)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        let source_name = SourceName::parse(&manifest.name)?;
+        let asset_root = self
+            .layout
+            .source_dir(workspace_name, &source_name)
+            .join("bundled");
+        rewrite_bundled_manifest_file_paths(&bundled.manifest_yaml, &manifest, &asset_root, bundled)
     }
 
     #[expect(
@@ -730,6 +813,7 @@ impl SourceManager {
             display_name: request.identity.display_name,
             source_key: request.identity.source_key,
             version: persisted_version,
+            interface_ids: request.candidate.interface_ids.clone(),
             variables,
             secrets: visible_secret_keys,
             credential_storage,
@@ -765,6 +849,10 @@ impl SourceManager {
         Ok(resolved)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Materialization setup receives source identity, manifest, credentials, and optional bundled assets from distinct lifecycle stages."
+    )]
     fn prepare_materialization(
         &self,
         workspace_name: &WorkspaceName,
@@ -773,7 +861,16 @@ impl SourceManager {
         identity: &InstalledSourceIdentity,
         suffix_prefix: &str,
         provider_credentials: &BTreeMap<String, String>,
+        bundled_assets: Option<&[BundledSourceAsset]>,
     ) -> Result<Option<MaterializationBuild>, AppError> {
+        if let Some(assets) = bundled_assets
+            && !assets.is_empty()
+        {
+            persist_bundled_assets(
+                &self.layout.source_dir(workspace_name, &candidate.name),
+                assets,
+            )?;
+        }
         let manifest = parse_source_manifest_yaml(manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         build_source_materialization_tmp(SourceMaterializationBuildRequest {
@@ -1160,9 +1257,10 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         mut source: InstalledSource,
     ) -> Result<InstalledSource, AppError> {
-        source.version = resolve_installed_manifest(workspace_name, &source, &self.layout)?
-            .candidate
-            .version;
+        let candidate =
+            resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate;
+        source.version = candidate.version;
+        source.interface_ids = candidate.interface_ids;
         Ok(source)
     }
 
@@ -1266,6 +1364,207 @@ fn validate_bindings(
         replaced_oauth_inputs: secret_values.keys().cloned().collect(),
         secrets: secret_values,
     })
+}
+
+fn rewrite_bundled_manifest_file_paths(
+    manifest_yaml: &str,
+    manifest: &SourceSpec,
+    asset_root: &Path,
+    bundled: &BundledSourceManifest,
+) -> Result<String, AppError> {
+    let mut raw = serde_yaml::from_str::<serde_yaml::Value>(manifest_yaml)
+        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    let interfaces = raw
+        .get_mut("interfaces")
+        .and_then(serde_yaml::Value::as_sequence_mut)
+        .ok_or_else(|| {
+            AppError::InvalidInput("source manifest interfaces must be a sequence".to_string())
+        })?;
+    for (index, interface) in manifest.interfaces.iter().enumerate() {
+        let raw_interface = interfaces.get_mut(index).ok_or_else(|| {
+            AppError::InvalidInput(format!(
+                "source manifest interface index {index} is missing"
+            ))
+        })?;
+        rewrite_bundled_interface_file_paths(raw_interface, interface, asset_root, bundled)?;
+    }
+    serde_yaml::to_string(&raw).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to serialize bundled source manifest: {error}"
+        ))
+    })
+}
+
+fn rewrite_bundled_interface_file_paths(
+    raw_interface: &mut serde_yaml::Value,
+    interface: &SourceInterface,
+    asset_root: &Path,
+    bundled: &BundledSourceManifest,
+) -> Result<(), AppError> {
+    match interface {
+        SourceInterface::OpenApi(openapi) => {
+            let mapping = yaml_mapping_mut(raw_interface, interface.id())?;
+            if let OpenApiDescriptor::File { file } = &openapi.descriptor {
+                let rewritten = bundled_asset_path(asset_root, bundled, file)?;
+                set_yaml_path_field(mapping, "file", &rewritten);
+            }
+            if let Some(overlays) = mapping
+                .get_mut(serde_yaml::Value::String("overlays".to_string()))
+                .and_then(serde_yaml::Value::as_sequence_mut)
+            {
+                for (index, overlay) in openapi.overlays.iter().enumerate() {
+                    let raw_overlay = overlays.get_mut(index).ok_or_else(|| {
+                        AppError::InvalidInput(format!(
+                            "source manifest interface '{}' overlay index {index} is missing",
+                            interface.id()
+                        ))
+                    })?;
+                    let raw_overlay = raw_overlay.as_mapping_mut().ok_or_else(|| {
+                        AppError::InvalidInput(format!(
+                            "source manifest interface '{}' overlay index {index} must be an object",
+                            interface.id()
+                        ))
+                    })?;
+                    let rewritten = bundled_asset_path(asset_root, bundled, &overlay.file)?;
+                    set_yaml_path_field(raw_overlay, "file", &rewritten);
+                }
+            }
+        }
+        SourceInterface::Graphql(graphql) => match &graphql.schema {
+            GraphqlSchemaDescriptor::SdlFile { file }
+            | GraphqlSchemaDescriptor::IntrospectionJsonFile { file } => {
+                let mapping = yaml_mapping_mut(raw_interface, interface.id())?;
+                let schema = mapping
+                    .get_mut(serde_yaml::Value::String("schema".to_string()))
+                    .and_then(serde_yaml::Value::as_mapping_mut)
+                    .ok_or_else(|| {
+                        AppError::InvalidInput(format!(
+                            "source manifest interface '{}' schema must be an object",
+                            interface.id()
+                        ))
+                    })?;
+                let rewritten = bundled_asset_path(asset_root, bundled, file)?;
+                set_yaml_path_field(schema, "file", &rewritten);
+            }
+            GraphqlSchemaDescriptor::SdlUrl { .. }
+            | GraphqlSchemaDescriptor::IntrospectionJsonUrl { .. }
+            | GraphqlSchemaDescriptor::IntrospectionQuery { .. } => {}
+        },
+        SourceInterface::File(file_interface) => {
+            let mapping = yaml_mapping_mut(raw_interface, interface.id())?;
+            let files = mapping
+                .get_mut(serde_yaml::Value::String("files".to_string()))
+                .and_then(serde_yaml::Value::as_sequence_mut)
+                .ok_or_else(|| {
+                    AppError::InvalidInput(format!(
+                        "source manifest interface '{}' files must be a sequence",
+                        interface.id()
+                    ))
+                })?;
+            for (index, file) in file_interface.files.iter().enumerate() {
+                let target = files.get_mut(index).ok_or_else(|| {
+                    AppError::InvalidInput(format!(
+                        "source manifest interface '{}' file index {index} is missing",
+                        interface.id()
+                    ))
+                })?;
+                let rewritten = bundled_asset_path(asset_root, bundled, file)?;
+                *target = serde_yaml::Value::String(rewritten.display().to_string());
+            }
+        }
+        SourceInterface::Mcp(_) => {}
+    }
+    Ok(())
+}
+
+fn yaml_mapping_mut<'a>(
+    value: &'a mut serde_yaml::Value,
+    interface_id: &str,
+) -> Result<&'a mut serde_yaml::Mapping, AppError> {
+    value.as_mapping_mut().ok_or_else(|| {
+        AppError::InvalidInput(format!(
+            "source manifest interface '{interface_id}' must be an object"
+        ))
+    })
+}
+
+fn set_yaml_path_field(mapping: &mut serde_yaml::Mapping, key: &str, path: &Path) {
+    mapping.insert(
+        serde_yaml::Value::String(key.to_string()),
+        serde_yaml::Value::String(path.display().to_string()),
+    );
+}
+
+fn bundled_asset_path(
+    asset_root: &Path,
+    bundled: &BundledSourceManifest,
+    file: &Path,
+) -> Result<PathBuf, AppError> {
+    if file.is_absolute() {
+        return Ok(file.to_path_buf());
+    }
+    let relative_path = normalize_bundled_asset_relative_path(file)?;
+    if !bundled
+        .assets
+        .iter()
+        .any(|asset| asset.relative_path == relative_path)
+    {
+        return Err(AppError::InvalidInput(format!(
+            "bundled source '{}' references local file '{}' that was not embedded as a bundled asset",
+            manifest_name_for_error(&bundled.manifest_yaml),
+            file.display()
+        )));
+    }
+    Ok(asset_root.join(relative_path))
+}
+
+fn persist_bundled_assets(
+    source_dir: &Path,
+    assets: &[BundledSourceAsset],
+) -> Result<(), AppError> {
+    let asset_root = source_dir.join("bundled");
+    for asset in assets {
+        let relative_path = normalize_bundled_asset_relative_path(Path::new(asset.relative_path))?;
+        let path = asset_root.join(relative_path);
+        if let Some(parent) = path.parent() {
+            fs::ensure_dir(parent)?;
+        }
+        fs::write_atomic(&path, asset.bytes)?;
+    }
+    Ok(())
+}
+
+fn normalize_bundled_asset_relative_path(path: &Path) -> Result<String, AppError> {
+    if path.is_absolute() {
+        return Err(AppError::InvalidInput(format!(
+            "bundled source asset path '{}' must be relative",
+            path.display()
+        )));
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(segment) => normalized.push(segment),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(AppError::InvalidInput(format!(
+                    "bundled source asset path '{}' must not escape the source directory",
+                    path.display()
+                )));
+            }
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        return Err(AppError::InvalidInput(
+            "bundled source asset path must not be empty".to_string(),
+        ));
+    }
+    Ok(normalized.to_string_lossy().replace('\\', "/"))
+}
+
+fn manifest_name_for_error(manifest_yaml: &str) -> String {
+    parse_source_manifest_yaml(manifest_yaml)
+        .map_or_else(|_| "unknown".to_string(), |manifest| manifest.name)
 }
 
 fn source_needs_stored_material_for_validation(
@@ -1446,12 +1745,38 @@ fn durable_import_manifest_yaml(
     Ok(manifest_yaml.to_string())
 }
 
+fn filtered_manifest_yaml(
+    manifest_yaml: &str,
+    interface_ids: &[String],
+) -> Result<String, AppError> {
+    filter_source_manifest_yaml_interfaces(manifest_yaml, interface_ids)
+        .map_err(|error| AppError::InvalidInput(error.to_string()))
+}
+
+fn filtered_bundled_source(
+    bundled: &BundledSourceManifest,
+    interface_ids: &[String],
+) -> Result<BundledSourceManifest, AppError> {
+    Ok(BundledSourceManifest {
+        manifest_yaml: filtered_manifest_yaml(&bundled.manifest_yaml, interface_ids)?,
+        assets: bundled.assets.clone(),
+    })
+}
+
 fn reject_relative_import_descriptors(manifest: &SourceSpec) -> Result<(), AppError> {
     for interface in &manifest.interfaces {
         match interface {
             SourceInterface::OpenApi(openapi) => {
                 if let OpenApiDescriptor::File { file } = &openapi.descriptor {
                     reject_relative_file_descriptor(manifest, interface.id(), "OpenAPI", file)?;
+                }
+                for overlay in &openapi.overlays {
+                    reject_relative_file_descriptor(
+                        manifest,
+                        interface.id(),
+                        "OpenAPI overlay",
+                        &overlay.file,
+                    )?;
                 }
             }
             SourceInterface::Graphql(graphql) => match &graphql.schema {
@@ -1527,11 +1852,12 @@ mod tests {
 
     use super::{
         OAuthInstallTail, SourceBinding, SourceBindings, SourceManager, ValidatedBindings,
-        durable_import_manifest_yaml, normalize_binding_key, validate_bindings,
+        durable_import_manifest_yaml, normalize_binding_key, rewrite_bundled_manifest_file_paths,
+        validate_bindings,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::sources::SourceName;
-    use crate::sources::catalog::describe_manifest;
+    use crate::sources::catalog::{BundledSourceAsset, BundledSourceManifest, describe_manifest};
     use crate::sources::model::SourceOrigin;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
@@ -1583,6 +1909,77 @@ interfaces:
     }
 
     #[test]
+    fn bundled_manifest_rewrites_embedded_openapi_assets_to_absolute_paths() {
+        let temp = TempDir::new().expect("temp dir");
+        let asset_root = temp.path().join("installed").join("bundled");
+        let manifest_yaml = r"
+spec_version: 1
+kind: source
+name: demo
+interfaces:
+  - id: rest
+    type: openapi
+    file: openapi.yaml
+    overlays:
+      - file: fixes.overlay.yaml
+    base_url: https://api.example.com
+";
+        let manifest = parse_source_manifest_yaml(manifest_yaml).expect("manifest");
+        let bundled = BundledSourceManifest {
+            manifest_yaml: manifest_yaml.to_string(),
+            assets: vec![
+                BundledSourceAsset {
+                    relative_path: "fixes.overlay.yaml",
+                    bytes: b"overlay: 1.0.0\n",
+                },
+                BundledSourceAsset {
+                    relative_path: "openapi.yaml",
+                    bytes: b"openapi: 3.0.3\n",
+                },
+            ],
+        };
+
+        let rewritten =
+            rewrite_bundled_manifest_file_paths(manifest_yaml, &manifest, &asset_root, &bundled)
+                .expect("rewrite");
+        let value: serde_yaml::Value = serde_yaml::from_str(&rewritten).expect("yaml");
+        let expected_openapi = asset_root
+            .join("openapi.yaml")
+            .to_string_lossy()
+            .to_string();
+        let expected_overlay = asset_root
+            .join("fixes.overlay.yaml")
+            .to_string_lossy()
+            .to_string();
+
+        let interfaces = value
+            .get("interfaces")
+            .and_then(serde_yaml::Value::as_sequence)
+            .expect("interfaces");
+        let rest = interfaces
+            .first()
+            .and_then(serde_yaml::Value::as_mapping)
+            .expect("rest interface");
+        let file = rest
+            .get(serde_yaml::Value::String("file".to_string()))
+            .and_then(serde_yaml::Value::as_str);
+        let overlays = rest
+            .get(serde_yaml::Value::String("overlays".to_string()))
+            .and_then(serde_yaml::Value::as_sequence)
+            .expect("overlays");
+        let overlay = overlays
+            .first()
+            .and_then(serde_yaml::Value::as_mapping)
+            .expect("overlay");
+        let overlay_file = overlay
+            .get(serde_yaml::Value::String("file".to_string()))
+            .and_then(serde_yaml::Value::as_str);
+
+        assert_eq!(file, Some(expected_openapi.as_str()));
+        assert_eq!(overlay_file, Some(expected_overlay.as_str()));
+    }
+
+    #[test]
     fn validate_bindings_rejects_values_outside_allowed_values() {
         let manifest_yaml = r"
 spec_version: 1
@@ -1630,6 +2027,17 @@ interfaces:
     type: openapi
     file: ./openapi.json
     base_url: https://api.example.com
+",
+            r"
+spec_version: 1
+kind: source
+name: slack
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+    overlays:
+      - file: ./slack.overlay.yaml
 ",
             r"
 spec_version: 1
@@ -1720,6 +2128,7 @@ interfaces:
                 has_stored_material: false,
                 manifest_yaml: Some(manifest_yaml.to_string()),
                 materialization_manifest_yaml: manifest_yaml.to_string(),
+                bundled_assets: Vec::new(),
                 origin: SourceOrigin::Imported,
             })
             .await

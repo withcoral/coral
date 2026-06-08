@@ -103,11 +103,11 @@ mod tests {
             vec![
                 (
                     "summary",
-                    "github.issues requires `WHERE repo = <constant>`",
+                    "github_rest.issues requires `WHERE repo = <constant>`",
                 ),
                 ("detail", "missing required filter"),
                 ("hint", "Add a constant equality filter on `repo`."),
-                ("schema", "github"),
+                ("schema", "github_rest"),
                 ("table", "issues"),
                 ("column", "repo"),
             ],
@@ -118,7 +118,7 @@ mod tests {
             DecodedStatusError::Plain(_) => panic!("expected Structured"),
         };
         let rendered = render_structured(&error);
-        assert!(rendered.starts_with("Error: github.issues requires"));
+        assert!(rendered.starts_with("Error: github_rest.issues requires"));
         assert!(rendered.contains("Detail: missing required filter"));
         assert!(rendered.contains("Hint: Add a constant equality filter"));
         assert!(rendered.ends_with('\n'));
@@ -216,9 +216,9 @@ mod tests {
 
     #[test]
     fn plain_not_found_shows_code() {
-        let rendered = render_plain(Code::NotFound, "resource not found: github.issues");
+        let rendered = render_plain(Code::NotFound, "resource not found: github_rest.issues");
         assert!(rendered.starts_with("Error (not found):"));
-        assert!(rendered.contains("github.issues"));
+        assert!(rendered.contains("github_rest.issues"));
     }
 
     #[test]

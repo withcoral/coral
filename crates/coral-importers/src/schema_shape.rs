@@ -11,7 +11,10 @@ pub(crate) fn shape_hints_from_json_schema(schema: &Value) -> ShapeHints {
         return ShapeHints::unknown();
     }
     if let Some(path) = single_array_property_path(schema, schema) {
-        return ShapeHints::list_at_path(vec![path]);
+        return ShapeHints::list_at_path(path);
+    }
+    if let Some(path) = single_object_property_path(schema, schema) {
+        return ShapeHints::singleton_at_path(path);
     }
     ShapeHints::root_singleton()
 }
@@ -62,25 +65,72 @@ fn schema_shape_with_root_defs(root: &Value, mut schema: Value) -> Value {
     schema
 }
 
-fn single_array_property_path(root: &Value, schema: &Value) -> Option<String> {
+fn single_array_property_path(root: &Value, schema: &Value) -> Option<Vec<String>> {
     let properties = schema.get("properties").and_then(Value::as_object)?;
     for preferred in ["items", "nodes", "edges", "data", "results"] {
         if properties.get(preferred).is_some_and(|property| {
             property_schema_type(root, property).as_deref() == Some("array")
         }) {
-            return Some(preferred.to_string());
+            return Some(vec![preferred.to_string()]);
         }
     }
     let mut array_properties = properties
         .iter()
         .filter(|(_, property)| property_schema_type(root, property).as_deref() == Some("array"))
         .map(|(name, _)| name.clone());
-    let first = array_properties.next()?;
+    let Some(first) = array_properties.next() else {
+        return nested_single_array_property_path(root, schema);
+    };
     if array_properties.next().is_none() {
+        return Some(vec![first]);
+    }
+    None
+}
+
+fn nested_single_array_property_path(root: &Value, schema: &Value) -> Option<Vec<String>> {
+    let properties = schema.get("properties").and_then(Value::as_object)?;
+    let mut paths = properties.iter().filter_map(|(name, property)| {
+        if metadata_property_name(name) {
+            return None;
+        }
+        let property = schema_shape_view_inner(root, property, &mut BTreeSet::new());
+        if json_schema_type(&property) != Some("object") {
+            return None;
+        }
+        let mut path = single_array_property_path(root, &property)?;
+        path.insert(0, name.clone());
+        Some(path)
+    });
+    let first = paths.next()?;
+    if paths.next().is_none() {
         Some(first)
     } else {
         None
     }
+}
+
+fn single_object_property_path(root: &Value, schema: &Value) -> Option<Vec<String>> {
+    let properties = schema.get("properties").and_then(Value::as_object)?;
+    let mut object_properties = properties.iter().filter_map(|(name, property)| {
+        if metadata_property_name(name) {
+            return None;
+        }
+        let property = schema_shape_view_inner(root, property, &mut BTreeSet::new());
+        (json_schema_type(&property) == Some("object")).then_some(name.clone())
+    });
+    let first = object_properties.next()?;
+    if object_properties.next().is_none() {
+        Some(vec![first])
+    } else {
+        None
+    }
+}
+
+fn metadata_property_name(name: &str) -> bool {
+    matches!(
+        name,
+        "ok" | "error" | "warning" | "needed" | "provided" | "response_metadata"
+    )
 }
 
 fn property_schema_type(root: &Value, property: &Value) -> Option<String> {

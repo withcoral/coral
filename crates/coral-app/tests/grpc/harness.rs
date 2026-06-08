@@ -81,6 +81,7 @@ impl GrpcHarness {
                 variables,
                 secrets,
                 oauth_credential_retrievals: Vec::new(),
+                interface_ids: Vec::new(),
             }))
             .await
             .expect("import source")

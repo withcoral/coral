@@ -27,6 +27,12 @@ fn main() {
 struct BundledEntry {
     name: String,
     manifest_yaml: String,
+    assets: Vec<BundledAsset>,
+}
+
+struct BundledAsset {
+    relative_path: String,
+    source_path: PathBuf,
 }
 
 fn bundled_entries(root: &Path) -> Vec<BundledEntry> {
@@ -62,9 +68,11 @@ fn bundled_entries(root: &Path) -> Vec<BundledEntry> {
                 manifest_name, name,
                 "bundled source directory '{name}' must match manifest name '{manifest_name}'"
             );
+            let assets = bundled_assets(&entry.path(), &manifest_path);
             Some(BundledEntry {
                 name,
                 manifest_yaml: raw,
+                assets,
             })
         })
         .collect::<Vec<_>>();
@@ -88,16 +96,26 @@ fn is_source_spec_manifest(raw: &str) -> bool {
 fn write_entries(generated: &mut String, const_name: &str, entries: &[BundledEntry]) {
     writeln!(
         generated,
-        "pub(crate) const {const_name}: &[(&str, &str)] = &["
+        "pub(crate) const {const_name}: &[BundledSourceEntry] = &["
     )
     .expect("writing to String is infallible");
     for entry in entries {
         writeln!(
             generated,
-            "    ({:?}, {:?}),",
-            entry.name, entry.manifest_yaml
+            "    BundledSourceEntry {{ name: {:?}, manifest_yaml: {:?}, assets: &[",
+            entry.name, entry.manifest_yaml,
         )
         .expect("writing to String is infallible");
+        for asset in &entry.assets {
+            writeln!(
+                generated,
+                "        BundledSourceAsset {{ relative_path: {:?}, bytes: include_bytes!({:?}) }},",
+                asset.relative_path,
+                asset.source_path.display().to_string(),
+            )
+            .expect("writing to String is infallible");
+        }
+        generated.push_str("    ] },\n");
     }
     generated.push_str("];\n");
 }
@@ -114,4 +132,56 @@ fn manifest_name(raw: &str) -> Option<String> {
     root.get("name")
         .and_then(Value::as_str)
         .map(ToString::to_string)
+}
+
+fn bundled_assets(source_dir: &Path, manifest_path: &Path) -> Vec<BundledAsset> {
+    let mut assets = Vec::new();
+    collect_bundled_assets(source_dir, source_dir, manifest_path, &mut assets);
+    assets.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    assets
+}
+
+fn collect_bundled_assets(
+    root: &Path,
+    dir: &Path,
+    manifest_path: &Path,
+    assets: &mut Vec<BundledAsset>,
+) {
+    for entry in fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("read bundled source assets '{}': {error}", dir.display()))
+    {
+        let entry = entry.unwrap_or_else(|error| {
+            panic!(
+                "read bundled source asset entry '{}': {error}",
+                dir.display()
+            )
+        });
+        let path = entry.path();
+        let file_type = entry.file_type().unwrap_or_else(|error| {
+            panic!("stat bundled source asset '{}': {error}", path.display())
+        });
+        if file_type.is_dir() {
+            collect_bundled_assets(root, &path, manifest_path, assets);
+            continue;
+        }
+        if !file_type.is_file() || path == manifest_path {
+            continue;
+        }
+        println!("cargo:rerun-if-changed={}", path.display());
+        let relative_path = path
+            .strip_prefix(root)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "bundled source asset '{}' was not under '{}': {error}",
+                    path.display(),
+                    root.display()
+                )
+            })
+            .to_string_lossy()
+            .replace('\\', "/");
+        assets.push(BundledAsset {
+            relative_path,
+            source_path: path,
+        });
+    }
 }

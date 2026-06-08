@@ -171,12 +171,12 @@ mod tests {
         let status = build_coral_status(
             "MISSING_REQUIRED_FILTER",
             vec![
-                ("schema", "github"),
+                ("schema", "github_rest"),
                 ("table", "issues"),
                 ("column", "repo"),
                 (
                     "summary",
-                    "github.issues requires `WHERE repo = <constant>`",
+                    "github_rest.issues requires `WHERE repo = <constant>`",
                 ),
                 ("hint", "Add a constant equality filter on `repo`."),
             ],
@@ -187,13 +187,13 @@ mod tests {
                 assert_eq!(err.reason, "MISSING_REQUIRED_FILTER");
                 assert_eq!(
                     err.summary,
-                    "github.issues requires `WHERE repo = <constant>`"
+                    "github_rest.issues requires `WHERE repo = <constant>`"
                 );
                 assert_eq!(
                     err.hint.as_deref(),
                     Some("Add a constant equality filter on `repo`.")
                 );
-                assert_eq!(err.metadata.get("schema").expect("schema"), "github");
+                assert_eq!(err.metadata.get("schema").expect("schema"), "github_rest");
                 assert_eq!(err.metadata.get("table").expect("table"), "issues");
                 assert_eq!(err.metadata.get("column").expect("column"), "repo");
                 assert!(
@@ -261,11 +261,11 @@ mod tests {
 
     #[test]
     fn empty_details_bytes_fall_back_even_with_non_empty_message() {
-        let status = Status::new(Code::NotFound, "resource not found: github.issues");
+        let status = Status::new(Code::NotFound, "resource not found: github_rest.issues");
         assert!(status.details().is_empty());
         match decode_status_error(&status) {
             DecodedStatusError::Plain(message) => {
-                assert_eq!(message, "resource not found: github.issues");
+                assert_eq!(message, "resource not found: github_rest.issues");
             }
             DecodedStatusError::Structured(_) => panic!("expected Plain"),
         }

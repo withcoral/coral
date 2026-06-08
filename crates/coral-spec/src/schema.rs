@@ -84,6 +84,8 @@ interfaces:
   - id: rest
     type: openapi
     url: https://example.com/openapi.json
+    overlays:
+      - file: ./fixes.overlay.yaml
     auth:
       kind: bearer_input
       key: token

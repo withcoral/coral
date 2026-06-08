@@ -1,0 +1,17 @@
+overlay: 1.0.0
+info:
+  title: Coral corrections for Slack Web API
+  version: "2026-06-08"
+actions:
+  - target: $.info
+    update:
+      description: Curated OpenAPI 3 descriptor for common Slack Web API methods used by Coral. Slack Web API responses are usually HTTP 200 JSON envelopes; callers must inspect ok and error fields.
+  - target: $.components.schemas.SlackMethodResponse.properties.ok
+    update:
+      description: Slack method success marker. Slack can return HTTP 200 with ok=false, so callers must inspect this field.
+  - target: $.paths["/conversations.history"].get
+    update:
+      description: Fetches messages and events from a conversation. Use response_metadata.next_cursor with cursor for cursor pagination; use latest, oldest, inclusive, and limit for time-bounded pagination.
+  - target: $.paths["/conversations.replies"].get
+    update:
+      description: Fetches replies to a thread identified by channel and parent message timestamp. Use response_metadata.next_cursor with cursor for cursor pagination.

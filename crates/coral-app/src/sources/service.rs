@@ -143,7 +143,12 @@ impl SourceServiceApi for SourceService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let source = sources
-                .get_source_info(&workspace_name, &source_name)
+                .get_source_info(
+                    &workspace_name,
+                    &source_name,
+                    &request.interface_ids,
+                    request.catalog_only,
+                )
                 .map_err(app_status)?;
             Ok(Response::new(GetSourceInfoResponse {
                 source_info: Some(candidate_source_to_proto(source)),
@@ -165,6 +170,7 @@ impl SourceServiceApi for SourceService {
             let command = CreateBundledSourceCommand {
                 name: bundled_name,
                 bindings: source_bindings_from_proto(request.variables, request.secrets),
+                interface_ids: request.interface_ids,
             };
             let response_workspace_name = workspace_name.clone();
             let installed = run_blocking_source_operation(move || {
@@ -200,6 +206,7 @@ impl SourceServiceApi for SourceService {
                     .map(oauth_credential_retrieval_from_proto)
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(app_status)?,
+                interface_ids: request.interface_ids,
             };
             let stream =
                 import_source_response_stream(response_workspace_name, move |event_sender| {
@@ -236,6 +243,7 @@ impl SourceServiceApi for SourceService {
                 let command = ImportSourceCommand {
                     manifest_yaml: request.manifest_yaml,
                     bindings: source_bindings_from_proto(request.variables, request.secrets),
+                    interface_ids: request.interface_ids,
                 };
                 let installed = run_blocking_source_operation(move || {
                     sources.import_source(&workspace_name, &command)
@@ -259,6 +267,7 @@ impl SourceServiceApi for SourceService {
                     .map(oauth_credential_retrieval_from_proto)
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(app_status)?,
+                interface_ids: request.interface_ids,
             };
             let stream =
                 import_source_response_stream(response_workspace_name, move |event_sender| {
@@ -527,6 +536,7 @@ fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSo
         source_id: source.source_id,
         display_name: source.display_name,
         source_key: source.source_key,
+        interface_ids: source.interface_ids,
         secrets: source
             .secrets
             .into_iter()
@@ -575,6 +585,7 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
         installed: source.installed,
         origin: proto_source_origin(source.origin) as i32,
         credential_storage: proto_source_credential_storage(source.credential_storage) as i32,
+        interface_ids: source.interface_ids,
     }
 }
 

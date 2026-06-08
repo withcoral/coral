@@ -71,6 +71,10 @@ generated downstream from provider snapshots and capabilities.
   in capability ids.
 - OpenAPI interfaces declare exactly one `url` or `file`, preserve provider
   auth/server expectations, and point at an authoritative provider document.
+- OpenAPI overlays, when present, are local OpenAPI Overlay correction files.
+  They should be small, repeatable, and reviewed against the provider document;
+  avoid unsupported `copy` actions, JSONPath filters, or broad semantic rewrites
+  that would be better handled by importer/runtime changes.
 - OpenAPI descriptor `url` values hosted away from the runtime `base_url` do
   not require provider credentials to fetch.
 - MCP interfaces clearly distinguish upstream provider MCP ingestion from

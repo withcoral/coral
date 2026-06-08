@@ -133,7 +133,7 @@ fn disambiguate_duplicate_sql_refs(exports: &mut SourceExports) {
             let Some((schema, table)) = binding.sql_reference.split_once('.') else {
                 continue;
             };
-            let table_base = format!("{}_{}", entry.interface_id, table);
+            let table_base = table.to_string();
             let mut candidate = format!("{schema}.{table_base}");
             let mut suffix = 2usize;
             while used_refs.contains(&binding.kind.export_ref(candidate.clone()).value) {
@@ -783,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn build_source_exports_disambiguates_duplicate_sql_refs_by_interface() {
+    fn build_source_exports_disambiguates_duplicate_sql_refs_by_suffix() {
         let source_id = SourceId("src_datadog".to_string());
         let capabilities = SourceCapabilitySet::new(
             source_id.clone(),
@@ -815,10 +815,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             sql_refs,
-            vec![
-                "datadog.rest_v1_list_apikeys",
-                "datadog.rest_v2_list_apikeys"
-            ]
+            vec!["datadog.list_apikeys", "datadog.list_apikeys_2"]
         );
     }
 
@@ -861,11 +858,11 @@ mod tests {
             vec![
                 (
                     SqlBindingKind::Function,
-                    "sql_function:datadog.rest_v1_list_apikeys"
+                    "sql_function:datadog.list_apikeys"
                 ),
                 (
                     SqlBindingKind::Function,
-                    "sql_function:datadog.rest_v2_list_apikeys"
+                    "sql_function:datadog.list_apikeys_2"
                 ),
             ]
         );

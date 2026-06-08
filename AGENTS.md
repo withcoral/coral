@@ -90,6 +90,17 @@
   change.
 - Active custom sources use `SourceSpec` with `spec_version: 1`,
   `kind: source`, and explicit `interfaces`.
+- Bundled SourceSpecs under `sources/core/<name>` may reference adjacent local
+  descriptor assets such as OpenAPI files, OpenAPI overlays, GraphQL schema
+  files, or file-source data files with relative `file` paths. `coral-app`
+  embeds those assets at build time, writes them under the installed source
+  directory, and rewrites the bundled materialization manifest to absolute
+  paths before import. Keep this packaging path in sync with SourceSpec parser
+  and materialization changes.
+- OpenAPI SourceSpec interfaces may declare ordered local `overlays` files.
+  Coral applies those OpenAPI Overlay corrections before import; keep parser,
+  materialization, docs, schema generation, and maintained source-spec skills in
+  sync when changing this surface.
 - Changes to `scripts/install.sh` must keep the `Validate` workflow's
   install-script matrix in sync with every OS/architecture target that the
   installer supports.

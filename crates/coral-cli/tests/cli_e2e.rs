@@ -97,10 +97,10 @@ async fn source_list_renders_configured_sources() {
     assert_eq!(
         nonempty_lines(&stdout),
         vec![
-            "Source  Version  Origin    Secrets",
-            "------  -------  --------  ----------------",
-            "github  1.0.0    bundled   file (plaintext)",
-            "jira    2.0.0    imported  file (plaintext)",
+            "Source  Version  Origin    Interfaces    Secrets",
+            "------  -------  --------  ------------  ----------------",
+            "github  1.0.0    bundled   rest          file (plaintext)",
+            "jira    2.0.0    imported  graphql, mcp  file (plaintext)",
         ],
         "expected configured source list"
     );
@@ -127,6 +127,7 @@ async fn source_list_renders_dash_for_missing_authored_version() {
                 source_id: "src_versionless".to_string(),
                 display_name: "versionless".to_string(),
                 source_key: "versionless".to_string(),
+                interface_ids: Vec::new(),
             }],
         },
     ))
@@ -138,9 +139,9 @@ async fn source_list_renders_dash_for_missing_authored_version() {
     assert_eq!(
         nonempty_lines(&stdout),
         vec![
-            "Source       Version  Origin    Secrets",
-            "-----------  -------  --------  ----------------",
-            "versionless  -        imported  file (plaintext)",
+            "Source       Version  Origin    Interfaces  Secrets",
+            "-----------  -------  --------  ----------  ----------------",
+            "versionless  -        imported  -           file (plaintext)",
         ],
         "expected versionless source list"
     );
@@ -241,6 +242,10 @@ async fn source_info_renders_metadata_for_installed_source() {
         "expected description: {stdout}"
     );
     assert!(
+        stdout.contains("Interfaces:  rest"),
+        "expected interfaces: {stdout}"
+    );
+    assert!(
         stdout.contains("GITHUB_TOKEN"),
         "expected input key: {stdout}"
     );
@@ -301,6 +306,10 @@ async fn source_info_renders_metadata_for_available_source() {
         stdout.contains("Slack data"),
         "expected description: {stdout}"
     );
+    assert!(
+        stdout.contains("Interfaces:  rest, mcp"),
+        "expected interfaces: {stdout}"
+    );
 
     server.shutdown().await;
 }
@@ -326,6 +335,10 @@ async fn source_info_renders_installed_imported_source() {
         "expected imported origin: {stdout}"
     );
     assert!(stdout.contains("2.0.0"), "expected version: {stdout}");
+    assert!(
+        stdout.contains("Interfaces:  graphql"),
+        "expected interfaces: {stdout}"
+    );
 
     let requests = server.get_source_info_requests();
     assert_eq!(requests.len(), 1, "expected one get_source_info call");
@@ -418,7 +431,7 @@ async fn source_test_renders_validation_summary() {
         "expected success summary: {stdout}"
     );
     assert!(
-        stdout.contains("github (2 tables)"),
+        stdout.contains("github_rest (2 tables)"),
         "expected schema summary: {stdout}"
     );
     assert!(stdout.contains("issues"), "expected issues table: {stdout}");
@@ -743,6 +756,37 @@ async fn source_add_rejects_name_and_file_together() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn source_add_bundled_interfaces_reads_catalog_info() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .args(["source", "add", "slack", "--interfaces", "rest"])
+        .assert()
+        .success();
+
+    let info_requests = server.get_source_info_requests();
+    assert_eq!(info_requests.len(), 1, "expected one get_source_info call");
+    assert_eq!(info_requests[0].name, "slack");
+    assert_eq!(info_requests[0].interface_ids, vec!["rest".to_string()]);
+    assert!(
+        info_requests[0].catalog_only,
+        "source add must filter against bundled catalog metadata, not an already-installed source"
+    );
+
+    let add_requests = server.create_bundled_source_requests();
+    assert_eq!(
+        add_requests.len(),
+        1,
+        "expected one create_bundled_source call"
+    );
+    assert_eq!(add_requests[0].name, "slack");
+    assert_eq!(add_requests[0].interface_ids, vec!["rest".to_string()]);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn source_add_file_resolves_source_spec_relative_descriptor_from_manifest_dir() {
     let server = MockServer::start().await;
     let source_dir = tempdir().expect("source dir");
@@ -755,6 +799,21 @@ paths: {}
 ",
     )
     .expect("write descriptor");
+    let overlay_file = source_dir.path().join("fixes.overlay.yaml");
+    std::fs::write(
+        &overlay_file,
+        r"
+overlay: 1.0.0
+info:
+  title: Fix descriptor
+  version: 1.0.0
+actions:
+  - target: $.info
+    update:
+      description: Patched by overlay
+",
+    )
+    .expect("write overlay");
     let manifest_file = source_dir.path().join("manifest.yaml");
     std::fs::write(
         &manifest_file,
@@ -766,6 +825,8 @@ interfaces:
   - id: rest
     type: openapi
     file: openapi.yaml
+    overlays:
+      - file: fixes.overlay.yaml
 ",
     )
     .expect("write manifest");
@@ -786,13 +847,91 @@ interfaces:
     let manifest_yaml = &requests[0].manifest_yaml;
     let canonical = openapi_file.canonicalize().expect("canonical descriptor");
     let canonical = canonical.to_string_lossy();
+    let overlay_canonical = overlay_file.canonicalize().expect("canonical overlay");
+    let overlay_canonical = overlay_canonical.to_string_lossy();
     assert!(
         manifest_yaml.contains(canonical.as_ref()),
         "expected import manifest to contain canonical descriptor path '{canonical}', got: {manifest_yaml}"
     );
     assert!(
+        manifest_yaml.contains(overlay_canonical.as_ref()),
+        "expected import manifest to contain canonical overlay path '{overlay_canonical}', got: {manifest_yaml}"
+    );
+    assert!(
         !manifest_yaml.contains("file: openapi.yaml"),
         "expected relative descriptor to be replaced before import: {manifest_yaml}"
+    );
+    assert!(
+        !manifest_yaml.contains("file: fixes.overlay.yaml"),
+        "expected relative overlay to be replaced before import: {manifest_yaml}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_interfaces_filters_manifest_before_collecting_inputs() {
+    let server = MockServer::start().await;
+    let source_dir = tempfile::tempdir().expect("source dir");
+    let data_file = source_dir.path().join("events.jsonl");
+    std::fs::write(&data_file, "{\"id\":\"1\"}\n").expect("write data file");
+    let manifest_file = source_dir.path().join("manifest.yaml");
+    std::fs::write(
+        &manifest_file,
+        r"
+spec_version: 1
+kind: source
+name: filtered
+inputs:
+  - key: API_TOKEN
+    kind: secret
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    auth:
+      kind: bearer_input
+      key: API_TOKEN
+  - id: files
+    type: file
+    files:
+      - events.jsonl
+    format:
+      kind: jsonl
+",
+    )
+    .expect("write manifest");
+
+    server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("manifest path utf8"),
+            "--interfaces",
+            "files",
+        ])
+        .assert()
+        .success();
+
+    let requests = server.import_source_requests();
+    assert_eq!(requests.len(), 1, "expected one import_source call");
+    assert_eq!(requests[0].interface_ids, vec!["files".to_string()]);
+    assert!(
+        requests[0].manifest_yaml.contains("id: files"),
+        "expected selected files interface in manifest: {}",
+        requests[0].manifest_yaml
+    );
+    assert!(
+        !requests[0].manifest_yaml.contains("id: rest"),
+        "expected rest interface to be filtered out: {}",
+        requests[0].manifest_yaml
+    );
+    assert!(
+        !requests[0].manifest_yaml.contains("API_TOKEN"),
+        "expected unselected REST input to be filtered out: {}",
+        requests[0].manifest_yaml
     );
 
     server.shutdown().await;
@@ -1068,6 +1207,7 @@ async fn source_test_suggests_add_for_uninstalled_bundled_source() {
                     installed: false,
                     origin: SourceOrigin::Bundled as i32,
                     credential_storage: SourceCredentialStorage::Unspecified as i32,
+                    interface_ids: vec!["rest".to_string()],
                 }],
             }),
     )

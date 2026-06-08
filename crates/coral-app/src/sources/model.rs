@@ -14,6 +14,7 @@ pub(crate) struct CandidateSource {
     pub(crate) name: SourceName,
     pub(crate) description: String,
     pub(crate) version: Option<String>,
+    pub(crate) interface_ids: Vec<String>,
     pub(crate) inputs: Vec<ManifestInputSpec>,
     pub(crate) installed: bool,
     pub(crate) origin: SourceOrigin,
@@ -40,6 +41,12 @@ pub(crate) struct InstalledSource {
     /// catalog, so they do not persist a duplicate version string in config.
     #[serde(default)]
     pub(crate) version: Option<String>,
+    /// Interface ids exposed by the effective installed manifest.
+    ///
+    /// This is derived from source artifacts at runtime and must not be
+    /// persisted into config.
+    #[serde(skip)]
+    pub(crate) interface_ids: Vec<String>,
     /// Configured non-secret variable bindings.
     #[serde(default)]
     pub(crate) variables: BTreeMap<String, String>,
@@ -214,6 +221,7 @@ mod tests {
             display_name: name.to_string(),
             source_key: source_key.to_string(),
             version: None,
+            interface_ids: Vec::new(),
             variables: std::collections::BTreeMap::default(),
             secrets: Vec::new(),
             credential_storage: None,

@@ -98,6 +98,7 @@ pub use source::{
     AuthDescriptor, AuthHeaderDescriptor, FileFormatDescriptor as SourceFileFormatDescriptor,
     FileInterface, GraphqlInterface, GraphqlSchemaDescriptor, McpEnvBinding, McpInterface,
     McpServerDescriptor, McpTransportDescriptor, OpenApiDescriptor, OpenApiInterface,
-    SourceInterface, SourceSpec, SourceSpecKind, generated_source_spec_schema,
+    OpenApiOverlay, SourceInterface, SourceSpec, SourceSpecKind,
+    filter_source_manifest_yaml_interfaces, generated_source_spec_schema,
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};

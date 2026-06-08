@@ -40,7 +40,7 @@ Exact typed-ref, capability-id, generated tool path, TypeScript-path, and SQL-re
 
 ### `describe`
 
-Use `describe` before invoking anything. Pass `reference` as a generated tool path such as `tools.github.rest.issues.list`, a typed ref such as `typescript:github.rest.issues.list`, a SQL ref such as `sql_table:github.issues` or `sql_function:github.search`, a capability id, or an unambiguous alias.
+Use `describe` before invoking anything. Pass `reference` as a generated tool path such as `tools.github.rest.issues.list`, a typed ref such as `typescript:github.rest.issues.list`, a SQL ref such as `sql_table:github_rest.issues` or `sql_function:github_rest.search`, a capability id, or an unambiguous alias.
 
 If an untyped reference is ambiguous, `describe` returns grouped candidates instead of guessing. Retry with a typed ref from the candidate list. If a source is installed but stale, not-found responses include top-level `diagnostics` instead of silently looking like the source does not exist.
 
@@ -57,7 +57,7 @@ Code Mode exposes Coral host helpers and generated provider methods:
 ```javascript
 await coral.search({ query: "github issues" });
 await coral.describe({ reference: "tools.github.rest.issues.list", view: "compact" });
-await coral.sql.query("select * from github.issues limit 5");
+await coral.sql.query("select * from github_rest.issues limit 5");
 const response = await tools.github.rest.issues.list(
   { owner: "withcoral", repo: "coral" },
   { allowErrorResult: true }

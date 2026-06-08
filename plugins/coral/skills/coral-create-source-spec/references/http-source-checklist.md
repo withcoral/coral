@@ -17,6 +17,8 @@ interfaces:
   - id: rest
     type: openapi
     url: https://api.example.com/openapi.json
+    overlays:
+      - file: ./openapi-fixes.overlay.yaml
     base_url: https://api.example.com
     auth:
       kind: bearer_input
@@ -35,6 +37,10 @@ exports.
   server selection.
 - Keep the provider document stable enough for source materialization to be
   reproducible.
+- Use `overlays` only for repeatable OpenAPI Overlay corrections to provider
+  descriptors. Coral applies overlays before import and currently supports
+  `update` and `remove` with simple JSONPath targets. Avoid `copy` actions and
+  JSONPath filters.
 - Provider URL templates may use `{{input.KEY}}` only for declared variable
   inputs. Do not put secrets or inline defaults in provider URLs.
 - Coral sends interface auth while fetching the OpenAPI descriptor only when

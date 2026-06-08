@@ -39,6 +39,12 @@ test_queries: []
 
 Fields outside SourceSpec v1 are rejected.
 
+During `coral source add`, pass `--interfaces <id[,id...]>` to install only a
+subset of a multi-interface source. Coral filters the effective SourceSpec
+before collecting inputs and materializing artifacts, so inputs used only by
+unselected interfaces are not required and the installed source exposes only the
+selected interfaces.
+
 ## Identity
 
 `name` is not source identity. When a source is installed, `coral-app` assigns:
@@ -211,6 +217,8 @@ interfaces:
   - id: rest
     type: openapi
     url: https://api.example.com/openapi.json
+    overlays:
+      - file: ./api-fixes.overlay.yaml
     base_url: https://api.example.com
     auth:
       kind: bearer_input
@@ -232,6 +240,7 @@ interfaces:
 | `type` | Yes | Must be `openapi`. |
 | `url` | One of `url`/`file` | HTTPS OpenAPI descriptor URL or `{{input.KEY}}` URL template. Localhost HTTP is allowed for development fixtures. |
 | `file` | One of `url`/`file` | Local OpenAPI descriptor file. |
+| `overlays` | No | Ordered list of local OpenAPI Overlay files to apply before import. |
 | `base_url` | No | Runtime provider base URL override or `{{input.KEY}}` URL template. |
 | `auth` | No | Auth descriptor. |
 | `inputs` | No | Interface-local inputs. |
@@ -243,6 +252,26 @@ URL during source materialization and invocation.
 For local descriptor files, `coral source add --file <manifest>` resolves
 relative `file:` paths from the manifest directory before import. Direct API
 imports must send absolute file paths.
+
+Use `overlays` when the OpenAPI descriptor needs repeatable local corrections:
+
+```yaml
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://api.example.com/openapi.json
+    overlays:
+      - file: ./api-fixes.overlay.yaml
+```
+
+Overlay files use the OpenAPI Overlay format and are applied in declaration
+order before Coral imports the effective OpenAPI document. Coral currently
+supports `update` and `remove` actions with simple JSONPath targets using
+dotted fields, quoted fields, array indexes, and wildcards. Overlay targets must
+match at least one node. `copy` actions and JSONPath filters are not supported.
+`coral source add --file <manifest>` resolves relative overlay files from the
+manifest directory before import. Direct API imports must send absolute overlay
+file paths.
 
 If `auth` is configured, Coral sends it while fetching the OpenAPI `url` only
 when `url` is same-origin with `base_url`. Public descriptors hosted elsewhere,
@@ -468,7 +497,7 @@ Typed refs identify usable bindings:
 
 ```text
 typescript:github.rest.issues.list
-sql_table:github.issues
+sql_table:github_rest.issues
 ```
 
 Capability ids remain the stable internal identity. Typed refs and TypeScript

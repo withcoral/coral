@@ -46,12 +46,13 @@ coral sql "<SQL>"
 JSON output is an array of row objects. Selected nullable columns are included with explicit `null` values when the row value is null.
 
 Use `SHOW TABLES`, `SHOW COLUMNS`, or `DESCRIBE <schema>.<table>` to inspect
-registered SQL surfaces:
+registered SQL surfaces. Provider-backed generated schemas include the source
+key and interface id, for example `<source>_<interface>.<table>`:
 
 ```shellscript
 coral sql "SHOW TABLES"
-coral sql "SHOW COLUMNS FROM datadog.hosts"
-coral sql "DESCRIBE datadog.hosts"
+coral sql "SHOW COLUMNS FROM datadog_rest_v1.hosts"
+coral sql "DESCRIBE datadog_rest_v1.hosts"
 ```
 
 `DESCRIBE` expects a table. To inspect generated table-function bindings, use
@@ -114,12 +115,14 @@ List sources currently installed.
 coral source list
 ```
 
-The output includes the source's secret storage route: `keychain` or
-`file (plaintext)`.
+The output includes the installed interface ids and the source's secret storage
+route: `keychain` or `file (plaintext)`.
 
 ### `coral source info <NAME>`
 
-Show metadata for a source: whether it is installed, its origin, version, description, and inputs. Works for active bundled SourceSpecs and imported sources installed via `coral source add --file`.
+Show metadata for a source: whether it is installed, its origin, interface ids,
+version, description, and inputs. Works for active bundled SourceSpecs and
+imported sources installed via `coral source add --file`.
 
 ```shellscript
 coral source info datadog
@@ -138,6 +141,16 @@ Add an active bundled SourceSpec source or update its credentials.
 By default, Coral reads each declared input from an environment variable of the same name. If a required input is missing, the command exits with an error listing the missing keys.
 
 Use `coral source discover` to list valid bundled names for your build.
+
+Pass `--interfaces` to install only specific provider interfaces from a
+multi-interface source. The value is a comma-separated list of interface ids.
+Coral filters the source spec before collecting inputs and materializing
+artifacts, so credentials for unselected interfaces are not required.
+
+```shellscript
+coral source add slack --interfaces rest
+coral source add --interactive slack --interfaces mcp
+```
 
 Pass `--interactive` to be prompted for variables and secrets instead. If a
 missing secret declares credential methods, Coral shows those choices in the
@@ -172,6 +185,7 @@ Add a custom source spec from a YAML file. Input values come from environment va
 
 ```shellscript
 coral source add --file ./local-messages.yaml
+coral source add --file ./multi-provider.yaml --interfaces rest
 ```
 
 ### `coral source lint <FILE>`

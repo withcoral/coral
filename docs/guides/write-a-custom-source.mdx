@@ -118,6 +118,8 @@ interfaces:
   - id: rest
     type: openapi
     file: ./openapi.yaml
+    overlays:
+      - file: ./openapi-fixes.overlay.yaml
     base_url: https://api.example.com
     auth:
       kind: bearer_input
@@ -146,6 +148,14 @@ Coral validates the rendered URL during source materialization and invocation.
 When using local `file:` descriptors, `coral source add --file` resolves
 relative paths from the manifest directory; direct API imports must send
 absolute paths.
+
+Use `overlays` for repeatable OpenAPI corrections when the provider descriptor
+is incomplete or hosted outside your control. Overlay files use the OpenAPI
+Overlay format and are applied before import. Coral currently supports `update`
+and `remove` actions with simple JSONPath targets using dotted fields, quoted
+fields, array indexes, and wildcards; targets must match at least one node.
+Relative overlay files are resolved from the manifest directory by
+`coral source add --file`.
 
 If the interface has `auth`, Coral uses it while fetching the OpenAPI `url`
 only when that descriptor URL is same-origin with `base_url`. Public OpenAPI
@@ -268,6 +278,15 @@ callable only.
 
 Top-level `inputs` are shared by all interfaces. An interface may also declare
 its own `inputs`; keys are merged and must not conflict.
+
+For multi-interface specs, users can install only selected interfaces:
+
+```shellscript
+coral source add --file ./my-source.yaml --interfaces rest
+```
+
+Coral filters the effective spec before prompting, so credentials used only by
+unselected interfaces are not requested.
 
 ```yaml
 inputs:

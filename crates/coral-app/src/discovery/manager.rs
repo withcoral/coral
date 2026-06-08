@@ -1021,6 +1021,7 @@ mod tests {
             display_name: name.to_string(),
             source_key: name.to_string(),
             version: None,
+            interface_ids: Vec::new(),
             variables: std::collections::BTreeMap::new(),
             secrets: Vec::new(),
             credential_storage: None,

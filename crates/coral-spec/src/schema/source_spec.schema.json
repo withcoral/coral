@@ -416,6 +416,12 @@
               ],
               "default": null
             },
+            "overlays": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RawOpenApiOverlay"
+              }
+            },
             "base_url": {
               "anyOf": [
                 {
@@ -560,6 +566,18 @@
     },
     "ParsedTemplate": {
       "type": "string"
+    },
+    "RawOpenApiOverlay": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "file"
+      ]
     },
     "RawAuth": {
       "oneOf": [

@@ -12,12 +12,13 @@ use coral_exports::{BindingBuildContext, SourceKey, TypescriptBindingContributor
 use coral_importers::{ImportResult, RawInterfaceInput, import_source};
 use coral_spec::{
     AuthDescriptor, FileInterface, GraphqlInterface, GraphqlSchemaDescriptor, McpInterface,
-    McpTransportDescriptor, OpenApiDescriptor, OpenApiInterface, ParsedTemplate,
+    McpTransportDescriptor, OpenApiDescriptor, OpenApiInterface, OpenApiOverlay, ParsedTemplate,
     SourceFileFormatDescriptor, SourceInterface, SourceSpec, TemplateNamespace, TemplatePart,
 };
 use coral_sql::SqlBindingContributor;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderName, HeaderValue};
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
@@ -564,7 +565,7 @@ fn read_openapi_interface_document(
     interface: &OpenApiInterface,
     provider_credentials: &ProviderCredentialMaterial,
 ) -> Result<Vec<u8>, AppError> {
-    match &interface.descriptor {
+    let document = match &interface.descriptor {
         OpenApiDescriptor::File { file } => read_file_descriptor(file),
         OpenApiDescriptor::Url { url } => {
             let url =
@@ -585,7 +586,410 @@ fn read_openapi_interface_document(
             )?;
             read_url_descriptor(&url, "OpenAPI descriptor", &request_headers)
         }
+    }?;
+    apply_openapi_overlays(document, &interface.overlays)
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenApiOverlayDocument {
+    overlay: String,
+    #[serde(default)]
+    actions: Vec<OpenApiOverlayAction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenApiOverlayAction {
+    target: String,
+    #[serde(default)]
+    update: Option<Value>,
+    #[serde(default)]
+    remove: Option<bool>,
+    #[serde(default)]
+    copy: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum OpenApiOverlayPathToken {
+    Field(String),
+    Index(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OpenApiOverlaySelector {
+    Field(String),
+    Index(usize),
+    Wildcard,
+}
+
+fn apply_openapi_overlays(
+    document_bytes: Vec<u8>,
+    overlays: &[OpenApiOverlay],
+) -> Result<Vec<u8>, AppError> {
+    if overlays.is_empty() {
+        return Ok(document_bytes);
     }
+    let mut document = parse_openapi_or_overlay_yaml(&document_bytes, "OpenAPI descriptor")?;
+    for overlay in overlays {
+        let overlay_bytes = read_openapi_overlay_file(&overlay.file)?;
+        let overlay_document: OpenApiOverlayDocument = serde_yaml::from_slice(&overlay_bytes)
+            .map_err(|error| {
+                AppError::FailedPrecondition(format!(
+                    "OpenAPI overlay '{}' is not valid YAML: {error}",
+                    overlay.file.display()
+                ))
+            })?;
+        validate_openapi_overlay_version(&overlay_document.overlay, &overlay.file)?;
+        for (index, action) in overlay_document.actions.iter().enumerate() {
+            apply_openapi_overlay_action(&mut document, action, &overlay.file, index)?;
+        }
+    }
+    serde_yaml::to_string(&document)
+        .map(String::into_bytes)
+        .map_err(|error| {
+            AppError::FailedPrecondition(format!(
+                "failed to serialize effective OpenAPI descriptor after overlays: {error}"
+            ))
+        })
+}
+
+fn parse_openapi_or_overlay_yaml(bytes: &[u8], label: &str) -> Result<Value, AppError> {
+    serde_yaml::from_slice(bytes).map_err(|error| {
+        AppError::FailedPrecondition(format!("{label} is not valid YAML: {error}"))
+    })
+}
+
+fn validate_openapi_overlay_version(version: &str, file: &Path) -> Result<(), AppError> {
+    if version.starts_with("1.0.") || version.starts_with("1.1.") {
+        return Ok(());
+    }
+    Err(AppError::FailedPrecondition(format!(
+        "OpenAPI overlay '{}' declares unsupported overlay version '{}'; supported versions are 1.0.x and 1.1.x",
+        file.display(),
+        version
+    )))
+}
+
+fn apply_openapi_overlay_action(
+    document: &mut Value,
+    action: &OpenApiOverlayAction,
+    file: &Path,
+    action_index: usize,
+) -> Result<(), AppError> {
+    if action.copy.is_some() {
+        return Err(AppError::FailedPrecondition(format!(
+            "OpenAPI overlay '{}' action {action_index} uses copy, which Coral does not support yet",
+            file.display()
+        )));
+    }
+    let has_update = action.update.is_some();
+    let has_remove = action.remove.unwrap_or(false);
+    if usize::from(has_update) + usize::from(has_remove) != 1 {
+        return Err(AppError::FailedPrecondition(format!(
+            "OpenAPI overlay '{}' action {action_index} must declare exactly one of update or remove",
+            file.display()
+        )));
+    }
+    let selectors = parse_openapi_overlay_target(&action.target).map_err(|message| {
+        AppError::FailedPrecondition(format!(
+            "OpenAPI overlay '{}' action {action_index} has unsupported target '{}': {message}",
+            file.display(),
+            action.target
+        ))
+    })?;
+    let paths = resolve_openapi_overlay_paths(document, &selectors);
+    if paths.is_empty() {
+        return Err(AppError::FailedPrecondition(format!(
+            "OpenAPI overlay '{}' action {action_index} target '{}' did not match any nodes",
+            file.display(),
+            action.target
+        )));
+    }
+    if let Some(update) = &action.update {
+        for path in paths {
+            let Some(target) = get_json_value_mut_at_path(document, &path) else {
+                return Err(AppError::FailedPrecondition(format!(
+                    "OpenAPI overlay '{}' action {action_index} target changed while applying update",
+                    file.display()
+                )));
+            };
+            merge_openapi_overlay_update(target, update).map_err(|message| {
+                AppError::FailedPrecondition(format!(
+                    "OpenAPI overlay '{}' action {action_index} cannot update target '{}': {message}",
+                    file.display(),
+                    action.target
+                ))
+            })?;
+        }
+    } else {
+        remove_openapi_overlay_paths(document, paths).map_err(|message| {
+            AppError::FailedPrecondition(format!(
+                "OpenAPI overlay '{}' action {action_index} cannot remove target '{}': {message}",
+                file.display(),
+                action.target
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::too_many_lines,
+    reason = "The overlay target parser scans JSONPath ASCII syntax delimiters; all string slices are bounded by those delimiter byte positions."
+)]
+fn parse_openapi_overlay_target(target: &str) -> Result<Vec<OpenApiOverlaySelector>, String> {
+    let bytes = target.as_bytes();
+    if bytes.first() != Some(&b'$') {
+        return Err("target must start with '$'".to_string());
+    }
+    let mut index = 1;
+    let mut selectors = Vec::new();
+    while index < bytes.len() {
+        match bytes[index] {
+            b'.' => {
+                index += 1;
+                if index >= bytes.len() {
+                    return Err("target ended after '.'".to_string());
+                }
+                if bytes[index] == b'*' {
+                    selectors.push(OpenApiOverlaySelector::Wildcard);
+                    index += 1;
+                    continue;
+                }
+                let start = index;
+                while index < bytes.len() && !matches!(bytes[index], b'.' | b'[') {
+                    index += 1;
+                }
+                if start == index {
+                    return Err("empty dotted field selector".to_string());
+                }
+                selectors.push(OpenApiOverlaySelector::Field(
+                    target[start..index].to_string(),
+                ));
+            }
+            b'[' => {
+                index += 1;
+                if index >= bytes.len() {
+                    return Err("unterminated '[' selector".to_string());
+                }
+                match bytes[index] {
+                    b'*' => {
+                        index += 1;
+                        if bytes.get(index) != Some(&b']') {
+                            return Err("wildcard selector must be '[*]'".to_string());
+                        }
+                        index += 1;
+                        selectors.push(OpenApiOverlaySelector::Wildcard);
+                    }
+                    b'\'' | b'"' => {
+                        let quote = bytes[index];
+                        index += 1;
+                        let mut field = String::new();
+                        let mut closed = false;
+                        while index < bytes.len() {
+                            match bytes[index] {
+                                b'\\' => {
+                                    index += 1;
+                                    let Some(next) = bytes.get(index) else {
+                                        return Err(
+                                            "unterminated escape in quoted selector".to_string()
+                                        );
+                                    };
+                                    field.push(char::from(*next));
+                                    index += 1;
+                                }
+                                value if value == quote => {
+                                    index += 1;
+                                    if bytes.get(index) != Some(&b']') {
+                                        return Err(
+                                            "quoted selector must end with closing ']'".to_string()
+                                        );
+                                    }
+                                    index += 1;
+                                    selectors.push(OpenApiOverlaySelector::Field(field));
+                                    closed = true;
+                                    break;
+                                }
+                                value => {
+                                    field.push(char::from(value));
+                                    index += 1;
+                                }
+                            }
+                        }
+                        if !closed {
+                            return Err("unterminated quoted selector".to_string());
+                        }
+                    }
+                    value if value.is_ascii_digit() => {
+                        let start = index;
+                        while index < bytes.len() && bytes[index].is_ascii_digit() {
+                            index += 1;
+                        }
+                        if bytes.get(index) != Some(&b']') {
+                            return Err("array index selector must end with ']'".to_string());
+                        }
+                        let array_index = target[start..index]
+                            .parse::<usize>()
+                            .map_err(|error| format!("invalid array index: {error}"))?;
+                        index += 1;
+                        selectors.push(OpenApiOverlaySelector::Index(array_index));
+                    }
+                    _ => {
+                        return Err(
+                            "only dotted fields, quoted fields, array indexes, and wildcards are supported".to_string()
+                        );
+                    }
+                }
+            }
+            _ => return Err("expected '.' or '[' selector".to_string()),
+        }
+    }
+    Ok(selectors)
+}
+
+fn resolve_openapi_overlay_paths(
+    document: &Value,
+    selectors: &[OpenApiOverlaySelector],
+) -> Vec<Vec<OpenApiOverlayPathToken>> {
+    let mut paths = vec![Vec::new()];
+    for selector in selectors {
+        let mut next_paths = Vec::new();
+        for path in &paths {
+            let Some(value) = get_json_value_at_path(document, path) else {
+                continue;
+            };
+            match selector {
+                OpenApiOverlaySelector::Field(field) => {
+                    if value
+                        .as_object()
+                        .is_some_and(|object| object.contains_key(field))
+                    {
+                        let mut path = path.clone();
+                        path.push(OpenApiOverlayPathToken::Field(field.clone()));
+                        next_paths.push(path);
+                    }
+                }
+                OpenApiOverlaySelector::Index(index) => {
+                    if value.as_array().is_some_and(|array| *index < array.len()) {
+                        let mut path = path.clone();
+                        path.push(OpenApiOverlayPathToken::Index(*index));
+                        next_paths.push(path);
+                    }
+                }
+                OpenApiOverlaySelector::Wildcard => match value {
+                    Value::Object(object) => {
+                        for key in object.keys() {
+                            let mut path = path.clone();
+                            path.push(OpenApiOverlayPathToken::Field(key.clone()));
+                            next_paths.push(path);
+                        }
+                    }
+                    Value::Array(array) => {
+                        for index in 0..array.len() {
+                            let mut path = path.clone();
+                            path.push(OpenApiOverlayPathToken::Index(index));
+                            next_paths.push(path);
+                        }
+                    }
+                    _ => {}
+                },
+            }
+        }
+        paths = next_paths;
+    }
+    paths
+}
+
+fn get_json_value_at_path<'a>(
+    value: &'a Value,
+    path: &[OpenApiOverlayPathToken],
+) -> Option<&'a Value> {
+    let mut current = value;
+    for token in path {
+        current = match token {
+            OpenApiOverlayPathToken::Field(field) => current.as_object()?.get(field)?,
+            OpenApiOverlayPathToken::Index(index) => current.as_array()?.get(*index)?,
+        };
+    }
+    Some(current)
+}
+
+fn get_json_value_mut_at_path<'a>(
+    value: &'a mut Value,
+    path: &[OpenApiOverlayPathToken],
+) -> Option<&'a mut Value> {
+    let mut current = value;
+    for token in path {
+        current = match token {
+            OpenApiOverlayPathToken::Field(field) => current.as_object_mut()?.get_mut(field)?,
+            OpenApiOverlayPathToken::Index(index) => current.as_array_mut()?.get_mut(*index)?,
+        };
+    }
+    Some(current)
+}
+
+fn merge_openapi_overlay_update(target: &mut Value, update: &Value) -> Result<(), String> {
+    match (target, update) {
+        (Value::Object(target), Value::Object(update)) => {
+            for (key, value) in update {
+                if let Some(existing) = target.get_mut(key) {
+                    merge_openapi_overlay_update(existing, value)?;
+                } else {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+            Ok(())
+        }
+        (Value::Array(target), Value::Array(update)) => {
+            target.extend(update.iter().cloned());
+            Ok(())
+        }
+        (Value::Array(target), update) => {
+            target.push(update.clone());
+            Ok(())
+        }
+        (target @ (Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_)), update) => {
+            *target = update.clone();
+            Ok(())
+        }
+        (Value::Object(_), _) => {
+            Err("object targets can only be updated with an object".to_string())
+        }
+    }
+}
+
+fn remove_openapi_overlay_paths(
+    document: &mut Value,
+    mut paths: Vec<Vec<OpenApiOverlayPathToken>>,
+) -> Result<(), String> {
+    paths.sort();
+    paths.reverse();
+    for path in paths {
+        let Some((last, parent_path)) = path.split_last() else {
+            return Err("cannot remove the document root".to_string());
+        };
+        let Some(parent) = get_json_value_mut_at_path(document, parent_path) else {
+            return Err("target parent changed while removing".to_string());
+        };
+        match (parent, last) {
+            (Value::Object(object), OpenApiOverlayPathToken::Field(field)) => {
+                object.remove(field);
+            }
+            (Value::Array(array), OpenApiOverlayPathToken::Index(index)) => {
+                if *index >= array.len() {
+                    return Err("array index changed while removing".to_string());
+                }
+                array.remove(*index);
+            }
+            _ => return Err("target parent type does not match selector".to_string()),
+        }
+    }
+    Ok(())
+}
+
+fn read_openapi_overlay_file(file: &Path) -> Result<Vec<u8>, AppError> {
+    read_descriptor_file(file, "OpenAPI overlay")
 }
 
 fn read_mcp_tools_list(
@@ -1620,11 +2024,15 @@ fn decode_sse_json_response(endpoint: &str, bytes: &[u8]) -> Result<Value, AppEr
 }
 
 fn read_file_descriptor(file: &Path) -> Result<Vec<u8>, AppError> {
-    let canonical = canonicalize_file_descriptor(file)?;
+    read_descriptor_file(file, "OpenAPI descriptor")
+}
+
+fn read_descriptor_file(file: &Path, label: &str) -> Result<Vec<u8>, AppError> {
+    let canonical = canonicalize_descriptor_file(file, label)?;
     let metadata = std::fs::metadata(&canonical)?;
     if metadata.len() > MAX_DESCRIPTOR_BYTES {
         return Err(AppError::FailedPrecondition(format!(
-            "OpenAPI descriptor '{}' is too large: {} bytes exceeds {MAX_DESCRIPTOR_BYTES}",
+            "{label} '{}' is too large: {} bytes exceeds {MAX_DESCRIPTOR_BYTES}",
             file.display(),
             metadata.len()
         )));
@@ -1633,22 +2041,26 @@ fn read_file_descriptor(file: &Path) -> Result<Vec<u8>, AppError> {
 }
 
 pub(crate) fn canonicalize_file_descriptor(file: &Path) -> Result<PathBuf, AppError> {
+    canonicalize_descriptor_file(file, "OpenAPI descriptor")
+}
+
+fn canonicalize_descriptor_file(file: &Path, label: &str) -> Result<PathBuf, AppError> {
     if !file.is_absolute() {
         return Err(AppError::InvalidInput(format!(
-            "OpenAPI descriptor '{}' is relative, but SourceSpec manifests must use absolute file descriptors after import. Use `coral source add --file <manifest>` so Coral can resolve relative descriptors from the manifest directory.",
+            "{label} '{}' is relative, but SourceSpec manifests must use absolute file descriptors after import. Use `coral source add --file <manifest>` so Coral can resolve relative descriptors from the manifest directory.",
             file.display()
         )));
     }
     let metadata = std::fs::symlink_metadata(file)?;
     if metadata.file_type().is_symlink() {
         return Err(AppError::FailedPrecondition(format!(
-            "OpenAPI descriptor '{}' must not be a symlink",
+            "{label} '{}' must not be a symlink",
             file.display()
         )));
     }
     if !metadata.file_type().is_file() {
         return Err(AppError::FailedPrecondition(format!(
-            "OpenAPI descriptor '{}' must be a regular file",
+            "{label} '{}' must be a regular file",
             file.display()
         )));
     }
@@ -2221,6 +2633,7 @@ interfaces:
             auth: Some(AuthDescriptor::BearerInput {
                 key: "token".to_string(),
             }),
+            overlays: Vec::new(),
             inputs: Vec::new(),
         };
         let credentials = BTreeMap::from([("token".to_string(), "secret-token".to_string())]);
@@ -2257,6 +2670,7 @@ interfaces:
             auth: Some(AuthDescriptor::BearerInput {
                 key: "token".to_string(),
             }),
+            overlays: Vec::new(),
             inputs: Vec::new(),
         };
         let credentials = BTreeMap::from([("token".to_string(), "secret-token".to_string())]);
@@ -2271,6 +2685,54 @@ interfaces:
                 .lines()
                 .any(|line| line.eq_ignore_ascii_case("authorization: Bearer secret-token")),
             "same-origin descriptor request did not include auth header:\n{request}"
+        );
+    }
+
+    #[test]
+    fn openapi_overlays_patch_effective_descriptor() {
+        let temp = TempDir::new().expect("temp dir");
+        let overlay_file = temp.path().join("fixes.overlay.yaml");
+        std::fs::write(
+            &overlay_file,
+            r#"
+overlay: 1.0.0
+info:
+  title: Patch OpenAPI descriptor
+  version: 1.0.0
+actions:
+  - target: $.paths["/issues"].get
+    update:
+      summary: List patched issues
+      x-coral-response-contract:
+        success:
+          body_json_pointer: /ok
+          equals: true
+  - target: $.paths.*.get
+    update:
+      x-safe: true
+"#,
+        )
+        .expect("write overlay");
+
+        let effective = apply_openapi_overlays(
+            openapi_fixture().as_bytes().to_vec(),
+            &[OpenApiOverlay { file: overlay_file }],
+        )
+        .expect("apply overlay");
+        let effective: Value = serde_yaml::from_slice(&effective).expect("effective YAML");
+
+        assert_eq!(
+            effective.pointer("/paths/~1issues/get/summary"),
+            Some(&json!("List patched issues"))
+        );
+        assert_eq!(
+            effective
+                .pointer("/paths/~1issues/get/x-coral-response-contract/success/body_json_pointer"),
+            Some(&json!("/ok"))
+        );
+        assert_eq!(
+            effective.pointer("/paths/~1issues/get/x-safe"),
+            Some(&json!(true))
         );
     }
 

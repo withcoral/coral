@@ -79,6 +79,25 @@ fn file_read_capability_gets_sql_table_binding() {
 }
 
 #[test]
+fn sql_schema_does_not_repeat_interface_suffix_already_in_source_key() {
+    let source_id = SourceId("src_local_messages".to_string());
+    let mut capability = file_capability();
+    capability.interface_id = "messages".to_string();
+    capability.operation_id = "read_files".to_string();
+    let binding = generate_sql_bindings(
+        &capability,
+        &BindingBuildContext {
+            source_id,
+            display_name: "Local Messages".to_string(),
+            source_key: SourceKey("local_messages".to_string()),
+        },
+    )
+    .pop()
+    .expect("sql binding");
+    assert_eq!(binding.sql_reference, "local_messages.messages");
+}
+
+#[test]
 fn mutation_capability_gets_no_sql_binding() {
     let mut capability = file_capability();
     capability.effect_profile = EffectProfile::write();
@@ -241,6 +260,7 @@ fn importer_file_read_operation_uses_interface_name_for_sql_table() {
 fn rest_read_capability_gets_provider_sql_table_binding() {
     let source_id = SourceId("src_demo".to_string());
     let mut capability = file_capability();
+    capability.interface_id = "rest".to_string();
     capability.operation_id = "list_issues".to_string();
     capability.upstream_binding = UpstreamBinding::Rest(RestUpstreamBinding {
         operation_ref: "interfaces/rest/provider-snapshot.yaml#/operations/list_issues".to_string(),
@@ -294,7 +314,7 @@ fn rest_read_capability_gets_provider_sql_table_binding() {
         },
     );
     let binding = bindings.first().expect("provider sql binding");
-    assert_eq!(binding.sql_reference, "demo.list_issues");
+    assert_eq!(binding.sql_reference, "demo_rest.list_issues");
     assert!(binding.projection.file_scan.is_none());
     assert_eq!(
         binding

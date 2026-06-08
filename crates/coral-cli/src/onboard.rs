@@ -177,8 +177,13 @@ async fn run_installed_source_menu(
                 &inputs,
                 source_ops::CredentialPromptMode::CredentialMethodFirst,
             )?;
-            let result =
-                source_ops::add_bundled_source_with_credentials(app, &source.name, inputs).await?;
+            let result = source_ops::add_bundled_source_with_credentials(
+                app,
+                &source.name,
+                inputs,
+                Vec::new(),
+            )
+            .await?;
             println!("Reconfigured source {}", result.name);
             source_ops::validate_and_warn(
                 app,
@@ -203,7 +208,9 @@ async fn run_add_bundled_source(app: &AppClient, source: &SourceInfo) -> Result<
         &inputs,
         source_ops::CredentialPromptMode::CredentialMethodFirst,
     )?;
-    let result = source_ops::add_bundled_source_with_credentials(app, &source.name, inputs).await?;
+    let result =
+        source_ops::add_bundled_source_with_credentials(app, &source.name, inputs, Vec::new())
+            .await?;
     println!("Added source {}", result.name);
     source_ops::validate_and_warn(app, &result.name, source_ops::TableDisplayLimit::DEFAULT).await
 }
@@ -368,6 +375,7 @@ mod tests {
             installed: true,
             origin: 1,
             credential_storage: 1,
+            interface_ids: vec!["rest".to_string()],
         };
         let item = format_source_list_item(&source, 10);
         assert!(item.starts_with("✓ "));
@@ -385,6 +393,7 @@ mod tests {
             installed: false,
             origin: 1,
             credential_storage: 0,
+            interface_ids: vec!["mcp".to_string()],
         };
         let item = format_source_list_item(&source, 10);
         assert!(item.starts_with("  "));
@@ -401,6 +410,7 @@ mod tests {
             installed: false,
             origin: 1,
             credential_storage: 0,
+            interface_ids: Vec::new(),
         };
         let long = SourceInfo {
             name: "statusgator".to_string(),
@@ -410,6 +420,7 @@ mod tests {
             installed: false,
             origin: 1,
             credential_storage: 0,
+            interface_ids: Vec::new(),
         };
         let width = 11; // len of "statusgator"
         let short_item = format_source_list_item(&short, width);

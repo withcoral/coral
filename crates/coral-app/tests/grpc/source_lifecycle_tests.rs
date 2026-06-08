@@ -35,6 +35,7 @@ async fn import_source_persists_and_lists() {
     assert_eq!(added.name, "local_messages");
     assert!(added.version.is_empty());
     assert_eq!(added.origin, SourceOrigin::Imported as i32);
+    assert_eq!(added.interface_ids, vec!["read_files".to_string()]);
     assert_eq!(
         added.credential_storage,
         SourceCredentialStorage::Unspecified as i32
@@ -62,10 +63,78 @@ async fn import_source_persists_and_lists() {
     let listed = harness.list_sources().await;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "local_messages");
+    assert_eq!(listed[0].interface_ids, vec!["read_files".to_string()]);
     assert_eq!(
         listed[0].credential_storage,
         SourceCredentialStorage::Unspecified as i32
     );
+}
+
+#[tokio::test]
+async fn import_source_with_interface_filter_ignores_unselected_required_inputs() {
+    let harness = GrpcHarness::new().await;
+    let data_file = harness.temp_path().join("events.jsonl");
+    fs::write(&data_file, "{\"id\":\"1\",\"text\":\"hello\"}\n").expect("write events fixture");
+    let manifest_yaml = format!(
+        r"
+spec_version: 1
+kind: source
+name: filtered_messages
+description: Filtered messages
+inputs:
+  - key: API_TOKEN
+    kind: secret
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    auth:
+      kind: bearer_input
+      key: API_TOKEN
+  - id: files
+    type: file
+    files:
+      - {}
+    format:
+      kind: jsonl
+",
+        data_file.display()
+    );
+
+    let mut stream = harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml,
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+            interface_ids: vec!["files".to_string()],
+        }))
+        .await
+        .expect("selected file interface import should not require REST credentials")
+        .into_inner();
+    let imported = stream
+        .message()
+        .await
+        .expect("import stream")
+        .and_then(|response| match response.event {
+            Some(import_source_response::Event::Source(source)) => Some(source),
+            _ => None,
+        })
+        .expect("import source response");
+
+    assert_eq!(imported.name, "filtered_messages");
+    assert_eq!(imported.interface_ids, vec!["files".to_string()]);
+    assert!(imported.secrets.is_empty());
+
+    let installed_manifest = fs::read_to_string(
+        source_dir(harness.config_dir(), "filtered_messages").join("manifest.yaml"),
+    )
+    .expect("read installed manifest");
+    assert!(installed_manifest.contains("id: files"));
+    assert!(!installed_manifest.contains("id: rest"));
+    assert!(!installed_manifest.contains("API_TOKEN"));
 }
 
 #[tokio::test]
@@ -106,6 +175,7 @@ async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     assert_eq!(fetched.name, "secured_messages");
     assert!(fetched.version.is_empty());
     assert_eq!(fetched.origin, SourceOrigin::Imported as i32);
+    assert_eq!(fetched.interface_ids, vec!["read_files".to_string()]);
     assert_eq!(
         fetched.credential_storage,
         SourceCredentialStorage::File as i32
@@ -130,6 +200,7 @@ async fn import_duplicate_source_overwrites_existing_source() {
             variables: Vec::new(),
             secrets: Vec::new(),
             oauth_credential_retrievals: Vec::new(),
+            interface_ids: Vec::new(),
         }))
         .await
         .expect("duplicate import should overwrite")
@@ -171,6 +242,7 @@ async fn import_invalid_manifest_returns_invalid_argument() {
             variables: Vec::new(),
             secrets: Vec::new(),
             oauth_credential_retrievals: Vec::new(),
+            interface_ids: Vec::new(),
         }))
         .await
         .expect_err("invalid manifest should fail");
@@ -417,6 +489,7 @@ async fn import_source_with_missing_file_returns_not_found() {
             variables: Vec::new(),
             secrets: Vec::new(),
             oauth_credential_retrievals: Vec::new(),
+            interface_ids: Vec::new(),
         }))
         .await
         .expect_err("source add should fail when an explicit file is missing");
@@ -446,6 +519,7 @@ async fn import_source_missing_required_secret_returns_invalid_argument() {
             }],
             secrets: Vec::new(),
             oauth_credential_retrievals: Vec::new(),
+            interface_ids: Vec::new(),
         }))
         .await
         .expect_err("missing required secret should fail");
@@ -472,6 +546,7 @@ async fn import_source_missing_required_variable_returns_invalid_argument() {
                 value: "secret-token".to_string(),
             }],
             oauth_credential_retrievals: Vec::new(),
+            interface_ids: Vec::new(),
         }))
         .await
         .expect_err("missing required variable should fail");
@@ -501,6 +576,7 @@ async fn import_source_unknown_variable_returns_invalid_argument() {
                 value: "secret-token".to_string(),
             }],
             oauth_credential_retrievals: Vec::new(),
+            interface_ids: Vec::new(),
         }))
         .await
         .expect_err("unknown variable should fail");
@@ -532,6 +608,7 @@ async fn import_source_unknown_secret_returns_invalid_argument() {
                 },
             ],
             oauth_credential_retrievals: Vec::new(),
+            interface_ids: Vec::new(),
         }))
         .await
         .expect_err("unknown secret should fail");
@@ -567,6 +644,7 @@ async fn import_source_repeated_variable_returns_invalid_argument() {
                 value: "secret-token".to_string(),
             }],
             oauth_credential_retrievals: Vec::new(),
+            interface_ids: Vec::new(),
         }))
         .await
         .expect_err("repeated variable should fail");
@@ -602,6 +680,7 @@ async fn import_source_repeated_secret_returns_invalid_argument() {
                 },
             ],
             oauth_credential_retrievals: Vec::new(),
+            interface_ids: Vec::new(),
         }))
         .await
         .expect_err("repeated secret should fail");
@@ -655,6 +734,8 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
         .get_source_info(Request::new(GetSourceInfoRequest {
             workspace: Some(default_workspace()),
             name: "secured_messages".to_string(),
+            interface_ids: Vec::new(),
+            catalog_only: false,
         }))
         .await
         .expect("get source info")
@@ -666,6 +747,7 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
     assert!(info.version.is_empty());
     assert_eq!(info.origin, SourceOrigin::Imported as i32);
     assert!(info.installed);
+    assert_eq!(info.interface_ids, vec!["read_files".to_string()]);
     assert_eq!(
         info.credential_storage,
         SourceCredentialStorage::File as i32
@@ -817,6 +899,7 @@ async fn import_rolls_back_on_config_write_failure() {
                 value: "secret-token".to_string(),
             }],
             oauth_credential_retrievals: Vec::new(),
+            interface_ids: Vec::new(),
         }))
         .await
         .expect_err("config write should fail");

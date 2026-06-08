@@ -123,6 +123,7 @@ impl PersistedInstalledSource {
             display_name: self.display_name,
             source_key: self.source_key,
             version: self.version,
+            interface_ids: Vec::new(),
             variables: self.variables,
             secrets: self.secrets,
             credential_storage: self.credential_storage,
@@ -565,6 +566,7 @@ mod tests {
             display_name: name.to_string(),
             source_key: name.to_string(),
             version: Some("1.1.4".to_string()),
+            interface_ids: Vec::new(),
             variables: BTreeMap::from([(
                 "GITHUB_API_BASE".to_string(),
                 "https://api.github.com".to_string(),

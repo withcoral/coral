@@ -58,8 +58,9 @@ pub fn generate_sql_bindings(
         return Vec::new();
     }
 
+    let sql_schema = sql_schema_name(capability, ctx.source_key.as_str());
     let sql_name = sql_identifier(sql_binding_leaf(capability));
-    let sql_reference = format!("{}.{}", ctx.source_key.as_str(), sql_name);
+    let sql_reference = format!("{sql_schema}.{sql_name}");
     let projection = projection_for_capability(capability);
     let kind = SqlBindingKind::Table;
     let ref_ = ExportRef::sql_table(sql_reference.clone());
@@ -168,6 +169,20 @@ fn sql_binding_leaf(capability: &Capability) -> &str {
         capability.interface_id.as_str()
     } else {
         capability.operation_id.as_str()
+    }
+}
+
+fn sql_schema_name(capability: &Capability, source_key: &str) -> String {
+    let source = sql_identifier(source_key);
+    if matches!(capability.upstream_binding, UpstreamBinding::FileRead(_)) {
+        return source;
+    }
+    let interface_id = &capability.interface_id;
+    let interface = sql_identifier(interface_id);
+    if source == interface || source.ends_with(&format!("_{interface}")) {
+        source
+    } else {
+        format!("{source}_{interface}")
     }
 }
 

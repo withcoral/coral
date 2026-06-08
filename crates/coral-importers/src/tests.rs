@@ -1028,6 +1028,166 @@ interfaces:
     );
 }
 
+#[test]
+fn openapi_shape_hints_detect_nested_wrapped_array_properties() {
+    let spec = parse_source_manifest_yaml(
+        r"
+spec_version: 1
+kind: source
+name: demo
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    base_url: https://api.example.com
+",
+    )
+    .expect("parse rest source spec");
+    let raw = BTreeMap::from([(
+        "rest".to_string(),
+        RawInterfaceInput::OpenApiDocument {
+            bytes: serde_json::to_vec(&json!({
+                "openapi": "3.0.3",
+                "paths": {
+                    "/search/messages": {
+                        "get": {
+                            "operationId": "searchMessages",
+                            "responses": {
+                                "200": {
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "ok": { "type": "boolean" },
+                                                    "messages": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "total": { "type": "integer" },
+                                                            "matches": {
+                                                                "type": "array",
+                                                                "items": {
+                                                                    "type": "object",
+                                                                    "properties": {
+                                                                        "id": { "type": "string" }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }))
+            .expect("serialize openapi fixture"),
+        },
+    )]);
+
+    let result = import_source(
+        coral_capabilities::SourceId("src_demo".to_string()),
+        &spec,
+        &raw,
+    )
+    .expect("import");
+    let capability = result
+        .capabilities
+        .capabilities
+        .iter()
+        .find(|capability| capability.operation_id == "search_messages")
+        .expect("search messages capability");
+
+    assert_eq!(capability.shape_hints.result_shape, ResultShapeHint::List);
+    assert_eq!(
+        capability.shape_hints.row_path_candidates,
+        vec![vec!["messages".to_string(), "matches".to_string()]]
+    );
+}
+
+#[test]
+fn openapi_shape_hints_detect_wrapped_singleton_object_properties() {
+    let spec = parse_source_manifest_yaml(
+        r"
+spec_version: 1
+kind: source
+name: demo
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    base_url: https://api.example.com
+",
+    )
+    .expect("parse rest source spec");
+    let raw = BTreeMap::from([(
+        "rest".to_string(),
+        RawInterfaceInput::OpenApiDocument {
+            bytes: serde_json::to_vec(&json!({
+                "openapi": "3.0.3",
+                "paths": {
+                    "/files/info": {
+                        "get": {
+                            "operationId": "filesInfo",
+                            "responses": {
+                                "200": {
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "ok": { "type": "boolean" },
+                                                    "file": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "id": { "type": "string" },
+                                                            "title": { "type": "string" }
+                                                        }
+                                                    },
+                                                    "response_metadata": {
+                                                        "type": "object"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }))
+            .expect("serialize openapi fixture"),
+        },
+    )]);
+
+    let result = import_source(
+        coral_capabilities::SourceId("src_demo".to_string()),
+        &spec,
+        &raw,
+    )
+    .expect("import");
+    let capability = result
+        .capabilities
+        .capabilities
+        .iter()
+        .find(|capability| capability.operation_id == "files_info")
+        .expect("files info capability");
+
+    assert_eq!(
+        capability.shape_hints.result_shape,
+        ResultShapeHint::Singleton
+    );
+    assert_eq!(
+        capability.shape_hints.row_path_candidates,
+        vec![vec!["file".to_string()]]
+    );
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "OpenAPI request-body component fixture keeps the regression visible"

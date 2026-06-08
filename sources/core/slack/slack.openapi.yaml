@@ -1,0 +1,1514 @@
+openapi: 3.0.3
+info:
+  title: Slack Web API
+  version: "2026-06-08"
+  description: Curated OpenAPI 3 descriptor for common Slack Web API methods used by Coral.
+servers:
+  - url: https://slack.com/api
+security:
+  - bearerAuth: []
+tags:
+  - name: auth
+    description: Token and workspace identity.
+  - name: conversations
+    description: Channels, private channels, DMs, MPIMs, history, and thread reads.
+  - name: chat
+    description: Message posting and message management.
+  - name: users
+    description: Slack users and user membership.
+  - name: files
+    description: Slack file metadata.
+  - name: reactions
+    description: Message and file reactions.
+  - name: pins
+    description: Pinned items.
+  - name: bookmarks
+    description: Channel bookmarks.
+  - name: emoji
+    description: Workspace emoji.
+  - name: team
+    description: Workspace team metadata.
+paths:
+  /auth.test:
+    get:
+      operationId: auth.test
+      tags: [auth]
+      summary: Check authentication.
+      description: Checks authentication and returns the workspace, team, user, and token identity.
+      responses:
+        "200":
+          $ref: "#/components/responses/AuthTest"
+  /conversations.list:
+    get:
+      operationId: conversations.list
+      tags: [conversations]
+      summary: List conversations.
+      description: Lists channel-like conversations visible to the token.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/ExcludeArchived"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/TeamId"
+        - $ref: "#/components/parameters/ConversationTypes"
+      responses:
+        "200":
+          $ref: "#/components/responses/ConversationsList"
+  /conversations.info:
+    get:
+      operationId: conversations.info
+      tags: [conversations]
+      summary: Get conversation info.
+      description: Gets metadata for a conversation.
+      parameters:
+        - $ref: "#/components/parameters/Channel"
+        - $ref: "#/components/parameters/IncludeLocale"
+        - $ref: "#/components/parameters/IncludeNumMembers"
+      responses:
+        "200":
+          $ref: "#/components/responses/ConversationInfo"
+  /conversations.history:
+    get:
+      operationId: conversations.history
+      tags: [conversations]
+      summary: Fetch conversation history.
+      description: Fetches messages and events from a conversation.
+      parameters:
+        - $ref: "#/components/parameters/Channel"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/IncludeAllMetadata"
+        - $ref: "#/components/parameters/Inclusive"
+        - $ref: "#/components/parameters/Latest"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Oldest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ConversationMessages"
+  /conversations.replies:
+    get:
+      operationId: conversations.replies
+      tags: [conversations]
+      summary: Fetch thread replies.
+      description: Fetches replies to a thread identified by channel and parent message timestamp.
+      parameters:
+        - $ref: "#/components/parameters/Channel"
+        - $ref: "#/components/parameters/ThreadTs"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/IncludeAllMetadata"
+        - $ref: "#/components/parameters/Inclusive"
+        - $ref: "#/components/parameters/Latest"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Oldest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ConversationMessages"
+  /conversations.members:
+    get:
+      operationId: conversations.members
+      tags: [conversations]
+      summary: List conversation members.
+      description: Lists user IDs for members of a conversation.
+      parameters:
+        - $ref: "#/components/parameters/Channel"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          $ref: "#/components/responses/ConversationMembers"
+  /conversations.open:
+    post:
+      operationId: conversations.open
+      tags: [conversations]
+      summary: Open a DM or MPIM.
+      description: Opens or resumes a direct message or multi-person direct message.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversationsOpenRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ConversationInfo"
+  /conversations.join:
+    post:
+      operationId: conversations.join
+      tags: [conversations]
+      summary: Join a conversation.
+      description: Joins an existing public channel.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChannelRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ConversationInfo"
+  /conversations.create:
+    post:
+      operationId: conversations.create
+      tags: [conversations]
+      summary: Create a channel.
+      description: Creates a public or private channel.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversationsCreateRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ConversationInfo"
+  /conversations.invite:
+    post:
+      operationId: conversations.invite
+      tags: [conversations]
+      summary: Invite users to a conversation.
+      description: Invites one or more users to a public or private channel.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversationsInviteRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ConversationInfo"
+  /conversations.archive:
+    post:
+      operationId: conversations.archive
+      tags: [conversations]
+      summary: Archive a conversation.
+      description: Archives a conversation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChannelRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/SlackMethod"
+  /conversations.unarchive:
+    post:
+      operationId: conversations.unarchive
+      tags: [conversations]
+      summary: Unarchive a conversation.
+      description: Unarchives a conversation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChannelRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/SlackMethod"
+  /conversations.rename:
+    post:
+      operationId: conversations.rename
+      tags: [conversations]
+      summary: Rename a conversation.
+      description: Renames a public or private channel.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversationsRenameRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ConversationInfo"
+  /conversations.setTopic:
+    post:
+      operationId: conversations.setTopic
+      tags: [conversations]
+      summary: Set a conversation topic.
+      description: Sets the topic for a public or private channel.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversationTextRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ConversationInfo"
+  /conversations.setPurpose:
+    post:
+      operationId: conversations.setPurpose
+      tags: [conversations]
+      summary: Set a conversation purpose.
+      description: Sets the purpose for a public or private channel.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversationTextRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ConversationInfo"
+  /chat.postMessage:
+    post:
+      operationId: chat.postMessage
+      tags: [chat]
+      summary: Post a message.
+      description: Sends a message to a channel, DM, or MPIM using a JSON request body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatPostMessageRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ChatMessage"
+  /chat.update:
+    post:
+      operationId: chat.update
+      tags: [chat]
+      summary: Update a message.
+      description: Updates a message sent by the authenticated app or user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatUpdateRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ChatMessage"
+  /chat.delete:
+    post:
+      operationId: chat.delete
+      tags: [chat]
+      summary: Delete a message.
+      description: Deletes a message.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatDeleteRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ChatDelete"
+  /chat.getPermalink:
+    get:
+      operationId: chat.getPermalink
+      tags: [chat]
+      summary: Get a message permalink.
+      description: Gets a permalink URL for a message.
+      parameters:
+        - $ref: "#/components/parameters/Channel"
+        - $ref: "#/components/parameters/MessageTs"
+      responses:
+        "200":
+          $ref: "#/components/responses/ChatPermalink"
+  /users.list:
+    get:
+      operationId: users.list
+      tags: [users]
+      summary: List users.
+      description: Lists users in a Slack workspace.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          $ref: "#/components/responses/UsersList"
+  /users.info:
+    get:
+      operationId: users.info
+      tags: [users]
+      summary: Get user info.
+      description: Gets information about a user.
+      parameters:
+        - $ref: "#/components/parameters/User"
+        - $ref: "#/components/parameters/IncludeLocale"
+      responses:
+        "200":
+          $ref: "#/components/responses/UserInfo"
+  /users.lookupByEmail:
+    get:
+      operationId: users.lookupByEmail
+      tags: [users]
+      summary: Look up a user by email.
+      description: Finds a user by email address.
+      parameters:
+        - name: email
+          in: query
+          required: true
+          schema:
+            type: string
+            format: email
+      responses:
+        "200":
+          $ref: "#/components/responses/UserInfo"
+  /users.conversations:
+    get:
+      operationId: users.conversations
+      tags: [users]
+      summary: List conversations for a user.
+      description: Lists conversations a user is a member of.
+      parameters:
+        - $ref: "#/components/parameters/UserOptional"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/ExcludeArchived"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/TeamId"
+        - $ref: "#/components/parameters/ConversationTypes"
+      responses:
+        "200":
+          $ref: "#/components/responses/ConversationsList"
+  /files.list:
+    get:
+      operationId: files.list
+      tags: [files]
+      summary: List files.
+      description: Lists files visible to the authenticated token.
+      parameters:
+        - name: user
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: channel
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: ts_from
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: ts_to
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: types
+          in: query
+          required: false
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Count"
+        - $ref: "#/components/parameters/Page"
+      responses:
+        "200":
+          $ref: "#/components/responses/FilesList"
+  /files.info:
+    get:
+      operationId: files.info
+      tags: [files]
+      summary: Get file info.
+      description: Gets information about a file.
+      parameters:
+        - name: file
+          in: query
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Count"
+        - $ref: "#/components/parameters/Page"
+      responses:
+        "200":
+          $ref: "#/components/responses/FileInfo"
+  /reactions.get:
+    get:
+      operationId: reactions.get
+      tags: [reactions]
+      summary: Get reactions for an item.
+      description: Gets reactions for a message or file.
+      parameters:
+        - $ref: "#/components/parameters/ChannelOptional"
+        - $ref: "#/components/parameters/FileOptional"
+        - $ref: "#/components/parameters/FileCommentOptional"
+        - $ref: "#/components/parameters/TimestampOptional"
+        - name: full
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        "200":
+          $ref: "#/components/responses/ReactionsGet"
+  /reactions.list:
+    get:
+      operationId: reactions.list
+      tags: [reactions]
+      summary: List reactions.
+      description: Lists reactions made by a user.
+      parameters:
+        - $ref: "#/components/parameters/UserOptional"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: full
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        "200":
+          $ref: "#/components/responses/ReactionsList"
+  /reactions.add:
+    post:
+      operationId: reactions.add
+      tags: [reactions]
+      summary: Add a reaction.
+      description: Adds a reaction to a message or file.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReactionChangeRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/SlackMethod"
+  /reactions.remove:
+    post:
+      operationId: reactions.remove
+      tags: [reactions]
+      summary: Remove a reaction.
+      description: Removes a reaction from a message or file.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReactionChangeRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/SlackMethod"
+  /pins.list:
+    get:
+      operationId: pins.list
+      tags: [pins]
+      summary: List pinned items.
+      description: Lists items pinned to a channel.
+      parameters:
+        - $ref: "#/components/parameters/Channel"
+      responses:
+        "200":
+          $ref: "#/components/responses/PinsList"
+  /pins.add:
+    post:
+      operationId: pins.add
+      tags: [pins]
+      summary: Pin an item.
+      description: Pins a message or file to a channel.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PinsChangeRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/SlackMethod"
+  /pins.remove:
+    post:
+      operationId: pins.remove
+      tags: [pins]
+      summary: Unpin an item.
+      description: Removes a pinned item from a channel.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PinsChangeRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/SlackMethod"
+  /bookmarks.list:
+    get:
+      operationId: bookmarks.list
+      tags: [bookmarks]
+      summary: List bookmarks.
+      description: Lists bookmarks for a channel.
+      parameters:
+        - name: channel_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/BookmarksList"
+  /emoji.list:
+    get:
+      operationId: emoji.list
+      tags: [emoji]
+      summary: List emoji.
+      description: Lists custom emoji for a workspace.
+      responses:
+        "200":
+          $ref: "#/components/responses/EmojiList"
+  /team.info:
+    get:
+      operationId: team.info
+      tags: [team]
+      summary: Get team info.
+      description: Gets workspace team information.
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          $ref: "#/components/responses/TeamInfo"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    Channel:
+      name: channel
+      in: query
+      required: true
+      schema:
+        type: string
+      description: Slack conversation ID.
+    ChannelOptional:
+      name: channel
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Slack conversation ID.
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Cursor from response_metadata.next_cursor returned by a previous response.
+    ExcludeArchived:
+      name: exclude_archived
+      in: query
+      required: false
+      schema:
+        type: boolean
+      description: Exclude archived channels from results.
+    FileCommentOptional:
+      name: file_comment
+      in: query
+      required: false
+      schema:
+        type: string
+      description: File comment ID.
+    FileOptional:
+      name: file
+      in: query
+      required: false
+      schema:
+        type: string
+      description: File ID.
+    IncludeLocale:
+      name: include_locale
+      in: query
+      required: false
+      schema:
+        type: boolean
+      description: Include locale fields where Slack supports them.
+    IncludeNumMembers:
+      name: include_num_members
+      in: query
+      required: false
+      schema:
+        type: boolean
+      description: Include num_members where Slack supports it.
+    IncludeAllMetadata:
+      name: include_all_metadata
+      in: query
+      required: false
+      schema:
+        type: boolean
+      description: Return all message metadata where Slack supports it.
+    Inclusive:
+      name: inclusive
+      in: query
+      required: false
+      schema:
+        type: boolean
+      description: Include messages matching oldest or latest when those timestamp bounds are provided.
+    Latest:
+      name: latest
+      in: query
+      required: false
+      schema:
+        type: string
+      description: End timestamp bound.
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+      description: Maximum number of items to return.
+    MessageTs:
+      name: message_ts
+      in: query
+      required: true
+      schema:
+        type: string
+      description: Slack message timestamp.
+    Oldest:
+      name: oldest
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Start timestamp bound.
+    Count:
+      name: count
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+      description: Number of results per page.
+    Page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+      description: One-based page number for Slack page-based methods.
+    TeamId:
+      name: team_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Slack workspace team ID.
+    ThreadTs:
+      name: ts
+      in: query
+      required: true
+      schema:
+        type: string
+      description: Parent message timestamp.
+    TimestampOptional:
+      name: timestamp
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Slack message timestamp.
+    User:
+      name: user
+      in: query
+      required: true
+      schema:
+        type: string
+      description: Slack user ID.
+    UserOptional:
+      name: user
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Slack user ID.
+    ConversationTypes:
+      name: types
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Comma-separated conversation types such as public_channel, private_channel, mpim, and im.
+  responses:
+    AuthTest:
+      description: Slack auth.test response.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuthTestResponse"
+    BookmarksList:
+      description: Slack bookmarks.list response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/BookmarksListResponse"
+    ChatDelete:
+      description: Slack chat.delete response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ChatDeleteResponse"
+    ChatMessage:
+      description: Slack chat message response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ChatMessageResponse"
+    ChatPermalink:
+      description: Slack chat.getPermalink response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ChatPermalinkResponse"
+    ConversationInfo:
+      description: Slack conversation response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ConversationInfoResponse"
+    ConversationMembers:
+      description: Slack conversation members response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ConversationMembersResponse"
+    ConversationMessages:
+      description: Slack conversation messages response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ConversationMessagesResponse"
+    ConversationsList:
+      description: Slack conversations list response.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ConversationsListResponse"
+    EmojiList:
+      description: Slack emoji.list response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/EmojiListResponse"
+    FileInfo:
+      description: Slack files.info response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/FileInfoResponse"
+    FilesList:
+      description: Slack files.list response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/FilesListResponse"
+    PinsList:
+      description: Slack pins.list response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PinsListResponse"
+    ReactionsGet:
+      description: Slack reactions.get response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ReactionsGetResponse"
+    ReactionsList:
+      description: Slack reactions.list response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ReactionsListResponse"
+    SlackMethod:
+      description: Slack method response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SlackMethodResponse"
+    TeamInfo:
+      description: Slack team.info response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TeamInfoResponse"
+    UserInfo:
+      description: Slack user response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UserInfoResponse"
+    UsersList:
+      description: Slack users.list response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UsersListResponse"
+  headers:
+    RetryAfter:
+      description: Seconds to wait before retrying after a rate-limit response.
+      schema:
+        type: integer
+  schemas:
+    AuthTestResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        url:
+          type: string
+        team:
+          type: string
+        team_id:
+          type: string
+        user:
+          type: string
+        user_id:
+          type: string
+        bot_id:
+          type: string
+        enterprise_id:
+          type: string
+    BookmarksListResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        bookmarks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Bookmark"
+        response_metadata:
+          $ref: "#/components/schemas/ResponseMetadata"
+    Bookmark:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        channel_id:
+          type: string
+        title:
+          type: string
+        type:
+          type: string
+        link:
+          type: string
+    ChannelRequest:
+      type: object
+      required: [channel]
+      additionalProperties: false
+      properties:
+        channel:
+          type: string
+    ChatDeleteRequest:
+      type: object
+      required: [channel, ts]
+      additionalProperties: false
+      properties:
+        channel:
+          type: string
+        ts:
+          type: string
+    ChatDeleteResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        channel:
+          type: string
+        ts:
+          type: string
+    ChatMessageResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        channel:
+          type: string
+        ts:
+          type: string
+        message:
+          $ref: "#/components/schemas/Message"
+    ChatPermalinkResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        channel:
+          type: string
+        permalink:
+          type: string
+    ChatPostMessageRequest:
+      type: object
+      required: [channel]
+      additionalProperties: false
+      properties:
+        channel:
+          type: string
+        text:
+          type: string
+        blocks:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        attachments:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        metadata:
+          type: object
+          additionalProperties: true
+        thread_ts:
+          type: string
+        reply_broadcast:
+          type: boolean
+        parse:
+          type: string
+          enum: [none, full]
+        mrkdwn:
+          type: boolean
+        unfurl_links:
+          type: boolean
+        unfurl_media:
+          type: boolean
+        username:
+          type: string
+        icon_emoji:
+          type: string
+        icon_url:
+          type: string
+    ChatUpdateRequest:
+      type: object
+      required: [channel, ts]
+      additionalProperties: false
+      properties:
+        channel:
+          type: string
+        ts:
+          type: string
+        text:
+          type: string
+        blocks:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        attachments:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        parse:
+          type: string
+          enum: [none, full]
+        reply_broadcast:
+          type: boolean
+    Conversation:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        is_channel:
+          type: boolean
+        is_group:
+          type: boolean
+        is_im:
+          type: boolean
+        is_mpim:
+          type: boolean
+        is_private:
+          type: boolean
+        is_archived:
+          type: boolean
+        is_member:
+          type: boolean
+        created:
+          type: integer
+        creator:
+          type: string
+        num_members:
+          type: integer
+        topic:
+          $ref: "#/components/schemas/ConversationText"
+        purpose:
+          $ref: "#/components/schemas/ConversationText"
+    ConversationInfoResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        channel:
+          $ref: "#/components/schemas/Conversation"
+    ConversationMembersResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        members:
+          type: array
+          items:
+            type: string
+        response_metadata:
+          $ref: "#/components/schemas/ResponseMetadata"
+    ConversationMessagesResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/Message"
+        has_more:
+          type: boolean
+        pin_count:
+          type: integer
+        response_metadata:
+          $ref: "#/components/schemas/ResponseMetadata"
+    ConversationText:
+      type: object
+      additionalProperties: true
+      properties:
+        value:
+          type: string
+        creator:
+          type: string
+        last_set:
+          type: integer
+    ConversationTextRequest:
+      type: object
+      required: [channel, text]
+      additionalProperties: false
+      properties:
+        channel:
+          type: string
+        text:
+          type: string
+    ConversationsCreateRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        is_private:
+          type: boolean
+        team_id:
+          type: string
+    ConversationsInviteRequest:
+      type: object
+      required: [channel, users]
+      additionalProperties: false
+      properties:
+        channel:
+          type: string
+        users:
+          oneOf:
+            - type: string
+              description: Comma-separated user IDs.
+            - type: array
+              items:
+                type: string
+    ConversationsListResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        channels:
+          type: array
+          items:
+            $ref: "#/components/schemas/Conversation"
+        response_metadata:
+          $ref: "#/components/schemas/ResponseMetadata"
+    ConversationsOpenRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        channel:
+          type: string
+        users:
+          oneOf:
+            - type: string
+              description: Comma-separated user IDs.
+            - type: array
+              items:
+                type: string
+        return_im:
+          type: boolean
+      anyOf:
+        - required: [channel]
+        - required: [users]
+    ConversationsRenameRequest:
+      type: object
+      required: [channel, name]
+      additionalProperties: false
+      properties:
+        channel:
+          type: string
+        name:
+          type: string
+    EmojiListResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        emoji:
+          type: object
+          additionalProperties:
+            type: string
+    File:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        created:
+          type: integer
+        timestamp:
+          type: integer
+        name:
+          type: string
+        title:
+          type: string
+        mimetype:
+          type: string
+        filetype:
+          type: string
+        user:
+          type: string
+        url_private:
+          type: string
+        permalink:
+          type: string
+    FileInfoResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        file:
+          $ref: "#/components/schemas/File"
+        response_metadata:
+          $ref: "#/components/schemas/ResponseMetadata"
+    FilesListResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/File"
+        paging:
+          $ref: "#/components/schemas/Paging"
+    Message:
+      type: object
+      additionalProperties: true
+      properties:
+        type:
+          type: string
+        subtype:
+          type: string
+        channel:
+          type: string
+        user:
+          type: string
+        username:
+          type: string
+        text:
+          type: string
+        ts:
+          type: string
+        thread_ts:
+          type: string
+        team:
+          type: string
+        blocks:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        reactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Reaction"
+    Paging:
+      type: object
+      additionalProperties: true
+      properties:
+        count:
+          type: integer
+        total:
+          type: integer
+        page:
+          type: integer
+        pages:
+          type: integer
+    PinsChangeRequest:
+      type: object
+      required: [channel]
+      additionalProperties: false
+      properties:
+        channel:
+          type: string
+        timestamp:
+          type: string
+        file:
+          type: string
+        file_comment:
+          type: string
+      anyOf:
+        - required: [timestamp]
+        - required: [file]
+        - required: [file_comment]
+    PinsListResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    Reaction:
+      type: object
+      additionalProperties: true
+      properties:
+        name:
+          type: string
+        count:
+          type: integer
+        users:
+          type: array
+          items:
+            type: string
+    ReactionChangeRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        channel:
+          type: string
+        timestamp:
+          type: string
+        file:
+          type: string
+        file_comment:
+          type: string
+      anyOf:
+        - required: [channel, timestamp]
+        - required: [file]
+        - required: [file_comment]
+    ReactionsGetResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        type:
+          type: string
+        channel:
+          type: string
+        message:
+          $ref: "#/components/schemas/Message"
+        file:
+          $ref: "#/components/schemas/File"
+    ReactionsListResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        response_metadata:
+          $ref: "#/components/schemas/ResponseMetadata"
+    ResponseMetadata:
+      type: object
+      additionalProperties: true
+      properties:
+        next_cursor:
+          type: string
+        messages:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+    SlackMethodResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        warning:
+          type: string
+        response_metadata:
+          $ref: "#/components/schemas/ResponseMetadata"
+    Team:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        domain:
+          type: string
+        enterprise_id:
+          type: string
+        enterprise_name:
+          type: string
+    TeamInfoResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        team:
+          $ref: "#/components/schemas/Team"
+    User:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        team_id:
+          type: string
+        name:
+          type: string
+        deleted:
+          type: boolean
+        real_name:
+          type: string
+        tz:
+          type: string
+        is_bot:
+          type: boolean
+        is_admin:
+          type: boolean
+        is_owner:
+          type: boolean
+        profile:
+          $ref: "#/components/schemas/UserProfile"
+    UserInfoResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        user:
+          $ref: "#/components/schemas/User"
+    UserProfile:
+      type: object
+      additionalProperties: true
+      properties:
+        real_name:
+          type: string
+        display_name:
+          type: string
+        email:
+          type: string
+        image_48:
+          type: string
+        image_72:
+          type: string
+    UsersListResponse:
+      type: object
+      required: [ok]
+      additionalProperties: true
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+        cache_ts:
+          type: integer
+        response_metadata:
+          $ref: "#/components/schemas/ResponseMetadata"

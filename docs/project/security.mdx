@@ -112,8 +112,9 @@ you configure; it does not make an otherwise untrusted local agent safe.
 - Scope provider tokens to the minimum data your workflow needs.
 - Put Coral's config directory on a local disk protected by your operating
   system account controls.
-- Use `coral source list` or `coral source info <NAME>` to inspect whether a
-  source uses `keychain` or `file (plaintext)` secret storage.
+- Use `coral source list` or `coral source info <NAME>` to inspect installed
+  interfaces and whether a source uses `keychain` or `file (plaintext)` secret
+  storage.
 - Review custom source specs before installing them, especially `base_url`,
   `auth`, and file `location` fields.
 - Coral only sends source auth to OpenAPI or GraphQL descriptor/schema

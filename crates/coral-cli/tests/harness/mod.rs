@@ -63,6 +63,7 @@ fn mock_source() -> Source {
         source_id: "src_github".to_string(),
         display_name: "github".to_string(),
         source_key: "github".to_string(),
+        interface_ids: vec!["rest".to_string()],
     }
 }
 
@@ -145,6 +146,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
                 credential_storage: SourceCredentialStorage::File as i32,
+                interface_ids: vec!["rest".to_string()],
             },
             SourceInfo {
                 name: "slack".to_string(),
@@ -154,6 +156,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 installed: false,
                 origin: SourceOrigin::Bundled as i32,
                 credential_storage: SourceCredentialStorage::Unspecified as i32,
+                interface_ids: vec!["rest".to_string(), "mcp".to_string()],
             },
         ],
     }
@@ -163,8 +166,8 @@ fn mock_validate_response() -> ValidateSourceResponse {
     ValidateSourceResponse {
         source: Some(mock_source()),
         tables: vec![
-            mock_table("github", "issues"),
-            mock_table("github", "pull_requests"),
+            mock_table("github_rest", "issues"),
+            mock_table("github_rest", "pull_requests"),
         ],
         table_functions: Vec::new(),
         query_tests: Vec::new(),
@@ -181,7 +184,7 @@ fn mock_search_exports_response(request: &SearchExportsRequest) -> SearchExports
             capability_id: "src_github.rest.list_issues".to_string(),
             refs: vec![
                 "typescript:github.rest.issues.listIssues".to_string(),
-                "sql_table:github.list_issues".to_string(),
+                "sql_table:github_rest.list_issues".to_string(),
             ],
             source_id: "src_github".to_string(),
             display_name: "github".to_string(),
@@ -250,7 +253,7 @@ fn mock_describe_export_response(request: &DescribeExportRequest) -> DescribeExp
             alias: "github.rest.issues.listIssues".to_string(),
             refs: vec![
                 "typescript:github.rest.issues.listIssues".to_string(),
-                "sql_table:github.list_issues".to_string(),
+                "sql_table:github_rest.list_issues".to_string(),
             ],
             source_id: "src_github".to_string(),
             display_name: "github".to_string(),
@@ -325,6 +328,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: true,
             origin: SourceOrigin::Bundled as i32,
             credential_storage: SourceCredentialStorage::File as i32,
+            interface_ids: vec!["rest".to_string()],
         }),
         "slack" => Ok(SourceInfo {
             name: "slack".to_string(),
@@ -334,6 +338,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: false,
             origin: SourceOrigin::Bundled as i32,
             credential_storage: SourceCredentialStorage::Unspecified as i32,
+            interface_ids: vec!["rest".to_string(), "mcp".to_string()],
         }),
         "jira" => Ok(SourceInfo {
             name: "jira".to_string(),
@@ -343,6 +348,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: true,
             origin: SourceOrigin::Imported as i32,
             credential_storage: SourceCredentialStorage::File as i32,
+            interface_ids: vec!["graphql".to_string()],
         }),
         "versionless" => Ok(SourceInfo {
             name: "versionless".to_string(),
@@ -352,6 +358,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: true,
             origin: SourceOrigin::Imported as i32,
             credential_storage: SourceCredentialStorage::File as i32,
+            interface_ids: Vec::new(),
         }),
         _ => Err(Status::not_found(format!("unknown source '{name}'"))),
     }
@@ -456,6 +463,7 @@ impl Default for MockServerConfig {
                         source_id: "src_github".to_string(),
                         display_name: "github".to_string(),
                         source_key: "github".to_string(),
+                        interface_ids: vec!["rest".to_string()],
                     },
                     Source {
                         workspace: Some(workspace()),
@@ -468,6 +476,7 @@ impl Default for MockServerConfig {
                         source_id: "src_jira".to_string(),
                         display_name: "jira".to_string(),
                         source_key: "jira".to_string(),
+                        interface_ids: vec!["graphql".to_string(), "mcp".to_string()],
                     },
                 ],
             }),
@@ -1081,6 +1090,14 @@ impl MockServer {
             .get_source_info
             .lock()
             .expect("get_source_info capture")
+            .clone()
+    }
+
+    pub(crate) fn create_bundled_source_requests(&self) -> Vec<CreateBundledSourceRequest> {
+        self.captured
+            .create_bundled_source
+            .lock()
+            .expect("create_bundled_source capture")
             .clone()
     }
 

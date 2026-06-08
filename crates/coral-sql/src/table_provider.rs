@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::collections::BTreeSet;
 use std::path::{Component, Path};
 use std::sync::Arc;
 
@@ -182,6 +183,11 @@ fn datafusion_external_error(
 }
 
 fn arrow_schema_from_projection(projection: &SqlProjectionV1) -> SchemaRef {
+    let column_names = projection
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<BTreeSet<_>>();
     let mut fields = projection
         .columns
         .iter()
@@ -197,9 +203,29 @@ fn arrow_schema_from_projection(projection: &SqlProjectionV1) -> SchemaRef {
         projection
             .inputs
             .iter()
+            .filter(|input| !column_names.contains(input.name.as_str()))
             .map(|input| Field::new(input.name.clone(), arrow_data_type(&input.data_type), true)),
     );
     Arc::new(Schema::new(fields))
+}
+
+fn projected_input_names_without_column_collision(projection: &SqlProjectionV1) -> Vec<&str> {
+    let column_names = projection
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<BTreeSet<_>>();
+    projection
+        .inputs
+        .iter()
+        .filter_map(|input| {
+            if column_names.contains(input.name.as_str()) {
+                None
+            } else {
+                Some(input.name.as_str())
+            }
+        })
+        .collect()
 }
 
 fn arrow_data_type(data_type: &str) -> DataType {
@@ -500,9 +526,9 @@ fn provider_row_values(
     for column in &binding.binding.projection.columns {
         values.push(project_row_column(row, root, &column.name));
     }
-    for input in &binding.binding.projection.inputs {
+    for input_name in projected_input_names_without_column_collision(&binding.binding.projection) {
         values.push(
-            args.get(&input.name)
+            args.get(input_name)
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         );
@@ -672,4 +698,61 @@ fn trusted_file_artifact_path(
         )));
     }
     Ok(canonical.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use coral_exports::{SqlColumn, SqlInput, SqlProjectionV1, SqlRowShape};
+
+    use super::{arrow_schema_from_projection, projected_input_names_without_column_collision};
+
+    #[test]
+    fn provider_schema_skips_input_fields_that_collide_with_output_columns() {
+        let projection = SqlProjectionV1 {
+            row_shape: SqlRowShape::Singleton,
+            columns: vec![
+                SqlColumn {
+                    name: "channel".to_string(),
+                    data_type: "Utf8".to_string(),
+                    nullable: true,
+                    description: String::new(),
+                },
+                SqlColumn {
+                    name: "name".to_string(),
+                    data_type: "Utf8".to_string(),
+                    nullable: true,
+                    description: String::new(),
+                },
+            ],
+            inputs: vec![
+                SqlInput {
+                    name: "channel".to_string(),
+                    required: true,
+                    data_type: "Utf8".to_string(),
+                },
+                SqlInput {
+                    name: "limit".to_string(),
+                    required: false,
+                    data_type: "Int64".to_string(),
+                },
+            ],
+            response_selection: None,
+            pagination: None,
+            file_scan: None,
+            diagnostics: Vec::new(),
+        };
+
+        let schema = arrow_schema_from_projection(&projection);
+        let fields = schema
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(fields, vec!["channel", "name", "limit"]);
+        assert_eq!(
+            projected_input_names_without_column_collision(&projection),
+            vec!["limit"]
+        );
+    }
 }

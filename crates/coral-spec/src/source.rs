@@ -81,6 +81,47 @@ impl SourceInterface {
             Self::File(interface) => &interface.inputs,
         }
     }
+
+    fn referenced_input_keys(&self) -> BTreeSet<String> {
+        let mut keys = self
+            .inputs()
+            .iter()
+            .map(|input| input.key.clone())
+            .collect::<BTreeSet<_>>();
+        match self {
+            Self::OpenApi(interface) => {
+                if let OpenApiDescriptor::Url { url } = &interface.descriptor {
+                    collect_template_input_keys(url, &mut keys);
+                }
+                if let Some(base_url) = &interface.base_url {
+                    collect_template_input_keys(base_url, &mut keys);
+                }
+                collect_auth_input_keys(interface.auth.as_ref(), &mut keys);
+            }
+            Self::Mcp(interface) => {
+                if let McpTransportDescriptor::StreamableHttp { url } = &interface.server.transport
+                {
+                    collect_template_input_keys(url, &mut keys);
+                }
+                collect_auth_input_keys(interface.server.auth.as_ref(), &mut keys);
+                for env in &interface.server.env {
+                    keys.insert(env.key.clone());
+                }
+            }
+            Self::Graphql(interface) => {
+                collect_template_input_keys(&interface.endpoint, &mut keys);
+                if let GraphqlSchemaDescriptor::IntrospectionQuery {
+                    endpoint: Some(endpoint),
+                } = &interface.schema
+                {
+                    collect_template_input_keys(endpoint, &mut keys);
+                }
+                collect_auth_input_keys(interface.auth.as_ref(), &mut keys);
+            }
+            Self::File(_) => {}
+        }
+        keys
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -89,6 +130,7 @@ pub struct OpenApiInterface {
     pub descriptor: OpenApiDescriptor,
     pub base_url: Option<ParsedTemplate>,
     pub auth: Option<AuthDescriptor>,
+    pub overlays: Vec<OpenApiOverlay>,
     pub inputs: Vec<ManifestInputSpec>,
 }
 
@@ -96,6 +138,11 @@ pub struct OpenApiInterface {
 pub enum OpenApiDescriptor {
     Url { url: ParsedTemplate },
     File { file: PathBuf },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenApiOverlay {
+    pub file: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -366,6 +413,8 @@ enum RawInterface {
         #[serde(default)]
         file: Option<PathBuf>,
         #[serde(default)]
+        overlays: Vec<RawOpenApiOverlay>,
+        #[serde(default)]
         base_url: Option<ParsedTemplate>,
         #[serde(default)]
         auth: Option<RawAuth>,
@@ -394,6 +443,12 @@ enum RawInterface {
         #[serde(default)]
         inputs: Vec<RawInput>,
     },
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RawOpenApiOverlay {
+    file: PathBuf,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -593,6 +648,140 @@ impl SourceSpec {
     }
 }
 
+pub fn filter_source_manifest_yaml_interfaces(
+    manifest_yaml: &str,
+    interface_ids: &[String],
+) -> Result<String> {
+    if interface_ids.is_empty() {
+        return Ok(manifest_yaml.to_string());
+    }
+    let manifest = crate::parse_source_manifest_yaml(manifest_yaml)?;
+    let selected = normalized_selected_interface_ids(&manifest, interface_ids)?;
+    let selected_set = selected.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let referenced_inputs = manifest
+        .interfaces
+        .iter()
+        .filter(|interface| selected_set.contains(interface.id()))
+        .flat_map(SourceInterface::referenced_input_keys)
+        .collect::<BTreeSet<_>>();
+
+    let mut raw = serde_yaml::from_str::<serde_yaml::Value>(manifest_yaml)
+        .map_err(ManifestError::parse_yaml)?;
+    filter_raw_interfaces(&manifest.name, &mut raw, &selected_set)?;
+    filter_raw_top_level_inputs(&mut raw, &referenced_inputs);
+    let filtered = serde_yaml::to_string(&raw).map_err(|error| {
+        ManifestError::validation(format!(
+            "failed to serialize filtered source manifest: {error}"
+        ))
+    })?;
+    crate::parse_source_manifest_yaml(&filtered)?;
+    Ok(filtered)
+}
+
+fn normalized_selected_interface_ids(
+    manifest: &SourceSpec,
+    interface_ids: &[String],
+) -> Result<Vec<String>> {
+    let available = manifest
+        .interfaces
+        .iter()
+        .map(|interface| interface.id().to_string())
+        .collect::<Vec<_>>();
+    let available_set = available
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    let mut normalized = Vec::with_capacity(interface_ids.len());
+    for id in interface_ids {
+        let id = id.trim();
+        if id.is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{}' selected interface id must not be empty",
+                manifest.name
+            )));
+        }
+        if !available_set.contains(id) {
+            return Err(ManifestError::validation(format!(
+                "source '{}' does not declare interface '{}'; available interfaces: {}",
+                manifest.name,
+                id,
+                available.join(", ")
+            )));
+        }
+        if !seen.insert(id.to_string()) {
+            return Err(ManifestError::validation(format!(
+                "source '{}' selected interface '{}' was specified more than once",
+                manifest.name, id
+            )));
+        }
+        normalized.push(id.to_string());
+    }
+    Ok(normalized)
+}
+
+fn filter_raw_interfaces(
+    source_name: &str,
+    raw: &mut serde_yaml::Value,
+    selected: &BTreeSet<&str>,
+) -> Result<()> {
+    let interfaces = raw
+        .as_mapping_mut()
+        .and_then(|mapping| mapping.get_mut(serde_yaml::Value::String("interfaces".to_string())))
+        .and_then(serde_yaml::Value::as_sequence_mut)
+        .ok_or_else(|| {
+            ManifestError::validation(format!(
+                "source '{source_name}' interfaces must be a sequence"
+            ))
+        })?;
+    interfaces.retain(|interface| {
+        yaml_string_field(interface, "id").is_some_and(|id| selected.contains(id))
+    });
+    Ok(())
+}
+
+fn filter_raw_top_level_inputs(raw: &mut serde_yaml::Value, referenced_inputs: &BTreeSet<String>) {
+    let Some(inputs) = raw
+        .as_mapping_mut()
+        .and_then(|mapping| mapping.get_mut(serde_yaml::Value::String("inputs".to_string())))
+        .and_then(serde_yaml::Value::as_sequence_mut)
+    else {
+        return;
+    };
+    inputs.retain(|input| {
+        yaml_string_field(input, "key").is_some_and(|key| referenced_inputs.contains(key))
+    });
+}
+
+fn yaml_string_field<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a str> {
+    value
+        .as_mapping()
+        .and_then(|mapping| mapping.get(serde_yaml::Value::String(key.to_string())))
+        .and_then(serde_yaml::Value::as_str)
+}
+
+fn collect_auth_input_keys(auth: Option<&AuthDescriptor>, keys: &mut BTreeSet<String>) {
+    match auth {
+        Some(AuthDescriptor::BearerInput { key } | AuthDescriptor::HeaderInput { key, .. }) => {
+            keys.insert(key.clone());
+        }
+        Some(AuthDescriptor::Headers { headers }) => {
+            for header in headers {
+                keys.insert(header.key.clone());
+            }
+        }
+        Some(AuthDescriptor::None) | None => {}
+    }
+}
+
+fn collect_template_input_keys(template: &ParsedTemplate, keys: &mut BTreeSet<String>) {
+    for token in template.tokens() {
+        for key in token.input_keys() {
+            keys.insert(key.to_string());
+        }
+    }
+}
+
 fn validate_test_queries(source_name: &str, test_queries: &[String]) -> Result<()> {
     for (index, query) in test_queries.iter().enumerate() {
         if query.trim().is_empty() {
@@ -614,6 +803,7 @@ fn parse_interface(source_name: &str, raw: RawInterface) -> Result<SourceInterfa
             id,
             url,
             file,
+            overlays,
             base_url,
             auth,
             inputs,
@@ -633,6 +823,10 @@ fn parse_interface(source_name: &str, raw: RawInterface) -> Result<SourceInterfa
                 descriptor,
                 base_url,
                 auth: auth.map(AuthDescriptor::from),
+                overlays: overlays
+                    .into_iter()
+                    .map(|overlay| OpenApiOverlay { file: overlay.file })
+                    .collect(),
                 inputs,
             }))
         }
@@ -1516,7 +1710,7 @@ mod tests {
     use crate::{
         AuthDescriptor, ManifestCredentialMethodKind, ManifestOAuthFlowKind, ManifestOAuthPkceMode,
         ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, SourceInterface,
-        parse_source_manifest_yaml,
+        filter_source_manifest_yaml_interfaces, parse_source_manifest_yaml,
     };
 
     #[test]
@@ -1562,6 +1756,112 @@ interfaces:
             SourceInterface::OpenApi(_)
         ));
         assert_eq!(manifest.declared_inputs.len(), 1);
+    }
+
+    #[test]
+    fn filters_source_manifest_to_selected_interfaces_and_inputs() {
+        let filtered = filter_source_manifest_yaml_interfaces(
+            r"
+spec_version: 1
+kind: source
+name: slack
+inputs:
+  - key: SLACK_BOT_TOKEN
+    kind: secret
+    required: true
+  - key: SLACK_USER_TOKEN
+    kind: secret
+    required: true
+  - key: UNUSED
+    kind: variable
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    auth:
+      kind: bearer_input
+      key: SLACK_BOT_TOKEN
+  - id: mcp
+    type: mcp
+    server:
+      transport:
+        type: streamable_http
+        url: https://mcp.example.com/mcp
+      auth:
+        kind: bearer_input
+        key: SLACK_USER_TOKEN
+",
+            &[String::from("mcp")],
+        )
+        .expect("manifest should filter");
+        let manifest = parse_source_manifest_yaml(&filtered).expect("filtered manifest parses");
+
+        assert_eq!(manifest.interfaces.len(), 1);
+        assert_eq!(
+            manifest
+                .interfaces
+                .first()
+                .expect("selected interface should remain")
+                .id(),
+            "mcp"
+        );
+        assert_eq!(
+            manifest
+                .declared_inputs
+                .iter()
+                .map(|input| input.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["SLACK_USER_TOKEN"]
+        );
+    }
+
+    #[test]
+    fn filtering_source_manifest_rejects_unknown_interfaces() {
+        let error = filter_source_manifest_yaml_interfaces(
+            r"
+spec_version: 1
+kind: source
+name: demo
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+",
+            &[String::from("mcp")],
+        )
+        .expect_err("unknown interface rejected");
+
+        assert!(error.to_string().contains("available interfaces: rest"));
+    }
+
+    #[test]
+    fn parses_openapi_overlays() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+spec_version: 1
+kind: source
+name: slack
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+    overlays:
+      - file: ./slack.coral.overlay.yaml
+",
+        )
+        .expect("parse source spec");
+
+        let SourceInterface::OpenApi(interface) =
+            manifest.interfaces.first().expect("first interface")
+        else {
+            panic!("expected openapi interface");
+        };
+        assert_eq!(interface.overlays.len(), 1);
+        let overlay = interface.overlays.first().expect("first overlay");
+        assert_eq!(
+            overlay.file,
+            std::path::PathBuf::from("./slack.coral.overlay.yaml")
+        );
     }
 
     #[test]

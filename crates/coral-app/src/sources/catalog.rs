@@ -12,9 +12,23 @@ use crate::workspaces::WorkspaceName;
 
 include!(concat!(env!("OUT_DIR"), "/bundled_sources.rs"));
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BundledSourceEntry {
+    pub(crate) name: &'static str,
+    pub(crate) manifest_yaml: &'static str,
+    pub(crate) assets: &'static [BundledSourceAsset],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BundledSourceAsset {
+    pub(crate) relative_path: &'static str,
+    pub(crate) bytes: &'static [u8],
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct BundledSourceManifest {
     pub(crate) manifest_yaml: String,
+    pub(crate) assets: Vec<BundledSourceAsset>,
 }
 
 #[derive(Debug, Clone)]
@@ -29,10 +43,10 @@ pub(crate) fn list_bundled_sources(
 ) -> Result<Vec<CandidateSource>, AppError> {
     let mut candidates = BUNDLED_SOURCES
         .iter()
-        .map(|(name, manifest_yaml)| {
-            let bundled_name = SourceName::parse(name)?;
+        .map(|entry| {
+            let bundled_name = SourceName::parse(entry.name)?;
             let mut candidate = describe_manifest(
-                manifest_yaml,
+                entry.manifest_yaml,
                 SourceOrigin::Bundled,
                 installed_source_names.contains(&bundled_name),
             )?;
@@ -45,16 +59,17 @@ pub(crate) fn list_bundled_sources(
 }
 
 pub(crate) fn load_bundled_source(name: &SourceName) -> Result<BundledSourceManifest, AppError> {
-    let Some((_, manifest_yaml)) = BUNDLED_SOURCES
+    let Some(entry) = BUNDLED_SOURCES
         .iter()
-        .find(|(candidate, _)| *candidate == name.as_str())
+        .find(|candidate| candidate.name == name.as_str())
     else {
         return Err(AppError::InvalidInput(format!(
             "unknown bundled source '{name}'"
         )));
     };
     Ok(BundledSourceManifest {
-        manifest_yaml: (*manifest_yaml).to_string(),
+        manifest_yaml: entry.manifest_yaml.to_string(),
+        assets: entry.assets.to_vec(),
     })
 }
 
@@ -66,7 +81,14 @@ pub(crate) fn resolve_installed_manifest(
     layout: &AppStateLayout,
 ) -> Result<InstalledSourceManifest, AppError> {
     let manifest_yaml = match source.origin {
-        SourceOrigin::Bundled => load_bundled_source(&source.name)?.manifest_yaml,
+        SourceOrigin::Bundled => {
+            let persisted = layout.manifest_file(workspace_name, &source.name);
+            if persisted.exists() {
+                std::fs::read_to_string(persisted)?
+            } else {
+                load_bundled_source(&source.name)?.manifest_yaml
+            }
+        }
         SourceOrigin::Imported => {
             std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name))?
         }
@@ -81,7 +103,7 @@ pub(crate) fn resolve_installed_manifest(
         )));
     }
     candidate.installed = true;
-    candidate.credential_storage = Some(source.effective_credential_storage());
+    candidate.credential_storage = source.credential_storage_for_material();
     Ok(InstalledSourceManifest {
         source_spec,
         candidate,
@@ -108,6 +130,11 @@ fn candidate_from_manifest(
         name: SourceName::parse(&manifest.name)?,
         description: manifest.description.clone(),
         version: None,
+        interface_ids: manifest
+            .interfaces
+            .iter()
+            .map(|interface| interface.id().to_string())
+            .collect(),
         inputs: manifest.declared_inputs.clone(),
         installed,
         origin,

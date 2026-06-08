@@ -23,7 +23,8 @@ use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_w
 use coral_spec::{
     FileInterface, GraphqlSchemaDescriptor, ManifestCredentialMethod, ManifestCredentialMethodKind,
     ManifestCredentialSpec, ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec,
-    OpenApiDescriptor, SourceInterface, SourceSpec, parse_source_manifest_yaml,
+    OpenApiDescriptor, SourceInterface, SourceSpec, filter_source_manifest_yaml_interfaces,
+    parse_source_manifest_yaml,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
@@ -79,6 +80,27 @@ pub(crate) async fn discover_sources(app: &AppClient) -> Result<Vec<SourceInfo>,
         .sources)
 }
 
+pub(crate) async fn source_info(
+    app: &AppClient,
+    name: &str,
+    interface_ids: &[String],
+    catalog_only: bool,
+) -> Result<SourceInfo, anyhow::Error> {
+    let response = app
+        .source_client()
+        .get_source_info(Request::new(GetSourceInfoRequest {
+            workspace: Some(default_workspace()),
+            name: source_name_arg(Some(name))?,
+            interface_ids: interface_ids.to_vec(),
+            catalog_only,
+        }))
+        .await?
+        .into_inner();
+    response
+        .source_info
+        .ok_or_else(|| anyhow::anyhow!("get source info response missing source_info"))
+}
+
 pub(crate) async fn list_sources(app: &AppClient) -> Result<Vec<Source>, anyhow::Error> {
     Ok(app
         .source_client()
@@ -95,6 +117,7 @@ pub(crate) async fn add_bundled_source(
     name: &str,
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
+    interface_ids: Vec<String>,
 ) -> Result<Source, anyhow::Error> {
     let response = app
         .source_client()
@@ -103,6 +126,7 @@ pub(crate) async fn add_bundled_source(
             name: name.to_string(),
             variables,
             secrets,
+            interface_ids,
         }))
         .await?
         .into_inner();
@@ -116,6 +140,7 @@ pub(crate) async fn import_source(
     manifest_yaml: String,
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
+    interface_ids: Vec<String>,
 ) -> Result<Source, anyhow::Error> {
     let mut responses = app
         .source_client()
@@ -125,6 +150,7 @@ pub(crate) async fn import_source(
             variables,
             secrets,
             oauth_credential_retrievals: Vec::new(),
+            interface_ids,
         }))
         .await?
         .into_inner();
@@ -175,9 +201,11 @@ pub(crate) async fn add_bundled_source_with_credentials(
     app: &AppClient,
     name: &str,
     inputs: CollectedSourceInputs,
+    interface_ids: Vec<String>,
 ) -> Result<Source, anyhow::Error> {
     if inputs.oauth_credential_retrievals.is_empty() {
-        return add_bundled_source(app, name, inputs.variables, inputs.secrets).await;
+        return add_bundled_source(app, name, inputs.variables, inputs.secrets, interface_ids)
+            .await;
     }
     let response = app
         .source_client()
@@ -187,6 +215,7 @@ pub(crate) async fn add_bundled_source_with_credentials(
             variables: inputs.variables,
             secrets: inputs.secrets,
             oauth_credential_retrievals: inputs.oauth_credential_retrievals,
+            interface_ids,
         }))
         .await?;
     source_from_bundled_credential_stream(response.into_inner(), &inputs.oauth_labels).await
@@ -196,9 +225,17 @@ pub(crate) async fn import_source_with_credentials(
     app: &AppClient,
     manifest_yaml: String,
     inputs: CollectedSourceInputs,
+    interface_ids: Vec<String>,
 ) -> Result<Source, anyhow::Error> {
     if inputs.oauth_credential_retrievals.is_empty() {
-        return import_source(app, manifest_yaml, inputs.variables, inputs.secrets).await;
+        return import_source(
+            app,
+            manifest_yaml,
+            inputs.variables,
+            inputs.secrets,
+            interface_ids,
+        )
+        .await;
     }
     let response = app
         .source_client()
@@ -208,6 +245,7 @@ pub(crate) async fn import_source_with_credentials(
             variables: inputs.variables,
             secrets: inputs.secrets,
             oauth_credential_retrievals: inputs.oauth_credential_retrievals,
+            interface_ids,
         }))
         .await?;
     source_from_import_credential_stream(response.into_inner(), &inputs.oauth_labels).await
@@ -380,12 +418,14 @@ async fn validate_source_request(
 
 pub(crate) fn load_validated_manifest_file(
     file: &Path,
+    interface_ids: &[String],
 ) -> Result<(String, SourceSpec), anyhow::Error> {
     let manifest_yaml = std::fs::read_to_string(file)?;
     let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
     let manifest_dir = manifest_file_parent_dir(file)?;
     let manifest_yaml =
         durable_manifest_file_yaml(&manifest_yaml, &manifest, manifest_dir.as_path())?;
+    let manifest_yaml = filter_source_manifest_yaml_interfaces(&manifest_yaml, interface_ids)?;
     let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
     Ok((manifest_yaml, manifest))
 }
@@ -438,6 +478,7 @@ fn rewrite_manifest_file_paths(
                 if let OpenApiDescriptor::File { file } = &openapi.descriptor {
                     set_yaml_path_field(raw_interface, "file", file, manifest_dir)?;
                 }
+                rewrite_openapi_overlay_paths(raw_interface, openapi, manifest_dir)?;
             }
             SourceInterface::Graphql(graphql) => {
                 if let Some(schema) = raw_interface.as_mapping_mut().and_then(|mapping| {
@@ -459,6 +500,24 @@ fn rewrite_manifest_file_paths(
             }
             SourceInterface::Mcp(_) => {}
         }
+    }
+    Ok(())
+}
+
+fn rewrite_openapi_overlay_paths(
+    raw_interface: &mut serde_yaml::Value,
+    interface: &coral_spec::OpenApiInterface,
+    manifest_dir: &Path,
+) -> Result<(), anyhow::Error> {
+    let Some(overlays) = raw_interface
+        .as_mapping_mut()
+        .and_then(|mapping| mapping.get_mut(serde_yaml::Value::String("overlays".to_string())))
+        .and_then(serde_yaml::Value::as_sequence_mut)
+    else {
+        return Ok(());
+    };
+    for (raw_overlay, parsed_overlay) in overlays.iter_mut().zip(&interface.overlays) {
+        set_yaml_path_field(raw_overlay, "file", &parsed_overlay.file, manifest_dir)?;
     }
     Ok(())
 }
@@ -553,6 +612,8 @@ pub(crate) async fn print_source_info(
         .get_source_info(Request::new(GetSourceInfoRequest {
             workspace: Some(default_workspace()),
             name: source_name_arg(Some(name))?,
+            interface_ids: Vec::new(),
+            catalog_only: false,
         }))
         .await?
         .into_inner();
@@ -573,6 +634,10 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
     println!("{}", style(&source.name).bold());
     println!("  Status:      {status}");
     println!("  Origin:      {}", source_origin_label(source.origin));
+    println!(
+        "  Interfaces:  {}",
+        format_interface_ids(&source.interface_ids)
+    );
     if source.installed {
         println!(
             "  Secrets:     {}",
@@ -616,6 +681,14 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
         if verbose && !input.hint.is_empty() {
             println!("      {}", style(&input.hint).dim());
         }
+    }
+}
+
+pub(crate) fn format_interface_ids(interface_ids: &[String]) -> String {
+    if interface_ids.is_empty() {
+        "-".to_string()
+    } else {
+        interface_ids.join(", ")
     }
 }
 
@@ -792,12 +865,20 @@ fn collect_inputs_with_hint(
     }
 
     if !missing.is_empty() {
+        let interface_hint = interactive_command
+            .as_ref()
+            .is_some_and(|command| !command.contains(" --interfaces "));
         let interactive_hint = interactive_command.map_or_else(
             || "--interactive".to_string(),
             |command| format!("`{command}`"),
         );
+        let interface_hint = if interface_hint {
+            " For multi-interface sources, pass --interfaces ID to install only selected interfaces."
+        } else {
+            ""
+        };
         return Err(anyhow::anyhow!(
-            "missing required environment variable{}: {}. Set the variable{} or run {interactive_hint}.",
+            "missing required environment variable{}: {}. Set the variable{} or run {interactive_hint}.{interface_hint}",
             if missing.len() == 1 { "" } else { "s" },
             missing.join(", "),
             if missing.len() == 1 { "" } else { "s" },

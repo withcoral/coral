@@ -69,6 +69,8 @@ message Source {
   string display_name = 9;
   // Immutable source key used for generated refs.
   string source_key = 10;
+  // Interface ids exposed by the effective installed source manifest.
+  repeated string interface_ids = 11;
 }
 
 // One manifest-declared source input prompt.
@@ -264,6 +266,8 @@ message SourceInfo {
   SourceOrigin origin = 6;
   // Where credential material is stored when this source is installed.
   SourceCredentialStorage credential_storage = 7;
+  // Interface ids exposed by this source manifest or selected interface view.
+  repeated string interface_ids = 8;
 }
 
 // Lists all bundled sources available for one workspace.
@@ -288,6 +292,8 @@ message CreateBundledSourceRequest {
   repeated SourceVariable variables = 3;
   // Source-owned secret values.
   repeated SourceSecret secrets = 4;
+  // Optional interface ids to install. Empty installs every declared interface.
+  repeated string interface_ids = 5;
 }
 
 // Returns the installed bundled source.
@@ -308,6 +314,8 @@ message CreateBundledSourceWithOAuthRequest {
   repeated SourceSecret secrets = 4;
   // OAuth credential retrievals the app should run before validation and install.
   repeated OAuthCredentialRetrieval oauth_credential_retrievals = 5;
+  // Optional interface ids to install. Empty installs every declared interface.
+  repeated string interface_ids = 6;
 }
 
 // Streaming event emitted while installing a bundled source with OAuth.
@@ -335,6 +343,8 @@ message ImportSourceRequest {
   repeated SourceSecret secrets = 4;
   // OAuth credential retrievals the app should run before validation and import.
   repeated OAuthCredentialRetrieval oauth_credential_retrievals = 5;
+  // Optional interface ids to install. Empty installs every declared interface.
+  repeated string interface_ids = 6;
 }
 
 // Streaming event emitted while importing a source.
@@ -435,6 +445,10 @@ message GetSourceInfoRequest {
   Workspace workspace = 1;
   // Bare source name to fetch metadata for.
   string name = 2;
+  // Optional interface ids used to filter install-time inputs for uninstalled sources.
+  repeated string interface_ids = 3;
+  // When true, read metadata from the bundled source catalog instead of an installed source.
+  bool catalog_only = 4;
 }
 
 // Returns source metadata.

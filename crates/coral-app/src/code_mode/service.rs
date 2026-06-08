@@ -2632,6 +2632,7 @@ return "ran";
             display_name: "Search Fixture".to_string(),
             source_key: "search_fixture".to_string(),
             version: None,
+            interface_ids: Vec::new(),
             variables: std::collections::BTreeMap::new(),
             secrets: Vec::new(),
             credential_storage: None,

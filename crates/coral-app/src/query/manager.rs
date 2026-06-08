@@ -486,6 +486,7 @@ mod tests {
             display_name: "codex".to_string(),
             source_key: "codex".to_string(),
             version: None,
+            interface_ids: Vec::new(),
             variables: BTreeMap::new(),
             secrets: Vec::new(),
             credential_storage: None,
