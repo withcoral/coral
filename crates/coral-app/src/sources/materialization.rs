@@ -23,115 +23,33 @@ use uuid::Uuid;
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
+use crate::sources::artifacts::{MaterializationBuild, SourceArtifactStore};
 use crate::state::AppStateLayout;
-use crate::storage::fs;
+use crate::storage::fs as storage_fs;
 use crate::workspaces::WorkspaceName;
 
 const DESCRIPTOR_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_DESCRIPTOR_BYTES: u64 = 16 * 1024 * 1024;
 const DESCRIPTOR_USER_AGENT: &str = "coral-dsl-v4-materializer";
 
-#[derive(Debug)]
-pub(crate) struct MaterializationBuild {
-    pub(crate) temp_dir: PathBuf,
-}
-
 pub(crate) fn build_v4_materialization_tmp(
-    layout: &AppStateLayout,
+    artifacts: &SourceArtifactStore,
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     manifest_yaml: &str,
     manifest: &V4SourceManifest,
     temp_suffix: &str,
 ) -> Result<MaterializationBuild, AppError> {
-    let temp_dir = layout.v4_materialized_tmp_dir(workspace_name, source_name, temp_suffix);
-    if temp_dir.exists() {
-        std::fs::remove_dir_all(&temp_dir)?;
-    }
-    fs::ensure_private_dir(&temp_dir)?;
+    let build =
+        artifacts.prepare_v4_materialization_tmp(workspace_name, source_name, temp_suffix)?;
 
-    match write_materialization(&temp_dir, manifest_yaml, manifest) {
-        Ok(()) => Ok(MaterializationBuild { temp_dir }),
+    match write_materialization(build.temp_dir(), manifest_yaml, manifest) {
+        Ok(()) => Ok(build),
         Err(error) => {
-            if temp_dir.exists() {
-                drop(std::fs::remove_dir_all(&temp_dir));
-            }
+            artifacts.cleanup_v4_materialization_tmp(Some(&build));
             Err(error)
         }
     }
-}
-
-pub(crate) fn replace_v4_materialization(
-    layout: &AppStateLayout,
-    workspace_name: &WorkspaceName,
-    source_name: &SourceName,
-    temp_dir: &Path,
-) -> Result<Option<PathBuf>, AppError> {
-    let target = layout.v4_materialized_dir(workspace_name, source_name);
-    let backup = layout.v4_materialized_tmp_dir(
-        workspace_name,
-        source_name,
-        &format!("rollback.{}", Uuid::new_v4()),
-    );
-    if let Some(parent) = target.parent() {
-        fs::ensure_private_dir(parent)?;
-    }
-    if backup.exists() {
-        std::fs::remove_dir_all(&backup)?;
-    }
-    let had_existing = target.exists();
-    if had_existing {
-        std::fs::rename(&target, &backup)?;
-    }
-    if let Err(error) = std::fs::rename(temp_dir, &target) {
-        if had_existing
-            && backup.exists()
-            && let Err(rollback_error) = std::fs::rename(&backup, &target)
-        {
-            return Err(AppError::FailedPrecondition(format!(
-                "failed to install DSL v4 materialization for source '{source_name}': {error}; failed to restore previous materialization from '{}': {rollback_error}",
-                backup.display()
-            )));
-        }
-        return Err(error.into());
-    }
-    Ok(had_existing.then_some(backup))
-}
-
-pub(crate) fn cleanup_materialization_backup(backup: Option<PathBuf>) {
-    if let Some(backup) = backup
-        && backup.exists()
-    {
-        drop(std::fs::remove_dir_all(backup));
-    }
-}
-
-pub(crate) fn cleanup_materialization_tmp(temp_dir: Option<&Path>) {
-    if let Some(temp_dir) = temp_dir
-        && temp_dir.exists()
-    {
-        drop(std::fs::remove_dir_all(temp_dir));
-    }
-}
-
-pub(crate) fn restore_materialization_backup(
-    layout: &AppStateLayout,
-    workspace_name: &WorkspaceName,
-    source_name: &SourceName,
-    backup: Option<PathBuf>,
-) -> Result<(), AppError> {
-    let target = layout.v4_materialized_dir(workspace_name, source_name);
-    if let Some(backup) = backup {
-        if target.exists() {
-            std::fs::remove_dir_all(&target)?;
-        }
-        if backup.exists() {
-            std::fs::rename(backup, target)?;
-        }
-    } else if target.exists() {
-        std::fs::remove_dir_all(target)?;
-    }
-    Ok(())
 }
 
 pub(crate) fn load_v4_materialization(
@@ -508,12 +426,12 @@ fn write_materialization(
             ))
         })?;
         let surface_dir = temp_dir.join("surfaces").join(&surface.id);
-        fs::ensure_private_dir(&surface_dir)?;
-        std::fs::write(surface_dir.join("source-document.raw"), &bytes)?;
-        std::fs::write(
-            surface_dir.join("source-document.yaml"),
-            normalize_source_document(&bytes)
-                .map_err(|error| AppError::FailedPrecondition(error.to_string()))?,
+        write_bytes(&surface_dir.join("source-document.raw"), &bytes)?;
+        let normalized = normalize_source_document(&bytes)
+            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+        write_bytes(
+            &surface_dir.join("source-document.yaml"),
+            normalized.as_bytes(),
         )?;
         write_yaml(&surface_dir.join("semantic-ir.yaml"), &semantic_ir)?;
         materialized_surfaces.push(MaterializedSurface {
@@ -863,11 +781,15 @@ fn read_artifact_yaml<T: serde::de::DeserializeOwned>(
 }
 
 fn write_yaml<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), AppError> {
-    if let Some(parent) = path.parent() {
-        fs::ensure_private_dir(parent)?;
-    }
     let bytes = serde_yaml::to_string(value)?;
-    fs::write_atomic(path, bytes.as_bytes())?;
+    write_bytes(path, bytes.as_bytes())
+}
+
+fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
+    if let Some(parent) = path.parent() {
+        storage_fs::ensure_private_dir(parent)?;
+    }
+    storage_fs::write_atomic(path, bytes)?;
     Ok(())
 }
 
@@ -942,8 +864,9 @@ surfaces:
             .as_v4()
             .expect("v4")
             .clone();
+        let artifacts = SourceArtifactStore::new(layout.clone());
         let build = build_v4_materialization_tmp(
-            &layout,
+            &artifacts,
             &workspace_name(),
             &source_name(),
             &manifest_yaml,
@@ -951,8 +874,10 @@ surfaces:
             "test",
         )
         .expect("build materialization");
-        replace_v4_materialization(&layout, &workspace_name(), &source_name(), &build.temp_dir)
+        let rollback = artifacts
+            .install_v4_materialization(&workspace_name(), &source_name(), &build)
             .expect("install materialization");
+        artifacts.discard_v4_materialization_rollback(Some(rollback));
         (state_temp, descriptor_temp, layout, manifest_yaml, manifest)
     }
 

@@ -54,13 +54,45 @@ pub(crate) fn append_file_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 pub(crate) fn replace_atomic(from: &Path, to: &Path) -> io::Result<()> {
     rename_with_fallback(from, to)?;
+    sync_parent(to);
 
-    if let Some(parent) = to.parent()
-        && let Ok(dir) = fs::File::open(parent)
-    {
-        drop(dir.sync_all());
+    Ok(())
+}
+
+pub(crate) fn rename_path(from: &Path, to: &Path) -> io::Result<()> {
+    fs::rename(from, to)?;
+    sync_parent(from);
+    if from.parent() != to.parent() {
+        sync_parent(to);
     }
+    Ok(())
+}
 
+pub(crate) fn remove_file_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => {
+            sync_parent(path);
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn remove_dir_all_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => {
+            sync_parent(path);
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn remove_empty_dir(path: &Path) -> io::Result<()> {
+    fs::remove_dir(path)?;
+    sync_parent(path);
     Ok(())
 }
 
@@ -153,6 +185,14 @@ fn temp_path_for(path: &Path) -> PathBuf {
         .and_then(|name| name.to_str())
         .unwrap_or("private-file");
     path.with_file_name(format!("{file_name}.tmp.{}", std::process::id()))
+}
+
+fn sync_parent(path: &Path) {
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        drop(dir.sync_all());
+    }
 }
 
 #[cfg(unix)]
