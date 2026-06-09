@@ -1,43 +1,24 @@
 dsl_version: 3
 name: github_mcp
-version: 0.1.0
-description: >-
-  Query GitHub repositories, issues, pull requests, Actions, security alerts,
-  projects, discussions, notifications, and other GitHub MCP tools through
-  GitHub's official remote MCP server.
+version: "0.1.0"
+description: "Query GitHub repositories, issues, pull requests, Actions, security alerts, projects, discussions, notifications, and other GitHub MCP tools through GitHub's official remote MCP server."
 backend: mcp
-
 inputs:
   GITHUB_MCP_ACCESS_TOKEN:
     kind: secret
-    hint: |
-      Connect with GitHub OAuth or paste a personal access token. The OAuth
-      methods request the GitHub scopes used by the read-oriented GitHub MCP
-      tools exposed by this source: `repo`, `read:org`, `read:user`,
-      `user:email`, `gist`, `notifications`, `read:project`, and
-      `security_events`.
-
-      See GitHub's MCP server docs:
-      https://github.com/github/github-mcp-server
+    hint: "Connect with GitHub OAuth or paste a personal access token. The OAuth\nmethods request the GitHub scopes used by the read-oriented GitHub MCP\ntools exposed by this source: `repo`, `read:org`, `read:user`,\n`user:email`, `gist`, `notifications`, `read:project`, and\n`security_events`.\n\nSee GitHub's MCP server docs:\nhttps://github.com/github/github-mcp-server\n"
     credential:
       methods:
         - type: oauth
           label: Connect with GitHub device code
           description: Sign in to GitHub with a device code.
-          hint: |
-            Signs you in through GitHub, with no app setup or client secret
-            needed. Requests the scopes needed for the read-oriented GitHub MCP
-            tools exposed by this source: `repo`, `read:org`, `read:user`,
-            `user:email`, `gist`, `notifications`, `read:project`, and
-            `security_events`. To use your own GitHub app instead, set
-            GITHUB_MCP_OAUTH_CLIENT_ID to its Client ID and enable device flow on
-            the app.
+          hint: "Signs you in through GitHub, with no app setup or client secret\nneeded. Requests the scopes needed for the read-oriented GitHub MCP\ntools exposed by this source: `repo`, `read:org`, `read:user`,\n`user:email`, `gist`, `notifications`, `read:project`, and\n`security_events`. To use your own GitHub app instead, set\nGITHUB_MCP_OAUTH_CLIENT_ID to its Client ID and enable device flow on\nthe app.\n"
           oauth:
             flow:
               type: device_code
             endpoints:
-              device_authorization_url: https://github.com/login/device/code
-              token_url: https://github.com/login/oauth/access_token
+              device_authorization_url: "https://github.com/login/device/code"
+              token_url: "https://github.com/login/oauth/access_token"
             client:
               id:
                 default: Iv23liJHis6Bs8NO1DAI
@@ -45,32 +26,20 @@ inputs:
             scopes:
               scope:
                 delimiter: space
-                values:
-                  - repo
-                  - read:org
-                  - read:user
-                  - user:email
-                  - gist
-                  - notifications
-                  - read:project
-                  - security_events
+                values: [repo, "read:org", "read:user", "user:email", gist, "notifications", "read:project", security_events]
         - type: oauth
           label: Connect with GitHub OAuth app
           description: Sign in through a GitHub OAuth app in your browser.
-          hint: |
-            Uses your own GitHub OAuth app. Register one with its Authorization
-            callback URL set to `http://127.0.0.1:53682/oauth/callback`, then
-            enter the app's Client ID and Client secret below. Requests the
-            read-oriented GitHub MCP scopes exposed by this source.
+          hint: "Uses your own GitHub OAuth app. Register one with its Authorization\ncallback URL set to `http://127.0.0.1:53682/oauth/callback`, then\nenter the app's Client ID and Client secret below. Requests the\nread-oriented GitHub MCP scopes exposed by this source.\n"
           oauth:
             flow:
               type: authorization_code
               pkce: required
-            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            redirect_uri: "http://127.0.0.1:53682/oauth/callback"
             redirect_uri_port_mode: fixed
             endpoints:
-              authorization_url: https://github.com/login/oauth/authorize
-              token_url: https://github.com/login/oauth/access_token
+              authorization_url: "https://github.com/login/oauth/authorize"
+              token_url: "https://github.com/login/oauth/access_token"
             client:
               id:
                 default: Iv23liJHis6Bs8NO1DAI
@@ -81,186 +50,4113 @@ inputs:
             scopes:
               scope:
                 delimiter: space
-                values:
-                  - repo
-                  - read:org
-                  - read:user
-                  - user:email
-                  - gist
-                  - notifications
-                  - read:project
-                  - security_events
+                values: [repo, "read:org", "read:user", "user:email", gist, "notifications", "read:project", security_events]
         - type: source_config
           label: Paste GitHub token
           description: Paste an existing GitHub token or provide GITHUB_MCP_ACCESS_TOKEN.
-          hint: |
-            If you use GitHub CLI, run `gh auth token`. Otherwise create a
-            personal access token with read access to the repositories,
-            organizations, notifications, projects, gists, and security data you
-            query. Paste the raw token value, without a `Bearer ` prefix.
-
+          hint: "If you use GitHub CLI, run `gh auth token`. Otherwise create a\npersonal access token with read access to the repositories,\norganizations, notifications, projects, gists, and security data you\nquery. Paste the raw token value, without a `Bearer ` prefix.\n"
 server:
   transport: streamable_http
-  url: https://api.githubcopilot.com/mcp/x/all/readonly
+  url: "https://api.githubcopilot.com/mcp/x/all/readonly"
   auth:
     type: bearer
     from: input
     key: GITHUB_MCP_ACCESS_TOKEN
-
-test_queries:
-  - SELECT result FROM github_mcp.me LIMIT 1
-
+test_queries: [SELECT login FROM github_mcp.me LIMIT 1]
 tables:
   - name: me
     description: Authenticated GitHub user profile returned by the get_me tool.
     tool: get_me
     columns:
-      - name: result
+      - name: login
         type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
+      - name: id
+        type: Int64
+      - name: profile_url
+        type: Utf8
+      - name: avatar_url
+        type: Utf8
+      - name: name
+        type: Utf8
         expr:
-          kind: current_row
+          kind: path
+          path: [details, name]
+      - name: company
+        type: Utf8
+        expr:
+          kind: path
+          path: [details, company]
+      - name: blog
+        type: Utf8
+        expr:
+          kind: path
+          path: [details, blog]
+      - name: location
+        type: Utf8
+        expr:
+          kind: path
+          path: [details, location]
+      - name: public_repos
+        type: Int64
+        expr:
+          kind: path
+          path: [details, public_repos]
+      - name: public_gists
+        type: Int64
+        expr:
+          kind: path
+          path: [details, public_gists]
+      - name: followers
+        type: Int64
+        expr:
+          kind: path
+          path: [details, followers]
+      - name: following
+        type: Int64
+        expr:
+          kind: path
+          path: [details, following]
+      - name: created_at
+        type: Utf8
+        expr:
+          kind: path
+          path: [details, created_at]
+      - name: updated_at
+        type: Utf8
+        expr:
+          kind: path
+          path: [details, updated_at]
       - name: raw
         type: Json
-        description: Raw GitHub MCP response row.
+        description: Full JSON row returned by the GitHub MCP tool.
         expr:
           kind: current_row
-
-functions:
-  - name: get_teams
+  - name: teams
     tool: get_teams
-    description: Get teams for a GitHub user, defaulting to the authenticated user.
-    args:
+    description: "Get teams for a GitHub user, defaulting to the authenticated user."
+    filters:
       - name: user
-        bind:
-          arg: user
-    columns:
-      - name: result
+        tool_arg: user
         type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
+    columns:
+      - name: org
+        type: Utf8
+      - name: teams
+        type: Json
       - name: raw
         type: Json
-        description: Raw GitHub MCP response row.
+        description: Full JSON row returned by the GitHub MCP tool.
         expr:
           kind: current_row
-
-  - name: get_team_members
+      - name: user
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: user
+  - name: team_members
     tool: get_team_members
     description: Get members of a team in a GitHub organization.
-    args:
+    filters:
       - name: org
+        tool_arg: org
         required: true
-        bind:
-          arg: org
+        type: Utf8
       - name: team_slug
+        tool_arg: team_slug
         required: true
-        bind:
-          arg: team_slug
-    columns:
-      - name: result
         type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
+    columns:
+      - name: login
+        type: Utf8
+      - name: id
+        type: Int64
+      - name: profile_url
+        type: Utf8
+      - name: avatar_url
+        type: Utf8
+      - name: type
+        type: Utf8
       - name: raw
         type: Json
-        description: Raw GitHub MCP response row.
+        description: Full JSON row returned by the GitHub MCP tool.
         expr:
           kind: current_row
-
-  - name: issue_read
+      - name: org
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: org
+      - name: team_slug
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: team_slug
+  - name: issue
     tool: issue_read
-    description: Read issue details, comments, sub-issues, or labels.
-    args:
+    description: "Read issue details, comments, sub-issues, or labels."
+    tool_args:
+      method:
+        from: literal
+        value: get
+    filters:
       - name: owner
+        tool_arg: owner
         required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: issue_number
-        required: true
-        bind:
-          arg: issue_number
-      - name: method
-        required: true
-        values:
-          - get
-          - get_comments
-          - get_sub_issues
-          - get_labels
-        bind:
-          arg: method
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
         type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: issue_number
+        tool_arg: issue_number
+        required: true
+        type: Int64
+      - name: page
+        tool_arg: page
+        type: Int64
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: number
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: author_association
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: closed_at
+        type: Utf8
+      - name: id
+        type: Int64
+      - name: user
+        type: Json
+      - name: labels
+        type: Json
       - name: raw
         type: Json
-        description: Raw GitHub MCP response row.
+        description: Full JSON row returned by the GitHub MCP tool.
         expr:
           kind: current_row
-
-  - name: list_issues
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: issue_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: issue_number
+  - name: issues
     tool: list_issues
     description: List issues in a repository.
-    args:
+    filters:
       - name: owner
+        tool_arg: owner
         required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: state
-        values:
-          - OPEN
-          - CLOSED
-        bind:
-          arg: state
-      - name: since
-        bind:
-          arg: since
-      - name: order_by
-        bind:
-          arg: orderBy
-      - name: direction
-        values:
-          - ASC
-          - DESC
-        bind:
-          arg: direction
-      - name: per_page
-        bind:
-          arg: perPage
-      - name: after
-        bind:
-          arg: after
-    columns:
-      - name: result
         type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: state
+        tool_arg: state
+        type: Utf8
+      - name: since
+        tool_arg: since
+        type: Utf8
+      - name: order_by
+        tool_arg: orderBy
+        type: Utf8
+      - name: direction
+        tool_arg: direction
+        type: Utf8
+      - name: after
+        tool_arg: after
+        type: Utf8
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    response:
+      rows_path: [issues]
+    columns:
+      - name: number
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: author_association
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: closed_at
+        type: Utf8
+      - name: id
+        type: Int64
+      - name: user
+        type: Json
+      - name: labels
+        type: Json
       - name: raw
         type: Json
-        description: Raw GitHub MCP response row.
+        description: Full JSON row returned by the GitHub MCP tool.
         expr:
           kind: current_row
-
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: since
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: since
+      - name: direction
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: direction
+      - name: after
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: after
+  - name: pull_requests
+    tool: list_pull_requests
+    description: List pull requests in a repository.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: state
+        tool_arg: state
+        type: Utf8
+      - name: base
+        tool_arg: base
+        type: Utf8
+      - name: head
+        tool_arg: head
+        type: Utf8
+      - name: sort
+        tool_arg: sort
+        type: Utf8
+      - name: direction
+        tool_arg: direction
+        type: Utf8
+      - name: page
+        tool_arg: page
+        type: Int64
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: number
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: author_association
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: merged_at
+        type: Utf8
+      - name: id
+        type: Int64
+      - name: user
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: base
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: base
+      - name: head
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: head
+      - name: sort
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: sort
+      - name: direction
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: direction
+  - name: repository_tree
+    tool: get_repository_tree
+    description: "Get a repository tree, optionally filtered by path prefix."
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: tree_sha
+        tool_arg: tree_sha
+        type: Utf8
+      - name: path_filter
+        tool_arg: path_filter
+        type: Utf8
+      - name: recursive
+        tool_arg: recursive
+        type: Boolean
+    response:
+      rows_path: [tree]
+    columns:
+      - name: path
+        type: Utf8
+      - name: mode
+        type: Utf8
+      - name: type
+        type: Utf8
+      - name: sha
+        type: Utf8
+      - name: size
+        type: Int64
+      - name: url
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: tree_sha
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: tree_sha
+  - name: commit
+    tool: get_commit
+    description: Get details for a repository commit.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: sha
+        tool_arg: sha
+        required: true
+        type: Utf8
+      - name: include_diff
+        tool_arg: include_diff
+        type: Boolean
+      - name: page
+        tool_arg: page
+        type: Int64
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: sha
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: commit
+        type: Json
+      - name: author
+        type: Json
+      - name: committer
+        type: Json
+      - name: parents
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+  - name: branches
+    tool: list_branches
+    description: List branches in a repository.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: page
+        tool_arg: page
+        type: Int64
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: name
+        type: Utf8
+      - name: sha
+        type: Utf8
+      - name: protected
+        type: Boolean
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+  - name: commits
+    tool: list_commits
+    description: List repository commits.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: sha
+        tool_arg: sha
+        type: Utf8
+      - name: path
+        tool_arg: path
+        type: Utf8
+      - name: author
+        tool_arg: author
+        type: Utf8
+      - name: since
+        tool_arg: since
+        type: Utf8
+      - name: until
+        tool_arg: until
+        type: Utf8
+      - name: page
+        tool_arg: page
+        type: Int64
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: sha
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: commit
+        type: Json
+      - name: author
+        type: Json
+      - name: committer
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: path
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: path
+      - name: since
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: since
+  - name: releases
+    tool: list_releases
+    description: List repository releases.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: page
+        tool_arg: page
+        type: Int64
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: id
+        type: Int64
+      - name: tag_name
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: draft
+        type: Boolean
+      - name: prerelease
+        type: Boolean
+      - name: created_at
+        type: Utf8
+      - name: published_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+  - name: latest_release
+    tool: get_latest_release
+    description: Get the latest release for a repository.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+    columns:
+      - name: id
+        type: Int64
+      - name: tag_name
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: draft
+        type: Boolean
+      - name: prerelease
+        type: Boolean
+      - name: created_at
+        type: Utf8
+      - name: published_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+  - name: release_by_tag
+    tool: get_release_by_tag
+    description: Get a repository release by tag.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: tag
+        tool_arg: tag
+        required: true
+        type: Utf8
+    columns:
+      - name: id
+        type: Int64
+      - name: tag_name
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: draft
+        type: Boolean
+      - name: prerelease
+        type: Boolean
+      - name: created_at
+        type: Utf8
+      - name: published_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: tag
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: tag
+  - name: tags
+    tool: list_tags
+    description: List repository tags.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: page
+        tool_arg: page
+        type: Int64
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: name
+        type: Utf8
+      - name: sha
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+  - name: code_scanning_alerts
+    tool: list_code_scanning_alerts
+    description: List code scanning alerts in a repository.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: state
+        tool_arg: state
+        type: Utf8
+      - name: severity
+        tool_arg: severity
+        type: Utf8
+      - name: ref
+        tool_arg: ref
+        type: Utf8
+      - name: tool_name
+        tool_arg: tool_name
+        type: Utf8
+      - name: page
+        tool_arg: page
+        type: Int64
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: number
+        type: Int64
+      - name: state
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: fixed_at
+        type: Utf8
+      - name: dismissed_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: rule
+        type: Json
+      - name: tool
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: severity
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: severity
+      - name: ref
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: ref
+  - name: code_scanning_alert
+    tool: get_code_scanning_alert
+    description: Get details for one code scanning alert.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: alert_number
+        tool_arg: alertNumber
+        required: true
+        type: Int64
+    columns:
+      - name: number
+        type: Int64
+      - name: state
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: fixed_at
+        type: Utf8
+      - name: dismissed_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: rule
+        type: Json
+      - name: tool
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: alert_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: alert_number
+  - name: dependabot_alerts
+    tool: list_dependabot_alerts
+    description: List Dependabot alerts in a repository.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: state
+        tool_arg: state
+        type: Utf8
+      - name: severity
+        tool_arg: severity
+        type: Utf8
+      - name: page
+        tool_arg: page
+        type: Int64
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: number
+        type: Int64
+      - name: state
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: fixed_at
+        type: Utf8
+      - name: dismissed_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: dependency
+        type: Json
+      - name: security_advisory
+        type: Json
+      - name: security_vulnerability
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: severity
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: severity
+  - name: dependabot_alert
+    tool: get_dependabot_alert
+    description: Get details for one Dependabot alert.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: alert_number
+        tool_arg: alertNumber
+        required: true
+        type: Int64
+    columns:
+      - name: number
+        type: Int64
+      - name: state
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: fixed_at
+        type: Utf8
+      - name: dismissed_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: dependency
+        type: Json
+      - name: security_advisory
+        type: Json
+      - name: security_vulnerability
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: alert_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: alert_number
+  - name: secret_scanning_alerts
+    tool: list_secret_scanning_alerts
+    description: List secret scanning alerts in a repository.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: state
+        tool_arg: state
+        type: Utf8
+      - name: resolution
+        tool_arg: resolution
+        type: Utf8
+      - name: secret_type
+        tool_arg: secret_type
+        type: Utf8
+      - name: page
+        tool_arg: page
+        type: Int64
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: number
+        type: Int64
+      - name: state
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: fixed_at
+        type: Utf8
+      - name: dismissed_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: secret_type
+        type: Utf8
+      - name: secret_type_display_name
+        type: Utf8
+      - name: resolution
+        type: Utf8
+      - name: locations_url
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+  - name: secret_scanning_alert
+    tool: get_secret_scanning_alert
+    description: Get details for one secret scanning alert.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: alert_number
+        tool_arg: alertNumber
+        required: true
+        type: Int64
+    columns:
+      - name: number
+        type: Int64
+      - name: state
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: fixed_at
+        type: Utf8
+      - name: dismissed_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: secret_type
+        type: Utf8
+      - name: secret_type_display_name
+        type: Utf8
+      - name: resolution
+        type: Utf8
+      - name: locations
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: alert_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: alert_number
+  - name: global_security_advisories
+    tool: list_global_security_advisories
+    description: List global GitHub security advisories.
+    filters:
+      - name: ghsa_id
+        tool_arg: ghsaId
+        type: Utf8
+      - name: cve_id
+        tool_arg: cveId
+        type: Utf8
+      - name: ecosystem
+        tool_arg: ecosystem
+        type: Utf8
+      - name: severity
+        tool_arg: severity
+        type: Utf8
+      - name: advisory_type
+        tool_arg: type
+        type: Utf8
+      - name: affects
+        tool_arg: affects
+        type: Utf8
+      - name: cwes
+        tool_arg: cwes
+        type: Utf8
+      - name: is_withdrawn
+        tool_arg: isWithdrawn
+        type: Boolean
+      - name: published
+        tool_arg: published
+        type: Utf8
+      - name: updated
+        tool_arg: updated
+        type: Utf8
+      - name: modified
+        tool_arg: modified
+        type: Utf8
+    columns:
+      - name: ghsa_id
+        type: Utf8
+      - name: cve_id
+        type: Utf8
+      - name: summary
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: severity
+        type: Utf8
+      - name: published_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: withdrawn_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: cvss
+        type: Json
+      - name: cwes
+        type: Json
+      - name: vulnerabilities
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: ecosystem
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: ecosystem
+      - name: advisory_type
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: advisory_type
+  - name: global_security_advisory
+    tool: get_global_security_advisory
+    description: Get one global GitHub security advisory.
+    filters:
+      - name: ghsa_id
+        tool_arg: ghsaId
+        required: true
+        type: Utf8
+    columns:
+      - name: ghsa_id
+        type: Utf8
+      - name: cve_id
+        type: Utf8
+      - name: summary
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: severity
+        type: Utf8
+      - name: published_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: withdrawn_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: cvss
+        type: Json
+      - name: cwes
+        type: Json
+      - name: vulnerabilities
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+  - name: repository_security_advisories
+    tool: list_repository_security_advisories
+    description: List security advisories for a repository.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: state
+        tool_arg: state
+        type: Utf8
+      - name: sort
+        tool_arg: sort
+        type: Utf8
+      - name: direction
+        tool_arg: direction
+        type: Utf8
+    columns:
+      - name: ghsa_id
+        type: Utf8
+      - name: cve_id
+        type: Utf8
+      - name: summary
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: severity
+        type: Utf8
+      - name: published_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: withdrawn_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: vulnerabilities
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: sort
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: sort
+      - name: direction
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: direction
+  - name: org_repository_security_advisories
+    tool: list_org_repository_security_advisories
+    description: List repository security advisories for an organization.
+    filters:
+      - name: org
+        tool_arg: org
+        required: true
+        type: Utf8
+      - name: state
+        tool_arg: state
+        type: Utf8
+      - name: sort
+        tool_arg: sort
+        type: Utf8
+      - name: direction
+        tool_arg: direction
+        type: Utf8
+    columns:
+      - name: ghsa_id
+        type: Utf8
+      - name: cve_id
+        type: Utf8
+      - name: summary
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: severity
+        type: Utf8
+      - name: published_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: withdrawn_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: repository
+        type: Json
+      - name: vulnerabilities
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: org
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: org
+      - name: sort
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: sort
+      - name: direction
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: direction
+  - name: discussions
+    tool: list_discussions
+    description: List GitHub Discussions for a repository or organization.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        type: Utf8
+      - name: category
+        tool_arg: category
+        type: Utf8
+      - name: order_by
+        tool_arg: orderBy
+        type: Utf8
+      - name: direction
+        tool_arg: direction
+        type: Utf8
+      - name: after
+        tool_arg: after
+        type: Utf8
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    response:
+      rows_path: [discussions]
+    columns:
+      - name: number
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: author
+        type: Json
+      - name: category
+        type: Json
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: direction
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: direction
+      - name: after
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: after
+  - name: discussion
+    tool: get_discussion
+    description: Get one GitHub Discussion.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: discussion_number
+        tool_arg: discussionNumber
+        required: true
+        type: Int64
+    columns:
+      - name: number
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: author
+        type: Json
+      - name: category
+        type: Json
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: discussion_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: discussion_number
+  - name: discussion_comments
+    tool: get_discussion_comments
+    description: Get comments for one GitHub Discussion.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: discussion_number
+        tool_arg: discussionNumber
+        required: true
+        type: Int64
+      - name: include_replies
+        tool_arg: includeReplies
+        type: Boolean
+      - name: after
+        tool_arg: after
+        type: Utf8
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    response:
+      rows_path: [comments]
+    columns:
+      - name: id
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: author
+        type: Json
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: replies
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: discussion_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: discussion_number
+      - name: after
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: after
+  - name: discussion_categories
+    tool: list_discussion_categories
+    description: List GitHub Discussion categories for a repository or organization.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        type: Utf8
+    response:
+      rows_path: [categories]
+    columns:
+      - name: id
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: emoji
+        type: Utf8
+      - name: is_answerable
+        type: Boolean
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+  - name: "notifications"
+    tool: list_notifications
+    description: List GitHub notifications for the authenticated user.
+    filters:
+      - name: owner
+        tool_arg: owner
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        type: Utf8
+      - name: "notification_filter"
+        tool_arg: filter
+        type: Utf8
+      - name: since
+        tool_arg: since
+        type: Utf8
+      - name: before
+        tool_arg: before
+        type: Utf8
+      - name: page
+        tool_arg: page
+        type: Int64
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: id
+        type: Utf8
+      - name: reason
+        type: Utf8
+      - name: unread
+        type: Boolean
+      - name: updated_at
+        type: Utf8
+      - name: last_read_at
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: subject
+        type: Json
+      - name: repository
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: since
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: since
+      - name: before
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: before
+  - name: "notification_details"
+    tool: get_notification_details
+    description: Get details for one GitHub notification.
+    filters:
+      - name: "notification_id"
+        tool_arg: "notificationID"
+        required: true
+        type: Int64
+    columns:
+      - name: id
+        type: Utf8
+      - name: reason
+        type: Utf8
+      - name: unread
+        type: Boolean
+      - name: updated_at
+        type: Utf8
+      - name: last_read_at
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: subject
+        type: Json
+      - name: repository
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: "notification_id"
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: "notification_id"
+  - name: gists
+    tool: list_gists
+    description: List gists for a user or the authenticated user.
+    filters:
+      - name: username
+        tool_arg: username
+        type: Utf8
+      - name: since
+        tool_arg: since
+        type: Utf8
+      - name: page
+        tool_arg: page
+        type: Int64
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: id
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: public
+        type: Boolean
+      - name: html_url
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: owner
+        type: Json
+      - name: files
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: username
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: username
+      - name: since
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: since
+  - name: gist
+    tool: get_gist
+    description: Get one GitHub gist by ID.
+    filters:
+      - name: gist_id
+        tool_arg: gist_id
+        required: true
+        type: Utf8
+    columns:
+      - name: id
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: public
+        type: Boolean
+      - name: html_url
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: owner
+        type: Json
+      - name: files
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: gist_id
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: gist_id
+  - name: labels
+    tool: list_label
+    description: List labels in a repository.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+    response:
+      rows_path: [labels]
+    columns:
+      - name: id
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: color
+        type: Utf8
+      - name: default
+        type: Boolean
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+  - name: label
+    tool: get_label
+    description: Get one label in a repository.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: name
+        tool_arg: name
+        required: true
+        type: Utf8
+    columns:
+      - name: id
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: color
+        type: Utf8
+      - name: default
+        type: Boolean
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+  - name: issue_types
+    tool: list_issue_types
+    description: List issue types for an organization.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+    columns:
+      - name: id
+        type: Int64
+      - name: "node_id"
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: color
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+  - name: repository_collaborators
+    tool: list_repository_collaborators
+    description: List collaborators in a repository.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: affiliation
+        tool_arg: affiliation
+        type: Utf8
+      - name: page
+        tool_arg: page
+        type: Int64
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    response:
+      rows_path: [items]
+    columns:
+      - name: login
+        type: Utf8
+      - name: id
+        type: Int64
+      - name: role_name
+        type: Utf8
+      - name: permissions
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: affiliation
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: affiliation
+  - name: starred_repositories
+    tool: list_starred_repositories
+    description: List starred repositories for a user or the authenticated user.
+    filters:
+      - name: username
+        tool_arg: username
+        type: Utf8
+      - name: sort
+        tool_arg: sort
+        type: Utf8
+      - name: direction
+        tool_arg: direction
+        type: Utf8
+      - name: page
+        tool_arg: page
+        type: Int64
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: id
+        type: Int64
+      - name: name
+        type: Utf8
+      - name: full_name
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: private
+        type: Boolean
+      - name: fork
+        type: Boolean
+      - name: stargazers_count
+        type: Int64
+      - name: language
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: username
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: username
+      - name: sort
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: sort
+      - name: direction
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: direction
+  - name: tag
+    tool: get_tag
+    description: Get details for one repository tag.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: tag
+        tool_arg: tag
+        required: true
+        type: Utf8
+    columns:
+      - name: ref
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: object
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: tag
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: tag
+  - name: copilot_spaces
+    tool: list_copilot_spaces
+    description: List Copilot Spaces accessible to the authenticated user.
+    columns:
+      - name: id
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: owner
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+  - name: copilot_space
+    tool: get_copilot_space
+    description: Get the contents of one Copilot Space.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: name
+        tool_arg: name
+        required: true
+        type: Utf8
+    columns:
+      - name: id
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: owner
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: content
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+  - name: copilot_job_status
+    tool: get_copilot_job_status
+    description: Get status for a GitHub Copilot coding agent job.
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: id
+        tool_arg: id
+        required: true
+        type: Int64
+    columns:
+      - name: id
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: conclusion
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: pull_request
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+  - name: pull_request
+    tool: pull_request_read
+    description: "Read pull request details, diff, files, comments, reviews, or checks. Fixed to method=get."
+    tool_args:
+      method:
+        from: literal
+        value: get
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: pull_number
+        tool_arg: pullNumber
+        required: true
+        type: Int64
+      - name: page
+        tool_arg: page
+        type: Int64
+      - name: after
+        tool_arg: after
+        type: Utf8
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: number
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: author_association
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: merged_at
+        type: Utf8
+      - name: id
+        type: Int64
+      - name: user
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: pull_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: pull_number
+      - name: after
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: after
+  - name: pull_request_files
+    tool: pull_request_read
+    description: "Read pull request details, diff, files, comments, reviews, or checks. Fixed to method=get_files."
+    tool_args:
+      method:
+        from: literal
+        value: get_files
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: pull_number
+        tool_arg: pullNumber
+        required: true
+        type: Int64
+      - name: page
+        tool_arg: page
+        type: Int64
+      - name: after
+        tool_arg: after
+        type: Utf8
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: filename
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: additions
+        type: Int64
+      - name: deletions
+        type: Int64
+      - name: changes
+        type: Int64
+      - name: blob_url
+        type: Utf8
+      - name: raw_url
+        type: Utf8
+      - name: contents_url
+        type: Utf8
+      - name: sha
+        type: Utf8
+      - name: patch
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: pull_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: pull_number
+      - name: after
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: after
+  - name: pull_request_review_comments
+    tool: pull_request_read
+    description: "Read pull request details, diff, files, comments, reviews, or checks. Fixed to method=get_review_comments."
+    tool_args:
+      method:
+        from: literal
+        value: get_review_comments
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: pull_number
+        tool_arg: pullNumber
+        required: true
+        type: Int64
+      - name: page
+        tool_arg: page
+        type: Int64
+      - name: after
+        tool_arg: after
+        type: Utf8
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: id
+        type: Int64
+      - name: body
+        type: Utf8
+      - name: path
+        type: Utf8
+      - name: diff_hunk
+        type: Utf8
+      - name: position
+        type: Utf8
+      - name: original_position
+        type: Utf8
+      - name: commit_id
+        type: Utf8
+      - name: original_commit_id
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: pull_request_url
+        type: Utf8
+      - name: user
+        type: Json
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: pull_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: pull_number
+      - name: after
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: after
+  - name: pull_request_reviews
+    tool: pull_request_read
+    description: "Read pull request details, diff, files, comments, reviews, or checks. Fixed to method=get_reviews."
+    tool_args:
+      method:
+        from: literal
+        value: get_reviews
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: pull_number
+        tool_arg: pullNumber
+        required: true
+        type: Int64
+      - name: page
+        tool_arg: page
+        type: Int64
+      - name: after
+        tool_arg: after
+        type: Utf8
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: id
+        type: Int64
+      - name: body
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: pull_request_url
+        type: Utf8
+      - name: commit_id
+        type: Utf8
+      - name: user
+        type: Json
+      - name: submitted_at
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: pull_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: pull_number
+      - name: after
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: after
+  - name: pull_request_comments
+    tool: pull_request_read
+    description: "Read pull request details, diff, files, comments, reviews, or checks. Fixed to method=get_comments."
+    tool_args:
+      method:
+        from: literal
+        value: get_comments
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: pull_number
+        tool_arg: pullNumber
+        required: true
+        type: Int64
+      - name: page
+        tool_arg: page
+        type: Int64
+      - name: after
+        tool_arg: after
+        type: Utf8
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    columns:
+      - name: id
+        type: Int64
+      - name: body
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: issue_url
+        type: Utf8
+      - name: user
+        type: Json
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: pull_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: pull_number
+      - name: after
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: after
+  - name: pull_request_check_runs
+    tool: pull_request_read
+    description: "Read pull request details, diff, files, comments, reviews, or checks. Fixed to method=get_check_runs."
+    tool_args:
+      method:
+        from: literal
+        value: get_check_runs
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: pull_number
+        tool_arg: pullNumber
+        required: true
+        type: Int64
+      - name: page
+        tool_arg: page
+        type: Int64
+      - name: after
+        tool_arg: after
+        type: Utf8
+    limit_binding:
+      tool_arg: perPage
+      max: 100
+    response:
+      rows_path: [check_runs]
+    columns:
+      - name: id
+        type: Int64
+      - name: name
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: conclusion
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: started_at
+        type: Utf8
+      - name: completed_at
+        type: Utf8
+      - name: app
+        type: Json
+      - name: check_suite
+        type: Json
+      - name: pull_requests
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: pull_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: pull_number
+      - name: after
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: after
+  - name: workflows
+    tool: actions_list
+    description: "List GitHub Actions workflows, runs, jobs, or artifacts. Fixed to method=list_workflows."
+    tool_args:
+      method:
+        from: literal
+        value: list_workflows
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: resource_id
+        tool_arg: resource_id
+        type: Int64
+      - name: page
+        tool_arg: page
+        type: Int64
+      - name: workflow_jobs_filter
+        tool_arg: workflow_jobs_filter
+        type: Utf8
+      - name: workflow_runs_filter
+        tool_arg: workflow_runs_filter
+        type: Utf8
+    limit_binding:
+      tool_arg: per_page
+      max: 100
+    response:
+      rows_path: [workflows]
+    columns:
+      - name: id
+        type: Int64
+      - name: name
+        type: Utf8
+      - name: path
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: badge_url
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: resource_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: resource_id
+  - name: workflow_runs
+    tool: actions_list
+    description: "List GitHub Actions workflows, runs, jobs, or artifacts. Fixed to method=list_workflow_runs."
+    tool_args:
+      method:
+        from: literal
+        value: list_workflow_runs
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: resource_id
+        tool_arg: resource_id
+        type: Int64
+      - name: page
+        tool_arg: page
+        type: Int64
+      - name: workflow_jobs_filter
+        tool_arg: workflow_jobs_filter
+        type: Utf8
+      - name: workflow_runs_filter
+        tool_arg: workflow_runs_filter
+        type: Utf8
+    limit_binding:
+      tool_arg: per_page
+      max: 100
+    response:
+      rows_path: [workflow_runs]
+    columns:
+      - name: id
+        type: Int64
+      - name: name
+        type: Utf8
+      - name: display_title
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: conclusion
+        type: Utf8
+      - name: event
+        type: Utf8
+      - name: workflow_id
+        type: Int64
+      - name: head_branch
+        type: Utf8
+      - name: head_sha
+        type: Utf8
+      - name: run_number
+        type: Int64
+      - name: run_attempt
+        type: Int64
+      - name: html_url
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: run_started_at
+        type: Utf8
+      - name: actor
+        type: Json
+      - name: triggering_actor
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: resource_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: resource_id
+  - name: workflow_jobs
+    tool: actions_list
+    description: "List GitHub Actions workflows, runs, jobs, or artifacts. Fixed to method=list_workflow_jobs."
+    tool_args:
+      method:
+        from: literal
+        value: list_workflow_jobs
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: resource_id
+        tool_arg: resource_id
+        required: true
+        type: Int64
+      - name: page
+        tool_arg: page
+        type: Int64
+      - name: workflow_jobs_filter
+        tool_arg: workflow_jobs_filter
+        type: Utf8
+      - name: workflow_runs_filter
+        tool_arg: workflow_runs_filter
+        type: Utf8
+    limit_binding:
+      tool_arg: per_page
+      max: 100
+    response:
+      rows_path: [jobs]
+    columns:
+      - name: id
+        type: Int64
+      - name: run_id
+        type: Int64
+      - name: workflow_name
+        type: Utf8
+      - name: head_branch
+        type: Utf8
+      - name: run_url
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: conclusion
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: started_at
+        type: Utf8
+      - name: completed_at
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: steps
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: resource_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: resource_id
+  - name: workflow_run_artifacts
+    tool: actions_list
+    description: "List GitHub Actions workflows, runs, jobs, or artifacts. Fixed to method=list_workflow_run_artifacts."
+    tool_args:
+      method:
+        from: literal
+        value: list_workflow_run_artifacts
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: resource_id
+        tool_arg: resource_id
+        required: true
+        type: Int64
+      - name: page
+        tool_arg: page
+        type: Int64
+      - name: workflow_jobs_filter
+        tool_arg: workflow_jobs_filter
+        type: Utf8
+      - name: workflow_runs_filter
+        tool_arg: workflow_runs_filter
+        type: Utf8
+    limit_binding:
+      tool_arg: per_page
+      max: 100
+    response:
+      rows_path: [artifacts]
+    columns:
+      - name: id
+        type: Int64
+      - name: "node_id"
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: size_in_bytes
+        type: Int64
+      - name: url
+        type: Utf8
+      - name: archive_download_url
+        type: Utf8
+      - name: expired
+        type: Boolean
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: expires_at
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: resource_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: resource_id
+  - name: workflow
+    tool: actions_get
+    description: "Get one GitHub Actions workflow, run, job, artifact, or logs URL. Fixed to method=get_workflow."
+    tool_args:
+      method:
+        from: literal
+        value: get_workflow
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: resource_id
+        tool_arg: resource_id
+        required: true
+        type: Int64
+    columns:
+      - name: id
+        type: Int64
+      - name: name
+        type: Utf8
+      - name: path
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: badge_url
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: resource_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: resource_id
+  - name: workflow_run
+    tool: actions_get
+    description: "Get one GitHub Actions workflow, run, job, artifact, or logs URL. Fixed to method=get_workflow_run."
+    tool_args:
+      method:
+        from: literal
+        value: get_workflow_run
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: resource_id
+        tool_arg: resource_id
+        required: true
+        type: Int64
+    columns:
+      - name: id
+        type: Int64
+      - name: name
+        type: Utf8
+      - name: display_title
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: conclusion
+        type: Utf8
+      - name: event
+        type: Utf8
+      - name: workflow_id
+        type: Int64
+      - name: head_branch
+        type: Utf8
+      - name: head_sha
+        type: Utf8
+      - name: run_number
+        type: Int64
+      - name: run_attempt
+        type: Int64
+      - name: html_url
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: run_started_at
+        type: Utf8
+      - name: actor
+        type: Json
+      - name: triggering_actor
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: resource_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: resource_id
+  - name: workflow_job
+    tool: actions_get
+    description: "Get one GitHub Actions workflow, run, job, artifact, or logs URL. Fixed to method=get_workflow_job."
+    tool_args:
+      method:
+        from: literal
+        value: get_workflow_job
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: resource_id
+        tool_arg: resource_id
+        required: true
+        type: Int64
+    columns:
+      - name: id
+        type: Int64
+      - name: run_id
+        type: Int64
+      - name: workflow_name
+        type: Utf8
+      - name: head_branch
+        type: Utf8
+      - name: run_url
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: conclusion
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: started_at
+        type: Utf8
+      - name: completed_at
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: steps
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: resource_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: resource_id
+  - name: workflow_run_usage
+    tool: actions_get
+    description: "Get one GitHub Actions workflow, run, job, artifact, or logs URL. Fixed to method=get_workflow_run_usage."
+    tool_args:
+      method:
+        from: literal
+        value: get_workflow_run_usage
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: resource_id
+        tool_arg: resource_id
+        required: true
+        type: Int64
+    columns:
+      - name: billable
+        type: Json
+      - name: run_duration_ms
+        type: Int64
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: resource_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: resource_id
+  - name: workflow_run_logs_url
+    tool: actions_get
+    description: "Get one GitHub Actions workflow, run, job, artifact, or logs URL. Fixed to method=get_workflow_run_logs_url."
+    tool_args:
+      method:
+        from: literal
+        value: get_workflow_run_logs_url
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: repo
+        tool_arg: repo
+        required: true
+        type: Utf8
+      - name: resource_id
+        tool_arg: resource_id
+        required: true
+        type: Int64
+    columns:
+      - name: logs_url
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: repo
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: repo
+      - name: resource_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: resource_id
+  - name: projects
+    tool: projects_list
+    description: "List GitHub Projects, project fields, items, or status updates. Fixed to method=list_projects."
+    tool_args:
+      method:
+        from: literal
+        value: list_projects
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: owner_type
+        tool_arg: owner_type
+        type: Utf8
+      - name: project_number
+        tool_arg: project_number
+        type: Int64
+      - name: query
+        tool_arg: query
+        type: Utf8
+      - name: fields
+        tool_arg: fields
+        type: Utf8
+      - name: after
+        tool_arg: after
+        type: Utf8
+      - name: before
+        tool_arg: before
+        type: Utf8
+    limit_binding:
+      tool_arg: per_page
+      max: 100
+    response:
+      rows_path: [projects]
+    columns:
+      - name: id
+        type: Int64
+      - name: number
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: short_description
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: public
+        type: Boolean
+      - name: closed
+        type: Boolean
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: owner_type
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner_type
+      - name: project_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: project_number
+      - name: query
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: query
+      - name: after
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: after
+      - name: before
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: before
+  - name: project_fields
+    tool: projects_list
+    description: "List GitHub Projects, project fields, items, or status updates. Fixed to method=list_project_fields."
+    tool_args:
+      method:
+        from: literal
+        value: list_project_fields
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: owner_type
+        tool_arg: owner_type
+        type: Utf8
+      - name: project_number
+        tool_arg: project_number
+        required: true
+        type: Int64
+      - name: query
+        tool_arg: query
+        type: Utf8
+      - name: fields
+        tool_arg: fields
+        type: Utf8
+      - name: after
+        tool_arg: after
+        type: Utf8
+      - name: before
+        tool_arg: before
+        type: Utf8
+    limit_binding:
+      tool_arg: per_page
+      max: 100
+    response:
+      rows_path: [fields]
+    columns:
+      - name: id
+        type: Int64
+      - name: name
+        type: Utf8
+      - name: data_type
+        type: Utf8
+      - name: options
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: owner_type
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner_type
+      - name: project_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: project_number
+      - name: query
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: query
+      - name: after
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: after
+      - name: before
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: before
+  - name: project_items
+    tool: projects_list
+    description: "List GitHub Projects, project fields, items, or status updates. Fixed to method=list_project_items."
+    tool_args:
+      method:
+        from: literal
+        value: list_project_items
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: owner_type
+        tool_arg: owner_type
+        type: Utf8
+      - name: project_number
+        tool_arg: project_number
+        required: true
+        type: Int64
+      - name: query
+        tool_arg: query
+        type: Utf8
+      - name: fields
+        tool_arg: fields
+        type: Utf8
+      - name: after
+        tool_arg: after
+        type: Utf8
+      - name: before
+        tool_arg: before
+        type: Utf8
+    limit_binding:
+      tool_arg: per_page
+      max: 100
+    response:
+      rows_path: [items]
+    columns:
+      - name: id
+        type: Int64
+      - name: content
+        type: Json
+      - name: field_values
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: owner_type
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner_type
+      - name: project_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: project_number
+      - name: query
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: query
+      - name: after
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: after
+      - name: before
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: before
+  - name: project_status_updates
+    tool: projects_list
+    description: "List GitHub Projects, project fields, items, or status updates. Fixed to method=list_project_status_updates."
+    tool_args:
+      method:
+        from: literal
+        value: list_project_status_updates
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: owner_type
+        tool_arg: owner_type
+        type: Utf8
+      - name: project_number
+        tool_arg: project_number
+        required: true
+        type: Int64
+      - name: query
+        tool_arg: query
+        type: Utf8
+      - name: fields
+        tool_arg: fields
+        type: Utf8
+      - name: after
+        tool_arg: after
+        type: Utf8
+      - name: before
+        tool_arg: before
+        type: Utf8
+    limit_binding:
+      tool_arg: per_page
+      max: 100
+    response:
+      rows_path: [status_updates]
+    columns:
+      - name: id
+        type: Int64
+      - name: body
+        type: Utf8
+      - name: start_date
+        type: Utf8
+      - name: target_date
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: creator
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: owner_type
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner_type
+      - name: project_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: project_number
+      - name: query
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: query
+      - name: after
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: after
+      - name: before
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: before
+  - name: project
+    tool: projects_get
+    description: "Get one GitHub Project, field, item, or status update. Fixed to method=get_project."
+    tool_args:
+      method:
+        from: literal
+        value: get_project
+    filters:
+      - name: owner
+        tool_arg: owner
+        required: true
+        type: Utf8
+      - name: owner_type
+        tool_arg: owner_type
+        type: Utf8
+      - name: project_number
+        tool_arg: project_number
+        required: true
+        type: Int64
+      - name: field_id
+        tool_arg: field_id
+        type: Utf8
+      - name: item_id
+        tool_arg: item_id
+        type: Utf8
+      - name: status_update_id
+        tool_arg: status_update_id
+        type: Utf8
+      - name: fields
+        tool_arg: fields
+        type: Utf8
+    columns:
+      - name: id
+        type: Int64
+      - name: "node_id"
+        type: Utf8
+      - name: title
+        type: Utf8
+      - name: short_description
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: public
+        type: Boolean
+      - name: closed
+        type: Boolean
+      - name: fields
+        type: Json
+      - name: field_values
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: owner_type
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner_type
+      - name: project_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: project_number
+      - name: field_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: field_id
+      - name: item_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: item_id
+      - name: status_update_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: status_update_id
+  - name: project_field
+    tool: projects_get
+    description: "Get one GitHub Project, field, item, or status update. Fixed to method=get_project_field."
+    tool_args:
+      method:
+        from: literal
+        value: get_project_field
+    filters:
+      - name: owner
+        tool_arg: owner
+        type: Utf8
+      - name: owner_type
+        tool_arg: owner_type
+        type: Utf8
+      - name: project_number
+        tool_arg: project_number
+        type: Int64
+      - name: field_id
+        tool_arg: field_id
+        required: true
+        type: Utf8
+      - name: item_id
+        tool_arg: item_id
+        type: Utf8
+      - name: status_update_id
+        tool_arg: status_update_id
+        type: Utf8
+      - name: fields
+        tool_arg: fields
+        type: Utf8
+    columns:
+      - name: id
+        type: Int64
+      - name: "node_id"
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: data_type
+        type: Utf8
+      - name: options
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: owner_type
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner_type
+      - name: project_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: project_number
+      - name: field_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: field_id
+      - name: item_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: item_id
+      - name: status_update_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: status_update_id
+  - name: project_item
+    tool: projects_get
+    description: "Get one GitHub Project, field, item, or status update. Fixed to method=get_project_item."
+    tool_args:
+      method:
+        from: literal
+        value: get_project_item
+    filters:
+      - name: owner
+        tool_arg: owner
+        type: Utf8
+      - name: owner_type
+        tool_arg: owner_type
+        type: Utf8
+      - name: project_number
+        tool_arg: project_number
+        type: Int64
+      - name: field_id
+        tool_arg: field_id
+        type: Utf8
+      - name: item_id
+        tool_arg: item_id
+        required: true
+        type: Utf8
+      - name: status_update_id
+        tool_arg: status_update_id
+        type: Utf8
+      - name: fields
+        tool_arg: fields
+        type: Utf8
+    columns:
+      - name: id
+        type: Int64
+      - name: "node_id"
+        type: Utf8
+      - name: content
+        type: Json
+      - name: field_values
+        type: Json
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: owner_type
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner_type
+      - name: project_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: project_number
+      - name: field_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: field_id
+      - name: item_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: item_id
+      - name: status_update_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: status_update_id
+  - name: project_status_update
+    tool: projects_get
+    description: "Get one GitHub Project, field, item, or status update. Fixed to method=get_project_status_update."
+    tool_args:
+      method:
+        from: literal
+        value: get_project_status_update
+    filters:
+      - name: owner
+        tool_arg: owner
+        type: Utf8
+      - name: owner_type
+        tool_arg: owner_type
+        type: Utf8
+      - name: project_number
+        tool_arg: project_number
+        type: Int64
+      - name: field_id
+        tool_arg: field_id
+        type: Utf8
+      - name: item_id
+        tool_arg: item_id
+        type: Utf8
+      - name: status_update_id
+        tool_arg: status_update_id
+        required: true
+        type: Utf8
+      - name: fields
+        tool_arg: fields
+        type: Utf8
+    columns:
+      - name: id
+        type: Int64
+      - name: "node_id"
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: start_date
+        type: Utf8
+      - name: target_date
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: creator
+        type: Utf8
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+      - name: owner
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner
+      - name: owner_type
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: owner_type
+      - name: project_number
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: project_number
+      - name: field_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: field_id
+      - name: item_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: item_id
+      - name: status_update_id
+        type: Int64
+        virtual: true
+        expr:
+          kind: from_filter
+          key: status_update_id
+functions:
   - name: search_issues
     tool: search_issues
     description: Search issues using GitHub issue search syntax.
@@ -279,9 +4175,7 @@ functions:
         bind:
           arg: sort
       - name: order
-        values:
-          - asc
-          - desc
+        values: [asc, desc]
         bind:
           arg: order
       - name: page
@@ -290,120 +4184,40 @@ functions:
       - name: per_page
         bind:
           arg: perPage
+    response:
+      rows_path: [items]
     columns:
-      - name: result
+      - name: number
+        type: Int64
+      - name: title
         type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_pull_requests
-    tool: list_pull_requests
-    description: List pull requests in a repository.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
       - name: state
-        values:
-          - open
-          - closed
-          - all
-        bind:
-          arg: state
-      - name: base
-        bind:
-          arg: base
-      - name: head
-        bind:
-          arg: head
-      - name: sort
-        bind:
-          arg: sort
-      - name: direction
-        values:
-          - asc
-          - desc
-        bind:
-          arg: direction
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
         type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
+      - name: body
+        type: Utf8
+      - name: author_association
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: closed_at
+        type: Utf8
+      - name: id
+        type: Int64
+      - name: user
+        type: Json
+      - name: labels
+        type: Json
+      - name: score
+        type: Float64
       - name: raw
         type: Json
-        description: Raw GitHub MCP response row.
+        description: Full JSON row returned by the GitHub MCP tool.
         expr:
           kind: current_row
-
-  - name: pull_request_read
-    tool: pull_request_read
-    description: Read pull request details, diff, files, comments, reviews, or checks.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: pull_number
-        required: true
-        bind:
-          arg: pullNumber
-      - name: method
-        required: true
-        values:
-          - get
-          - get_diff
-          - get_status
-          - get_files
-          - get_review_comments
-          - get_reviews
-          - get_comments
-          - get_check_runs
-        bind:
-          arg: method
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-      - name: after
-        bind:
-          arg: after
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
   - name: search_pull_requests
     tool: search_pull_requests
     description: Search pull requests using GitHub pull request search syntax.
@@ -422,9 +4236,7 @@ functions:
         bind:
           arg: sort
       - name: order
-        values:
-          - asc
-          - desc
+        values: [asc, desc]
         bind:
           arg: order
       - name: page
@@ -433,88 +4245,432 @@ functions:
       - name: per_page
         bind:
           arg: perPage
+    response:
+      rows_path: [items]
     columns:
-      - name: result
+      - name: number
+        type: Int64
+      - name: title
         type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
+      - name: state
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: author_association
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: merged_at
+        type: Utf8
+      - name: id
+        type: Int64
+      - name: user
+        type: Json
+      - name: score
+        type: Float64
       - name: raw
         type: Json
-        description: Raw GitHub MCP response row.
+        description: Full JSON row returned by the GitHub MCP tool.
         expr:
           kind: current_row
-
-  - name: get_repository_tree
-    tool: get_repository_tree
-    description: Get a repository tree, optionally filtered by path prefix.
+  - name: search_code
+    tool: search_code
+    description: Search code using GitHub code search syntax.
     args:
-      - name: owner
+      - name: query
         required: true
         bind:
-          arg: owner
-      - name: repo
-        required: true
+          arg: query
+      - name: sort
+        values: [indexed]
         bind:
-          arg: repo
-      - name: tree_sha
+          arg: sort
+      - name: order
+        values: [asc, desc]
         bind:
-          arg: tree_sha
-      - name: path_filter
-        bind:
-          arg: path_filter
-      - name: recursive
-        bind:
-          arg: recursive
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_commit
-    tool: get_commit
-    description: Get details for a repository commit.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: sha
-        required: true
-        bind:
-          arg: sha
-      - name: include_diff
-        bind:
-          arg: include_diff
+          arg: order
       - name: page
         bind:
           arg: page
       - name: per_page
         bind:
           arg: perPage
+    response:
+      rows_path: [items]
+    columns:
+      - name: name
+        type: Utf8
+      - name: path
+        type: Utf8
+      - name: sha
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: repository
+        type: Json
+      - name: score
+        type: Float64
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+  - name: search_commits
+    tool: search_commits
+    description: Search commits using GitHub commit search syntax.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: sort
+        bind:
+          arg: sort
+      - name: order
+        values: [asc, desc]
+        bind:
+          arg: order
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    response:
+      rows_path: [items]
+    columns:
+      - name: sha
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: commit
+        type: Json
+      - name: author
+        type: Json
+      - name: committer
+        type: Json
+      - name: repository
+        type: Json
+      - name: score
+        type: Float64
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+  - name: search_repositories
+    tool: search_repositories
+    description: Search repositories using GitHub repository search syntax.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: minimal_output
+        bind:
+          arg: minimal_output
+      - name: sort
+        bind:
+          arg: sort
+      - name: order
+        values: [asc, desc]
+        bind:
+          arg: order
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    response:
+      rows_path: [items]
+    columns:
+      - name: id
+        type: Int64
+      - name: name
+        type: Utf8
+      - name: full_name
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: private
+        type: Boolean
+      - name: fork
+        type: Boolean
+      - name: stargazers_count
+        type: Int64
+      - name: language
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: score
+        type: Float64
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+  - name: search_users
+    tool: search_users
+    description: Search users using GitHub user search syntax.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: sort
+        bind:
+          arg: sort
+      - name: order
+        values: [asc, desc]
+        bind:
+          arg: order
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    response:
+      rows_path: [items]
+    columns:
+      - name: login
+        type: Utf8
+      - name: id
+        type: Int64
+      - name: profile_url
+        type: Utf8
+      - name: avatar_url
+        type: Utf8
+      - name: type
+        type: Utf8
+      - name: score
+        type: Float64
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+  - name: search_orgs
+    tool: search_orgs
+    description: Search organizations using GitHub organization search syntax.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: sort
+        values: [followers, repositories, joined]
+        bind:
+          arg: sort
+      - name: order
+        values: [asc, desc]
+        bind:
+          arg: order
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+    response:
+      rows_path: [items]
+    columns:
+      - name: login
+        type: Utf8
+      - name: id
+        type: Int64
+      - name: profile_url
+        type: Utf8
+      - name: avatar_url
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: score
+        type: Float64
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+  - name: semantic_issues_search
+    tool: semantic_issues_search
+    description: Search issues semantically with natural language.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: owner
+        bind:
+          arg: owner
+      - name: repo
+        bind:
+          arg: repo
+      - name: sort
+        values: [comments, reactions, reactions-+1, reactions--1, reactions-smile, reactions-thinking_face, reactions-heart, reactions-tada, interactions, created, updated]
+        bind:
+          arg: sort
+      - name: order
+        values: [asc, desc]
+        bind:
+          arg: order
+      - name: page
+        bind:
+          arg: page
+    response:
+      rows_path: [items]
+    columns:
+      - name: number
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: author_association
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: closed_at
+        type: Utf8
+      - name: id
+        type: Int64
+      - name: score
+        type: Float64
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+  - name: semantic_issue_similarity_search
+    tool: semantic_issue_similarity_search
+    description: Find issues semantically similar to one issue.
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+      - name: issue_number
+        required: true
+        bind:
+          arg: issue_number
+      - name: threshold
+        bind:
+          arg: threshold
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: per_page
+    response:
+      rows_path: [similar_issues]
+    columns:
+      - name: number
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: body
+        type: Utf8
+      - name: author_association
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: closed_at
+        type: Utf8
+      - name: id
+        type: Int64
+      - name: similarity
+        type: Float64
+      - name: score
+        type: Float64
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+  - name: web_search
+    tool: web_search
+    description: Run GitHub MCP's AI-powered web search.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+    columns:
+      - name: type
+        type: Utf8
+      - name: text
+        type: Json
+      - name: text_value
+        type: Utf8
+        expr:
+          kind: path
+          path: [text, value]
+      - name: raw
+        type: Json
+        description: Full JSON row returned by the GitHub MCP tool.
+        expr:
+          kind: current_row
+  # pull_request_diff fixes pull_request_read.method=get_diff, which returns unified diff text rather than JSON.
+  - name: pull_request_diff
+    tool: pull_request_read
+    description: Read a pull request unified diff.
+    tool_args:
+      method:
+        from: literal
+        value: get_diff
+    args:
+      - name: owner
+        required: true
+        bind:
+          arg: owner
+      - name: repo
+        required: true
+        bind:
+          arg: repo
+      - name: pull_number
+        required: true
+        bind:
+          arg: pullNumber
+      - name: page
+        bind:
+          arg: page
+      - name: per_page
+        bind:
+          arg: perPage
+      - name: after
+        bind:
+          arg: after
     columns:
       - name: result
         type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
+        description: Human-readable GitHub MCP unified diff text.
         expr:
           kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
+  # This GitHub MCP tool returns human-readable text/Markdown, a report, or embedded resource content rather than stable JSON rows.
   - name: get_file_contents
     tool: get_file_contents
     description: Get file or directory contents from a repository.
@@ -539,18 +4695,13 @@ functions:
     columns:
       - name: result
         type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
+        description: "Human-readable GitHub MCP output for text, Markdown, diff, report, or resource-style responses."
         expr:
           kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_branches
-    tool: list_branches
-    description: List branches in a repository.
+  # This GitHub MCP tool returns human-readable text/Markdown, a report, or embedded resource content rather than stable JSON rows.
+  - name: check_dependency_vulnerabilities
+    tool: check_dependency_vulnerabilities
+    description: Check dependencies against the GitHub Security Advisory Database.
     args:
       - name: owner
         required: true
@@ -560,339 +4711,35 @@ functions:
         required: true
         bind:
           arg: repo
-      - name: page
+      - name: dependencies
+        required: true
         bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
+          arg: dependencies
     columns:
       - name: result
         type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
+        description: "Human-readable GitHub MCP output for text, Markdown, diff, report, or resource-style responses."
         expr:
           kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_commits
-    tool: list_commits
-    description: List repository commits.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: sha
-        bind:
-          arg: sha
-      - name: path
-        bind:
-          arg: path
-      - name: author
-        bind:
-          arg: author
-      - name: since
-        bind:
-          arg: since
-      - name: until
-        bind:
-          arg: until
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_releases
-    tool: list_releases
-    description: List repository releases.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_latest_release
-    tool: get_latest_release
-    description: Get the latest release for a repository.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_release_by_tag
-    tool: get_release_by_tag
-    description: Get a repository release by tag.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: tag
-        required: true
-        bind:
-          arg: tag
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_tags
-    tool: list_tags
-    description: List repository tags.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: search_code
-    tool: search_code
-    description: Search code using GitHub code search syntax.
+  # This GitHub MCP tool returns human-readable text/Markdown, a report, or embedded resource content rather than stable JSON rows.
+  - name: github_support_docs_search
+    tool: github_support_docs_search
+    description: Search GitHub support documentation through the GitHub MCP server.
     args:
       - name: query
         required: true
         bind:
           arg: query
-      - name: sort
-        values:
-          - indexed
-        bind:
-          arg: sort
-      - name: order
-        values:
-          - asc
-          - desc
-        bind:
-          arg: order
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
     columns:
       - name: result
         type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
+        description: "Human-readable GitHub MCP output for text, Markdown, diff, report, or resource-style responses."
         expr:
           kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: search_commits
-    tool: search_commits
-    description: Search commits using GitHub commit search syntax.
+  - name: run_secret_scanning
+    tool: run_secret_scanning
+    description: Scan raw content strings or diff hunks for secrets with GitHub MCP.
     args:
-      - name: query
-        required: true
-        bind:
-          arg: query
-      - name: sort
-        bind:
-          arg: sort
-      - name: order
-        values:
-          - asc
-          - desc
-        bind:
-          arg: order
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: search_repositories
-    tool: search_repositories
-    description: Search repositories using GitHub repository search syntax.
-    args:
-      - name: query
-        required: true
-        bind:
-          arg: query
-      - name: minimal_output
-        bind:
-          arg: minimal_output
-      - name: sort
-        bind:
-          arg: sort
-      - name: order
-        values:
-          - asc
-          - desc
-        bind:
-          arg: order
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: search_users
-    tool: search_users
-    description: Search users using GitHub user search syntax.
-    args:
-      - name: query
-        required: true
-        bind:
-          arg: query
-      - name: sort
-        bind:
-          arg: sort
-      - name: order
-        values:
-          - asc
-          - desc
-        bind:
-          arg: order
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: actions_list
-    tool: actions_list
-    description: List GitHub Actions workflows, runs, jobs, or artifacts.
-    args:
-      - name: method
-        required: true
-        values:
-          - list_workflows
-          - list_workflow_runs
-          - list_workflow_jobs
-          - list_workflow_run_artifacts
-        bind:
-          arg: method
       - name: owner
         required: true
         bind:
@@ -901,72 +4748,28 @@ functions:
         required: true
         bind:
           arg: repo
-      - name: resource_id
+      - name: files
+        required: true
         bind:
-          arg: resource_id
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: per_page
-      - name: workflow_jobs_filter
-        bind:
-          arg: workflow_jobs_filter
-      - name: workflow_runs_filter
-        bind:
-          arg: workflow_runs_filter
+          arg: files
     columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
+      - name: num_bytes_scanned
+        type: Int64
         expr:
-          kind: current_row
+          kind: path
+          path: [numBytesScanned]
+      - name: blobs_scanned
+        type: Int64
+        expr:
+          kind: path
+          path: [blobsScanned]
+      - name: secrets
+        type: Json
       - name: raw
         type: Json
-        description: Raw GitHub MCP response row.
+        description: Full JSON row returned by the GitHub MCP tool.
         expr:
           kind: current_row
-
-  - name: actions_get
-    tool: actions_get
-    description: Get one GitHub Actions workflow, run, job, artifact, or logs URL.
-    args:
-      - name: method
-        required: true
-        values:
-          - get_workflow
-          - get_workflow_run
-          - get_workflow_job
-          - download_workflow_run_artifact
-          - get_workflow_run_usage
-          - get_workflow_run_logs_url
-        bind:
-          arg: method
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: resource_id
-        required: true
-        bind:
-          arg: resource_id
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
   - name: get_job_logs
     tool: get_job_logs
     description: Get logs for one GitHub Actions job or failed jobs in a run.
@@ -995,1231 +4798,20 @@ functions:
         bind:
           arg: tail_lines
     columns:
-      - name: result
+      - name: failed_jobs
+        type: Int64
+      - name: message
         type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
+      - name: run_id
+        type: Int64
+      - name: total_jobs
+        type: Int64
+      - name: jobs
+        type: Json
+      - name: logs
+        type: Json
       - name: raw
         type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_code_scanning_alerts
-    tool: list_code_scanning_alerts
-    description: List code scanning alerts in a repository.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: state
-        values:
-          - open
-          - closed
-          - dismissed
-          - fixed
-        bind:
-          arg: state
-      - name: severity
-        values:
-          - critical
-          - high
-          - medium
-          - low
-          - warning
-          - note
-          - error
-        bind:
-          arg: severity
-      - name: ref
-        bind:
-          arg: ref
-      - name: tool_name
-        bind:
-          arg: tool_name
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_code_scanning_alert
-    tool: get_code_scanning_alert
-    description: Get details for one code scanning alert.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: alert_number
-        required: true
-        bind:
-          arg: alertNumber
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_dependabot_alerts
-    tool: list_dependabot_alerts
-    description: List Dependabot alerts in a repository.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: state
-        values:
-          - open
-          - fixed
-          - dismissed
-          - auto_dismissed
-        bind:
-          arg: state
-      - name: severity
-        values:
-          - low
-          - medium
-          - high
-          - critical
-        bind:
-          arg: severity
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_dependabot_alert
-    tool: get_dependabot_alert
-    description: Get details for one Dependabot alert.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: alert_number
-        required: true
-        bind:
-          arg: alertNumber
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_secret_scanning_alerts
-    tool: list_secret_scanning_alerts
-    description: List secret scanning alerts in a repository.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: state
-        values:
-          - open
-          - resolved
-        bind:
-          arg: state
-      - name: resolution
-        values:
-          - false_positive
-          - wont_fix
-          - revoked
-          - pattern_edited
-          - pattern_deleted
-          - used_in_tests
-        bind:
-          arg: resolution
-      - name: secret_type
-        bind:
-          arg: secret_type
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_secret_scanning_alert
-    tool: get_secret_scanning_alert
-    description: Get details for one secret scanning alert.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: alert_number
-        required: true
-        bind:
-          arg: alertNumber
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: check_dependency_vulnerabilities
-    tool: check_dependency_vulnerabilities
-    description: Check dependencies against the GitHub Security Advisory Database.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: dependencies
-        required: true
-        bind:
-          arg: dependencies
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_global_security_advisories
-    tool: list_global_security_advisories
-    description: List global GitHub security advisories.
-    args:
-      - name: ghsa_id
-        bind:
-          arg: ghsaId
-      - name: cve_id
-        bind:
-          arg: cveId
-      - name: ecosystem
-        values:
-          - actions
-          - composer
-          - erlang
-          - go
-          - maven
-          - npm
-          - nuget
-          - other
-          - pip
-          - pub
-          - rubygems
-          - rust
-        bind:
-          arg: ecosystem
-      - name: severity
-        values:
-          - unknown
-          - low
-          - medium
-          - high
-          - critical
-        bind:
-          arg: severity
-      - name: advisory_type
-        values:
-          - reviewed
-          - malware
-          - unreviewed
-        bind:
-          arg: type
-      - name: affects
-        bind:
-          arg: affects
-      - name: cwes
-        bind:
-          arg: cwes
-      - name: is_withdrawn
-        bind:
-          arg: isWithdrawn
-      - name: published
-        bind:
-          arg: published
-      - name: updated
-        bind:
-          arg: updated
-      - name: modified
-        bind:
-          arg: modified
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_global_security_advisory
-    tool: get_global_security_advisory
-    description: Get one global GitHub security advisory.
-    args:
-      - name: ghsa_id
-        required: true
-        bind:
-          arg: ghsaId
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_repository_security_advisories
-    tool: list_repository_security_advisories
-    description: List security advisories for a repository.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: state
-        values:
-          - triage
-          - draft
-          - published
-          - closed
-        bind:
-          arg: state
-      - name: sort
-        values:
-          - created
-          - updated
-          - published
-        bind:
-          arg: sort
-      - name: direction
-        values:
-          - asc
-          - desc
-        bind:
-          arg: direction
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_org_repository_security_advisories
-    tool: list_org_repository_security_advisories
-    description: List repository security advisories for an organization.
-    args:
-      - name: org
-        required: true
-        bind:
-          arg: org
-      - name: state
-        values:
-          - triage
-          - draft
-          - published
-          - closed
-        bind:
-          arg: state
-      - name: sort
-        values:
-          - created
-          - updated
-          - published
-        bind:
-          arg: sort
-      - name: direction
-        values:
-          - asc
-          - desc
-        bind:
-          arg: direction
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_discussions
-    tool: list_discussions
-    description: List GitHub Discussions for a repository or organization.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        bind:
-          arg: repo
-      - name: category
-        bind:
-          arg: category
-      - name: order_by
-        values:
-          - CREATED_AT
-          - UPDATED_AT
-        bind:
-          arg: orderBy
-      - name: direction
-        values:
-          - ASC
-          - DESC
-        bind:
-          arg: direction
-      - name: per_page
-        bind:
-          arg: perPage
-      - name: after
-        bind:
-          arg: after
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_discussion
-    tool: get_discussion
-    description: Get one GitHub Discussion.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: discussion_number
-        required: true
-        bind:
-          arg: discussionNumber
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_discussion_comments
-    tool: get_discussion_comments
-    description: Get comments for one GitHub Discussion.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: discussion_number
-        required: true
-        bind:
-          arg: discussionNumber
-      - name: include_replies
-        bind:
-          arg: includeReplies
-      - name: per_page
-        bind:
-          arg: perPage
-      - name: after
-        bind:
-          arg: after
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_discussion_categories
-    tool: list_discussion_categories
-    description: List GitHub Discussion categories for a repository or organization.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        bind:
-          arg: repo
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_notifications
-    tool: list_notifications
-    description: List GitHub notifications for the authenticated user.
-    args:
-      - name: owner
-        bind:
-          arg: owner
-      - name: repo
-        bind:
-          arg: repo
-      - name: notification_filter
-        values:
-          - default
-          - include_read_notifications
-          - only_participating
-        bind:
-          arg: filter
-      - name: since
-        bind:
-          arg: since
-      - name: before
-        bind:
-          arg: before
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_notification_details
-    tool: get_notification_details
-    description: Get details for one GitHub notification.
-    args:
-      - name: notification_id
-        required: true
-        bind:
-          arg: notificationID
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: projects_list
-    tool: projects_list
-    description: List GitHub Projects, project fields, items, or status updates.
-    args:
-      - name: method
-        required: true
-        values:
-          - list_projects
-          - list_project_fields
-          - list_project_items
-          - list_project_status_updates
-        bind:
-          arg: method
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: owner_type
-        values:
-          - user
-          - org
-        bind:
-          arg: owner_type
-      - name: project_number
-        bind:
-          arg: project_number
-      - name: query
-        bind:
-          arg: query
-      - name: fields
-        bind:
-          arg: fields
-      - name: per_page
-        bind:
-          arg: per_page
-      - name: after
-        bind:
-          arg: after
-      - name: before
-        bind:
-          arg: before
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: projects_get
-    tool: projects_get
-    description: Get one GitHub Project, field, item, or status update.
-    args:
-      - name: method
-        required: true
-        values:
-          - get_project
-          - get_project_field
-          - get_project_item
-          - get_project_status_update
-        bind:
-          arg: method
-      - name: owner
-        bind:
-          arg: owner
-      - name: owner_type
-        values:
-          - user
-          - org
-        bind:
-          arg: owner_type
-      - name: project_number
-        bind:
-          arg: project_number
-      - name: field_id
-        bind:
-          arg: field_id
-      - name: item_id
-        bind:
-          arg: item_id
-      - name: status_update_id
-        bind:
-          arg: status_update_id
-      - name: fields
-        bind:
-          arg: fields
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_gists
-    tool: list_gists
-    description: List gists for a user or the authenticated user.
-    args:
-      - name: username
-        bind:
-          arg: username
-      - name: since
-        bind:
-          arg: since
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_gist
-    tool: get_gist
-    description: Get one GitHub gist by ID.
-    args:
-      - name: gist_id
-        required: true
-        bind:
-          arg: gist_id
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_label
-    tool: list_label
-    description: List labels in a repository.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_label
-    tool: get_label
-    description: Get one label in a repository.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: name
-        required: true
-        bind:
-          arg: name
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_issue_types
-    tool: list_issue_types
-    description: List issue types for an organization.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_repository_collaborators
-    tool: list_repository_collaborators
-    description: List collaborators in a repository.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: affiliation
-        values:
-          - outside
-          - direct
-          - all
-        bind:
-          arg: affiliation
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_starred_repositories
-    tool: list_starred_repositories
-    description: List starred repositories for a user or the authenticated user.
-    args:
-      - name: username
-        bind:
-          arg: username
-      - name: sort
-        values:
-          - created
-          - updated
-        bind:
-          arg: sort
-      - name: direction
-        values:
-          - asc
-          - desc
-        bind:
-          arg: direction
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_tag
-    tool: get_tag
-    description: Get details for one repository tag.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: tag
-        required: true
-        bind:
-          arg: tag
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: search_orgs
-    tool: search_orgs
-    description: Search organizations using GitHub organization search syntax.
-    args:
-      - name: query
-        required: true
-        bind:
-          arg: query
-      - name: sort
-        values:
-          - followers
-          - repositories
-          - joined
-        bind:
-          arg: sort
-      - name: order
-        values:
-          - asc
-          - desc
-        bind:
-          arg: order
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: perPage
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: semantic_issues_search
-    tool: semantic_issues_search
-    description: Search issues semantically with natural language.
-    args:
-      - name: query
-        required: true
-        bind:
-          arg: query
-      - name: owner
-        bind:
-          arg: owner
-      - name: repo
-        bind:
-          arg: repo
-      - name: sort
-        values:
-          - comments
-          - reactions
-          - reactions-+1
-          - reactions--1
-          - reactions-smile
-          - reactions-thinking_face
-          - reactions-heart
-          - reactions-tada
-          - interactions
-          - created
-          - updated
-        bind:
-          arg: sort
-      - name: order
-        values:
-          - asc
-          - desc
-        bind:
-          arg: order
-      - name: page
-        bind:
-          arg: page
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: semantic_issue_similarity_search
-    tool: semantic_issue_similarity_search
-    description: Find issues semantically similar to one issue.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: issue_number
-        required: true
-        bind:
-          arg: issue_number
-      - name: threshold
-        bind:
-          arg: threshold
-      - name: page
-        bind:
-          arg: page
-      - name: per_page
-        bind:
-          arg: per_page
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: github_support_docs_search
-    tool: github_support_docs_search
-    description: Search GitHub support documentation through the GitHub MCP server.
-    args:
-      - name: query
-        required: true
-        bind:
-          arg: query
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: web_search
-    tool: web_search
-    description: Run GitHub MCP's AI-powered web search.
-    args:
-      - name: query
-        required: true
-        bind:
-          arg: query
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: list_copilot_spaces
-    tool: list_copilot_spaces
-    description: List Copilot Spaces accessible to the authenticated user.
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_copilot_space
-    tool: get_copilot_space
-    description: Get the contents of one Copilot Space.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: name
-        required: true
-        bind:
-          arg: name
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: get_copilot_job_status
-    tool: get_copilot_job_status
-    description: Get status for a GitHub Copilot coding agent job.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: id
-        required: true
-        bind:
-          arg: id
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
-        expr:
-          kind: current_row
-
-  - name: run_secret_scanning
-    tool: run_secret_scanning
-    description: Scan raw content strings or diff hunks for secrets with GitHub MCP.
-    args:
-      - name: owner
-        required: true
-        bind:
-          arg: owner
-      - name: repo
-        required: true
-        bind:
-          arg: repo
-      - name: files
-        required: true
-        bind:
-          arg: files
-    columns:
-      - name: result
-        type: Utf8
-        description: GitHub MCP response text or one stringified structured row.
-        expr:
-          kind: current_row
-      - name: raw
-        type: Json
-        description: Raw GitHub MCP response row.
+        description: Full JSON row returned by the GitHub MCP tool.
         expr:
           kind: current_row

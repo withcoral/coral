@@ -274,6 +274,58 @@ async fn executes_mcp_table_function_with_bound_args() {
 }
 
 #[tokio::test]
+async fn executes_mcp_table_function_with_manifest_tool_args() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    let manifest = coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "server": { "transport": "stdio", "command": "unused" },
+        "functions": [{
+            "name": "pull_request_diff",
+            "tool": "pull_request_read",
+            "tool_args": {
+                "method": { "from": "literal", "value": "get_diff" }
+            },
+            "args": [{
+                "name": "pull_number",
+                "required": true,
+                "bind": { "arg": "pullNumber" }
+            }],
+            "response": { "rows_path": ["items"] },
+            "columns": [
+                { "name": "title", "type": "Utf8" },
+                { "name": "url", "type": "Utf8" }
+            ]
+        }]
+    }))
+    .expect("mcp manifest should parse");
+    register_test_sources(&ctx, compile_sources(manifest, caller.clone()));
+
+    let _ = ctx
+        .sql("SELECT title FROM test_mcp.pull_request_diff(pull_number => 42)")
+        .await
+        .expect("query should plan")
+        .collect()
+        .await
+        .expect("query should execute");
+
+    let calls = caller.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 1);
+    let call = calls.first().expect("one MCP call should be recorded");
+    assert_eq!(call.0, "pull_request_read");
+    assert_eq!(
+        call.1.get("method"),
+        Some(&Value::String("get_diff".to_string()))
+    );
+    assert_eq!(call.1.get("pullNumber"), Some(&Value::from(42)));
+}
+
+#[tokio::test]
 async fn mcp_table_function_preserves_json_scalar_arg_types() {
     let ctx = SessionContext::new();
     let caller = Arc::new(FakeMcpCaller {

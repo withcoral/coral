@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coral_spec::ResponseSpec;
 use coral_spec::backends::mcp::{McpPaginationSpec, McpTableFunctionSpec};
+use coral_spec::{ResponseSpec, ValueSourceSpec};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
@@ -14,6 +14,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::scalar::ScalarValue;
 use serde_json::Value;
 
+use super::McpSourceInputs;
 use super::client::McpSourceClient;
 use super::error::McpProviderQueryError;
 use super::fetch::McpFetchPlan;
@@ -34,6 +35,8 @@ struct McpFunctionState {
     tool_name: String,
     schema: SchemaRef,
     response: ResponseSpec,
+    source_inputs: Arc<McpSourceInputs>,
+    source_tool_args: Arc<BTreeMap<String, ValueSourceSpec>>,
     pagination: Option<McpPaginationSpec>,
     columns: Arc<[coral_spec::ColumnSpec]>,
     fetch_limit_default: Option<usize>,
@@ -63,12 +66,14 @@ impl McpSourceTableFunction {
     pub(super) fn new(
         backend: McpSourceClient,
         source_schema: String,
+        source_inputs: Arc<McpSourceInputs>,
         function: McpTableFunctionSpec,
     ) -> Result<Self> {
         let schema = schema_from_columns(function.columns(), &source_schema, function.name())?;
         let function_name = function.name().to_string();
         let tool_name = function.tool.clone();
         let response = function.common.response.clone();
+        let source_tool_args = Arc::new(function.tool_args.clone());
         let columns = function.common.columns.clone();
         let fetch_limit_default = function.fetch_limit_default();
         let pagination = function.pagination.clone();
@@ -81,6 +86,8 @@ impl McpSourceTableFunction {
                 tool_name,
                 schema,
                 response,
+                source_inputs,
+                source_tool_args,
                 pagination,
                 columns: Arc::from(columns),
                 fetch_limit_default,
@@ -156,8 +163,8 @@ impl TableProvider for McpFunctionCallTableProvider {
             relation: self.state.function_name.clone(),
             tool_name: self.state.tool_name.clone(),
             arguments,
-            source_inputs: None,
-            source_tool_args: Arc::new(BTreeMap::default()),
+            source_inputs: Some(Arc::clone(&self.state.source_inputs)),
+            source_tool_args: Arc::clone(&self.state.source_tool_args),
             response: self.state.response.clone(),
             pagination: self.state.pagination.clone(),
             limit: limit.or(self.state.fetch_limit_default),

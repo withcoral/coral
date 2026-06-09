@@ -121,6 +121,8 @@ struct RawMcpTableFunctionSpec {
     #[serde(default)]
     fetch_limit_default: Option<usize>,
     #[serde(default)]
+    tool_args: BTreeMap<String, ValueSourceSpec>,
+    #[serde(default)]
     args: Vec<TableFunctionArgSpec>,
     #[serde(default)]
     pagination: Option<McpPaginationSpec>,
@@ -135,6 +137,7 @@ struct RawMcpTableFunctionSpec {
 pub struct McpTableFunctionSpec {
     pub common: SourceTableFunctionSpec,
     pub tool: String,
+    pub tool_args: BTreeMap<String, ValueSourceSpec>,
     pub pagination: Option<McpPaginationSpec>,
 }
 
@@ -305,6 +308,7 @@ impl RawMcpTableFunctionSpec {
         validate_mcp_function(source_name, &self)?;
         Ok(McpTableFunctionSpec {
             tool: self.tool,
+            tool_args: self.tool_args,
             pagination: self.pagination,
             common: SourceTableFunctionSpec {
                 name: self.name,
@@ -572,6 +576,27 @@ fn validate_mcp_function(source_name: &str, function: &RawMcpTableFunctionSpec) 
 
     let mut arg_names = HashSet::new();
     let mut request_arg_names = HashSet::new();
+    for (name, source) in &function.tool_args {
+        if name.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' function '{}' tool_args has an empty key",
+                function.name
+            )));
+        }
+        if !request_arg_names.insert(name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' function '{}' has multiple bindings for tool arg '{name}'",
+                function.name
+            )));
+        }
+        validate_source_scoped_value_source(
+            source,
+            &format!(
+                "source '{source_name}' function '{}' tool_args.{name}",
+                function.name
+            ),
+        )?;
+    }
     for arg in &function.args {
         validate_identifier(
             &arg.name,
@@ -918,6 +943,7 @@ fn validate_function_binding<'a>(
 mod tests {
     use std::collections::BTreeSet;
 
+    use crate::ValueSourceSpec;
     use serde_json::json;
 
     use super::{McpServerSpec, McpSourceManifest};
@@ -965,6 +991,78 @@ mod tests {
         assert_eq!(
             manifest.required_secret_names(),
             BTreeSet::from(["GITHUB_TOKEN".to_string()])
+        );
+    }
+
+    #[test]
+    fn parses_mcp_function_with_fixed_tool_args() {
+        let manifest = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo_mcp",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "stdio",
+                "command": "demo-mcp-server"
+            },
+            "functions": [{
+                "name": "pull_request_diff",
+                "tool": "pull_request_read",
+                "tool_args": {
+                    "method": { "from": "literal", "value": "get_diff" }
+                },
+                "args": [{
+                    "name": "pull_number",
+                    "required": true,
+                    "bind": { "arg": "pullNumber" }
+                }],
+                "columns": [{ "name": "result", "type": "Utf8" }]
+            }]
+        }))
+        .expect("mcp function tool_args should parse");
+
+        let function = manifest.functions.first().expect("function should parse");
+        assert_eq!(function.name(), "pull_request_diff");
+        let method = function
+            .tool_args
+            .get("method")
+            .expect("method tool arg should parse");
+        let ValueSourceSpec::Literal { value } = method else {
+            panic!("method tool arg should be literal, got {method:?}");
+        };
+        assert_eq!(value, &json!("get_diff"));
+    }
+
+    #[test]
+    fn rejects_duplicate_tool_arg_bindings_across_function_args_and_tool_args() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo_mcp",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "stdio",
+                "command": "demo-mcp-server"
+            },
+            "functions": [{
+                "name": "pull_request_diff",
+                "tool": "pull_request_read",
+                "tool_args": {
+                    "method": { "from": "literal", "value": "get_diff" }
+                },
+                "args": [{
+                    "name": "method",
+                    "required": true,
+                    "bind": { "arg": "method" }
+                }],
+                "columns": [{ "name": "result", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("duplicate function tool arg binding should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "source 'demo_mcp' function 'pull_request_diff' has multiple bindings for tool arg 'method'"
         );
     }
 

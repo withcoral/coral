@@ -708,6 +708,31 @@ functions:
 SELECT * FROM my_mcp.run_query(query => 'SELECT 1');
 ```
 
+MCP table functions can also declare source-scoped `tool_args` for fixed or
+input-backed MCP arguments that should not be exposed as SQL function
+arguments. These are merged with SQL-bound `args`, and a tool argument may only
+be bound once:
+
+```yaml
+functions:
+  - name: pull_request_diff
+    tool: pull_request_read
+    tool_args:
+      method:
+        from: literal
+        value: get_diff
+    args:
+      - name: pull_number
+        required: true
+        bind:
+          arg: pullNumber
+    columns:
+      - name: result
+        type: Utf8
+        expr:
+          kind: current_row
+```
+
 MCP tables and functions can also declare cursor pagination:
 
 ```yaml

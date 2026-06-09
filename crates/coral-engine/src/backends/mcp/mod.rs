@@ -161,6 +161,7 @@ impl CompiledBackendSource for McpCompiledSource {
             let function_impl: Arc<dyn TableFunctionImpl> = Arc::new(McpSourceTableFunction::new(
                 self.caller.clone(),
                 self.manifest.common.name.clone(),
+                Arc::clone(&self.source_inputs),
                 function.clone(),
             )?);
             table_functions.insert(internal_name.clone(), function_impl);
