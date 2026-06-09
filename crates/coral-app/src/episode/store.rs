@@ -14,7 +14,7 @@
 )]
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -166,30 +166,39 @@ pub(crate) fn now_unix_nanos() -> u128 {
 }
 
 /// Returns the most recent record for `episode_id` in `path`, if any.
+///
+/// Reads raw bytes and splits on newlines so a torn final record is skipped
+/// whether the crash broke JSON *or* UTF-8 (it can truncate a multi-byte intent
+/// mid-character) — one torn write must never brick reads for the workspace.
 fn read_episode(
     path: &Path,
     episode_id: &str,
 ) -> Result<Option<PersistedEpisode>, EpisodeStoreError> {
-    let file = match File::open(path) {
-        Ok(file) => file,
+    let contents = match std::fs::read(path) {
+        Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
     let mut found = None;
-    for line in BufReader::new(file).lines() {
-        let line = line?;
+    for raw_line in contents.split(|&byte| byte == b'\n') {
+        // A torn final record can be invalid UTF-8 (e.g. a truncated non-ASCII
+        // intent); skip it rather than failing the whole read.
+        let Ok(line) = std::str::from_utf8(raw_line) else {
+            tracing::warn!("skipping episode record with invalid UTF-8 (likely a torn write)");
+            continue;
+        };
         if line.trim().is_empty() {
             continue;
         }
-        match serde_json::from_str::<PersistedEpisode>(&line) {
+        match serde_json::from_str::<PersistedEpisode>(line) {
             Ok(episode) => {
                 if episode.id == episode_id {
                     found = Some(episode);
                 }
             }
-            // A crash mid-append can leave a torn record; skip it rather than
-            // bricking every read for the workspace. An unacknowledged torn write
-            // is simply re-appended when the client retries `OpenEpisode`.
+            // A crash mid-append can also leave a syntactically torn (but valid
+            // UTF-8) record; skip it too. An unacknowledged torn write is simply
+            // re-appended when the client retries `OpenEpisode`.
             Err(error) => {
                 tracing::warn!(%error, "skipping unparsable episode record");
             }
@@ -323,6 +332,32 @@ mod tests {
             .expect("read")
             .expect("ep_2 present after recovery");
         assert_eq!(recovered.intent, "second intent");
+    }
+
+    #[test]
+    fn read_tolerates_a_torn_record_with_invalid_utf8() {
+        use std::io::Write as _;
+
+        let (_dir, layout) = layout();
+        let store = EpisodeStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        let path = layout.episodes_file(&workspace);
+        store
+            .open_episode(&episode(&workspace, "ep_1", "first intent", None))
+            .expect("open");
+        // A crash can truncate a multi-byte (non-ASCII) intent mid-character,
+        // leaving invalid UTF-8 at the tail — `{` then the first two bytes of a
+        // 4-byte emoji.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open for append")
+            .write_all(&[b'{', 0xF0, 0x9F])
+            .expect("write torn invalid-utf8 record");
+        let read = read_episode(&path, "ep_1")
+            .expect("read tolerates an invalid-UTF-8 tail")
+            .expect("ep_1 present");
+        assert_eq!(read.intent, "first intent");
     }
 
     #[test]
