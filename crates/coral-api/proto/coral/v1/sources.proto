@@ -107,6 +107,8 @@ message SourceCredentialMethod {
   string label = 1;
   // Optional display description.
   string description = 2;
+  // Optional hint describing how to obtain the values this method needs.
+  string hint = 5;
   // Method-specific metadata.
   oneof method {
     // Secret value is supplied through the source configuration path.
@@ -348,7 +350,9 @@ message CredentialMetadata {
   string value = 2;
 }
 
-// Transient OAuth method input.
+// OAuth method input used during credential retrieval. These values are not
+// stored as source-visible configuration; Coral may store sensitive values as
+// internal credential metadata when needed to preserve the OAuth lifecycle.
 message OAuthCredentialInput {
   // Logical input key expected by the selected OAuth credential method.
   string key = 1;
