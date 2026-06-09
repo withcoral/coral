@@ -10,7 +10,13 @@
 /// Invalid URLs are rejected (`false`).
 #[must_use]
 pub fn url_is_https_or_loopback(url: &str) -> bool {
-    ::url::Url::parse(url).is_ok_and(|url| match url.scheme() {
+    ::url::Url::parse(url).is_ok_and(|url| parsed_url_is_https_or_loopback(&url))
+}
+
+/// Return `true` when a parsed URL is HTTPS or HTTP loopback.
+#[must_use]
+pub fn parsed_url_is_https_or_loopback(url: &::url::Url) -> bool {
+    match url.scheme() {
         "https" => true,
         "http" => match url.host() {
             Some(::url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
@@ -19,5 +25,5 @@ pub fn url_is_https_or_loopback(url: &str) -> bool {
             None => false,
         },
         _ => false,
-    })
+    }
 }

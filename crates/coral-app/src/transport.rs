@@ -259,31 +259,6 @@ pub(crate) fn json_value_to_proto(value: serde_json::Value) -> ProtoJsonValue {
     ProtoJsonValue { kind: Some(kind) }
 }
 
-pub(crate) fn proto_json_value_to_json(value: ProtoJsonValue) -> serde_json::Value {
-    match value.kind {
-        Some(proto_json_value::Kind::NullValue(_)) | None => serde_json::Value::Null,
-        Some(proto_json_value::Kind::BoolValue(value)) => serde_json::Value::Bool(value),
-        Some(proto_json_value::Kind::IntegerValue(value)) => serde_json::json!(value),
-        Some(proto_json_value::Kind::UnsignedIntegerValue(value)) => serde_json::json!(value),
-        Some(proto_json_value::Kind::DoubleValue(value)) => serde_json::json!(value),
-        Some(proto_json_value::Kind::StringValue(value)) => serde_json::Value::String(value),
-        Some(proto_json_value::Kind::ArrayValue(array)) => serde_json::Value::Array(
-            array
-                .values
-                .into_iter()
-                .map(proto_json_value_to_json)
-                .collect(),
-        ),
-        Some(proto_json_value::Kind::ObjectValue(object)) => serde_json::Value::Object(
-            object
-                .fields
-                .into_iter()
-                .map(|(key, value)| (key, proto_json_value_to_json(value)))
-                .collect(),
-        ),
-    }
-}
-
 fn json_number_to_proto(number: &serde_json::Number) -> proto_json_value::Kind {
     if let Some(value) = number.as_i64() {
         proto_json_value::Kind::IntegerValue(value)

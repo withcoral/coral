@@ -175,7 +175,7 @@ fn render_oauth_endpoint_url(
     let parsed = Url::parse(&rendered).map_err(|error| {
         ManifestError::validation(format!("invalid OAuth {label} URL: {error}"))
     })?;
-    if !crate::url_is_https_or_loopback(parsed.as_str()) {
+    if !crate::parsed_url_is_https_or_loopback(&parsed) {
         return Err(ManifestError::validation(format!(
             "OAuth {label} URL must use https, except localhost development URLs"
         )));

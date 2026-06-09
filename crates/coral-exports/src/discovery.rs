@@ -575,7 +575,10 @@ fn query_tokens(query: &str) -> BTreeSet<String> {
 }
 
 fn token_set(text: &str) -> BTreeSet<String> {
-    raw_tokens(text).into_iter().map(|token| stem(&token)).collect()
+    raw_tokens(text)
+        .into_iter()
+        .map(|token| stem(&token))
+        .collect()
 }
 
 fn raw_tokens(text: &str) -> Vec<String> {
@@ -1177,7 +1180,8 @@ mod tests {
         for query in ["messages", "message"] {
             let hits = search_exports(&workspace, query, &SearchFilter::default(), 20);
             assert!(
-                hits.iter().any(|hit| hit.capability_id.as_str().contains(target)),
+                hits.iter()
+                    .any(|hit| hit.capability_id.as_str().contains(target)),
                 "query {query:?} should match the message-search tool: {hits:#?}"
             );
         }

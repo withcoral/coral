@@ -387,35 +387,49 @@ impl CoralMcpServer {
 
     async fn runtime_metadata_value(&self) -> Value {
         let mut source_client = self.source.clone();
-        let installed_source_count = match source_client
-            .list_sources(Request::new(ListSourcesRequest {
-                workspace: Some(default_workspace()),
-            }))
-            .await
-        {
-            Ok(response) => json!(response.into_inner().sources.len()),
-            Err(status) => json!({
-                "error": status.message(),
-            }),
-        };
-        let typescript_count = if self.options.runtime_exposure.typescript_enabled {
-            self.visible_binding_count(ExportBindingKind::Typescript)
+        let installed_source_count = async move {
+            match source_client
+                .list_sources(Request::new(ListSourcesRequest {
+                    workspace: Some(default_workspace()),
+                }))
                 .await
-        } else {
-            json!(0)
+            {
+                Ok(response) => json!(response.into_inner().sources.len()),
+                Err(status) => json!({
+                    "error": status.message(),
+                }),
+            }
         };
-        let sql_table_count = if self.options.runtime_exposure.sql_enabled {
-            self.visible_binding_count(ExportBindingKind::SqlTable)
-                .await
-        } else {
-            json!(0)
+        let typescript_count = async {
+            if self.options.runtime_exposure.typescript_enabled {
+                self.visible_binding_count(ExportBindingKind::Typescript)
+                    .await
+            } else {
+                json!(0)
+            }
         };
-        let sql_function_count = if self.options.runtime_exposure.sql_enabled {
-            self.visible_binding_count(ExportBindingKind::SqlFunction)
-                .await
-        } else {
-            json!(0)
+        let sql_table_count = async {
+            if self.options.runtime_exposure.sql_enabled {
+                self.visible_binding_count(ExportBindingKind::SqlTable)
+                    .await
+            } else {
+                json!(0)
+            }
         };
+        let sql_function_count = async {
+            if self.options.runtime_exposure.sql_enabled {
+                self.visible_binding_count(ExportBindingKind::SqlFunction)
+                    .await
+            } else {
+                json!(0)
+            }
+        };
+        let (installed_source_count, typescript_count, sql_table_count, sql_function_count) = tokio::join!(
+            installed_source_count,
+            typescript_count,
+            sql_table_count,
+            sql_function_count
+        );
         json!({
             "exposure": self.options.runtime_exposure.label(),
             "typescript_enabled": self.options.runtime_exposure.typescript_enabled,
@@ -554,26 +568,40 @@ impl CoralMcpServer {
                 None,
             ));
         }
-        let mut discovery_client = self.discovery.clone();
-        // Runtime metadata costs several sequential discovery RPCs and is only
-        // rendered by the detailed view; the default compact view ignores it.
-        let runtime = if arguments.view == DescribeView::Detailed {
-            self.runtime_metadata_value().await
+        let describe_request = Request::new(DescribeExportRequest {
+            workspace: Some(default_workspace()),
+            reference: arguments.reference,
+        });
+        let result = if arguments.view == DescribeView::Detailed {
+            let mut discovery_client = self.discovery.clone();
+            let describe = discovery_client.describe(describe_request);
+            let runtime = self.runtime_metadata_value();
+            let (response, runtime) = tokio::join!(describe, runtime);
+            response
+                .map(|response| {
+                    let mut response = response.into_inner();
+                    prune_describe_response_for_runtime(
+                        &mut response,
+                        self.options.runtime_exposure,
+                    );
+                    describe_tool_value(&response, arguments.view, &runtime)
+                })
+                .and_then(std::convert::identity)
         } else {
-            Value::Null
+            let mut discovery_client = self.discovery.clone();
+            discovery_client
+                .describe(describe_request)
+                .await
+                .map(|response| {
+                    let mut response = response.into_inner();
+                    prune_describe_response_for_runtime(
+                        &mut response,
+                        self.options.runtime_exposure,
+                    );
+                    describe_tool_value(&response, arguments.view, &Value::Null)
+                })
+                .and_then(std::convert::identity)
         };
-        let result = discovery_client
-            .describe(Request::new(DescribeExportRequest {
-                workspace: Some(default_workspace()),
-                reference: arguments.reference,
-            }))
-            .await
-            .map(|response| {
-                let mut response = response.into_inner();
-                prune_describe_response_for_runtime(&mut response, self.options.runtime_exposure);
-                describe_tool_value(&response, arguments.view, &runtime)
-            })
-            .and_then(std::convert::identity);
         Ok(ToolCallOutcome::from_value_result("Describe", result))
     }
 
@@ -1232,7 +1260,11 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let span =
             telemetry::call_tool_span(request.name.as_ref(), self.options.trace_parent.as_deref());
-        let outcome = telemetry::instrument(span.clone(), self.dispatch_tool(request)).await;
+        let outcome = Box::pin(telemetry::instrument(
+            span.clone(),
+            self.dispatch_tool(request),
+        ))
+        .await;
         finish_tool_call(&span, outcome)
     }
 }

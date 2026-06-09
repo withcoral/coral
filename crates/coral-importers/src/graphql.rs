@@ -84,11 +84,8 @@ pub(super) fn import_graphql(
         if unsupported {
             continue;
         }
-        let operation_id = operation_ids.allocate(&format!(
-            "{}_{}",
-            field.kind.as_keyword(),
-            field.name
-        ));
+        let operation_id =
+            operation_ids.allocate(&format!("{}_{}", field.kind.as_keyword(), field.name));
         let operation_name = format!(
             "{}{}",
             match field.kind {

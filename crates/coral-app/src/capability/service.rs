@@ -41,8 +41,7 @@ use crate::discovery::manager::{DiscoveryManager, LoadedWorkspaceExports};
 use crate::graphql_documents::operation_document_path;
 use crate::sources::SourceName;
 use crate::transport::{
-    grpc_span, instrument_grpc, json_value_to_proto, proto_json_value_to_json,
-    workspace_name_from_proto,
+    grpc_span, instrument_grpc, json_value_to_proto, workspace_name_from_proto,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -179,14 +178,12 @@ pub(crate) async fn invoke_sql_provider_capability(
     )
     .await;
     if response.ok {
-        return Ok(response
-            .value
-            .map_or(JsonValue::Null, proto_json_value_to_json));
+        return Ok(response.value.map_or(JsonValue::Null, JsonValue::from));
     }
     let Some(error) = response.error else {
         return Err("provider invocation failed without a structured error".to_string());
     };
-    let details = error.details.map(proto_json_value_to_json);
+    let details = error.details.map(JsonValue::from);
     Err(json!({
         "kind": error.kind,
         "message": error.message,
@@ -2351,7 +2348,6 @@ mod tests {
     use crate::discovery::manager::LoadedSourceRuntime;
     use crate::sources::SourceName;
     use crate::state::AppStateLayout;
-    use coral_api::v1::json_value as proto_json_value;
     use coral_capabilities::{
         EffectProfile, FileArtifactRef, FileFormatDescriptor, FileScanBinding,
         GraphqlOperationKind, GraphqlVariableBinding, HttpMethod, InvocationSchema, McpTaskSupport,
@@ -2419,14 +2415,14 @@ mod tests {
         response
             .value
             .clone()
-            .map_or(JsonValue::Null, proto_json_value_to_json)
+            .map_or(JsonValue::Null, JsonValue::from)
     }
 
     fn response_envelope(response: &InvokeCapabilityResponse) -> JsonValue {
         response
             .envelope
             .clone()
-            .map_or(JsonValue::Null, proto_json_value_to_json)
+            .map_or(JsonValue::Null, JsonValue::from)
     }
 
     fn assert_json_pointer(value: &JsonValue, pointer: &str, expected: &JsonValue) {
@@ -2594,31 +2590,6 @@ mod tests {
             "/provider/headers/x-api-key",
             &json!("provider-api-key"),
         );
-    }
-
-    fn proto_json_value_to_json(value: coral_api::v1::JsonValue) -> JsonValue {
-        match value.kind {
-            Some(proto_json_value::Kind::NullValue(_)) | None => JsonValue::Null,
-            Some(proto_json_value::Kind::BoolValue(value)) => JsonValue::Bool(value),
-            Some(proto_json_value::Kind::IntegerValue(value)) => json!(value),
-            Some(proto_json_value::Kind::UnsignedIntegerValue(value)) => json!(value),
-            Some(proto_json_value::Kind::DoubleValue(value)) => json!(value),
-            Some(proto_json_value::Kind::StringValue(value)) => JsonValue::String(value),
-            Some(proto_json_value::Kind::ArrayValue(array)) => JsonValue::Array(
-                array
-                    .values
-                    .into_iter()
-                    .map(proto_json_value_to_json)
-                    .collect(),
-            ),
-            Some(proto_json_value::Kind::ObjectValue(object)) => JsonValue::Object(
-                object
-                    .fields
-                    .into_iter()
-                    .map(|(key, value)| (key, proto_json_value_to_json(value)))
-                    .collect(),
-            ),
-        }
     }
 
     fn file_capability() -> Capability {
@@ -4118,7 +4089,7 @@ interfaces:
         let details = error
             .details
             .clone()
-            .map(proto_json_value_to_json)
+            .map(JsonValue::from)
             .expect("error details");
         assert_json_pointer(&details, "/provider_error/detail/http_status", &json!(400));
         assert_json_pointer(
@@ -4709,7 +4680,7 @@ interfaces:
         let details = error
             .details
             .clone()
-            .map_or(JsonValue::Null, proto_json_value_to_json);
+            .map_or(JsonValue::Null, JsonValue::from);
         assert_json_pointer(
             &details,
             "/provider_error/errors/0/extensions/code",
@@ -4778,7 +4749,7 @@ interfaces:
         let details = error
             .details
             .clone()
-            .map_or(JsonValue::Null, proto_json_value_to_json);
+            .map_or(JsonValue::Null, JsonValue::from);
         assert_json_pointer(
             &details,
             "/provider_error/errors/1/extensions/code",
@@ -4866,9 +4837,7 @@ interfaces:
         assert!(!response.ok);
         let error = response.error.expect("structured error");
         assert_eq!(error.kind, "provider_error");
-        let details = error
-            .details
-            .map_or(JsonValue::Null, proto_json_value_to_json);
+        let details = error.details.map_or(JsonValue::Null, JsonValue::from);
         assert_json_pointer(
             &details,
             "/provider_error/errors/0/extensions/code",
@@ -4924,9 +4893,7 @@ interfaces:
         assert!(!response.ok);
         let error = response.error.expect("structured error");
         assert_eq!(error.kind, "provider_error");
-        let details = error
-            .details
-            .map_or(JsonValue::Null, proto_json_value_to_json);
+        let details = error.details.map_or(JsonValue::Null, JsonValue::from);
         assert_json_pointer(&details, "/provider_error/http_status", &json!(200));
         assert_json_pointer(&details, "/provider_error/errors/truncated", &json!(true));
         assert_json_pointer(
@@ -4986,9 +4953,7 @@ interfaces:
         assert!(!response.ok);
         let error = response.error.expect("structured error");
         assert_eq!(error.kind, "provider_error");
-        let details = error
-            .details
-            .map_or(JsonValue::Null, proto_json_value_to_json);
+        let details = error.details.map_or(JsonValue::Null, JsonValue::from);
         assert_json_pointer(
             &details,
             "/provider_error/detail/errors/truncated",

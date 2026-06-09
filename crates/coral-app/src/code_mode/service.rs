@@ -15,8 +15,8 @@ use coral_api::v1::{
     CodeModeRunEvent as ProtoCodeModeRunEvent, CodeModeRunFailed, CodeModeRunStarted,
     CodeModeRunStatus as ProtoCodeModeRunStatus, CodeModeToolCompleted, CodeModeToolFailed,
     CodeModeToolStarted, ExecCodeModeRequest, ExecCodeModeResponse, InitializeCodeModeRequest,
-    InitializeCodeModeResponse, JsonValue as ProtoJsonValue, TerminateCodeModeRequest,
-    WaitCodeModeRequest, WaitCodeModeResponse, json_value as proto_json_value,
+    InitializeCodeModeResponse, TerminateCodeModeRequest, WaitCodeModeRequest,
+    WaitCodeModeResponse,
 };
 use coral_capabilities::{Capability, code_mode_tool_input_schema, generated_tool_output_schema};
 use coral_client::batches_to_json_rows_json_safe_numbers;
@@ -720,7 +720,7 @@ impl AppCodeModeHost {
             json!({
                 "kind": error.kind,
                 "message": error.message,
-                "details": error.details.map_or(JsonValue::Null, proto_json_value_to_json),
+                "details": error.details.map_or(JsonValue::Null, JsonValue::from),
             })
         });
         let partial = !ok && provider_error_has_partial_data(&error_value);
@@ -744,9 +744,9 @@ impl AppCodeModeHost {
                 "partial": partial,
                 "error": if ok { JsonValue::Null } else { error_value.clone() },
             }],
-            "value": response.value.map_or(JsonValue::Null, proto_json_value_to_json),
+            "value": response.value.map_or(JsonValue::Null, JsonValue::from),
             "error": error_value,
-            "envelope": response.envelope.map_or(JsonValue::Null, proto_json_value_to_json),
+            "envelope": response.envelope.map_or(JsonValue::Null, JsonValue::from),
         });
         if !ok && !generated_tool_provider_error_result(&value) {
             return Err(generated_tool_failure_text(full_path, &value));
@@ -1429,31 +1429,6 @@ fn run_error_cause_to_proto(cause: CodeModeRunErrorCause) -> ProtoCodeModeRunErr
     }
 }
 
-fn proto_json_value_to_json(value: ProtoJsonValue) -> JsonValue {
-    match value.kind {
-        Some(proto_json_value::Kind::NullValue(_)) | None => JsonValue::Null,
-        Some(proto_json_value::Kind::BoolValue(value)) => JsonValue::Bool(value),
-        Some(proto_json_value::Kind::IntegerValue(value)) => json!(value),
-        Some(proto_json_value::Kind::UnsignedIntegerValue(value)) => json!(value),
-        Some(proto_json_value::Kind::DoubleValue(value)) => json!(value),
-        Some(proto_json_value::Kind::StringValue(value)) => JsonValue::String(value),
-        Some(proto_json_value::Kind::ArrayValue(array)) => JsonValue::Array(
-            array
-                .values
-                .into_iter()
-                .map(proto_json_value_to_json)
-                .collect(),
-        ),
-        Some(proto_json_value::Kind::ObjectValue(object)) => JsonValue::Object(
-            object
-                .fields
-                .into_iter()
-                .map(|(key, value)| (key, proto_json_value_to_json(value)))
-                .collect(),
-        ),
-    }
-}
-
 fn json_value_to_proto(value: JsonValue) -> CodeModeJsonValue {
     let kind = match value {
         JsonValue::Null => code_mode_json_value::Kind::NullValue(CodeModeJsonNull {}),
@@ -1622,13 +1597,12 @@ fn describe_entry_value(
 mod tests {
     use std::time::Duration;
 
-    use coral_api::v1::code_mode_json_value;
     use coral_api::v1::code_mode_run_event;
     use coral_api::v1::code_mode_service_server::CodeModeService as _;
     use coral_api::v1::{
-        CodeModeJsonValue, CodeModeRunErrorCause, CodeModeRunEvent, CodeModeRunStatus,
-        ExecCodeModeRequest, InitializeCodeModeRequest, TerminateCodeModeRequest,
-        WaitCodeModeRequest, WaitCodeModeResponse, Workspace,
+        CodeModeRunErrorCause, CodeModeRunEvent, CodeModeRunStatus, ExecCodeModeRequest,
+        InitializeCodeModeRequest, TerminateCodeModeRequest, WaitCodeModeRequest,
+        WaitCodeModeResponse, Workspace,
     };
     use coral_sql::ColumnInfo;
     use serde_json::json;
@@ -2752,7 +2726,7 @@ return "ran";
             let code_mode_run_event::Event::ResultItem(result_item) = event.event.as_ref()? else {
                 return None;
             };
-            result_item.item.as_ref().map(json_value_from_proto)
+            result_item.item.clone().map(serde_json::Value::from)
         })
     }
 
@@ -2768,8 +2742,8 @@ return "ran";
                 };
                 content_item
                     .item
-                    .as_ref()
-                    .map(|item| (event.id, json_value_from_proto(item)))
+                    .clone()
+                    .map(|item| (event.id, serde_json::Value::from(item)))
             })
             .collect()
     }
@@ -2810,26 +2784,5 @@ return "ran";
                 .as_ref()
                 .and_then(|error| CodeModeRunErrorCause::try_from(error.cause).ok())
         })
-    }
-
-    fn json_value_from_proto(value: &CodeModeJsonValue) -> serde_json::Value {
-        match value.kind.as_ref() {
-            Some(code_mode_json_value::Kind::NullValue(_)) | None => serde_json::Value::Null,
-            Some(code_mode_json_value::Kind::BoolValue(value)) => json!(value),
-            Some(code_mode_json_value::Kind::IntegerValue(value)) => json!(value),
-            Some(code_mode_json_value::Kind::UnsignedIntegerValue(value)) => json!(value),
-            Some(code_mode_json_value::Kind::DoubleValue(value)) => json!(value),
-            Some(code_mode_json_value::Kind::StringValue(value)) => json!(value),
-            Some(code_mode_json_value::Kind::ArrayValue(array)) => {
-                serde_json::Value::Array(array.values.iter().map(json_value_from_proto).collect())
-            }
-            Some(code_mode_json_value::Kind::ObjectValue(object)) => serde_json::Value::Object(
-                object
-                    .fields
-                    .iter()
-                    .map(|(key, value)| (key.clone(), json_value_from_proto(value)))
-                    .collect(),
-            ),
-        }
     }
 }

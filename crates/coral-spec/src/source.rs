@@ -1676,7 +1676,7 @@ fn validate_https_url_literal(
             "source '{source_name}' interface '{interface_id}' {label} URL is invalid: {error}"
         ))
     })?;
-    if crate::url_is_https_or_loopback(parsed.as_str()) {
+    if crate::parsed_url_is_https_or_loopback(&parsed) {
         return Ok(());
     }
     Err(ManifestError::validation(format!(

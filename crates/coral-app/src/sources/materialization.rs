@@ -1679,7 +1679,7 @@ fn render_provider_url_template(
     let parsed = reqwest::Url::parse(&rendered).map_err(|error| {
         AppError::InvalidInput(format!("{field} URL '{rendered}' is invalid: {error}"))
     })?;
-    if !coral_spec::url_is_https_or_loopback(parsed.as_str()) {
+    if !coral_spec::parsed_url_is_https_or_loopback(&parsed) {
         return Err(AppError::FailedPrecondition(format!(
             "{field} URL '{rendered}' must use HTTPS, except localhost development URLs"
         )));
@@ -1939,7 +1939,7 @@ fn post_json_request_on_blocking_thread(
     let mut response = request
         .send()
         .map_err(|error| AppError::Unavailable(format!("failed to POST '{endpoint}': {error}")))?;
-    if !coral_spec::url_is_https_or_loopback(response.url().as_str()) {
+    if !coral_spec::parsed_url_is_https_or_loopback(response.url()) {
         return Err(AppError::FailedPrecondition(format!(
             "provider descriptor '{endpoint}' redirected to disallowed URL '{}'",
             response.url()
@@ -2136,7 +2136,7 @@ fn read_url_descriptor_on_blocking_thread(
     let mut response = request.send().map_err(|error| {
         AppError::Unavailable(format!("failed to fetch {label} '{url}': {error}"))
     })?;
-    if !coral_spec::url_is_https_or_loopback(response.url().as_str()) {
+    if !coral_spec::parsed_url_is_https_or_loopback(response.url()) {
         return Err(AppError::FailedPrecondition(format!(
             "{label} '{url}' redirected to disallowed URL '{}'",
             response.url()
@@ -2194,7 +2194,7 @@ fn ensure_allowed_descriptor_url(url: &str) -> Result<bool, AppError> {
             "OpenAPI descriptor URL '{url}' is invalid: {error}"
         ))
     })?;
-    if !coral_spec::url_is_https_or_loopback(parsed.as_str()) {
+    if !coral_spec::parsed_url_is_https_or_loopback(&parsed) {
         return Err(AppError::FailedPrecondition(format!(
             "OpenAPI descriptor URL '{url}' must use HTTPS, except localhost development URLs"
         )));
@@ -2207,7 +2207,7 @@ fn descriptor_redirect_policy() -> reqwest::redirect::Policy {
         if attempt.previous().len() >= 5 {
             return attempt.error("too many descriptor redirects");
         }
-        if coral_spec::url_is_https_or_loopback(attempt.url().as_str()) {
+        if coral_spec::parsed_url_is_https_or_loopback(attempt.url()) {
             attempt.follow()
         } else {
             let target = attempt.url().to_string();

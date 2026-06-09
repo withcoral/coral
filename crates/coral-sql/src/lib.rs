@@ -26,9 +26,7 @@ pub use projection::{
     SqlBindingContributor, datafusion_runtime_type_name, generate_sql_bindings,
     upstream_plan_type_name,
 };
-pub use runtime::{
-    SqlProviderInvocation, SqlProviderInvoker, SqlRuntimeBinding, SqlWorkspace,
-};
+pub use runtime::{SqlProviderInvocation, SqlProviderInvoker, SqlRuntimeBinding, SqlWorkspace};
 pub use validation::validate_read_only_sql;
 
 #[cfg(test)]

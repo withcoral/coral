@@ -201,8 +201,6 @@ mod tests {
     use serde_json::json;
 
     use crate::telemetry::local_store::{StoredTraceStatus, TraceSpanRecord};
-    use crate::transport::proto_json_value_to_json;
-
     #[test]
     fn page_size_defaults_and_caps() {
         assert_eq!(normalize_page_size(0), super::DEFAULT_TRACE_PAGE_SIZE);
@@ -253,14 +251,14 @@ mod tests {
         assert_eq!(
             proto
                 .attributes
-                .map(proto_json_value_to_json)
+                .map(serde_json::Value::from)
                 .expect("structured attributes"),
             json!({ "http.method": "GET" })
         );
         assert_eq!(
             proto
                 .scope_attributes
-                .map(proto_json_value_to_json)
+                .map(serde_json::Value::from)
                 .expect("structured scope attributes"),
             json!({ "scope.attr": true })
         );

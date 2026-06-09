@@ -1,6 +1,4 @@
-use coral_capabilities::{
-    Capability, ProviderOriginKind, SupportStatus, UpstreamBinding,
-};
+use coral_capabilities::{Capability, ProviderOriginKind, SupportStatus, UpstreamBinding};
 
 use crate::exports::{
     Binding, BindingBuildContext, BindingContribution, BindingContributor, ExportRef,

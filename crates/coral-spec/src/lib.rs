@@ -98,4 +98,4 @@ pub use source::{
     filter_source_manifest_yaml_interfaces, generated_source_spec_schema,
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
-pub use url::url_is_https_or_loopback;
+pub use url::{parsed_url_is_https_or_loopback, url_is_https_or_loopback};

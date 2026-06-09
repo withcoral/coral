@@ -847,7 +847,10 @@ fn openapi_get_shape_hints_distinguish_singletons_and_lists() {
         issues.shape_hints.row_path_candidates,
         vec![Vec::<String>::new()]
     );
-    let search = find_op(&result.capabilities.capabilities, "search_issues_and_pull_requests");
+    let search = find_op(
+        &result.capabilities.capabilities,
+        "search_issues_and_pull_requests",
+    );
     assert_eq!(search.shape_hints.result_shape, ResultShapeHint::List);
     assert_eq!(
         search.shape_hints.row_path_candidates,
@@ -1379,7 +1382,10 @@ interfaces:
     );
 
     let result = import_demo("src_github_like", &spec, &raw);
-    let capability = find_op(&result.capabilities.capabilities, "search_issues_and_pull_requests");
+    let capability = find_op(
+        &result.capabilities.capabilities,
+        "search_issues_and_pull_requests",
+    );
     let schema = &capability.input_schema.schema;
     assert_eq!(
         schema
@@ -1490,7 +1496,10 @@ interfaces:
     );
 
     let result = import_demo("src_github_like", &spec, &raw);
-    let capability = find_op(&result.capabilities.capabilities, "activity_list_events_for_authenticated_user");
+    let capability = find_op(
+        &result.capabilities.capabilities,
+        "activity_list_events_for_authenticated_user",
+    );
     let schema = &capability.input_schema.schema;
     assert_eq!(
         schema

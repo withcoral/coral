@@ -46,4 +46,3 @@ fn check_file(path: &Path, body: &str) -> bool {
         false
     }
 }
-
