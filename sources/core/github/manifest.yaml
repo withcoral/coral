@@ -89783,10 +89783,10 @@ tables:
     filters:
       - name: owner
         required: true
-        bindable: true
+        lookup_key: true
       - name: repo
         required: true
-        bindable: true
+        lookup_key: true
       - name: state
         required: false
       - name: head
@@ -89800,7 +89800,7 @@ tables:
       - name: number
         type: Int64
         required: false
-        bindable: true
+        lookup_key: true
       - name: commit_sha
         required: false
     request:

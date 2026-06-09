@@ -611,9 +611,9 @@ fn validate_native_file_table_features(
     filters: &[FilterSpec],
     columns: &[ColumnSpec],
 ) -> Result<()> {
-    if let Some(filter) = filters.iter().find(|filter| filter.bindable) {
+    if let Some(filter) = filters.iter().find(|filter| filter.lookup_key) {
         return Err(ManifestError::validation(format!(
-            "{schema}.{table} filter '{}': backend=file does not support bindable filters",
+            "{schema}.{table} filter '{}': backend=file does not support lookup_key filters",
             filter.name
         )));
     }

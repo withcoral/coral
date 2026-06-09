@@ -2469,7 +2469,7 @@ tables:
       and SLA timestamp columns.
     filters:
       - name: team_id
-        bindable: true
+        lookup_key: true
       - name: team_key
       - name: project_id
       - name: project_milestone_id

@@ -149,7 +149,7 @@ pub enum FilterMode {
     Contains,
 }
 
-/// One declared filter that can be bound from SQL into a backend request.
+/// One declared filter that can be used as a complete exact lookup from SQL.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FilterSpec {
     pub name: String,
@@ -162,7 +162,7 @@ pub struct FilterSpec {
     #[serde(default)]
     pub description: String,
     #[serde(default)]
-    pub bindable: bool,
+    pub lookup_key: bool,
 }
 
 impl FilterSpec {
@@ -993,7 +993,7 @@ mod tests {
                 required: false,
                 mode: FilterMode::default(),
                 description: String::new(),
-                bindable: false,
+                lookup_key: false,
             }],
             RequestSpec {
                 method: HttpMethod::GET,
@@ -1031,7 +1031,7 @@ mod tests {
                     required: false,
                     mode: FilterMode::default(),
                     description: String::new(),
-                    bindable: false,
+                    lookup_key: false,
                 },
                 FilterSpec {
                     name: "org".into(),
@@ -1039,7 +1039,7 @@ mod tests {
                     required: false,
                     mode: FilterMode::default(),
                     description: String::new(),
-                    bindable: false,
+                    lookup_key: false,
                 },
             ],
             RequestSpec {
@@ -1143,7 +1143,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(spec.mode, FilterMode::Equality);
-        assert!(!spec.bindable);
+        assert!(!spec.lookup_key);
     }
 
     #[test]
@@ -1214,14 +1214,14 @@ mod tests {
     }
 
     #[test]
-    fn filter_bindable_field_deserializes() {
+    fn filter_lookup_key_field_deserializes() {
         let spec: FilterSpec = serde_json::from_value(serde_json::json!({
             "name": "repo",
-            "bindable": true
+            "lookup_key": true
         }))
         .unwrap();
 
-        assert!(spec.bindable);
+        assert!(spec.lookup_key);
     }
 
     #[test]

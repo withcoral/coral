@@ -592,7 +592,7 @@
           ]
         },
         "description": { "type": "string" },
-        "bindable": { "type": "boolean" }
+        "lookup_key": { "type": "boolean" }
       }
     },
     "search_limits": {

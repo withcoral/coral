@@ -36,7 +36,7 @@ pub(crate) enum DependentJoinFallbackReason {
     NonEqui,
     NonHttpProvider,
     NonPeelableWrapper,
-    MixedBindable,
+    MixedLookupKey,
     MissingRequired,
     OverConstrained,
     NonCoercible,
@@ -52,7 +52,7 @@ impl DependentJoinFallbackReason {
             Self::NonEqui => "not_inner_equi_join",
             Self::NonHttpProvider => "not_http_provider",
             Self::NonPeelableWrapper => "non_peelable_wrapper",
-            Self::MixedBindable => "mixed_or_missing_bindable_filter",
+            Self::MixedLookupKey => "mixed_or_missing_lookup_key_filter",
             Self::MissingRequired => "missing_required_filter",
             Self::OverConstrained => "over_constrained_filter",
             Self::NonCoercible => "non_coercible_binding_type",
@@ -175,7 +175,7 @@ fn analyze_join(join: &Join, config: &DependentJoinConfig) -> DependentJoinAnaly
         (DependentJoinAnalysis::Candidate(_), DependentJoinAnalysis::Fallback(_)) => left,
         (DependentJoinAnalysis::Fallback(_), DependentJoinAnalysis::Candidate(_)) => right,
         (DependentJoinAnalysis::Candidate(_), DependentJoinAnalysis::Candidate(_)) => {
-            DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::MixedBindable)
+            DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::MixedLookupKey)
         }
         (
             DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonHttpProvider),
@@ -253,14 +253,14 @@ fn analyze_dependent_bindings(
             .iter()
             .find(|filter| filter.name == dependent_column.name)
         else {
-            return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::MixedBindable);
+            return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::MixedLookupKey);
         };
 
-        if !filter.bindable {
-            return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::MixedBindable);
+        if !filter.lookup_key {
+            return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::MixedLookupKey);
         }
 
-        if !is_bindable_data_type(&binding.resolver.data_type) {
+        if !is_lookup_key_data_type(&binding.resolver.data_type) {
             return DependentJoinAnalysis::Fallback(DependentJoinFallbackReason::NonCoercible);
         }
 
@@ -402,7 +402,7 @@ fn resolver_with_binding_columns(
         let dependent_column = &binding.dependent_column;
         let resolver = binding.resolver;
 
-        if !is_bindable_data_type(&resolver.data_type) {
+        if !is_lookup_key_data_type(&resolver.data_type) {
             return None;
         }
 
@@ -412,7 +412,7 @@ fn resolver_with_binding_columns(
             .iter()
             .find(|filter| filter.name == dependent_column.name)?;
 
-        if !filter.bindable {
+        if !filter.lookup_key {
             return None;
         }
         if !binding_filter_names.insert(filter.name.as_str()) {
@@ -582,7 +582,7 @@ fn resolve_join_operand(
         None => source_type.clone(),
     };
 
-    if !is_bindable_data_type(&data_type) {
+    if !is_lookup_key_data_type(&data_type) {
         return None;
     }
 
@@ -597,7 +597,7 @@ fn dependent_has_column(dependent: &PeeledDependentScan, column: &Column) -> boo
     dependent.table_schema.field_from_column(column).is_ok()
 }
 
-fn is_bindable_data_type(data_type: &DataType) -> bool {
+fn is_lookup_key_data_type(data_type: &DataType) -> bool {
     matches!(
         data_type,
         DataType::Utf8
@@ -620,7 +620,7 @@ fn is_join_cast_supported(
     source_type: &DataType,
     target_type: &DataType,
 ) -> bool {
-    if source_type == target_type && is_bindable_data_type(target_type) {
+    if source_type == target_type && is_lookup_key_data_type(target_type) {
         return true;
     }
 

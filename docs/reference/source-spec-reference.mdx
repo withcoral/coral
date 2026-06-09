@@ -916,10 +916,10 @@ The manifest contract is deliberately narrow:
 
 | Field | Scope | Type | Default | Description |
 | ----- | ----- | ---- | ------- | ----------- |
-| `filters[].bindable` | filter | boolean | `false` | Allows the filter to be supplied from a runtime join key |
+| `filters[].lookup_key` | filter | boolean | `false` | Allows the filter to be supplied from a runtime join key |
 
-Bindable filters must use `mode: equality`. Do not mark ranked, capped, fuzzy,
-or otherwise incomplete search-result filters as bindable; dependent joins rely
+Lookup-key filters must use `mode: equality`. Do not mark ranked, capped, fuzzy,
+or otherwise incomplete search-result filters as lookup keys; dependent joins rely
 on complete filtered result sets to preserve SQL join correctness.
 
 Dependent join execution buffers resolver rows and dependent fetch results
@@ -936,12 +936,12 @@ tables:
       path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.number}}
     filters:
       - name: owner
-        bindable: true
+        lookup_key: true
       - name: repo
-        bindable: true
+        lookup_key: true
       - name: number
         type: Int64
-        bindable: true
+        lookup_key: true
     columns:
       - name: number
         type: Int64

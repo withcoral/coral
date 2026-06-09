@@ -1570,7 +1570,7 @@ async fn dependent_join_source_config_disables_rewrite_for_source() {
 }
 
 #[tokio::test]
-async fn dependent_join_source_config_disables_one_mixed_bindable_side() {
+async fn dependent_join_source_config_disables_one_mixed_lookup_key_side() {
     let execution = CoralQuery::execute_sql(
         &[
             build_source(github_broad_query_manifest("http://127.0.0.1:9")),
@@ -2399,19 +2399,19 @@ async fn assert_dpp_and_naive_rows_agree(sql: &str, comparison: RowComparison) {
     }
 }
 
-async fn execute_differential_join(sql: &str, bindable: bool) -> Vec<Value> {
+async fn execute_differential_join(sql: &str, lookup_key_enabled: bool) -> Vec<Value> {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(temp.path(), "issues.jsonl", &differential_issue_rows());
 
     let server = MockServer::start().await;
-    mount_differential_github_mocks(&server, bindable).await;
+    mount_differential_github_mocks(&server, lookup_key_enabled).await;
 
     let execution = CoralQuery::execute_sql(
         &[
             build_source(issues_manifest(temp.path())),
-            build_source(github_broad_query_manifest_with_bindable(
+            build_source(github_broad_query_manifest_with_lookup_key(
                 &server.uri(),
-                bindable,
+                lookup_key_enabled,
             )),
         ],
         test_runtime(),
@@ -2423,9 +2423,9 @@ async fn execute_differential_join(sql: &str, bindable: bool) -> Vec<Value> {
     execution_to_rows(&execution)
 }
 
-async fn mount_differential_github_mocks(server: &MockServer, bindable: bool) {
+async fn mount_differential_github_mocks(server: &MockServer, lookup_key_enabled: bool) {
     let pull_rows = differential_pull_rows();
-    if bindable {
+    if lookup_key_enabled {
         mount_filtered_pull_response(server, &pull_rows, "withcoral", "coral", 123).await;
         mount_filtered_pull_response(server, &pull_rows, "apache", "arrow-datafusion", 42).await;
         mount_filtered_pull_response(server, &pull_rows, "ghost", "missing", 404).await;
@@ -2765,7 +2765,7 @@ fn slack_messages_manifest(base_url: &str) -> Value {
             "name": "messages",
             "description": "Slack messages",
             "filters": [
-                { "name": "channel", "required": true, "bindable": true }
+                { "name": "channel", "required": true, "lookup_key": true }
             ],
             "request": {
                 "method": "GET",
@@ -2803,9 +2803,9 @@ fn github_manifest(base_url: &str) -> Value {
         base_url,
         None,
         vec![
-            json!({ "name": "owner", "bindable": true }),
-            json!({ "name": "repo", "bindable": true }),
-            json!({ "name": "number", "bindable": true }),
+            json!({ "name": "owner", "lookup_key": true }),
+            json!({ "name": "repo", "lookup_key": true }),
+            json!({ "name": "number", "lookup_key": true }),
             json!({ "name": "state" }),
         ],
     )
@@ -2816,9 +2816,9 @@ fn github_required_manifest(base_url: &str) -> Value {
         base_url,
         None,
         vec![
-            json!({ "name": "owner", "required": true, "bindable": true }),
-            json!({ "name": "repo", "required": true, "bindable": true }),
-            json!({ "name": "number", "required": true, "bindable": true }),
+            json!({ "name": "owner", "required": true, "lookup_key": true }),
+            json!({ "name": "repo", "required": true, "lookup_key": true }),
+            json!({ "name": "number", "required": true, "lookup_key": true }),
             json!({ "name": "state" }),
         ],
     )
@@ -3006,9 +3006,9 @@ fn github_broad_manifest(base_url: &str) -> Value {
             "name": "pull_requests",
             "description": "Pull requests",
             "filters": [
-                { "name": "owner", "bindable": true },
-                { "name": "repo", "bindable": true },
-                { "name": "number", "bindable": true }
+                { "name": "owner", "lookup_key": true },
+                { "name": "repo", "lookup_key": true },
+                { "name": "number", "lookup_key": true }
             ],
             "request": {
                 "method": "GET",
@@ -3028,7 +3028,7 @@ fn github_broad_manifest(base_url: &str) -> Value {
 }
 
 fn github_broad_query_manifest(base_url: &str) -> Value {
-    github_broad_query_manifest_with_bindable(base_url, true)
+    github_broad_query_manifest_with_lookup_key(base_url, true)
 }
 
 fn source_named(mut manifest: Value, name: &str) -> Value {
@@ -3039,7 +3039,7 @@ fn source_named(mut manifest: Value, name: &str) -> Value {
     manifest
 }
 
-fn github_broad_query_manifest_with_bindable(base_url: &str, bindable: bool) -> Value {
+fn github_broad_query_manifest_with_lookup_key(base_url: &str, lookup_key_enabled: bool) -> Value {
     json!({
         "name": "github",
         "version": "0.1.0",
@@ -3050,9 +3050,9 @@ fn github_broad_query_manifest_with_bindable(base_url: &str, bindable: bool) -> 
             "name": "pull_requests",
             "description": "Pull requests",
             "filters": [
-                { "name": "owner", "bindable": bindable },
-                { "name": "repo", "bindable": bindable },
-                { "name": "number", "bindable": bindable }
+                { "name": "owner", "lookup_key": lookup_key_enabled },
+                { "name": "repo", "lookup_key": lookup_key_enabled },
+                { "name": "number", "lookup_key": lookup_key_enabled }
             ],
             "request": {
                 "method": "GET",

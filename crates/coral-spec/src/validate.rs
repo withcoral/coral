@@ -135,7 +135,7 @@ pub(crate) fn validate_http_table(input: HttpTableValidation<'_>) -> Result<()> 
         detail_hints,
         columns,
     )?;
-    validate_bindable_filters_compatible_with_search_limits(
+    validate_lookup_key_filters_compatible_with_search_limits(
         schema,
         table_name,
         filters,
@@ -426,7 +426,7 @@ fn validate_search_limits(limits: &SearchLimitsSpec, context: &str) -> Result<()
     Ok(())
 }
 
-fn validate_bindable_filters_compatible_with_search_limits(
+fn validate_lookup_key_filters_compatible_with_search_limits(
     schema: &str,
     table: &str,
     filters: &[FilterSpec],
@@ -436,9 +436,9 @@ fn validate_bindable_filters_compatible_with_search_limits(
         return Ok(());
     }
 
-    if let Some(filter) = filters.iter().find(|filter| filter.bindable) {
+    if let Some(filter) = filters.iter().find(|filter| filter.lookup_key) {
         return Err(ManifestError::validation(format!(
-            "{schema}.{table} filter '{}': bindable filters require complete filtered result sets, but this table declares search_limits",
+            "{schema}.{table} filter '{}': lookup_key filters require complete filtered result sets, but this table declares search_limits",
             filter.name
         )));
     }
@@ -489,9 +489,9 @@ fn validate_detail_hints(
 }
 
 fn validate_filter_capabilities(filter: &FilterSpec) -> Result<()> {
-    if filter.bindable && filter.mode != FilterMode::Equality {
+    if filter.lookup_key && filter.mode != FilterMode::Equality {
         return Err(ManifestError::validation(format!(
-            "filter '{}': bindable=true requires mode=equality",
+            "filter '{}': lookup_key=true requires mode=equality",
             filter.name
         )));
     }
@@ -1002,18 +1002,18 @@ mod tests {
             required: false,
             mode: FilterMode::Equality,
             description: String::new(),
-            bindable: false,
+            lookup_key: false,
         }]
     }
 
-    fn bindable_filter(name: &str) -> FilterSpec {
+    fn lookup_key_filter(name: &str) -> FilterSpec {
         FilterSpec {
             name: name.to_string(),
             data_type: "Utf8".to_string(),
             required: false,
             mode: FilterMode::Equality,
             description: String::new(),
-            bindable: true,
+            lookup_key: true,
         }
     }
 
@@ -1722,7 +1722,7 @@ mod tests {
             required: false,
             mode: FilterMode::Contains,
             description: String::new(),
-            bindable: false,
+            lookup_key: false,
         }];
 
         let columns = [test_column()];
@@ -1778,7 +1778,7 @@ mod tests {
             required: false,
             mode: FilterMode::Contains,
             description: String::new(),
-            bindable: false,
+            lookup_key: false,
         }];
 
         let columns = [test_column()];
@@ -1798,13 +1798,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_search_limited_http_table_rejects_bindable_filters() {
+    fn validate_search_limited_http_table_rejects_lookup_key_filters() {
         let search_limits = SearchLimitsSpec {
             default_top_k: 10,
             max_top_k: 100,
             max_calls_per_query: 1,
         };
-        let filters = vec![bindable_filter("id")];
+        let filters = vec![lookup_key_filter("id")];
         let columns = [test_column()];
         let request = base_request();
 
@@ -1819,11 +1819,11 @@ mod tests {
             search_limits: Some(&search_limits),
             detail_hints: &[],
         })
-        .expect_err("search-limited tables should not allow bindable filters");
+        .expect_err("search-limited tables should not allow lookup_key filters");
 
         assert!(
             error.to_string().contains(
-                "demo.search filter 'id': bindable filters require complete filtered result sets, but this table declares search_limits"
+                "demo.search filter 'id': lookup_key filters require complete filtered result sets, but this table declares search_limits"
             ),
             "unexpected error: {error}"
         );
@@ -2102,18 +2102,18 @@ mod tests {
     }
 
     #[test]
-    fn bindable_non_equality_modes_reject() {
+    fn lookup_key_non_equality_modes_reject() {
         for mode in [FilterMode::Search, FilterMode::Contains] {
-            let mut filter = bindable_filter("q");
+            let mut filter = lookup_key_filter("q");
             filter.mode = mode;
 
             let error = validate_test_http_table(&[filter], &base_request(), &[])
-                .expect_err("non-equality bindable mode should fail");
+                .expect_err("non-equality lookup_key mode should fail");
 
             assert!(
                 error
                     .to_string()
-                    .contains("filter 'q': bindable=true requires mode=equality")
+                    .contains("filter 'q': lookup_key=true requires mode=equality")
             );
         }
     }

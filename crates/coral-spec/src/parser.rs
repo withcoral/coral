@@ -290,7 +290,7 @@ tables:
     }
 
     #[test]
-    fn bindable_on_file_jsonl_rejects_at_spec_layer() {
+    fn lookup_key_on_file_jsonl_rejects_at_spec_layer() {
         let error = parse_source_manifest_yaml(
             r"
 name: demo
@@ -303,7 +303,7 @@ tables:
     format: jsonl
     filters:
       - name: id
-        bindable: true
+        lookup_key: true
     source:
       location: file:///tmp/demo/
     columns:
@@ -311,17 +311,15 @@ tables:
         type: Utf8
 ",
         )
-        .expect_err("spec layer should reject bindable filters on file sources");
+        .expect_err("spec layer should reject lookup_key filters on file sources");
 
-        assert!(
-            error.to_string().contains(
-                "demo.messages filter 'id': backend=file does not support bindable filters"
-            )
-        );
+        assert!(error.to_string().contains(
+            "demo.messages filter 'id': backend=file does not support lookup_key filters"
+        ));
     }
 
     #[test]
-    fn bindable_on_file_parquet_rejects_at_spec_layer() {
+    fn lookup_key_on_file_parquet_rejects_at_spec_layer() {
         let error = parse_source_manifest_yaml(
             r"
 name: demo
@@ -334,7 +332,7 @@ tables:
     format: parquet
     filters:
       - name: id
-        bindable: true
+        lookup_key: true
     source:
       location: file:///tmp/demo/
     columns:
@@ -342,13 +340,11 @@ tables:
         type: Utf8
 ",
         )
-        .expect_err("spec layer should reject bindable filters on file sources");
+        .expect_err("spec layer should reject lookup_key filters on file sources");
 
-        assert!(
-            error.to_string().contains(
-                "demo.messages filter 'id': backend=file does not support bindable filters"
-            )
-        );
+        assert!(error.to_string().contains(
+            "demo.messages filter 'id': backend=file does not support lookup_key filters"
+        ));
     }
 
     #[test]

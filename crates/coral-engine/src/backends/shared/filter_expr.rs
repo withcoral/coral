@@ -445,7 +445,7 @@ mod tests {
             required,
             mode,
             description: String::new(),
-            bindable: false,
+            lookup_key: false,
         }
     }
 
@@ -654,7 +654,7 @@ mod pushdown_classification_tests {
             required: false,
             mode: FilterMode::Equality,
             description: String::new(),
-            bindable: false,
+            lookup_key: false,
         }
     }
 

@@ -26,7 +26,7 @@ use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
     RegisteredSource, RegisteredTable, build_registered_inputs, build_registered_table,
     registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
-    validate_bindable_filter_backend_support,
+    validate_lookup_key_filter_backend_support,
 };
 use coral_spec::SourceBackend;
 use coral_spec::backends::file::{FileFormat, FileSourceManifest, FileTableSpec};
@@ -79,14 +79,14 @@ impl CompiledBackendSource for FileCompiledSource {
     }
 
     fn validate_runtime_capabilities(&self) -> Result<()> {
-        validate_bindable_filter_backend_support(
+        validate_lookup_key_filter_backend_support(
             self.source_name(),
             SourceBackend::File,
             self.manifest
                 .tables
                 .iter()
                 .flat_map(FileTableSpec::filters)
-                .any(|filter| filter.bindable),
+                .any(|filter| filter.lookup_key),
         )
     }
 

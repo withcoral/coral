@@ -67,7 +67,7 @@ async fn multi_component_source_executes_across_component_tables() {
 }
 
 #[tokio::test]
-async fn composite_source_rejects_unsupported_bindable_component_backend() {
+async fn composite_source_rejects_unsupported_lookup_key_component_backend() {
     let source = QuerySource::from_runtime_components(
         RuntimeSourcePackage {
             source_name: "demo".to_string(),
@@ -76,7 +76,7 @@ async fn composite_source_rejects_unsupported_bindable_component_backend() {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             components: vec![RuntimeSourceComponent::File(
-                file_component_with_bindable_filter(),
+                file_component_with_lookup_key_filter(),
             )],
         },
         BTreeMap::new(),
@@ -86,11 +86,11 @@ async fn composite_source_rejects_unsupported_bindable_component_backend() {
 
     let error = CoralQuery::validate_source(&source, test_runtime(), &[])
         .await
-        .expect_err("composite validation should reject unsupported bindable component backend");
+        .expect_err("composite validation should reject unsupported lookup_key component backend");
 
     assert!(
         error.to_string().contains(
-            "source 'demo': bindable filters are not supported by the current engine for backend 'file'"
+            "source 'demo': lookup_key filters are not supported by the current engine for backend 'file'"
         ),
         "{error}"
     );
@@ -122,7 +122,7 @@ tables:
     manifest.as_http().expect("http manifest").clone()
 }
 
-fn file_component_with_bindable_filter() -> coral_spec::backends::file::FileSourceManifest {
+fn file_component_with_lookup_key_filter() -> coral_spec::backends::file::FileSourceManifest {
     let manifest = parse_source_manifest_yaml(
         r"
 name: demo
@@ -134,7 +134,7 @@ tables:
     description: Items
     format: jsonl
     source:
-      location: file:///tmp/coral-composite-bindable/
+      location: file:///tmp/coral-composite-lookup-key/
     columns:
       - name: id
         type: Utf8
@@ -149,7 +149,7 @@ tables:
         required: false,
         mode: FilterMode::Equality,
         description: String::new(),
-        bindable: true,
+        lookup_key: true,
     });
     manifest
 }

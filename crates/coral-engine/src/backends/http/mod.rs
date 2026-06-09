@@ -13,7 +13,8 @@ use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
     RegisteredSource, RegisteredTable, SourceTableFunctions, build_registered_inputs,
     build_registered_table, build_registered_table_function, internal_table_function_name,
-    registered_columns_from_specs, required_filter_names, validate_bindable_filter_backend_support,
+    registered_columns_from_specs, required_filter_names,
+    validate_lookup_key_filter_backend_support,
 };
 use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
 use coral_spec::SourceBackend;
@@ -94,14 +95,14 @@ impl CompiledBackendSource for HttpCompiledSource {
     }
 
     fn validate_runtime_capabilities(&self) -> Result<()> {
-        validate_bindable_filter_backend_support(
+        validate_lookup_key_filter_backend_support(
             self.source_name(),
             SourceBackend::Http,
             self.manifest
                 .tables
                 .iter()
                 .flat_map(HttpTableSpec::filters)
-                .any(|filter| filter.bindable),
+                .any(|filter| filter.lookup_key),
         )
     }
 
