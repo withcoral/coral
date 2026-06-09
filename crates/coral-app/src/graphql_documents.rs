@@ -89,11 +89,10 @@ pub(crate) fn render_operation_document(
 
 fn operation_kind_keyword(kind: GraphqlOperationKind) -> Result<&'static str, String> {
     match kind {
-        GraphqlOperationKind::Query => Ok("query"),
-        GraphqlOperationKind::Mutation => Ok("mutation"),
         GraphqlOperationKind::Subscription => {
             Err("GraphQL subscriptions are not invokable in this runtime".to_string())
         }
+        kind => Ok(kind.as_keyword()),
     }
 }
 

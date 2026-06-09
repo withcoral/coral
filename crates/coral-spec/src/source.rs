@@ -1676,25 +1676,12 @@ fn validate_https_url_literal(
             "source '{source_name}' interface '{interface_id}' {label} URL is invalid: {error}"
         ))
     })?;
-    if descriptor_url_is_allowed(&parsed) {
+    if crate::url_is_https_or_loopback(parsed.as_str()) {
         return Ok(());
     }
     Err(ManifestError::validation(format!(
         "source '{source_name}' interface '{interface_id}' {label} must use https, except localhost development URLs"
     )))
-}
-
-fn descriptor_url_is_allowed(url: &url::Url) -> bool {
-    match url.scheme() {
-        "https" => true,
-        "http" => match url.host() {
-            Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-            Some(url::Host::Ipv4(address)) => address.is_loopback(),
-            Some(url::Host::Ipv6(address)) => address.is_loopback(),
-            None => false,
-        },
-        _ => false,
-    }
 }
 
 fn default_true() -> bool {

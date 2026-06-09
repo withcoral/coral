@@ -672,7 +672,7 @@ fn rest_base_url(
     })?;
     metadata
         .server_url
-        .filter(|url| is_allowed_runtime_base_url(url))
+        .filter(|url| coral_spec::url_is_https_or_loopback(url))
         .ok_or_else(|| {
             error_response(
                 "unsupported",
@@ -683,19 +683,6 @@ fn rest_base_url(
                 }),
             )
         })
-}
-
-fn is_allowed_runtime_base_url(value: &str) -> bool {
-    Url::parse(value).is_ok_and(|url| match url.scheme() {
-        "https" => true,
-        "http" => match url.host() {
-            Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-            Some(url::Host::Ipv4(address)) => address.is_loopback(),
-            Some(url::Host::Ipv6(address)) => address.is_loopback(),
-            None => false,
-        },
-        _ => false,
-    })
 }
 
 async fn mcp_invocation_plan(
@@ -1032,7 +1019,7 @@ fn render_source_input_template(
             }
         }
     }
-    if !is_allowed_runtime_base_url(&rendered) {
+    if !coral_spec::url_is_https_or_loopback(&rendered) {
         return Err(error_response(
             "invalid_request",
             format!("{field} rendered to an unsupported provider URL"),

@@ -1,5 +1,5 @@
 use coral_capabilities::{
-    Capability, GraphqlOperationKind, ProviderOriginKind, SupportStatus, UpstreamBinding,
+    Capability, ProviderOriginKind, SupportStatus, UpstreamBinding,
 };
 
 use crate::exports::{
@@ -147,11 +147,7 @@ fn strip_matching_operation_group(operation_id: &str, group: &str) -> Option<Str
 
 fn graphql_operation_path_segments(capability: &Capability) -> Vec<String> {
     let operation_kind = match &capability.upstream_binding {
-        UpstreamBinding::Graphql(binding) => match binding.graphql_operation_kind {
-            GraphqlOperationKind::Query => Some("query"),
-            GraphqlOperationKind::Mutation => Some("mutation"),
-            GraphqlOperationKind::Subscription => Some("subscription"),
-        },
+        UpstreamBinding::Graphql(binding) => Some(binding.graphql_operation_kind.as_keyword()),
         _ => None,
     };
     let Some(kind) = operation_kind else {

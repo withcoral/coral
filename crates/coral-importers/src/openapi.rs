@@ -57,7 +57,7 @@ pub(super) fn import_openapi(
         && !metadata
             .server_url
             .as_deref()
-            .is_some_and(is_allowed_runtime_base_url)
+            .is_some_and(coral_spec::url_is_https_or_loopback)
     {
         let diagnostic = Diagnostic {
             source_id: Some(source_id.clone()),
@@ -223,19 +223,6 @@ fn operation_tags(operation: &Map<String, Value>) -> Vec<String> {
         .filter(|tag| !tag.is_empty())
         .map(ToString::to_string)
         .collect()
-}
-
-fn is_allowed_runtime_base_url(value: &str) -> bool {
-    url::Url::parse(value).is_ok_and(|url| match url.scheme() {
-        "https" => true,
-        "http" => match url.host() {
-            Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-            Some(url::Host::Ipv4(address)) => address.is_loopback(),
-            Some(url::Host::Ipv6(address)) => address.is_loopback(),
-            None => false,
-        },
-        _ => false,
-    })
 }
 
 fn rest_input_schema(parameters: &[Value], request_bodies: &[RestRequestBody]) -> InvocationSchema {

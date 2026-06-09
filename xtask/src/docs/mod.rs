@@ -126,16 +126,9 @@ fn check_mode(outputs: &[GeneratedFile]) -> bool {
 
 fn write_mode(outputs: &[GeneratedFile]) -> Result<()> {
     for file in outputs {
-        write_if_changed(&file.path, &file.body)?;
+        crate::write_if_changed(&file.path, &file.body)?;
     }
     Ok(())
-}
-
-fn write_if_changed(path: &Path, body: &str) -> Result<()> {
-    if fs::read_to_string(path).ok().as_deref() == Some(body) {
-        return Ok(());
-    }
-    fs::write(path, body).with_context(|| format!("writing {}", path.display()))
 }
 
 #[cfg(test)]

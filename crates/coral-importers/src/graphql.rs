@@ -86,11 +86,7 @@ pub(super) fn import_graphql(
         }
         let operation_id = operation_ids.allocate(&format!(
             "{}_{}",
-            match field.kind {
-                GraphqlOperationKind::Query => "query",
-                GraphqlOperationKind::Mutation => "mutation",
-                GraphqlOperationKind::Subscription => "subscription",
-            },
+            field.kind.as_keyword(),
             field.name
         ));
         let operation_name = format!(

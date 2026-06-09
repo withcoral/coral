@@ -654,6 +654,18 @@ pub enum GraphqlOperationKind {
     Subscription,
 }
 
+impl GraphqlOperationKind {
+    /// Lowercase GraphQL operation keyword (`query`, `mutation`, `subscription`).
+    #[must_use]
+    pub const fn as_keyword(self) -> &'static str {
+        match self {
+            Self::Query => "query",
+            Self::Mutation => "mutation",
+            Self::Subscription => "subscription",
+        }
+    }
+}
+
 /// GraphQL variable binding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphqlVariableBinding {

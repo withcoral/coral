@@ -175,25 +175,12 @@ fn render_oauth_endpoint_url(
     let parsed = Url::parse(&rendered).map_err(|error| {
         ManifestError::validation(format!("invalid OAuth {label} URL: {error}"))
     })?;
-    if !oauth_endpoint_url_is_allowed(&parsed) {
+    if !crate::url_is_https_or_loopback(parsed.as_str()) {
         return Err(ManifestError::validation(format!(
             "OAuth {label} URL must use https, except localhost development URLs"
         )));
     }
     Ok(rendered)
-}
-
-fn oauth_endpoint_url_is_allowed(url: &Url) -> bool {
-    match url.scheme() {
-        "https" => true,
-        "http" => match url.host() {
-            Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-            Some(url::Host::Ipv4(address)) => address.is_loopback(),
-            Some(url::Host::Ipv6(address)) => address.is_loopback(),
-            None => false,
-        },
-        _ => false,
-    }
 }
 
 /// Supported loopback redirect URI port binding modes.

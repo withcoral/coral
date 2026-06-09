@@ -1090,6 +1090,7 @@ dependencies = [
  "prost",
  "protoc-bin-vendored",
  "serde",
+ "serde_json",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
@@ -1247,7 +1248,6 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "thiserror 2.0.18",
- "url",
 ]
 
 [[package]]

@@ -33,6 +33,16 @@ mod schemas;
 mod skills;
 mod sources;
 
+/// Writes `body` to `path` only when it differs from the current contents,
+/// keeping generated-file timestamps stable across no-op regenerations.
+pub(crate) fn write_if_changed(path: &std::path::Path, body: &str) -> Result<()> {
+    use anyhow::Context as _;
+    if std::fs::read_to_string(path).ok().as_deref() == Some(body) {
+        return Ok(());
+    }
+    std::fs::write(path, body).with_context(|| format!("writing {}", path.display()))
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "xtask",

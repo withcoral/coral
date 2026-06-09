@@ -24,7 +24,7 @@ pub(crate) fn run(args: &Args) -> Result<bool> {
     if args.check {
         Ok(check_file(&args.source_spec_schema, &body))
     } else {
-        write_if_changed(&args.source_spec_schema, &body)?;
+        crate::write_if_changed(&args.source_spec_schema, &body)?;
         Ok(true)
     }
 }
@@ -47,9 +47,3 @@ fn check_file(path: &Path, body: &str) -> bool {
     }
 }
 
-fn write_if_changed(path: &Path, body: &str) -> Result<()> {
-    if fs::read_to_string(path).ok().as_deref() == Some(body) {
-        return Ok(());
-    }
-    fs::write(path, body).with_context(|| format!("writing {}", path.display()))
-}

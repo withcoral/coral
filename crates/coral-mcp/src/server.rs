@@ -3,14 +3,12 @@
 use std::collections::BTreeMap;
 
 use coral_api::v1::{
-    CodeModeJsonValue, CodeModeRunError, CodeModeRunErrorCause, CodeModeRunEvent,
-    CodeModeRunStatus, DescribeExportCandidate, DescribeExportRequest, DescribeExportResponse,
-    ExecCodeModeRequest, ExecCodeModeResponse, ExportBindingKind, ExportDescription,
-    ExportDiagnosticDescription, InitializeCodeModeRequest, JsonValue as ProtoJsonValue,
-    ListSourcesRequest, PaginationRequest, SearchExportItem, SearchExportsRequest,
-    SearchExportsResponse, SubmitFeedbackRequest, TerminateCodeModeRequest, WaitCodeModeRequest,
-    WaitCodeModeResponse, code_mode_json_value, code_mode_run_event,
-    json_value as proto_json_value,
+    CodeModeRunError, CodeModeRunErrorCause, CodeModeRunEvent, CodeModeRunStatus,
+    DescribeExportCandidate, DescribeExportRequest, DescribeExportResponse, ExecCodeModeRequest,
+    ExecCodeModeResponse, ExportBindingKind, ExportDescription, ExportDiagnosticDescription,
+    InitializeCodeModeRequest, ListSourcesRequest, PaginationRequest, SearchExportItem,
+    SearchExportsRequest, SearchExportsResponse, SubmitFeedbackRequest, TerminateCodeModeRequest,
+    WaitCodeModeRequest, WaitCodeModeResponse, code_mode_run_event,
 };
 use coral_capabilities::{Capability, code_mode_tool_input_schema, generated_tool_output_schema};
 use coral_client::{
@@ -186,13 +184,13 @@ fn summarize_code_mode_event(event: CodeModeRunEvent, summary: &mut CodeModeSumm
     };
     match payload {
         code_mode_run_event::Event::ContentItem(payload) => {
-            let value = payload.item.map_or(Value::Null, json_value_from_code_mode);
+            let value = payload.item.map_or(Value::Null, Value::from);
             summary
                 .events
                 .push(code_mode_content_event(event_id, value));
         }
         code_mode_run_event::Event::ResultItem(payload) => {
-            summary.result = Some(payload.item.map_or(Value::Null, json_value_from_code_mode));
+            summary.result = Some(payload.item.map_or(Value::Null, Value::from));
         }
         code_mode_run_event::Event::RunFailed(payload) => {
             summary.error = Some(
@@ -356,56 +354,6 @@ fn code_mode_error_value(error: &CodeModeRunError) -> Value {
         value.insert("correlation_id".to_string(), json!(&error.correlation_id));
     }
     Value::Object(value)
-}
-
-fn json_value_from_code_mode(value: CodeModeJsonValue) -> Value {
-    match value.kind {
-        Some(code_mode_json_value::Kind::NullValue(_)) | None => Value::Null,
-        Some(code_mode_json_value::Kind::BoolValue(value)) => Value::Bool(value),
-        Some(code_mode_json_value::Kind::IntegerValue(value)) => json!(value),
-        Some(code_mode_json_value::Kind::UnsignedIntegerValue(value)) => json!(value),
-        Some(code_mode_json_value::Kind::DoubleValue(value)) => json!(value),
-        Some(code_mode_json_value::Kind::StringValue(value)) => Value::String(value),
-        Some(code_mode_json_value::Kind::ObjectValue(object)) => Value::Object(
-            object
-                .fields
-                .into_iter()
-                .map(|(key, value)| (key, json_value_from_code_mode(value)))
-                .collect(),
-        ),
-        Some(code_mode_json_value::Kind::ArrayValue(array)) => Value::Array(
-            array
-                .values
-                .into_iter()
-                .map(json_value_from_code_mode)
-                .collect(),
-        ),
-    }
-}
-
-fn json_value_from_proto(value: ProtoJsonValue) -> Value {
-    match value.kind {
-        Some(proto_json_value::Kind::NullValue(_)) | None => Value::Null,
-        Some(proto_json_value::Kind::BoolValue(value)) => Value::Bool(value),
-        Some(proto_json_value::Kind::IntegerValue(value)) => json!(value),
-        Some(proto_json_value::Kind::UnsignedIntegerValue(value)) => json!(value),
-        Some(proto_json_value::Kind::DoubleValue(value)) => json!(value),
-        Some(proto_json_value::Kind::StringValue(value)) => Value::String(value),
-        Some(proto_json_value::Kind::ObjectValue(object)) => Value::Object(
-            object
-                .fields
-                .into_iter()
-                .map(|(key, value)| (key, json_value_from_proto(value)))
-                .collect(),
-        ),
-        Some(proto_json_value::Kind::ArrayValue(array)) => Value::Array(
-            array
-                .values
-                .into_iter()
-                .map(json_value_from_proto)
-                .collect(),
-        ),
-    }
 }
 
 impl ToolCallOutcome {
@@ -1049,7 +997,7 @@ fn compact_entry_value(description: &ExportDescription) -> Result<Value, tonic::
     let capability_value = description
         .capability
         .clone()
-        .map_or(Value::Null, json_value_from_proto);
+        .map_or(Value::Null, Value::from);
     let code_mode_input_schema = serde_json::from_value::<Capability>(capability_value.clone())
         .map(|capability| code_mode_tool_input_schema(&capability))
         .or_else(|_| {
@@ -1200,7 +1148,7 @@ fn inject_diagnostic_details(values: &mut [Value], diagnostics: &[ExportDiagnost
         if let Some(object) = value.as_object_mut()
             && let Some(details) = proto_diagnostic.details.clone()
         {
-            object.insert("details".to_string(), json_value_from_proto(details));
+            object.insert("details".to_string(), Value::from(details));
         }
     }
 }
@@ -1230,7 +1178,7 @@ fn normalize_describe_tool_value(value: &mut Value, response: &DescribeExportRes
     };
     if let Some(entry) = value.get_mut("entry").and_then(Value::as_object_mut) {
         if let Some(capability) = description.capability.clone() {
-            entry.insert("capability".to_string(), json_value_from_proto(capability));
+            entry.insert("capability".to_string(), Value::from(capability));
         }
         insert_code_mode_output_schema(entry);
         if let Some(Value::Array(diagnostics)) = entry.get_mut("diagnostics") {

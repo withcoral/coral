@@ -40,6 +40,8 @@ pub mod v1 {
     tonic::include_proto!("coral.v1");
 }
 
+mod convert;
+
 /// Maximum gRPC message size for `QueryService` *responses*, in bytes.
 ///
 /// `ExecuteSql` is a unary RPC that returns the full Arrow IPC result in
