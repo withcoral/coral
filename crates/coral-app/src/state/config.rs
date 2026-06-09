@@ -8,7 +8,7 @@ use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
-use crate::sources::model::{InstalledSource, SourceOrigin};
+use crate::sources::model::{CommunitySourceProvenance, InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
 use crate::storage::fs::{self as storage_fs, FileLock};
 use crate::workspaces::WorkspaceName;
@@ -57,6 +57,8 @@ struct PersistedInstalledSource {
     #[serde(default)]
     credential_storage: Option<CredentialStorageKind>,
     origin: SourceOrigin,
+    #[serde(default)]
+    community_provenance: Option<CommunitySourceProvenance>,
 }
 
 impl PersistedInstalledSource {
@@ -68,6 +70,7 @@ impl PersistedInstalledSource {
             secrets: self.secrets,
             credential_storage: self.credential_storage,
             origin: self.origin,
+            community_provenance: self.community_provenance,
         }
     }
 }
@@ -80,6 +83,7 @@ impl From<&InstalledSource> for PersistedInstalledSource {
             secrets: value.secrets.clone(),
             credential_storage: value.credential_storage,
             origin: value.origin,
+            community_provenance: value.community_provenance.clone(),
         }
     }
 }
@@ -287,10 +291,48 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
                 source_table.remove("credential_storage");
             }
             source_item["origin"] = value(source.origin.as_config_value());
+            if let Some(provenance) = &source.community_provenance {
+                source_item["community_provenance"] =
+                    Item::Value(render_community_provenance(provenance));
+            } else {
+                let source_table = source_item
+                    .as_table_mut()
+                    .expect("source config entry should be a table after initialization");
+                source_table.remove("community_provenance");
+            }
         }
     }
 
     doc.to_string()
+}
+
+fn render_community_provenance(provenance: &CommunitySourceProvenance) -> Value {
+    let mut table = InlineTable::new();
+    table.insert("repository", Value::from(provenance.repository.clone()));
+    table.insert("ref", Value::from(provenance.git_ref.clone()));
+    table.insert("commit_sha", Value::from(provenance.commit_sha.clone()));
+    table.insert(
+        "manifest_path",
+        Value::from(provenance.manifest_path.clone()),
+    );
+    table.insert(
+        "manifest_sha256",
+        Value::from(provenance.manifest_sha256.clone()),
+    );
+    if let Some(readme_path) = &provenance.readme_path {
+        table.insert("readme_path", Value::from(readme_path.clone()));
+    }
+    if let Some(readme_sha256) = &provenance.readme_sha256 {
+        table.insert("readme_sha256", Value::from(readme_sha256.clone()));
+    }
+    if let Some(manifest_blob_sha) = &provenance.manifest_blob_sha {
+        table.insert("manifest_blob_sha", Value::from(manifest_blob_sha.clone()));
+    }
+    if let Some(readme_blob_sha) = &provenance.readme_blob_sha {
+        table.insert("readme_blob_sha", Value::from(readme_blob_sha.clone()));
+    }
+    table.fmt();
+    Value::InlineTable(table)
 }
 
 fn ensure_implicit_table(item: &mut Item) {
@@ -367,7 +409,7 @@ mod tests {
     use super::{AppConfig, PersistedAppConfig, SourceCatalog, render_config};
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
-    use crate::sources::model::{InstalledSource, SourceOrigin};
+    use crate::sources::model::{CommunitySourceProvenance, InstalledSource, SourceOrigin};
     use crate::workspaces::WorkspaceName;
 
     fn default_workspace() -> WorkspaceName {
@@ -385,6 +427,7 @@ mod tests {
             secrets: vec!["GITHUB_TOKEN".to_string()],
             credential_storage: None,
             origin: SourceOrigin::Imported,
+            community_provenance: None,
         }
     }
 
@@ -486,6 +529,50 @@ origin = "bundled"
         assert_eq!(
             sources[0].credential_storage,
             Some(CredentialStorageKind::Keychain)
+        );
+    }
+
+    #[test]
+    fn round_trips_community_source_provenance() {
+        let workspace_name = default_workspace();
+        let mut source = installed_source("hn");
+        source.origin = SourceOrigin::Community;
+        source.community_provenance = Some(CommunitySourceProvenance {
+            repository: "withcoral/coral".to_string(),
+            git_ref: "main".to_string(),
+            commit_sha: "abc123".to_string(),
+            manifest_path: "sources/community/hn/manifest.yaml".to_string(),
+            manifest_sha256: "manifest-hash".to_string(),
+            readme_path: Some("sources/community/hn/README.md".to_string()),
+            readme_sha256: Some("readme-hash".to_string()),
+            manifest_blob_sha: Some("manifest-blob".to_string()),
+            readme_blob_sha: Some("readme-blob".to_string()),
+        });
+        let mut catalog = SourceCatalog::default();
+        catalog.upsert_source(&workspace_name, source);
+        let config = AppConfig {
+            version: 1,
+            catalog,
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+        assert!(raw.contains("origin = \"community\""));
+        assert!(raw.contains("community_provenance = { repository = \"withcoral/coral\""));
+        assert!(raw.contains("manifest_sha256 = \"manifest-hash\""));
+
+        let loaded = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(&raw).expect("config should parse"),
+        )
+        .expect("config");
+        let sources = loaded.catalog.workspace_sources(&workspace_name);
+        assert_eq!(sources[0].origin, SourceOrigin::Community);
+        assert_eq!(
+            sources[0]
+                .community_provenance
+                .as_ref()
+                .expect("community provenance")
+                .commit_sha,
+            "abc123"
         );
     }
 

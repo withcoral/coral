@@ -140,6 +140,8 @@ mod tests {
             variables: Vec::new(),
             origin: 0,
             credential_storage: SourceCredentialStorage::Unspecified as i32,
+            community_provenance: None,
+            update: None,
         }
     }
 

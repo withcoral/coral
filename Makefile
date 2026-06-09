@@ -1,4 +1,4 @@
-.PHONY: install ui-build rust-checks license-check lint-proto lint-sources fix-sources docs-generate docs-check
+.PHONY: install ui-build rust-checks license-check lint-proto lint-sources fix-sources docs-generate docs-check community-index-generate community-index-check
 
 install: ui-build
 	cargo install --path crates/coral-cli --locked
@@ -75,4 +75,15 @@ docs-check:
 	  --index docs/reference/bundled-sources.mdx \
 	  --docs-json docs/docs.json \
 	  --skip-community-sources \
+	  --check
+
+community-index-generate:
+	cargo run --locked -p xtask -- generate-community-index \
+	  --sources-dir sources/community \
+	  --out target/community-sources/index.json
+
+community-index-check:
+	cargo run --locked -p xtask -- generate-community-index \
+	  --sources-dir sources/community \
+	  --out target/community-sources/index.json \
 	  --check

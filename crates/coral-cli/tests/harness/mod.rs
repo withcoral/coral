@@ -18,9 +18,11 @@ use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
     CatalogItem, CatalogSearchResult, Column, ColumnSearchResult, CreateBundledSourceRequest,
     CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DeleteSourceResponse,
-    DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
-    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
+    CreateBundledSourceWithOAuthResponse, CreateCommunitySourceRequest, DeleteSourceRequest,
+    DeleteSourceResponse, DescribeTableRequest, DescribeTableResponse,
+    DiscoverCommunitySourcesRequest, DiscoverCommunitySourcesResponse, DiscoverSourcesRequest,
+    DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest,
+    ExplainSqlResponse, GetCommunitySourceInfoRequest, GetCommunitySourceInfoResponse,
     GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
     ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
     ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
@@ -55,6 +57,8 @@ fn mock_source() -> Source {
         variables: Vec::new(),
         origin: SourceOrigin::Bundled as i32,
         credential_storage: SourceCredentialStorage::File as i32,
+        community_provenance: None,
+        update: None,
     }
 }
 
@@ -287,6 +291,8 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
                 credential_storage: SourceCredentialStorage::File as i32,
+                community_provenance: None,
+                update: None,
             },
             SourceInfo {
                 name: "slack".to_string(),
@@ -296,6 +302,8 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 installed: false,
                 origin: SourceOrigin::Bundled as i32,
                 credential_storage: SourceCredentialStorage::Unspecified as i32,
+                community_provenance: None,
+                update: None,
             },
         ],
     }
@@ -330,6 +338,8 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: true,
             origin: SourceOrigin::Bundled as i32,
             credential_storage: SourceCredentialStorage::File as i32,
+            community_provenance: None,
+            update: None,
         }),
         "slack" => Ok(SourceInfo {
             name: "slack".to_string(),
@@ -339,6 +349,8 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: false,
             origin: SourceOrigin::Bundled as i32,
             credential_storage: SourceCredentialStorage::Unspecified as i32,
+            community_provenance: None,
+            update: None,
         }),
         "jira" => Ok(SourceInfo {
             name: "jira".to_string(),
@@ -348,6 +360,8 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             installed: true,
             origin: SourceOrigin::Imported as i32,
             credential_storage: SourceCredentialStorage::File as i32,
+            community_provenance: None,
+            update: None,
         }),
         _ => Err(Status::not_found(format!("unknown source '{name}'"))),
     }
@@ -449,6 +463,8 @@ impl Default for MockServerConfig {
                         variables: Vec::new(),
                         origin: SourceOrigin::Bundled as i32,
                         credential_storage: SourceCredentialStorage::File as i32,
+                        community_provenance: None,
+                        update: None,
                     },
                     Source {
                         workspace: Some(workspace()),
@@ -458,6 +474,8 @@ impl Default for MockServerConfig {
                         variables: Vec::new(),
                         origin: SourceOrigin::Imported as i32,
                         credential_storage: SourceCredentialStorage::File as i32,
+                        community_provenance: None,
+                        update: None,
                     },
                 ],
             }),
@@ -807,7 +825,7 @@ fn mock_bundled_source_stream() -> MockBundledSourceStream {
         tokio::sync::mpsc::channel::<Result<CreateBundledSourceWithOAuthResponse, Status>>(1);
     tx.try_send(Ok(CreateBundledSourceWithOAuthResponse {
         event: Some(create_bundled_source_with_o_auth_response::Event::Source(
-            mock_source(),
+            Box::new(mock_source()),
         )),
     }))
     .expect("send mock bundled source credential event");
@@ -817,7 +835,9 @@ fn mock_bundled_source_stream() -> MockBundledSourceStream {
 fn mock_import_source_stream() -> MockImportSourceStream {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<ImportSourceResponse, Status>>(1);
     tx.try_send(Ok(ImportSourceResponse {
-        event: Some(import_source_response::Event::Source(mock_source())),
+        event: Some(import_source_response::Event::Source(Box::new(
+            mock_source(),
+        ))),
     }))
     .expect("send mock import source credential event");
     Box::pin(ReceiverStream::new(rx))
@@ -827,6 +847,7 @@ fn mock_import_source_stream() -> MockImportSourceStream {
 impl SourceService for MockSourceService {
     type CreateBundledSourceWithOAuthStream = MockBundledSourceStream;
     type ImportSourceStream = MockImportSourceStream;
+    type CreateCommunitySourceStream = MockImportSourceStream;
 
     async fn discover_sources(
         &self,
@@ -840,6 +861,15 @@ impl SourceService for MockSourceService {
         Ok(Response::new(
             self.config.discover_sources.clone().into_tonic_result()?,
         ))
+    }
+
+    async fn discover_community_sources(
+        &self,
+        _request: Request<DiscoverCommunitySourcesRequest>,
+    ) -> Result<Response<DiscoverCommunitySourcesResponse>, Status> {
+        Ok(Response::new(DiscoverCommunitySourcesResponse {
+            sources: Vec::new(),
+        }))
     }
 
     async fn list_sources(
@@ -885,6 +915,17 @@ impl SourceService for MockSourceService {
         }))
     }
 
+    async fn get_community_source_info(
+        &self,
+        request: Request<GetCommunitySourceInfoRequest>,
+    ) -> Result<Response<GetCommunitySourceInfoResponse>, Status> {
+        let request = request.into_inner();
+        Err(Status::not_found(format!(
+            "unknown community source '{}'",
+            request.name
+        )))
+    }
+
     async fn create_bundled_source(
         &self,
         request: Request<CreateBundledSourceRequest>,
@@ -920,6 +961,13 @@ impl SourceService for MockSourceService {
             .lock()
             .expect("import_source capture")
             .push(request.into_inner());
+        Ok(Response::new(mock_import_source_stream()))
+    }
+
+    async fn create_community_source(
+        &self,
+        _request: Request<CreateCommunitySourceRequest>,
+    ) -> Result<Response<Self::CreateCommunitySourceStream>, Status> {
         Ok(Response::new(mock_import_source_stream()))
     }
 

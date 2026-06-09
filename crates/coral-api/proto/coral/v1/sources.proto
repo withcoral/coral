@@ -13,6 +13,8 @@ enum SourceOrigin {
   SOURCE_ORIGIN_BUNDLED = 1;
   // Source was imported from a user-supplied manifest.
   SOURCE_ORIGIN_IMPORTED = 2;
+  // Source was installed from the community source registry.
+  SOURCE_ORIGIN_COMMUNITY = 3;
 }
 
 // Where an installed source's credential material is stored.
@@ -24,6 +26,44 @@ enum SourceCredentialStorage {
   SOURCE_CREDENTIAL_STORAGE_FILE = 1;
   // Credential material is stored in the operating-system credential store.
   SOURCE_CREDENTIAL_STORAGE_KEYCHAIN = 2;
+}
+
+// Registry provenance for a community source copied into local Coral ownership.
+message SourceCommunityProvenance {
+  // Repository full name that supplied this source, such as `withcoral/coral`.
+  string repository = 1;
+  // Git ref whose CI run generated the registry index.
+  string ref = 2;
+  // Commit SHA that pins manifest and README artifact fetches.
+  string commit_sha = 3;
+  // Repository-relative manifest path at `commit_sha`.
+  string manifest_path = 4;
+  // SHA-256 of the manifest YAML copied into local ownership.
+  string manifest_sha256 = 5;
+  // Repository-relative README path at `commit_sha`.
+  string readme_path = 6;
+  // SHA-256 of the README, when the registry entry has one.
+  string readme_sha256 = 7;
+  // Git blob SHA for the manifest, when supplied by the registry index.
+  string manifest_blob_sha = 8;
+  // Git blob SHA for the README, when supplied by the registry index.
+  string readme_blob_sha = 9;
+}
+
+// Update comparison for a locally installed community source.
+message SourceUpdateInfo {
+  // Whether the registry entry differs from the installed local copy.
+  bool update_available = 1;
+  // Version currently installed in local Coral state.
+  string installed_version = 2;
+  // Latest version advertised by the registry.
+  string latest_version = 3;
+  // Manifest SHA-256 currently installed in local Coral state.
+  string installed_manifest_sha256 = 4;
+  // Latest manifest SHA-256 advertised by the registry.
+  string latest_manifest_sha256 = 5;
+  // Latest registry commit SHA that would be installed by an update.
+  string latest_commit_sha = 6;
 }
 
 // One configured non-secret source variable.
@@ -63,6 +103,10 @@ message Source {
   SourceOrigin origin = 6;
   // Where this installed source's credential material is stored.
   SourceCredentialStorage credential_storage = 7;
+  // Community registry provenance, present only for community sources.
+  SourceCommunityProvenance community_provenance = 8;
+  // Community update state, present when the registry has been checked.
+  SourceUpdateInfo update = 9;
 }
 
 // One manifest-declared source input prompt.
@@ -254,6 +298,10 @@ message SourceInfo {
   SourceOrigin origin = 6;
   // Where credential material is stored when this source is installed.
   SourceCredentialStorage credential_storage = 7;
+  // Community registry provenance, present only for community sources.
+  SourceCommunityProvenance community_provenance = 8;
+  // Community update state, present when the registry has been checked.
+  SourceUpdateInfo update = 9;
 }
 
 // Lists all bundled sources available for one workspace.
@@ -265,6 +313,18 @@ message DiscoverSourcesRequest {
 // Returns all bundled source metadata records.
 message DiscoverSourcesResponse {
   // Bundled sources compiled into this Coral build.
+  repeated SourceInfo sources = 1;
+}
+
+// Lists all community sources available for one workspace.
+message DiscoverCommunitySourcesRequest {
+  // Workspace used to mark which community sources are already installed.
+  Workspace workspace = 1;
+}
+
+// Returns all community source metadata records advertised by the registry.
+message DiscoverCommunitySourcesResponse {
+  // Community sources available through the registry.
   repeated SourceInfo sources = 1;
 }
 
@@ -431,6 +491,34 @@ message GetSourceInfoResponse {
   SourceInfo source_info = 1;
 }
 
+// Fetches community source metadata by identifier.
+message GetCommunitySourceInfoRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Bare community source name to fetch metadata for.
+  string name = 2;
+}
+
+// Returns community source metadata.
+message GetCommunitySourceInfoResponse {
+  // Metadata for the community source.
+  SourceInfo source_info = 1;
+}
+
+// Installs one community source by name.
+message CreateCommunitySourceRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Canonical community source name.
+  string name = 2;
+  // Visible configured non-secret variables.
+  repeated SourceVariable variables = 3;
+  // Source-config secret bindings.
+  repeated SourceSecret secrets = 4;
+  // OAuth credential retrievals the app should run before validation and install.
+  repeated OAuthCredentialRetrieval oauth_credential_retrievals = 5;
+}
+
 // Deletes one registered source and its managed artifacts.
 message DeleteSourceRequest {
   // Owning workspace resource.
@@ -491,17 +579,23 @@ message ValidateSourceResponse {
 service SourceService {
   // Lists bundled sources available for installation.
   rpc DiscoverSources(DiscoverSourcesRequest) returns (DiscoverSourcesResponse);
+  // Lists community sources available for installation.
+  rpc DiscoverCommunitySources(DiscoverCommunitySourcesRequest) returns (DiscoverCommunitySourcesResponse);
   // Lists all registered sources.
   rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse);
   // Fetches one registered source.
   rpc GetSource(GetSourceRequest) returns (GetSourceResponse);
   // Fetches metadata for one installed or bundled source.
   rpc GetSourceInfo(GetSourceInfoRequest) returns (GetSourceInfoResponse);
+  // Fetches metadata for one community source.
+  rpc GetCommunitySourceInfo(GetCommunitySourceInfoRequest) returns (GetCommunitySourceInfoResponse);
   // Installs one bundled source.
   rpc CreateBundledSource(CreateBundledSourceRequest) returns (CreateBundledSourceResponse);
   // Installs one bundled source with app-owned OAuth credential retrieval.
   rpc CreateBundledSourceWithOAuth(CreateBundledSourceWithOAuthRequest)
       returns (stream CreateBundledSourceWithOAuthResponse);
+  // Installs one community source with optional app-owned OAuth credential retrieval.
+  rpc CreateCommunitySource(CreateCommunitySourceRequest) returns (stream ImportSourceResponse);
   // Imports one user-provided source manifest, streaming credential retrieval
   // progress before the final source event when credentials are app-owned.
   rpc ImportSource(ImportSourceRequest) returns (stream ImportSourceResponse);

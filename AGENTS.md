@@ -48,6 +48,10 @@
   Any PR may leave that generated page stale so unrelated changes do not fail
   on aggregate community catalog drift; keep docs freshness strict for bundled
   sources under `sources/core/**`, `docs/docs.json`, and the changelog.
+- Do not check in the aggregate community source registry index. Use
+  `make community-index-generate` for a local artifact under
+  `target/community-sources/index.json`; CI owns publishing that artifact for
+  registry consumption.
 - Keep checked-in generated files marked in `.gitattributes` with
   `linguist-generated` so GitHub collapses them by default in PR diffs.
 - Source inputs that carry credentials must be `kind: secret`, never

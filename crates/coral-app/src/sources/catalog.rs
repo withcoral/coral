@@ -66,7 +66,7 @@ pub(crate) fn resolve_installed_manifest(
 ) -> Result<InstalledSourceManifest, AppError> {
     let manifest_yaml = match source.origin {
         SourceOrigin::Bundled => load_bundled_source(&source.name)?.manifest_yaml,
-        SourceOrigin::Imported => {
+        SourceOrigin::Imported | SourceOrigin::Community => {
             std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name))?
         }
     };
@@ -81,6 +81,9 @@ pub(crate) fn resolve_installed_manifest(
     }
     candidate.installed = true;
     candidate.credential_storage = Some(source.effective_credential_storage());
+    candidate
+        .community_provenance
+        .clone_from(&source.community_provenance);
     Ok(InstalledSourceManifest {
         source_spec,
         candidate,
@@ -110,6 +113,8 @@ fn candidate_from_manifest(
         installed,
         origin,
         credential_storage: None,
+        community_provenance: None,
+        update: None,
     })
 }
 

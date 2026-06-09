@@ -18,6 +18,8 @@ pub(crate) struct CandidateSource {
     pub(crate) installed: bool,
     pub(crate) origin: SourceOrigin,
     pub(crate) credential_storage: Option<CredentialStorageKind>,
+    pub(crate) community_provenance: Option<CommunitySourceProvenance>,
+    pub(crate) update: Option<SourceUpdateInfo>,
 }
 
 /// App-owned model for one source installed in a workspace.
@@ -45,6 +47,9 @@ pub(crate) struct InstalledSource {
     pub(crate) credential_storage: Option<CredentialStorageKind>,
     /// Where this installed source came from.
     pub(crate) origin: SourceOrigin,
+    /// Registry provenance for installed community sources.
+    #[serde(default)]
+    pub(crate) community_provenance: Option<CommunitySourceProvenance>,
 }
 
 impl InstalledSource {
@@ -67,6 +72,7 @@ impl InstalledSource {
 pub(crate) enum SourceOrigin {
     Bundled,
     Imported,
+    Community,
 }
 
 impl SourceOrigin {
@@ -74,6 +80,35 @@ impl SourceOrigin {
         match self {
             Self::Bundled => "bundled",
             Self::Imported => "imported",
+            Self::Community => "community",
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct CommunitySourceProvenance {
+    pub(crate) repository: String,
+    #[serde(rename = "ref")]
+    pub(crate) git_ref: String,
+    pub(crate) commit_sha: String,
+    pub(crate) manifest_path: String,
+    pub(crate) manifest_sha256: String,
+    #[serde(default)]
+    pub(crate) readme_path: Option<String>,
+    #[serde(default)]
+    pub(crate) readme_sha256: Option<String>,
+    #[serde(default)]
+    pub(crate) manifest_blob_sha: Option<String>,
+    #[serde(default)]
+    pub(crate) readme_blob_sha: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceUpdateInfo {
+    pub(crate) update_available: bool,
+    pub(crate) installed_version: String,
+    pub(crate) latest_version: String,
+    pub(crate) installed_manifest_sha256: String,
+    pub(crate) latest_manifest_sha256: String,
+    pub(crate) latest_commit_sha: String,
 }

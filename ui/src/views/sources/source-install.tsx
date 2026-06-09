@@ -23,9 +23,13 @@ import { providerIcon } from '@/lib/provider-icons'
 import {
   createBundledSource,
   createBundledSourceWithOAuth,
+  createCommunitySource,
+  createCommunitySourceWithOAuth,
+  getCommunitySourceInfo,
   getSourceInfo,
   type InstallInput,
   type ResolvedSourceInfo,
+  type SourceOriginLabel,
 } from '@/lib/sources'
 import { toSentenceCase } from '@/utils/to-sentence-case'
 
@@ -50,11 +54,13 @@ function formatFieldName(key: string): string {
 
 export function SourceInstallDialog({
   name,
+  origin,
   open,
   onOpenChange,
   onInstalled,
 }: {
   name: string | null
+  origin: SourceOriginLabel
   open: boolean
   onOpenChange: (open: boolean) => void
   onInstalled: (name: string) => void
@@ -67,6 +73,7 @@ export function SourceInstallDialog({
           {name ? (
             <SourceInstallDialogContent
               name={name}
+              origin={origin}
               onCancel={() => onOpenChange(false)}
               onInstalled={onInstalled}
             />
@@ -79,10 +86,12 @@ export function SourceInstallDialog({
 
 function SourceInstallDialogContent({
   name,
+  origin,
   onCancel,
   onInstalled,
 }: {
   name: string
+  origin: SourceOriginLabel
   onCancel: () => void
   onInstalled: (name: string) => void
 }) {
@@ -95,13 +104,14 @@ function SourceInstallDialogContent({
 
   useEffect(() => {
     let cancelled = false
-    getSourceInfo(name)
+    const loadInfo = origin === 'community' ? getCommunitySourceInfo : getSourceInfo
+    loadInfo(name)
       .then((info) => !cancelled && setResolved(info))
       .catch((e) => !cancelled && setLoadError(e instanceof Error ? e.message : String(e)))
     return () => {
       cancelled = true
     }
-  }, [name])
+  }, [name, origin])
 
   const inputs: SourceInputSpec[] = resolved?.info.inputs ?? []
   const icon = providerIcon(name)
@@ -189,9 +199,17 @@ function SourceInstallDialogContent({
       }
 
       if (retrievalProtos.length === 0) {
-        await createBundledSource(name, bindings)
+        if (origin === 'community') {
+          await createCommunitySource(name, bindings)
+        } else {
+          await createBundledSource(name, bindings)
+        }
       } else {
-        await createBundledSourceWithOAuth(name, bindings, retrievalProtos, callbacks)
+        if (origin === 'community') {
+          await createCommunitySourceWithOAuth(name, bindings, retrievalProtos, callbacks)
+        } else {
+          await createBundledSourceWithOAuth(name, bindings, retrievalProtos, callbacks)
+        }
       }
 
       addToast('neutral', {
@@ -220,10 +238,17 @@ function SourceInstallDialogContent({
             <Typography.HeadingMedium as="span" className={styles.headerTitle}>
               {name}
             </Typography.HeadingMedium>
-            <span className={styles.headerPill}>Core</span>
+            {origin === 'community' ? (
+              <span className={styles.headerPill}>Community</span>
+            ) : (
+              <span className={styles.headerPill}>Core</span>
+            )}
           </Dialog.Title>
           <Dialog.Description render={<div />}>
-            <Markdown>{resolved?.info.description ?? 'Officially supported by Coral.'}</Markdown>
+            <Markdown>
+              {resolved?.info.description ??
+                (origin === 'community' ? 'Community source.' : 'Officially supported by Coral.')}
+            </Markdown>
           </Dialog.Description>
         </div>
       </div>

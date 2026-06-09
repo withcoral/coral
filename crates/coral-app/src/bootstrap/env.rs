@@ -4,11 +4,14 @@ use std::path::PathBuf;
 
 use coral_engine::QueryRuntimeContext;
 
-use super::consts::CORAL_CONFIG_DIR;
+use super::consts::{
+    CORAL_COMMUNITY_REGISTRY_URL, CORAL_CONFIG_DIR, DEFAULT_COMMUNITY_REGISTRY_URL,
+};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AppEnvironment {
     coral_config_dir_override: Option<PathBuf>,
+    community_registry_url: String,
     user_home_dir: Option<PathBuf>,
 }
 
@@ -16,6 +19,7 @@ impl AppEnvironment {
     pub(crate) fn discover() -> Self {
         Self {
             coral_config_dir_override: coral_config_dir_override(),
+            community_registry_url: community_registry_url(),
             user_home_dir: etcetera::home_dir().ok(),
         }
     }
@@ -30,6 +34,10 @@ impl AppEnvironment {
             ..QueryRuntimeContext::default()
         }
     }
+
+    pub(crate) fn community_registry_url(&self) -> &str {
+        &self.community_registry_url
+    }
 }
 
 #[expect(
@@ -38,6 +46,17 @@ impl AppEnvironment {
 )]
 fn coral_config_dir_override() -> Option<PathBuf> {
     std::env::var_os(CORAL_CONFIG_DIR).map(PathBuf::from)
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "coral-app is the single owner of process environment access."
+)]
+fn community_registry_url() -> String {
+    std::env::var(CORAL_COMMUNITY_REGISTRY_URL)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_COMMUNITY_REGISTRY_URL.to_string())
 }
 
 #[cfg(test)]

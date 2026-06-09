@@ -475,6 +475,7 @@ mod tests {
                     secrets: vec!["GITHUB_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::Keychain),
                     origin: SourceOrigin::Bundled,
+                    community_provenance: None,
                 },
             )
             .expect("persist source");

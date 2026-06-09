@@ -13,13 +13,18 @@ Community sources are source specs built and maintained by our community. These 
 [sources/community](https://github.com/withcoral/coral/tree/main/sources/community).
 
 <Note>
-  Community sources are not included in `coral source discover`, and `coral
-  source add <name>` only installs [bundled sources](/reference/bundled-sources).
-  Import community sources
-  with `coral source add --file`.
+  The Coral UI installs community sources from the hosted registry and tracks
+  updates for installed community copies. `coral source discover` and
+  `coral source add <name>` remain scoped to
+  [bundled sources](/reference/bundled-sources); CLI-only workflows can still
+  import community manifests with `coral source add --file`.
 </Note>
 
 ## Install a community source
+
+Open `coral ui` and install community sources from the Sources page. Coral copies the selected manifest into your local workspace, labels it as a community source, and checks the registry for available updates.
+
+For CLI-only workflows, import the manifest file from a local checkout:
 
 Clone the Coral repository so you have the source specs locally:
 
@@ -28,7 +33,7 @@ git clone https://github.com/withcoral/coral.git
 cd coral
 ```
 
-Review the source's manifest and README when one exists, then add it from its manifest file:
+Review the source's manifest and README, then add it from its manifest file:
 
 ```shellscript
 coral source add --file sources/community/hn/manifest.yaml

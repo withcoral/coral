@@ -80,6 +80,7 @@ pub(crate) struct ServerConfig {
     mode: ServerMode,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
+    community_registry_url: Option<String>,
     enable_stderr_logs: bool,
 }
 
@@ -96,6 +97,7 @@ impl ServerConfig {
             mode: ServerMode::NativeGrpc,
             engine_extensions_providers: Vec::new(),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
+            community_registry_url: None,
             enable_stderr_logs: false,
         }
     }
@@ -116,6 +118,11 @@ impl ServerConfig {
     ) -> Self {
         self.engine_extensions_providers
             .push(engine_extensions_provider);
+        self
+    }
+
+    pub(crate) fn with_community_registry_url(mut self, url: impl Into<String>) -> Self {
+        self.community_registry_url = Some(url.into());
         self
     }
 
@@ -225,6 +232,14 @@ impl ServerBuilder {
         self
     }
 
+    /// Overrides the community source registry URL for tests and controlled harnesses.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_community_registry_url(mut self, url: impl Into<String>) -> Self {
+        self.config = self.config.with_community_registry_url(url);
+        self
+    }
+
     /// Disables hosted feedback upload for tests and controlled local harnesses.
     #[doc(hidden)]
     #[must_use]
@@ -266,10 +281,13 @@ impl ServerBuilder {
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
+        let source_manager = SourceManager::with_community_registry_url(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            self.config
+                .community_registry_url
+                .unwrap_or_else(|| env.community_registry_url().to_string()),
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);

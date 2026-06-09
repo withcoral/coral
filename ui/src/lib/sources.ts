@@ -3,8 +3,11 @@ import { create } from '@bufbuild/protobuf'
 import {
   CreateBundledSourceRequestSchema,
   CreateBundledSourceWithOAuthRequestSchema,
+  CreateCommunitySourceRequestSchema,
+  DiscoverCommunitySourcesRequestSchema,
   DeleteSourceRequestSchema,
   DiscoverSourcesRequestSchema,
+  GetCommunitySourceInfoRequestSchema,
   GetSourceInfoRequestSchema,
   GetSourceRequestSchema,
   SourceOrigin,
@@ -15,7 +18,7 @@ import {
 
 import { sourceClient, WORKSPACE } from './coral-clients'
 
-export type SourceOriginLabel = 'bundled' | 'imported' | 'unknown'
+export type SourceOriginLabel = 'bundled' | 'community' | 'imported' | 'unknown'
 
 export interface CatalogEntry {
   name: string
@@ -23,6 +26,7 @@ export interface CatalogEntry {
   version: string
   installed: boolean
   origin: SourceOriginLabel
+  updateAvailable: boolean
 }
 
 export interface ResolvedSourceInfo {
@@ -37,6 +41,7 @@ export interface InstallInput {
 
 export function originLabel(origin: SourceOrigin): SourceOriginLabel {
   if (origin === SourceOrigin.BUNDLED) return 'bundled'
+  if (origin === SourceOrigin.COMMUNITY) return 'community'
   if (origin === SourceOrigin.IMPORTED) return 'imported'
   return 'unknown'
 }
@@ -48,6 +53,7 @@ function toCatalogEntry(s: SourceInfo): CatalogEntry {
     version: s.version,
     installed: s.installed,
     origin: originLabel(s.origin),
+    updateAvailable: s.update?.updateAvailable ?? false,
   }
 }
 
@@ -58,12 +64,29 @@ export async function discoverBundled(): Promise<CatalogEntry[]> {
   return resp.sources.map(toCatalogEntry)
 }
 
+export async function discoverCommunity(): Promise<CatalogEntry[]> {
+  const resp = await sourceClient.discoverCommunitySources(
+    create(DiscoverCommunitySourcesRequestSchema, { workspace: WORKSPACE }),
+  )
+  return resp.sources.map(toCatalogEntry)
+}
+
 export async function getSourceInfo(name: string): Promise<ResolvedSourceInfo> {
   const resp = await sourceClient.getSourceInfo(
     create(GetSourceInfoRequestSchema, { workspace: WORKSPACE, name }),
   )
   if (!resp.sourceInfo) {
     throw new Error(`source '${name}' has no info`)
+  }
+  return { info: resp.sourceInfo }
+}
+
+export async function getCommunitySourceInfo(name: string): Promise<ResolvedSourceInfo> {
+  const resp = await sourceClient.getCommunitySourceInfo(
+    create(GetCommunitySourceInfoRequestSchema, { workspace: WORKSPACE, name }),
+  )
+  if (!resp.sourceInfo) {
+    throw new Error(`community source '${name}' has no info`)
   }
   return { info: resp.sourceInfo }
 }
@@ -98,6 +121,24 @@ export async function createBundledSource(name: string, inputs: InstallInput[]):
   )
   if (!resp.source) throw new Error(`createBundledSource returned no source`)
   return resp.source
+}
+
+export async function createCommunitySource(name: string, inputs: InstallInput[]): Promise<Source> {
+  const { variables, secrets } = splitBindings(inputs)
+  const stream = sourceClient.createCommunitySource(
+    create(CreateCommunitySourceRequestSchema, {
+      workspace: WORKSPACE,
+      name,
+      variables,
+      secrets,
+      oauthCredentialRetrievals: [],
+    }),
+  )
+  for await (const response of stream) {
+    const event = response.event
+    if (event.case === 'source') return event.value
+  }
+  throw new Error(`install stream ended without a source event`)
 }
 
 export interface OAuthFlowCallbacks {
@@ -143,6 +184,46 @@ export async function createBundledSourceWithOAuth(
       })
       // Keep the device-code prompt visible if a fast backend streams the
       // completion event immediately after authorization starts.
+      if (event.value.userCode) {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+      }
+    } else if (event.case === 'oauthCompleted') {
+      const metadata = new Map<string, string>()
+      for (const item of event.value.metadata) metadata.set(item.key, item.value)
+      callbacks.onCompleted?.({ inputKey: event.value.inputKey, metadata })
+    }
+  }
+  throw new Error(`install stream ended without a source event`)
+}
+
+export async function createCommunitySourceWithOAuth(
+  name: string,
+  inputs: InstallInput[],
+  oauthRetrievals: OAuthCredentialRetrieval[],
+  callbacks: OAuthFlowCallbacks = {},
+): Promise<Source> {
+  const { variables, secrets } = splitBindings(inputs)
+  const stream = sourceClient.createCommunitySource(
+    create(CreateCommunitySourceRequestSchema, {
+      workspace: WORKSPACE,
+      name,
+      variables,
+      secrets,
+      oauthCredentialRetrievals: oauthRetrievals,
+    }),
+  )
+  for await (const response of stream) {
+    const event = response.event
+    if (event.case === 'source') return event.value
+    if (event.case === 'oauthAuthorization') {
+      callbacks.onAuthorization?.({
+        inputKey: event.value.inputKey,
+        authorizationUrl: event.value.authorizationUrl,
+        expiresInSeconds: event.value.expiresInSeconds,
+        userCode: event.value.userCode,
+        verificationUri: event.value.verificationUri,
+        verificationUriComplete: event.value.verificationUriComplete,
+      })
       if (event.value.userCode) {
         await new Promise((resolve) => setTimeout(resolve, 1000))
       }

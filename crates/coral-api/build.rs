@@ -7,6 +7,8 @@ fn main() {
     config.type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]");
     // Keep the generated oneof enum small enough for workspace clippy.
     config.boxed(".coral.v1.SourceCredentialMethod.method.oauth");
+    config.boxed(".coral.v1.CreateBundledSourceWithOAuthResponse.event.source");
+    config.boxed(".coral.v1.ImportSourceResponse.event.source");
 
     tonic_prost_build::configure()
         .build_server(true)

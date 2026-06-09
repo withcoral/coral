@@ -7,8 +7,10 @@ use std::task::{Context, Poll};
 use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
 use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, CredentialMetadata, DeleteSourceRequest,
-    DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
+    CreateBundledSourceWithOAuthResponse, CreateCommunitySourceRequest, CredentialMetadata,
+    DeleteSourceRequest, DeleteSourceResponse, DiscoverCommunitySourcesRequest,
+    DiscoverCommunitySourcesResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
+    GetCommunitySourceInfoRequest, GetCommunitySourceInfoResponse, GetSourceInfoRequest,
     GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
     ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, OAuthCredentialAuthorization,
     OAuthCredentialClient, OAuthCredentialClientId, OAuthCredentialClientSecret,
@@ -16,10 +18,11 @@ use coral_api::v1::{
     OAuthCredentialMethod, OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
     OauthCredentialClientSecretTransport, OauthCredentialFlowType, OauthCredentialPkceMode,
     OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter, Source,
-    SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
+    SourceCommunityProvenance as ProtoSourceCommunityProvenance, SourceConfigCredentialMethod,
+    SourceCredential, SourceCredentialMethod,
     SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo, SourceInputSpec,
-    SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
-    SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
+    SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceUpdateInfo,
+    SourceVariable, SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
     create_bundled_source_with_o_auth_response, import_source_response,
     source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
@@ -36,12 +39,16 @@ use crate::credentials::CredentialStorageKind;
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
 use crate::sources::manager::{
-    CreateBundledSourceCommand, CreateBundledSourceWithOAuthCommand, ImportSourceCommand,
-    ImportSourceEventSender, ImportSourceWithCredentialsCommand, ImportSourceWithCredentialsEvent,
+    CreateBundledSourceCommand, CreateBundledSourceWithOAuthCommand, CreateCommunitySourceCommand,
+    CreateCommunitySourceWithCredentialsCommand, ImportSourceCommand, ImportSourceEventSender,
+    ImportSourceWithCredentialsCommand, ImportSourceWithCredentialsEvent,
     PendingImportSourceWithCredentialsEvent, SourceBinding, SourceBindings, SourceManager,
     SourceOAuthCredentialRetrieval,
 };
-use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+use crate::sources::model::{
+    CandidateSource, CommunitySourceProvenance, InstalledSource, SourceOrigin,
+    SourceUpdateInfo as AppSourceUpdateInfo,
+};
 use crate::transport::{
     grpc_span, instrument_grpc, query_status, validate_source_response_to_proto,
     workspace_name_from_proto, workspace_to_proto,
@@ -69,6 +76,7 @@ impl SourceService {
 #[tonic::async_trait]
 impl SourceServiceApi for SourceService {
     type CreateBundledSourceWithOAuthStream = CreateBundledSourceWithOAuthResponseStreamBox;
+    type CreateCommunitySourceStream = ImportSourceResponseStreamBox;
     type ImportSourceStream = ImportSourceResponseStreamBox;
 
     async fn discover_sources(
@@ -87,6 +95,27 @@ impl SourceServiceApi for SourceService {
                 .map(candidate_source_to_proto)
                 .collect();
             Ok(Response::new(DiscoverSourcesResponse { sources }))
+        })
+        .await
+    }
+
+    async fn discover_community_sources(
+        &self,
+        request: Request<DiscoverCommunitySourcesRequest>,
+    ) -> Result<Response<DiscoverCommunitySourcesResponse>, Status> {
+        let span = grpc_span(&request);
+        let sources = self.sources.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let sources = sources
+                .discover_community_sources(&workspace_name)
+                .await
+                .map_err(app_status)?
+                .into_iter()
+                .map(candidate_source_to_proto)
+                .collect();
+            Ok(Response::new(DiscoverCommunitySourcesResponse { sources }))
         })
         .await
     }
@@ -145,6 +174,27 @@ impl SourceServiceApi for SourceService {
                 .get_source_info(&workspace_name, &source_name)
                 .map_err(app_status)?;
             Ok(Response::new(GetSourceInfoResponse {
+                source_info: Some(candidate_source_to_proto(source)),
+            }))
+        })
+        .await
+    }
+
+    async fn get_community_source_info(
+        &self,
+        request: Request<GetCommunitySourceInfoRequest>,
+    ) -> Result<Response<GetCommunitySourceInfoResponse>, Status> {
+        let span = grpc_span(&request);
+        let sources = self.sources.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let source_name = SourceName::parse(&request.name).map_err(app_status)?;
+            let source = sources
+                .get_community_source_info(&workspace_name, &source_name)
+                .await
+                .map_err(app_status)?;
+            Ok(Response::new(GetCommunitySourceInfoResponse {
                 source_info: Some(candidate_source_to_proto(source)),
             }))
         })
@@ -216,6 +266,62 @@ impl SourceServiceApi for SourceService {
         .await
     }
 
+    async fn create_community_source(
+        &self,
+        request: Request<CreateCommunitySourceRequest>,
+    ) -> Result<Response<Self::ImportSourceStream>, Status> {
+        let span = grpc_span(&request);
+        let sources = self.sources.clone();
+        instrument_grpc(span.clone(), async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let response_workspace_name = workspace_name.clone();
+            if request.oauth_credential_retrievals.is_empty() {
+                let command = CreateCommunitySourceCommand {
+                    name: SourceName::parse(&request.name).map_err(app_status)?,
+                    bindings: source_bindings_from_proto(request.variables, request.secrets),
+                };
+                let installed = sources
+                    .create_community_source(&workspace_name, &command)
+                    .await
+                    .map_err(app_status)?;
+                let response = ImportSourceResponse {
+                    event: Some(import_source_response::Event::Source(Box::new(
+                        installed_source_to_proto(&response_workspace_name, installed),
+                    ))),
+                };
+                return Ok(Response::new(
+                    Box::pin(tokio_stream::once(Ok(response))) as Self::ImportSourceStream
+                ));
+            }
+            let command = CreateCommunitySourceWithCredentialsCommand {
+                name: SourceName::parse(&request.name).map_err(app_status)?,
+                bindings: source_bindings_from_proto(request.variables, request.secrets),
+                oauth_credential_retrievals: request
+                    .oauth_credential_retrievals
+                    .into_iter()
+                    .map(oauth_credential_retrieval_from_proto)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(app_status)?,
+            };
+            let stream =
+                import_source_response_stream(response_workspace_name, move |event_sender| {
+                    instrument_grpc(span, async move {
+                        sources
+                            .create_community_source_with_credentials(
+                                &workspace_name,
+                                command,
+                                event_sender,
+                            )
+                            .await
+                            .map_err(app_status)
+                    })
+                });
+            Ok(Response::new(stream))
+        })
+        .await
+    }
+
     async fn import_source(
         &self,
         request: Request<ImportSourceRequest>,
@@ -235,9 +341,9 @@ impl SourceServiceApi for SourceService {
                     .import_source(&workspace_name, &command)
                     .map_err(app_status)?;
                 let response = ImportSourceResponse {
-                    event: Some(import_source_response::Event::Source(
+                    event: Some(import_source_response::Event::Source(Box::new(
                         installed_source_to_proto(&response_workspace_name, installed),
-                    )),
+                    ))),
                 };
                 return Ok(Response::new(
                     Box::pin(tokio_stream::once(Ok(response))) as Self::ImportSourceStream
@@ -380,9 +486,9 @@ impl Stream for ImportSourceResponseStream {
                 Poll::Ready(result) => {
                     this.import = None;
                     this.completion = Some(result.map(|installed| ImportSourceResponse {
-                        event: Some(import_source_response::Event::Source(
+                        event: Some(import_source_response::Event::Source(Box::new(
                             installed_source_to_proto(&this.response_workspace_name, installed),
-                        )),
+                        ))),
                     }));
                 }
                 Poll::Pending => {
@@ -519,6 +625,10 @@ fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSo
             .collect(),
         origin: proto_source_origin(source.origin) as i32,
         credential_storage: proto_source_credential_storage(credential_storage) as i32,
+        community_provenance: source
+            .community_provenance
+            .map(community_provenance_to_proto),
+        update: None,
     }
 }
 
@@ -526,6 +636,7 @@ fn proto_source_origin(origin: SourceOrigin) -> ProtoSourceOrigin {
     match origin {
         SourceOrigin::Bundled => ProtoSourceOrigin::Bundled,
         SourceOrigin::Imported => ProtoSourceOrigin::Imported,
+        SourceOrigin::Community => ProtoSourceOrigin::Community,
     }
 }
 
@@ -552,6 +663,37 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
         installed: source.installed,
         origin: proto_source_origin(source.origin) as i32,
         credential_storage: proto_source_credential_storage(source.credential_storage) as i32,
+        community_provenance: source
+            .community_provenance
+            .map(community_provenance_to_proto),
+        update: source.update.map(source_update_to_proto),
+    }
+}
+
+fn community_provenance_to_proto(
+    provenance: CommunitySourceProvenance,
+) -> ProtoSourceCommunityProvenance {
+    ProtoSourceCommunityProvenance {
+        repository: provenance.repository,
+        r#ref: provenance.git_ref,
+        commit_sha: provenance.commit_sha,
+        manifest_path: provenance.manifest_path,
+        manifest_sha256: provenance.manifest_sha256,
+        readme_path: provenance.readme_path.unwrap_or_default(),
+        readme_sha256: provenance.readme_sha256.unwrap_or_default(),
+        manifest_blob_sha: provenance.manifest_blob_sha.unwrap_or_default(),
+        readme_blob_sha: provenance.readme_blob_sha.unwrap_or_default(),
+    }
+}
+
+fn source_update_to_proto(update: AppSourceUpdateInfo) -> SourceUpdateInfo {
+    SourceUpdateInfo {
+        update_available: update.update_available,
+        installed_version: update.installed_version,
+        latest_version: update.latest_version,
+        installed_manifest_sha256: update.installed_manifest_sha256,
+        latest_manifest_sha256: update.latest_manifest_sha256,
+        latest_commit_sha: update.latest_commit_sha,
     }
 }
 

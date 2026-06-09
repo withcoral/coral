@@ -120,7 +120,7 @@ pub(crate) async fn import_source(
         .into_inner();
     while let Some(response) = responses.message().await? {
         if let Some(import_source_response::Event::Source(source)) = response.event {
-            return Ok(source);
+            return Ok(*source);
         }
     }
     Err(anyhow::anyhow!("import source stream ended without source"))
@@ -225,7 +225,7 @@ async fn source_from_import_credential_stream(
 }
 
 enum CredentialStreamEvent {
-    Source(Source),
+    Source(Box<Source>),
     OAuthAuthorization {
         input_key: String,
         authorization_url: String,
@@ -293,7 +293,7 @@ fn handle_credential_stream_event(
             }
             None
         }
-        Some(CredentialStreamEvent::Source(source)) => Some(source),
+        Some(CredentialStreamEvent::Source(source)) => Some(*source),
         Some(CredentialStreamEvent::OAuthCompleted) | None => None,
     }
 }
@@ -588,6 +588,7 @@ pub(crate) fn source_origin_label(origin: i32) -> &'static str {
     match SourceOrigin::try_from(origin) {
         Ok(SourceOrigin::Bundled) => "bundled",
         Ok(SourceOrigin::Imported) => "imported",
+        Ok(SourceOrigin::Community) => "community",
         Ok(SourceOrigin::Unspecified) | Err(_) => "unknown",
     }
 }

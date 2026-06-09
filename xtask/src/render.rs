@@ -107,13 +107,17 @@ pub(crate) fn community_sources_page(manifests: &[ValidatedSourceManifest]) -> S
     out.push_str(COMMUNITY_INTRO);
 
     out.push_str("\n## Install a community source\n\n");
+    out.push_str(
+        "Open `coral ui` and install community sources from the Sources page. Coral copies the selected manifest into your local workspace, labels it as a community source, and checks the registry for available updates.\n\n",
+    );
+    out.push_str("For CLI-only workflows, import the manifest file from a local checkout:\n\n");
     out.push_str("Clone the Coral repository so you have the source specs locally:\n\n");
     out.push_str("```shellscript\n");
     out.push_str("git clone https://github.com/withcoral/coral.git\n");
     out.push_str("cd coral\n");
     out.push_str("```\n\n");
     out.push_str(
-        "Review the source's manifest and README when one exists, then add it from its manifest file:\n\n",
+        "Review the source's manifest and README, then add it from its manifest file:\n\n",
     );
     out.push_str("```shellscript\n");
     out.push_str("coral source add --file sources/community/hn/manifest.yaml\n");
@@ -405,10 +409,11 @@ const COMMUNITY_INTRO: &str = concat!(
     "[sources/community](https://github.com/withcoral/coral/tree/main/sources/community).\n",
     "\n",
     "<Note>\n",
-    "  Community sources are not included in `coral source discover`, and `coral\n",
-    "  source add <name>` only installs [bundled sources](/reference/bundled-sources).\n",
-    "  Import community sources\n",
-    "  with `coral source add --file`.\n",
+    "  The Coral UI installs community sources from the hosted registry and tracks\n",
+    "  updates for installed community copies. `coral source discover` and\n",
+    "  `coral source add <name>` remain scoped to\n",
+    "  [bundled sources](/reference/bundled-sources); CLI-only workflows can still\n",
+    "  import community manifests with `coral source add --file`.\n",
     "</Note>\n",
 );
 

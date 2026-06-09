@@ -23,6 +23,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 
+mod community_index;
 mod detect;
 mod nav;
 mod render;
@@ -43,6 +44,8 @@ enum Command {
     DetectTruncations(DetectArgs),
     /// Export installable skills from plugins/coral/skills.
     ExportSkills(ExportSkillsArgs),
+    /// Generate the community source registry index consumed by hosted services.
+    GenerateCommunityIndex(GenerateCommunityIndexArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -113,6 +116,35 @@ struct ExportSkillsArgs {
     dest: PathBuf,
 }
 
+#[derive(Debug, clap::Args)]
+struct GenerateCommunityIndexArgs {
+    /// Directory containing one subdirectory per community source.
+    #[arg(long, default_value = "sources/community")]
+    sources_dir: PathBuf,
+
+    /// Path to write the generated JSON index.
+    #[arg(long, default_value = "target/community-sources/index.json")]
+    out: PathBuf,
+
+    /// Repository full name whose GitHub contents contain the sources.
+    #[arg(long, default_value = "withcoral/coral")]
+    repo: String,
+
+    /// Repository ref that should be advertised with this index.
+    #[arg(long, default_value = "main")]
+    git_ref: String,
+
+    /// Commit SHA that pins all manifest and README fetches.
+    ///
+    /// Defaults to `git rev-parse HEAD`.
+    #[arg(long)]
+    commit_sha: Option<String>,
+
+    /// Render in memory and fail if the on-disk output differs.
+    #[arg(long)]
+    check: bool,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(&cli.command) {
@@ -139,6 +171,7 @@ fn run(command: &Command) -> Result<bool> {
             detect::run(&paths, args.verbose)
         }
         Command::ExportSkills(args) => skills::export(&args.dest),
+        Command::GenerateCommunityIndex(args) => community_index::run(args),
     }
 }
 
@@ -216,6 +249,9 @@ fn write_mode(outputs: &[GeneratedFile]) -> Result<()> {
 fn write_if_changed(path: &Path, body: &str) -> Result<()> {
     if fs::read_to_string(path).ok().as_deref() == Some(body) {
         return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     fs::write(path, body).with_context(|| format!("writing {}", path.display()))
 }

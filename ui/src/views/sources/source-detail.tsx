@@ -14,7 +14,9 @@ import { Typography } from '@/wax/components/typography'
 import { providerIcon } from '@/lib/provider-icons'
 import {
   createBundledSource,
+  createCommunitySource,
   deleteSource,
+  getCommunitySourceInfo,
   getInstalledSource,
   getSourceInfo,
   originLabel,
@@ -77,25 +79,23 @@ function SourceDetailDialogContent({
   const [saving, setSaving] = useState(false)
 
   const refresh = useCallback(async () => {
-    // getSourceInfo no longer depends on the installed origin, so fetch both in
-    // parallel. Source info is best-effort (imported sources may not have it).
-    const [installedResult, infoResult] = await Promise.allSettled([
-      getInstalledSource(name),
-      getSourceInfo(name),
-    ])
-
-    if (installedResult.status === 'rejected') {
-      const reason = installedResult.reason
+    try {
+      const installed = await getInstalledSource(name)
+      const installedOrigin = originLabel(installed.origin)
+      const loadInfo = installedOrigin === 'community' ? getCommunitySourceInfo : getSourceInfo
+      const infoResult = await Promise.resolve(loadInfo(name)).then(
+        (info) => ({ status: 'fulfilled' as const, value: info }),
+        (reason: unknown) => ({ status: 'rejected' as const, reason }),
+      )
+      setSource(installed)
+      setSourceInfo(infoResult.status === 'fulfilled' ? infoResult.value.info : null)
+      setDrafts({})
+      setLoadError(null)
+    } catch (e) {
       setSource(null)
       setSourceInfo(null)
-      setLoadError(reason instanceof Error ? reason.message : String(reason))
-      return
+      setLoadError(e instanceof Error ? e.message : String(e))
     }
-
-    setSource(installedResult.value)
-    setSourceInfo(infoResult.status === 'fulfilled' ? infoResult.value.info : null)
-    setDrafts({})
-    setLoadError(null)
   }, [name])
 
   useEffect(() => {
@@ -115,7 +115,9 @@ function SourceDetailDialogContent({
     }
   }, [name, onRemoved])
 
-  const editable = source ? originLabel(source.origin) === 'bundled' : false
+  const origin = source ? originLabel(source.origin) : null
+  const editable = origin === 'bundled' || origin === 'community'
+  const updateAvailable = sourceInfo?.update?.updateAvailable ?? false
 
   const hasChanges = useMemo(() => {
     if (!source) return false
@@ -187,7 +189,11 @@ function SourceDetailDialogContent({
           }
         }
       }
-      await createBundledSource(name, bindings)
+      if (origin === 'community') {
+        await createCommunitySource(name, bindings)
+      } else {
+        await createBundledSource(name, bindings)
+      }
       onClose()
       addToast('success', { title: `Updated ${name}` })
     } catch (e) {
@@ -198,7 +204,6 @@ function SourceDetailDialogContent({
   }
 
   const icon = providerIcon(name)
-  const origin = source ? originLabel(source.origin) : null
 
   return (
     <>
@@ -220,6 +225,9 @@ function SourceDetailDialogContent({
           <Dialog.Description render={<div />}>
             <Typography.BodySmall variant="secondary">
               {source?.version ? `v${source.version}` : 'Configured source'}
+              {updateAvailable && sourceInfo?.update?.latestVersion
+                ? ` -> v${sourceInfo.update.latestVersion}`
+                : ''}
             </Typography.BodySmall>
           </Dialog.Description>
         </div>
@@ -280,7 +288,7 @@ function SourceDetailDialogContent({
         <ButtonContainer variant="bare" size="32" onClick={() => setConfirmingRemove(true)}>
           <ButtonText>Remove</ButtonText>
         </ButtonContainer>
-        {editable && hasChanges ? (
+        {editable && (hasChanges || updateAvailable) ? (
           <ButtonContainer
             variant="primary"
             size="32"
@@ -288,7 +296,9 @@ function SourceDetailDialogContent({
             disabled={saving}
           >
             {saving ? <ButtonIcon name="Loader" /> : null}
-            <ButtonText>{saving ? 'Saving…' : 'Save changes'}</ButtonText>
+            <ButtonText>
+              {saving ? 'Saving…' : updateAvailable && !hasChanges ? 'Update' : 'Save changes'}
+            </ButtonText>
           </ButtonContainer>
         ) : (
           <ButtonContainer variant="primary" size="32" onClick={onClose}>
@@ -503,6 +513,7 @@ function Field({ input, children }: { input: SourceInputSpec; children: React.Re
 
 function originBadgeLabel(origin: SourceOriginLabel): string {
   if (origin === 'bundled') return 'Core'
+  if (origin === 'community') return 'Community'
   if (origin === 'imported') return 'Imported'
-  return '—'
+  return 'Unknown'
 }

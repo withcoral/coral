@@ -4,18 +4,24 @@
     reason = "test code: assertion-style indexing is idiomatic in tests"
 )]
 
+use std::fmt::Write as _;
 use std::fs;
+use std::sync::Arc;
 
 use coral_api::v1::{
-    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
-    ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
-    ListCatalogRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess,
-    SourceCredentialStorage, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
-    Workspace, catalog_item, import_source_response, query_test_result,
-    source_input_spec::Input as ProtoSourceInput,
+    CreateBundledSourceRequest, CreateCommunitySourceRequest, DeleteSourceRequest,
+    DiscoverCommunitySourcesRequest, DiscoverSourcesRequest, ExecuteSqlRequest, ExplainSqlRequest,
+    GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest, ListCatalogRequest,
+    PaginationRequest, QueryTestFailure, QueryTestSuccess, SourceCredentialStorage, SourceOrigin,
+    SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, catalog_item,
+    import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::default_workspace;
+use serde_json::json;
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::sync::RwLock;
 use tonic::Request;
 
 use crate::harness::{
@@ -107,6 +113,96 @@ async fn discover_sources_includes_installed_imported_sources() {
 }
 
 #[tokio::test]
+async fn community_source_installs_from_registry_and_reports_updates() {
+    let initial_manifest = community_manifest_yaml("0.1.0");
+    let updated_manifest = community_manifest_yaml("0.2.0");
+    let registry =
+        CommunityRegistryFixture::new(initial_manifest.clone(), "0.1.0", "commit-one").await;
+    let harness = GrpcHarness::new_with_community_registry_url(registry.base_url()).await;
+
+    let discovered = harness
+        .source_client()
+        .discover_community_sources(Request::new(DiscoverCommunitySourcesRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect("discover community sources")
+        .into_inner()
+        .sources;
+    let community = discovered
+        .iter()
+        .find(|source| source.name == "community_messages")
+        .expect("community source");
+    assert_eq!(community.origin, SourceOrigin::Community as i32);
+    assert!(!community.installed);
+
+    let mut stream = harness
+        .source_client()
+        .create_community_source(Request::new(CreateCommunitySourceRequest {
+            workspace: Some(default_workspace()),
+            name: "community_messages".to_string(),
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await
+        .expect("create community source")
+        .into_inner();
+    let installed = stream
+        .message()
+        .await
+        .expect("community source stream")
+        .and_then(|response| match response.event {
+            Some(import_source_response::Event::Source(source)) => Some(*source),
+            _ => None,
+        })
+        .expect("community source response");
+    assert_eq!(installed.origin, SourceOrigin::Community as i32);
+    assert_eq!(installed.version, "0.1.0");
+    let provenance = installed
+        .community_provenance
+        .as_ref()
+        .expect("community provenance");
+    assert_eq!(provenance.repository, "withcoral/coral");
+    assert_eq!(provenance.commit_sha, "commit-one");
+    assert_eq!(provenance.manifest_sha256, sha256_hex(&initial_manifest));
+
+    let installed_manifest =
+        source_dir(harness.config_dir(), "community_messages").join("manifest.yaml");
+    assert_eq!(
+        fs::read_to_string(&installed_manifest).expect("read installed manifest"),
+        initial_manifest
+    );
+    let config_raw =
+        fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
+    assert!(config_raw.contains("origin = \"community\""));
+    assert!(config_raw.contains("community_provenance = { repository = \"withcoral/coral\""));
+
+    registry
+        .replace_manifest(updated_manifest, "0.2.0", "commit-two")
+        .await;
+    let discovered = harness
+        .source_client()
+        .discover_community_sources(Request::new(DiscoverCommunitySourcesRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect("discover community sources after update")
+        .into_inner()
+        .sources;
+    let community = discovered
+        .iter()
+        .find(|source| source.name == "community_messages")
+        .expect("community source");
+    assert!(community.installed);
+    let update = community.update.as_ref().expect("update info");
+    assert!(update.update_available);
+    assert_eq!(update.installed_version, "0.1.0");
+    assert_eq!(update.latest_version, "0.2.0");
+    assert_eq!(update.latest_commit_sha, "commit-two");
+}
+
+#[tokio::test]
 async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     let harness = GrpcHarness::new().await;
 
@@ -177,7 +273,7 @@ async fn import_duplicate_source_overwrites_existing_source() {
         .await
         .expect("duplicate import stream")
         .and_then(|response| match response.event {
-            Some(import_source_response::Event::Source(source)) => Some(source),
+            Some(import_source_response::Event::Source(source)) => Some(*source),
             _ => None,
         })
         .expect("import source response");
@@ -1503,4 +1599,168 @@ origin = "imported"
         config_raw.contains("[workspaces.default.sources.local_messages]"),
         "newly added source should be in config"
     );
+}
+
+struct CommunityRegistryFixture {
+    base_url: String,
+    state: Arc<RwLock<CommunityRegistryState>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Debug, Clone)]
+struct CommunityRegistryState {
+    manifest_yaml: String,
+    version: String,
+    commit_sha: String,
+}
+
+impl CommunityRegistryFixture {
+    async fn new(manifest_yaml: String, version: &str, commit_sha: &str) -> Self {
+        let state = Arc::new(RwLock::new(CommunityRegistryState {
+            manifest_yaml,
+            version: version.to_string(),
+            commit_sha: commit_sha.to_string(),
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind community registry fixture");
+        let addr = listener.local_addr().expect("fixture local addr");
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let (socket, _) = listener
+                    .accept()
+                    .await
+                    .expect("accept community registry request");
+                let state = server_state.clone();
+                tokio::spawn(async move {
+                    handle_community_registry_request(socket, state).await;
+                });
+            }
+        });
+        Self {
+            base_url: format!("http://{addr}"),
+            state,
+            task,
+        }
+    }
+
+    fn base_url(&self) -> String {
+        self.base_url.clone()
+    }
+
+    async fn replace_manifest(&self, manifest_yaml: String, version: &str, commit_sha: &str) {
+        let mut state = self.state.write().await;
+        state.manifest_yaml = manifest_yaml;
+        state.version = version.to_string();
+        state.commit_sha = commit_sha.to_string();
+    }
+}
+
+impl Drop for CommunityRegistryFixture {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn handle_community_registry_request(
+    mut socket: tokio::net::TcpStream,
+    state: Arc<RwLock<CommunityRegistryState>>,
+) {
+    let mut buffer = vec![0; 4096];
+    let Ok(read) = socket.read(&mut buffer).await else {
+        return;
+    };
+    let request = String::from_utf8_lossy(&buffer[..read]);
+    let path = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("/");
+    let (status, content_type, body) = match path {
+        "/v1/community/sources" => (
+            "200 OK",
+            "application/json; charset=utf-8",
+            community_registry_index_body(state).await,
+        ),
+        "/v1/community/sources/community_messages/manifest" => (
+            "200 OK",
+            "application/yaml; charset=utf-8",
+            state.read().await.manifest_yaml.clone(),
+        ),
+        _ => (
+            "404 Not Found",
+            "application/json; charset=utf-8",
+            "{\"error\":\"not_found\"}".to_string(),
+        ),
+    };
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _write = socket.write_all(response.as_bytes()).await;
+}
+
+async fn community_registry_index_body(state: Arc<RwLock<CommunityRegistryState>>) -> String {
+    let state = state.read().await;
+    json!({
+        "schema_version": 1,
+        "repository": {
+            "full_name": "withcoral/coral",
+            "ref": "test",
+            "commit_sha": state.commit_sha.clone(),
+        },
+        "sources": [{
+            "name": "community_messages",
+            "description": "Community messages",
+            "version": state.version.clone(),
+            "dsl_version": 3,
+            "backend": "http",
+            "paths": {
+                "manifest": "sources/community/community-messages/manifest.yaml",
+                "readme": "sources/community/community-messages/README.md",
+            },
+            "hashes": {
+                "manifest_sha256": sha256_hex(&state.manifest_yaml),
+                "readme_sha256": sha256_hex("readme"),
+            },
+            "git": {
+                "commit_sha": state.commit_sha.clone(),
+                "manifest_blob_sha": format!("blob-{}", state.commit_sha),
+                "readme_blob_sha": format!("readme-{}", state.commit_sha),
+            }
+        }]
+    })
+    .to_string()
+}
+
+fn community_manifest_yaml(version: &str) -> String {
+    format!(
+        r"name: community_messages
+version: {version}
+dsl_version: 3
+backend: http
+description: Community messages
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    response: {{}}
+    columns:
+      - name: id
+        type: Utf8
+"
+    )
+}
+
+fn sha256_hex(raw: &str) -> String {
+    let digest = Sha256::digest(raw.as_bytes());
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
 }

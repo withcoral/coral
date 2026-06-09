@@ -6,6 +6,8 @@ mod error;
 mod server;
 
 #[cfg(test)]
+pub(crate) use consts::DEFAULT_COMMUNITY_REGISTRY_URL;
+#[cfg(test)]
 pub(crate) use error::MAX_STATUS_DETAIL_BYTES;
 pub(crate) use error::{app_status, core_status};
 

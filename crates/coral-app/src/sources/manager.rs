@@ -3,6 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::bootstrap::AppError;
+#[cfg(test)]
+use crate::bootstrap::DEFAULT_COMMUNITY_REGISTRY_URL;
 use crate::credentials::oauth::{
     OAuthCredentialManager, OAuthCredentialMaterial, StartOAuthCredentialRequest,
     material_key_belongs_to_input,
@@ -15,7 +17,12 @@ use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
 };
-use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+use crate::sources::model::{
+    CandidateSource, CommunitySourceProvenance, InstalledSource, SourceOrigin,
+};
+use crate::sources::registry::{
+    CommunitySourceRegistry, RegistryRepository, RegistrySourceEntry, sha256_hex,
+};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
@@ -29,6 +36,7 @@ pub(crate) struct SourceManager {
     credential_manager: CredentialManager,
     oauth_manager: OAuthCredentialManager,
     layout: AppStateLayout,
+    community_registry: CommunitySourceRegistry,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -49,6 +57,17 @@ pub(crate) struct ImportSourceCommand {
 
 pub(crate) struct ImportSourceWithCredentialsCommand {
     pub(crate) manifest_yaml: String,
+    pub(crate) bindings: SourceBindings,
+    pub(crate) oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
+}
+
+pub(crate) struct CreateCommunitySourceCommand {
+    pub(crate) name: SourceName,
+    pub(crate) bindings: SourceBindings,
+}
+
+pub(crate) struct CreateCommunitySourceWithCredentialsCommand {
+    pub(crate) name: SourceName,
     pub(crate) bindings: SourceBindings,
     pub(crate) oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
 }
@@ -136,6 +155,17 @@ struct PersistSourceRequest<'a> {
     bindings: ValidatedBindings,
     origin: SourceOrigin,
     credential_storage: Option<CredentialStorageKind>,
+    community_provenance: Option<CommunitySourceProvenance>,
+}
+
+struct PersistedSourceCredentials {
+    visible_secret_keys: Vec<String>,
+    credential_storage: Option<CredentialStorageKind>,
+}
+
+struct SourceCredentialPersistError {
+    error: AppError,
+    new_material_storage: Option<CredentialStorageKind>,
 }
 
 struct SourceRollbackState {
@@ -144,17 +174,39 @@ struct SourceRollbackState {
     credential_material: Option<CredentialMaterialSnapshot>,
 }
 
+struct PreparedCommunitySource {
+    manifest_yaml: String,
+    provenance: CommunitySourceProvenance,
+    entry: RegistrySourceEntry,
+}
+
 impl SourceManager {
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
         layout: AppStateLayout,
+    ) -> Self {
+        Self::with_community_registry_url(
+            config_store,
+            credential_manager,
+            layout,
+            DEFAULT_COMMUNITY_REGISTRY_URL.to_string(),
+        )
+    }
+
+    pub(crate) fn with_community_registry_url(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        layout: AppStateLayout,
+        community_registry_url: String,
     ) -> Self {
         Self {
             config_store,
             credential_manager,
             oauth_manager: OAuthCredentialManager::new(),
             layout,
+            community_registry: CommunitySourceRegistry::new(community_registry_url),
         }
     }
 
@@ -229,7 +281,7 @@ impl SourceManager {
             }
         }
 
-        // Imported sources aren't in the bundled catalog, so append their
+        // Imported and community sources aren't in the bundled catalog, so append their
         // resolved metadata here. This keeps discovery the single source of
         // effective source info for clients, avoiding any client-side merge of
         // the installed list against the catalog. Resolution is best-effort: a
@@ -240,7 +292,11 @@ impl SourceManager {
             .map(|candidate| candidate.name.clone())
             .collect::<BTreeSet<_>>();
         for source in &installed_sources {
-            if source.origin != SourceOrigin::Imported || catalog_names.contains(&source.name) {
+            if !matches!(
+                source.origin,
+                SourceOrigin::Imported | SourceOrigin::Community
+            ) || catalog_names.contains(&source.name)
+            {
                 continue;
             }
             match resolve_installed_manifest(workspace_name, source, &self.layout) {
@@ -253,6 +309,55 @@ impl SourceManager {
             }
         }
         Ok(candidates)
+    }
+
+    pub(crate) async fn discover_community_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<CandidateSource>, AppError> {
+        let installed_sources = self.config_store.list_workspace_sources(workspace_name)?;
+        let installed_sources_by_name = installed_sources
+            .into_iter()
+            .map(|source| (source.name.clone(), source))
+            .collect::<BTreeMap<_, _>>();
+        let catalog = self.community_registry.discover_sources().await?;
+        catalog
+            .sources
+            .iter()
+            .map(|entry| {
+                self.community_entry_to_candidate(
+                    workspace_name,
+                    &catalog.repository,
+                    entry,
+                    installed_sources_by_name.get(&SourceName::parse(&entry.name)?),
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) async fn get_community_source_info(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<CandidateSource, AppError> {
+        let prepared = self.prepare_community_source(source_name).await?;
+        let mut candidate =
+            describe_manifest(&prepared.manifest_yaml, SourceOrigin::Community, false)?;
+        candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
+        candidate.community_provenance = Some(prepared.provenance.clone());
+        if let Ok(installed) = self
+            .config_store
+            .get_source(workspace_name, &candidate.name)
+            && let Some(installed_provenance) = installed.community_provenance.as_ref()
+            && installed.origin == SourceOrigin::Community
+        {
+            candidate.update = Some(prepared.entry.update_info(
+                installed.version.as_deref().unwrap_or_default(),
+                installed_provenance,
+            ));
+            candidate.credential_storage = installed.credential_storage_for_material();
+        }
+        Ok(candidate)
     }
 
     pub(crate) fn create_bundled_source(
@@ -290,6 +395,7 @@ impl SourceManager {
                 bindings,
                 origin: SourceOrigin::Bundled,
                 credential_storage,
+                community_provenance: None,
             },
         )
     }
@@ -344,6 +450,108 @@ impl SourceManager {
                 bindings,
                 origin: SourceOrigin::Bundled,
                 credential_storage,
+                community_provenance: None,
+            },
+        )
+    }
+
+    pub(crate) async fn create_community_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        command: &CreateCommunitySourceCommand,
+    ) -> Result<InstalledSource, AppError> {
+        let prepared = self.prepare_community_source(&command.name).await?;
+        let mut candidate =
+            describe_manifest(&prepared.manifest_yaml, SourceOrigin::Community, false)?;
+        candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
+        candidate.community_provenance = Some(prepared.provenance.clone());
+        let validation_storage = self.source_validation_storage(
+            workspace_name,
+            &candidate,
+            &command.bindings,
+            &BTreeSet::new(),
+        )?;
+        let stored_material = self.source_material_for_validation(
+            workspace_name,
+            &candidate,
+            &command.bindings,
+            &BTreeSet::new(),
+            validation_storage,
+        )?;
+        let bindings = validate_bindings(&candidate, &command.bindings, &stored_material)?;
+        let credential_storage = self.source_persist_storage(
+            workspace_name,
+            &candidate.name,
+            &bindings,
+            !stored_material.is_empty(),
+        )?;
+        self.persist_source(
+            workspace_name,
+            PersistSourceRequest {
+                candidate: &candidate,
+                manifest_yaml: Some(&prepared.manifest_yaml),
+                bindings,
+                origin: SourceOrigin::Community,
+                credential_storage,
+                community_provenance: Some(prepared.provenance),
+            },
+        )
+    }
+
+    pub(crate) async fn create_community_source_with_credentials(
+        &self,
+        workspace_name: &WorkspaceName,
+        command: CreateCommunitySourceWithCredentialsCommand,
+        events: ImportSourceEventSender,
+    ) -> Result<InstalledSource, AppError> {
+        let prepared = self.prepare_community_source(&command.name).await?;
+        let mut candidate =
+            describe_manifest(&prepared.manifest_yaml, SourceOrigin::Community, false)?;
+        candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
+        candidate.community_provenance = Some(prepared.provenance.clone());
+        let oauth_input_keys = command
+            .oauth_credential_retrievals
+            .iter()
+            .map(|credential| credential.input_key.clone())
+            .collect::<BTreeSet<_>>();
+        let validation_storage = self.source_validation_storage(
+            workspace_name,
+            &candidate,
+            &command.bindings,
+            &oauth_input_keys,
+        )?;
+        let stored_material = self.source_material_for_validation(
+            workspace_name,
+            &candidate,
+            &command.bindings,
+            &oauth_input_keys,
+            validation_storage,
+        )?;
+        let has_stored_material = !stored_material.is_empty();
+        let bindings = self
+            .bindings_with_oauth_material(
+                &candidate,
+                &command.bindings,
+                stored_material,
+                command.oauth_credential_retrievals,
+                events,
+            )
+            .await?;
+        let credential_storage = self.source_persist_storage(
+            workspace_name,
+            &candidate.name,
+            &bindings,
+            has_stored_material,
+        )?;
+        self.persist_source(
+            workspace_name,
+            PersistSourceRequest {
+                candidate: &candidate,
+                manifest_yaml: Some(&prepared.manifest_yaml),
+                bindings,
+                origin: SourceOrigin::Community,
+                credential_storage,
+                community_provenance: Some(prepared.provenance),
             },
         )
     }
@@ -384,6 +592,7 @@ impl SourceManager {
                 bindings,
                 origin: SourceOrigin::Imported,
                 credential_storage,
+                community_provenance: None,
             },
         )
     }
@@ -439,6 +648,7 @@ impl SourceManager {
                 bindings,
                 origin: SourceOrigin::Imported,
                 credential_storage,
+                community_provenance: None,
             },
         )
     }
@@ -466,7 +676,7 @@ impl SourceManager {
             source: stored,
             manifest_yaml: match removed.origin {
                 SourceOrigin::Bundled => None,
-                SourceOrigin::Imported => Some(std::fs::read_to_string(
+                SourceOrigin::Imported | SourceOrigin::Community => Some(std::fs::read_to_string(
                     self.layout.manifest_file(workspace_name, source_name),
                 )?),
             },
@@ -510,6 +720,68 @@ impl SourceManager {
         Ok(candidate)
     }
 
+    async fn prepare_community_source(
+        &self,
+        source_name: &SourceName,
+    ) -> Result<PreparedCommunitySource, AppError> {
+        let (repository, entry) = self.community_registry.get_source(source_name).await?;
+        let manifest_yaml = self.community_registry.get_manifest(source_name).await?;
+        let actual_manifest_sha256 = sha256_hex(&manifest_yaml);
+        if actual_manifest_sha256 != entry.hashes.manifest_sha256 {
+            return Err(AppError::FailedPrecondition(format!(
+                "community source '{source_name}' manifest hash mismatch"
+            )));
+        }
+        let candidate = describe_manifest(&manifest_yaml, SourceOrigin::Community, false)?;
+        if candidate.name != *source_name || candidate.name.as_str() != entry.name {
+            return Err(AppError::FailedPrecondition(format!(
+                "community source '{}' manifest name does not match registry entry '{}'",
+                candidate.name, entry.name
+            )));
+        }
+        let provenance = entry.provenance(&repository);
+        Ok(PreparedCommunitySource {
+            manifest_yaml,
+            provenance,
+            entry,
+        })
+    }
+
+    fn community_entry_to_candidate(
+        &self,
+        workspace_name: &WorkspaceName,
+        repository: &RegistryRepository,
+        entry: &RegistrySourceEntry,
+        installed: Option<&InstalledSource>,
+    ) -> Result<CandidateSource, AppError> {
+        let name = SourceName::parse(&entry.name)?;
+        let installed_source = installed.filter(|source| source.name == name);
+        let mut candidate = CandidateSource {
+            name,
+            description: entry.description.clone(),
+            version: entry.version.clone(),
+            inputs: Vec::new(),
+            installed: installed_source.is_some(),
+            origin: SourceOrigin::Community,
+            credential_storage: installed_source
+                .and_then(InstalledSource::credential_storage_for_material),
+            community_provenance: Some(entry.provenance(repository)),
+            update: None,
+        };
+        if let Some(installed_source) = installed_source
+            && installed_source.origin == SourceOrigin::Community
+            && let Some(installed_provenance) = installed_source.community_provenance.as_ref()
+        {
+            candidate.update = Some(entry.update_info(
+                installed_source.version.as_deref().unwrap_or_default(),
+                installed_provenance,
+            ));
+        } else if self.source_exists(workspace_name, &candidate.name)? {
+            candidate.installed = true;
+        }
+        Ok(candidate)
+    }
+
     fn persist_source(
         &self,
         workspace_name: &WorkspaceName,
@@ -524,74 +796,27 @@ impl SourceManager {
             return Err(error);
         }
 
-        let (visible_secret_keys, credential_storage) = if let Some(requested_storage) =
-            request.credential_storage
-        {
-            let credential_set_id = CredentialSetId::for_source(&source_name);
-            let mut credential_material = match self.credential_manager.read_material(
-                workspace_name,
-                &credential_set_id,
-                requested_storage,
-            ) {
-                Ok(material) => material,
-                Err(AppError::Credentials(CredentialsError::Parse(_)))
-                    if requested_storage == CredentialStorageKind::File =>
-                {
-                    BTreeMap::new()
-                }
-                Err(error) => {
-                    self.restore_source_rollback_state(
-                        workspace_name,
-                        &source_name,
-                        previous,
-                        None,
-                    );
-                    return Err(error);
-                }
-            };
-            let expected_secret_keys = request
-                .candidate
-                .inputs
-                .iter()
-                .filter(|input| input.kind == ManifestInputKind::Secret)
-                .map(|input| input.key.clone())
-                .collect::<BTreeSet<_>>();
-            credential_material
-                .retain(|key, _| material_key_belongs_to_source_secret(key, &expected_secret_keys));
-            for input_key in &request.bindings.replaced_oauth_inputs {
-                credential_material.retain(|key, _| !material_key_belongs_to_input(key, input_key));
+        let PersistedSourceCredentials {
+            visible_secret_keys,
+            credential_storage,
+        } = match self.persist_source_credentials(workspace_name, &source_name, &request) {
+            Ok(credentials) => credentials,
+            Err(error) => {
+                self.restore_source_rollback_state(
+                    workspace_name,
+                    &source_name,
+                    previous,
+                    error.new_material_storage,
+                );
+                return Err(error.error);
             }
-            credential_material.extend(request.bindings.secrets);
-            let credential_write = match self.credential_manager.replace_material(
-                workspace_name,
-                &credential_set_id,
-                requested_storage,
-                &credential_material,
-            ) {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    self.restore_source_rollback_state(
-                        workspace_name,
-                        &source_name,
-                        previous,
-                        Some(requested_storage),
-                    );
-                    return Err(error);
-                }
-            };
-            let credential_storage = if credential_write.visible_keys.is_empty() {
-                None
-            } else {
-                Some(credential_write.storage)
-            };
-            (credential_write.visible_keys, credential_storage)
-        } else {
-            (Vec::new(), None)
         };
 
         let persisted_version = match request.origin {
             SourceOrigin::Bundled => None,
-            SourceOrigin::Imported => Some(request.candidate.version.clone()),
+            SourceOrigin::Imported | SourceOrigin::Community => {
+                Some(request.candidate.version.clone())
+            }
         };
         let stored = InstalledSource {
             name: source_name.clone(),
@@ -600,6 +825,7 @@ impl SourceManager {
             secrets: visible_secret_keys,
             credential_storage,
             origin: request.origin,
+            community_provenance: request.community_provenance,
         };
         if let Err(error) = self
             .config_store
@@ -616,6 +842,73 @@ impl SourceManager {
         let mut resolved = stored;
         resolved.version = Some(request.candidate.version.clone());
         Ok(resolved)
+    }
+
+    fn persist_source_credentials(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        request: &PersistSourceRequest<'_>,
+    ) -> Result<PersistedSourceCredentials, SourceCredentialPersistError> {
+        let Some(requested_storage) = request.credential_storage else {
+            return Ok(PersistedSourceCredentials {
+                visible_secret_keys: Vec::new(),
+                credential_storage: None,
+            });
+        };
+        let credential_set_id = CredentialSetId::for_source(source_name);
+        let mut credential_material = match self.credential_manager.read_material(
+            workspace_name,
+            &credential_set_id,
+            requested_storage,
+        ) {
+            Ok(material) => material,
+            Err(AppError::Credentials(CredentialsError::Parse(_)))
+                if requested_storage == CredentialStorageKind::File =>
+            {
+                BTreeMap::new()
+            }
+            Err(error) => {
+                return Err(SourceCredentialPersistError {
+                    error,
+                    new_material_storage: None,
+                });
+            }
+        };
+        let expected_secret_keys = request
+            .candidate
+            .inputs
+            .iter()
+            .filter(|input| input.kind == ManifestInputKind::Secret)
+            .map(|input| input.key.clone())
+            .collect::<BTreeSet<_>>();
+        credential_material
+            .retain(|key, _| material_key_belongs_to_source_secret(key, &expected_secret_keys));
+        for input_key in &request.bindings.replaced_oauth_inputs {
+            credential_material.retain(|key, _| !material_key_belongs_to_input(key, input_key));
+        }
+        credential_material.extend(request.bindings.secrets.clone());
+        let credential_write = self
+            .credential_manager
+            .replace_material(
+                workspace_name,
+                &credential_set_id,
+                requested_storage,
+                &credential_material,
+            )
+            .map_err(|error| SourceCredentialPersistError {
+                error,
+                new_material_storage: Some(requested_storage),
+            })?;
+        let credential_storage = if credential_write.visible_keys.is_empty() {
+            None
+        } else {
+            Some(credential_write.storage)
+        };
+        Ok(PersistedSourceCredentials {
+            visible_secret_keys: credential_write.visible_keys,
+            credential_storage,
+        })
     }
 
     fn source_exists(
@@ -876,7 +1169,7 @@ impl SourceManager {
         Ok(Some(SourceRollbackState {
             manifest_yaml: match source.origin {
                 SourceOrigin::Bundled => None,
-                SourceOrigin::Imported => Some(std::fs::read_to_string(
+                SourceOrigin::Imported | SourceOrigin::Community => Some(std::fs::read_to_string(
                     self.layout.manifest_file(workspace_name, source_name),
                 )?),
             },

@@ -31,6 +31,7 @@ jobs:
       ui-tests: ${{ steps.filter.outputs.ui-tests }}
       proto-lint: ${{ steps.filter.outputs.proto-lint }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
+      community-index: ${{ steps.filter.outputs.community-index }}
       docs-freshness: ${{ steps.filter.outputs.docs-freshness }}
       license-check: ${{ steps.filter.outputs.license-check }}
 
@@ -79,6 +80,14 @@ jobs:
               - 'Makefile'
               - 'sources/**/*.yaml'
               - 'sources/**/*.yml'
+            community-index:
+              - '.github/workflows/validate.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'Makefile'
+              - 'xtask/**'
+              - 'crates/coral-spec/**'
+              - 'sources/community/**'
             docs-freshness:
               - '.github/workflows/validate.yml'
               - 'Makefile'
@@ -349,6 +358,41 @@ jobs:
       - name: Run make lint-sources
         run: make lint-sources
 
+  community-index:
+    name: Generate community source index
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.community-index == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: coral-community-index-${{ runner.os }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Generate community source index
+        run: |
+          cargo run --locked -p xtask -- generate-community-index \
+            --sources-dir sources/community \
+            --out target/community-sources/index.json \
+            --git-ref "$GITHUB_REF_NAME" \
+            --commit-sha "$GITHUB_SHA"
+
+      - name: Upload community source index
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: community-sources-index
+          path: target/community-sources/index.json
+          if-no-files-found: error
+
   docs-freshness:
     name: Docs freshness check
     runs-on: ubuntu-latest
@@ -413,6 +457,7 @@ jobs:
         proto-lint,
         gha-security-audit,
         source-lint,
+        community-index,
         docs-freshness,
         license-check,
       ]
@@ -431,6 +476,7 @@ jobs:
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
           GHA_SECURITY_AUDIT_RESULT: ${{ needs.gha-security-audit.result }}
           SOURCE_LINT_RESULT: ${{ needs.source-lint.result }}
+          COMMUNITY_INDEX_RESULT: ${{ needs.community-index.result }}
           DOCS_FRESHNESS_RESULT: ${{ needs.docs-freshness.result }}
           LICENSE_CHECK_RESULT: ${{ needs.license-check.result }}
         run: |
@@ -444,6 +490,7 @@ jobs:
             "proto-lint:$PROTO_LINT_RESULT"
             "gha-security-audit:$GHA_SECURITY_AUDIT_RESULT"
             "source-lint:$SOURCE_LINT_RESULT"
+            "community-index:$COMMUNITY_INDEX_RESULT"
             "docs-freshness:$DOCS_FRESHNESS_RESULT"
             "license-check:$LICENSE_CHECK_RESULT"
           )

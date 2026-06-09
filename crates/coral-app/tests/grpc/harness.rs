@@ -39,13 +39,28 @@ impl GrpcHarness {
         Self::start_with_parts(temp_dir, config_dir).await
     }
 
-    async fn start_with_parts(temp_dir: TempDir, config_dir: PathBuf) -> Self {
-        ensure_file_credentials_config(&config_dir);
-        let server = ServerBuilder::new()
-            .with_config_dir(&config_dir)
-            .start()
+    pub(crate) async fn new_with_community_registry_url(community_registry_url: String) -> Self {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path().join("coral-config");
+        Self::start_with_parts_and_registry(temp_dir, config_dir, Some(community_registry_url))
             .await
-            .expect("start server");
+    }
+
+    async fn start_with_parts(temp_dir: TempDir, config_dir: PathBuf) -> Self {
+        Self::start_with_parts_and_registry(temp_dir, config_dir, None).await
+    }
+
+    async fn start_with_parts_and_registry(
+        temp_dir: TempDir,
+        config_dir: PathBuf,
+        community_registry_url: Option<String>,
+    ) -> Self {
+        ensure_file_credentials_config(&config_dir);
+        let mut builder = ServerBuilder::new().with_config_dir(&config_dir);
+        if let Some(community_registry_url) = community_registry_url {
+            builder = builder.with_community_registry_url(community_registry_url);
+        }
+        let server = builder.start().await.expect("start server");
         let app = AppClient::connect(server.endpoint_uri())
             .await
             .expect("connect client");
@@ -100,7 +115,7 @@ impl GrpcHarness {
             .await
             .expect("import source stream")
             .and_then(|response| match response.event {
-                Some(import_source_response::Event::Source(source)) => Some(source),
+                Some(import_source_response::Event::Source(source)) => Some(*source),
                 _ => None,
             })
             .expect("import source response")

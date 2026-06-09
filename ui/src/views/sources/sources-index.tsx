@@ -7,7 +7,7 @@ import { Typography } from '@/wax/components/typography'
 import { ErrorBanner } from '@/components/error-banner'
 import { providerIcon } from '@/lib/provider-icons'
 import { SOURCE_CATEGORY_ORDER, getCategoryForSource } from '@/lib/source-categories'
-import { discoverBundled, type CatalogEntry } from '@/lib/sources'
+import { discoverBundled, discoverCommunity, type CatalogEntry } from '@/lib/sources'
 
 import { SourceDetailDialog } from './source-detail'
 import { SourceInstallDialog } from './source-install'
@@ -17,9 +17,11 @@ type IndexEntry = CatalogEntry
 
 export function SourcesIndex() {
   const [bundled, setBundled] = useState<CatalogEntry[] | null>(null)
+  const [community, setCommunity] = useState<CatalogEntry[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [communityError, setCommunityError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
-  const [installingName, setInstallingName] = useState<string | null>(null)
+  const [installingEntry, setInstallingEntry] = useState<IndexEntry | null>(null)
   const [detailName, setDetailName] = useState<string | null>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
 
@@ -38,11 +40,24 @@ export function SourcesIndex() {
   }, [])
 
   const refresh = useCallback(async () => {
-    try {
-      setBundled(await discoverBundled())
+    const [bundledResult, communityResult] = await Promise.allSettled([
+      discoverBundled(),
+      discoverCommunity(),
+    ])
+    if (bundledResult.status === 'fulfilled') {
+      setBundled(bundledResult.value)
       setError(null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } else {
+      const reason = bundledResult.reason
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+    if (communityResult.status === 'fulfilled') {
+      setCommunity(communityResult.value)
+      setCommunityError(null)
+    } else {
+      const reason = communityResult.reason
+      setCommunity([])
+      setCommunityError(reason instanceof Error ? reason.message : String(reason))
     }
   }, [])
 
@@ -50,11 +65,12 @@ export function SourcesIndex() {
     void refresh()
   }, [refresh])
 
-  const loading = bundled === null && !error
+  const loading = bundled === null && community === null && !error
 
   const allEntries = useMemo<IndexEntry[]>(
-    () => (bundled ?? []).toSorted((a, b) => a.name.localeCompare(b.name)),
-    [bundled],
+    () =>
+      [...(bundled ?? []), ...(community ?? [])].toSorted((a, b) => a.name.localeCompare(b.name)),
+    [bundled, community],
   )
 
   const filtered = useMemo(() => {
@@ -94,12 +110,12 @@ export function SourcesIndex() {
     if (entry.installed) {
       setDetailName(entry.name)
     } else {
-      setInstallingName(entry.name)
+      setInstallingEntry(entry)
     }
   }
 
   const onInstalled = useCallback(() => {
-    setInstallingName(null)
+    setInstallingEntry(null)
     void refresh()
   }, [refresh])
 
@@ -134,6 +150,14 @@ export function SourcesIndex() {
             title="Couldn't load sources"
             message={error}
             onRetry={() => window.location.reload()}
+          />
+        ) : null}
+
+        {communityError && !error ? (
+          <ErrorBanner
+            title="Couldn't load community sources"
+            message={communityError}
+            onRetry={() => void refresh()}
           />
         ) : null}
 
@@ -193,10 +217,11 @@ export function SourcesIndex() {
       </div>
 
       <SourceInstallDialog
-        name={installingName}
-        open={installingName !== null}
+        name={installingEntry?.name ?? null}
+        origin={installingEntry?.origin ?? 'bundled'}
+        open={installingEntry !== null}
         onOpenChange={(open) => {
-          if (!open) setInstallingName(null)
+          if (!open) setInstallingEntry(null)
         }}
         onInstalled={onInstalled}
       />
@@ -250,6 +275,8 @@ function SourceCard({ entry, onClick }: { entry: IndexEntry; onClick: () => void
         </Typography.BodyLargeStrong>
         {entry.origin === 'imported' ? (
           <span className={styles.originPill}>Imported</span>
+        ) : entry.origin === 'community' ? (
+          <span className={styles.originPill}>Community</span>
         ) : entry.origin === 'bundled' ? (
           <span className={styles.originPill}>Core</span>
         ) : null}
@@ -261,7 +288,9 @@ function SourceCard({ entry, onClick }: { entry: IndexEntry; onClick: () => void
       ) : null}
       {entry.installed ? (
         <div className={styles.cardFooter}>
-          <span className={styles.connectedPill}>Configured</span>
+          <span className={styles.connectedPill}>
+            {entry.updateAvailable ? 'Update available' : 'Configured'}
+          </span>
         </div>
       ) : null}
     </button>
