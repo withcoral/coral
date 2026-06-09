@@ -4,7 +4,7 @@ use coral_capabilities::{
     InvocationSchema, McpTaskSupport, McpToolUpstreamBinding, PaginationHint, PaginationKind,
     ProviderOrigin, ProviderOriginKind, RestUpstreamBinding, ShapeHints, SourceId, UpstreamBinding,
 };
-use coral_exports::{BindingBuildContext, SourceKey, SqlRowShape};
+use coral_exports::{BindingBuildContext, SourceKey, SqlBinding, SqlRowShape};
 use datafusion::common::{Column, ScalarValue};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator};
 use serde_json::json;
@@ -52,6 +52,33 @@ fn file_capability() -> Capability {
     capability
 }
 
+fn demo_context() -> BindingBuildContext {
+    BindingBuildContext {
+        source_id: SourceId("src_demo".to_string()),
+        display_name: "Demo".to_string(),
+        source_key: SourceKey("demo".to_string()),
+    }
+}
+
+fn single_demo_sql_binding(capability: &Capability) -> SqlBinding {
+    generate_sql_bindings(capability, &demo_context())
+        .pop()
+        .expect("sql binding")
+}
+
+fn search_issues_rest_binding() -> UpstreamBinding {
+    UpstreamBinding::Rest(RestUpstreamBinding {
+        operation_ref: "interfaces/rest/provider-snapshot.yaml#/operations/search_issues"
+            .to_string(),
+        method: HttpMethod::Get,
+        path_template: "/search/issues".to_string(),
+        parameter_bindings: Vec::new(),
+        request_bodies: Vec::new(),
+        responses: Vec::new(),
+        pagination: None,
+    })
+}
+
 #[test]
 fn sql_identifier_splits_camel_case_provider_names() {
     assert_eq!(sql_identifier("includeArchived"), "include_archived");
@@ -62,15 +89,7 @@ fn sql_identifier_splits_camel_case_provider_names() {
 
 #[test]
 fn file_read_capability_gets_sql_table_binding() {
-    let source_id = SourceId("src_demo".to_string());
-    let bindings = generate_sql_bindings(
-        &file_capability(),
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    );
+    let bindings = generate_sql_bindings(&file_capability(), &demo_context());
     assert_eq!(bindings.len(), 1);
     let binding = bindings.first().expect("first SQL binding");
     assert_eq!(binding.sql_reference, "demo.issues");
@@ -101,25 +120,16 @@ fn sql_schema_does_not_repeat_interface_suffix_already_in_source_key() {
 fn mutation_capability_gets_no_sql_binding() {
     let mut capability = file_capability();
     capability.effect_profile = EffectProfile::write();
-    let source_id = SourceId("src_demo".to_string());
     let contribution = SqlBindingContributor::new()
-        .contribute(
-            &capability,
-            &BindingBuildContext {
-                source_id,
-                display_name: "Demo".to_string(),
-                source_key: SourceKey("demo".to_string()),
-            },
-        )
+        .contribute(&capability, &demo_context())
         .expect("contribute");
     assert!(contribution.bindings.is_empty());
 }
 
 #[test]
 fn mcp_read_tool_without_output_schema_reports_sql_diagnostic() {
-    let source_id = SourceId("src_demo".to_string());
     let mut capability = Capability::new(
-        source_id.clone(),
+        SourceId("src_demo".to_string()),
         "mcp",
         "search_public",
         ProviderOrigin {
@@ -139,14 +149,7 @@ fn mcp_read_tool_without_output_schema_reports_sql_diagnostic() {
         coral_capabilities::OutputContract::McpStructuredContent { schema: None };
 
     let contribution = SqlBindingContributor::new()
-        .contribute(
-            &capability,
-            &BindingBuildContext {
-                source_id,
-                display_name: "Demo".to_string(),
-                source_key: SourceKey("demo".to_string()),
-            },
-        )
+        .contribute(&capability, &demo_context())
         .expect("contribute");
 
     assert!(contribution.bindings.is_empty());
@@ -171,9 +174,8 @@ fn mcp_read_tool_without_output_schema_reports_sql_diagnostic() {
 
 #[test]
 fn mcp_read_tool_with_list_output_schema_gets_sql_binding() {
-    let source_id = SourceId("src_demo".to_string());
     let mut capability = Capability::new(
-        source_id.clone(),
+        SourceId("src_demo".to_string()),
         "mcp",
         "search_public",
         ProviderOrigin {
@@ -204,14 +206,7 @@ fn mcp_read_tool_with_list_output_schema_gets_sql_binding() {
     };
 
     let contribution = SqlBindingContributor::new()
-        .contribute(
-            &capability,
-            &BindingBuildContext {
-                source_id,
-                display_name: "Demo".to_string(),
-                source_key: SourceKey("demo".to_string()),
-            },
-        )
+        .contribute(&capability, &demo_context())
         .expect("contribute");
 
     assert_eq!(contribution.bindings.len(), 1);
@@ -221,7 +216,6 @@ fn mcp_read_tool_with_list_output_schema_gets_sql_binding() {
 
 #[test]
 fn file_capability_with_inputs_gets_sql_provider_table_metadata() {
-    let source_id = SourceId("src_demo".to_string());
     let mut capability = file_capability();
     capability.input_schema = InvocationSchema::object(
         serde_json::Map::from_iter([("limit".to_string(), json!({ "type": "integer" }))]),
@@ -229,14 +223,7 @@ fn file_capability_with_inputs_gets_sql_provider_table_metadata() {
         false,
     );
 
-    let bindings = generate_sql_bindings(
-        &capability,
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    );
+    let bindings = generate_sql_bindings(&capability, &demo_context());
 
     let binding = bindings.first().expect("sql binding");
     assert_eq!(binding.sql_reference, "demo.issues");
@@ -248,26 +235,15 @@ fn file_capability_with_inputs_gets_sql_provider_table_metadata() {
 
 #[test]
 fn importer_file_read_operation_uses_interface_name_for_sql_table() {
-    let source_id = SourceId("src_demo".to_string());
     let mut capability = file_capability();
     capability.interface_id = "messages".to_string();
     capability.operation_id = "read_files".to_string();
-    let binding = generate_sql_bindings(
-        &capability,
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    )
-    .pop()
-    .expect("sql binding");
+    let binding = single_demo_sql_binding(&capability);
     assert_eq!(binding.sql_reference, "demo.messages");
 }
 
 #[test]
 fn rest_read_capability_gets_provider_sql_table_binding() {
-    let source_id = SourceId("src_demo".to_string());
     let mut capability = file_capability();
     capability.interface_id = "rest".to_string();
     capability.operation_id = "list_issues".to_string();
@@ -314,14 +290,7 @@ fn rest_read_capability_gets_provider_sql_table_binding() {
         vec!["owner".to_string(), "repo".to_string()],
         false,
     );
-    let bindings = generate_sql_bindings(
-        &capability,
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    );
+    let bindings = generate_sql_bindings(&capability, &demo_context());
     let binding = bindings.first().expect("provider sql binding");
     assert_eq!(binding.sql_reference, "demo_rest.list_issues");
     assert!(binding.projection.file_scan.is_none());
@@ -341,16 +310,7 @@ fn rest_read_capability_gets_provider_sql_table_binding() {
 fn provider_limit_does_not_invent_per_page_argument() {
     let mut capability = file_capability();
     capability.operation_id = "search_issues".to_string();
-    capability.upstream_binding = UpstreamBinding::Rest(RestUpstreamBinding {
-        operation_ref: "interfaces/rest/provider-snapshot.yaml#/operations/search_issues"
-            .to_string(),
-        method: HttpMethod::Get,
-        path_template: "/search/issues".to_string(),
-        parameter_bindings: Vec::new(),
-        request_bodies: Vec::new(),
-        responses: Vec::new(),
-        pagination: None,
-    });
+    capability.upstream_binding = search_issues_rest_binding();
     let binding = runtime_binding_for(capability);
 
     let args = provider_args_from_filters(&binding, &[], Some(10)).expect("provider args");
@@ -597,19 +557,9 @@ fn provider_filter_conflicts_fail_loudly() {
 
 #[test]
 fn wrapped_items_response_selects_item_rows() {
-    let source_id = SourceId("src_demo".to_string());
     let mut capability = file_capability();
     capability.operation_id = "search_issues".to_string();
-    capability.upstream_binding = UpstreamBinding::Rest(RestUpstreamBinding {
-        operation_ref: "interfaces/rest/provider-snapshot.yaml#/operations/search_issues"
-            .to_string(),
-        method: HttpMethod::Get,
-        path_template: "/search/issues".to_string(),
-        parameter_bindings: Vec::new(),
-        request_bodies: Vec::new(),
-        responses: Vec::new(),
-        pagination: None,
-    });
+    capability.upstream_binding = search_issues_rest_binding();
     capability.output_contract = coral_capabilities::OutputContract::RestResponseVariants {
         variants: vec![coral_capabilities::RestOutputVariant {
             status: coral_capabilities::StatusRange::Code { code: 200 },
@@ -633,16 +583,7 @@ fn wrapped_items_response_selects_item_rows() {
             })),
         }],
     };
-    let binding = generate_sql_bindings(
-        &capability,
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    )
-    .pop()
-    .expect("sql binding");
+    let binding = single_demo_sql_binding(&capability);
     assert_eq!(
         binding
             .projection
@@ -664,19 +605,9 @@ fn wrapped_items_response_selects_item_rows() {
 
 #[test]
 fn referenced_wrapped_rest_response_selects_item_rows() {
-    let source_id = SourceId("src_demo".to_string());
     let mut capability = file_capability();
     capability.operation_id = "search_issues".to_string();
-    capability.upstream_binding = UpstreamBinding::Rest(RestUpstreamBinding {
-        operation_ref: "interfaces/rest/provider-snapshot.yaml#/operations/search_issues"
-            .to_string(),
-        method: HttpMethod::Get,
-        path_template: "/search/issues".to_string(),
-        parameter_bindings: Vec::new(),
-        request_bodies: Vec::new(),
-        responses: Vec::new(),
-        pagination: None,
-    });
+    capability.upstream_binding = search_issues_rest_binding();
     capability.output_contract = coral_capabilities::OutputContract::RestResponseVariants {
         variants: vec![coral_capabilities::RestOutputVariant {
             status: coral_capabilities::StatusRange::Code { code: 200 },
@@ -706,16 +637,7 @@ fn referenced_wrapped_rest_response_selects_item_rows() {
             })),
         }],
     };
-    let binding = generate_sql_bindings(
-        &capability,
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    )
-    .pop()
-    .expect("sql binding");
+    let binding = single_demo_sql_binding(&capability);
 
     assert_eq!(
         binding
@@ -738,19 +660,9 @@ fn referenced_wrapped_rest_response_selects_item_rows() {
 
 #[test]
 fn composed_wrapped_rest_response_selects_item_rows() {
-    let source_id = SourceId("src_demo".to_string());
     let mut capability = file_capability();
     capability.operation_id = "search_issues".to_string();
-    capability.upstream_binding = UpstreamBinding::Rest(RestUpstreamBinding {
-        operation_ref: "interfaces/rest/provider-snapshot.yaml#/operations/search_issues"
-            .to_string(),
-        method: HttpMethod::Get,
-        path_template: "/search/issues".to_string(),
-        parameter_bindings: Vec::new(),
-        request_bodies: Vec::new(),
-        responses: Vec::new(),
-        pagination: None,
-    });
+    capability.upstream_binding = search_issues_rest_binding();
     capability.output_contract = coral_capabilities::OutputContract::RestResponseVariants {
         variants: vec![coral_capabilities::RestOutputVariant {
             status: coral_capabilities::StatusRange::Code { code: 200 },
@@ -786,16 +698,7 @@ fn composed_wrapped_rest_response_selects_item_rows() {
             })),
         }],
     };
-    let binding = generate_sql_bindings(
-        &capability,
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    )
-    .pop()
-    .expect("sql binding");
+    let binding = single_demo_sql_binding(&capability);
 
     assert_eq!(
         binding
@@ -818,7 +721,6 @@ fn composed_wrapped_rest_response_selects_item_rows() {
 
 #[test]
 fn graphql_connection_shape_hint_selects_node_rows() {
-    let source_id = SourceId("src_demo".to_string());
     let mut capability = file_capability();
     capability.operation_id = "query_issues".to_string();
     capability.upstream_binding = UpstreamBinding::Graphql(GraphqlOperationBinding {
@@ -854,16 +756,7 @@ fn graphql_connection_shape_hint_selects_node_rows() {
             }
         })),
     };
-    let binding = generate_sql_bindings(
-        &capability,
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    )
-    .pop()
-    .expect("sql binding");
+    let binding = single_demo_sql_binding(&capability);
 
     assert_eq!(
         binding
@@ -886,7 +779,6 @@ fn graphql_connection_shape_hint_selects_node_rows() {
 
 #[test]
 fn graphql_singleton_shape_hint_selects_nested_object_row() {
-    let source_id = SourceId("src_demo".to_string());
     let mut capability = file_capability();
     capability.operation_id = "query_issue".to_string();
     capability.upstream_binding = UpstreamBinding::Graphql(GraphqlOperationBinding {
@@ -913,16 +805,7 @@ fn graphql_singleton_shape_hint_selects_nested_object_row() {
             }
         })),
     };
-    let binding = generate_sql_bindings(
-        &capability,
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    )
-    .pop()
-    .expect("sql binding");
+    let binding = single_demo_sql_binding(&capability);
 
     assert_eq!(binding.projection.row_shape, SqlRowShape::Singleton);
     assert_eq!(
@@ -946,19 +829,9 @@ fn graphql_singleton_shape_hint_selects_nested_object_row() {
 
 #[test]
 fn nullable_wrapped_array_response_selects_item_rows_and_preserves_column_types() {
-    let source_id = SourceId("src_demo".to_string());
     let mut capability = file_capability();
     capability.operation_id = "search_issues".to_string();
-    capability.upstream_binding = UpstreamBinding::Rest(RestUpstreamBinding {
-        operation_ref: "interfaces/rest/provider-snapshot.yaml#/operations/search_issues"
-            .to_string(),
-        method: HttpMethod::Get,
-        path_template: "/search/issues".to_string(),
-        parameter_bindings: Vec::new(),
-        request_bodies: Vec::new(),
-        responses: Vec::new(),
-        pagination: None,
-    });
+    capability.upstream_binding = search_issues_rest_binding();
     capability.output_contract = coral_capabilities::OutputContract::RestResponseVariants {
         variants: vec![coral_capabilities::RestOutputVariant {
             status: coral_capabilities::StatusRange::Code { code: 200 },
@@ -983,16 +856,7 @@ fn nullable_wrapped_array_response_selects_item_rows_and_preserves_column_types(
             })),
         }],
     };
-    let binding = generate_sql_bindings(
-        &capability,
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    )
-    .pop()
-    .expect("sql binding");
+    let binding = single_demo_sql_binding(&capability);
 
     assert_eq!(
         binding
@@ -1019,17 +883,7 @@ fn nullable_wrapped_array_response_selects_item_rows_and_preserves_column_types(
 }
 
 fn runtime_binding_for(capability: Capability) -> SqlRuntimeBinding {
-    let source_id = capability.source_id.clone();
-    let binding = generate_sql_bindings(
-        &capability,
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    )
-    .pop()
-    .expect("sql binding");
+    let binding = single_demo_sql_binding(&capability);
     SqlRuntimeBinding {
         capability,
         binding,
@@ -1131,18 +985,8 @@ async fn executes_file_sql_binding_from_installed_artifact() {
     )
     .expect("write data");
 
-    let source_id = SourceId("src_demo".to_string());
     let capability = file_capability();
-    let binding = generate_sql_bindings(
-        &capability,
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    )
-    .pop()
-    .expect("sql binding");
+    let binding = single_demo_sql_binding(&capability);
     let workspace = super::SqlWorkspace::new(vec![super::SqlRuntimeBinding {
         capability,
         binding,
@@ -1170,18 +1014,8 @@ async fn information_schema_lists_registered_sql_bindings() {
     std::fs::create_dir_all(&files_dir).expect("create files dir");
     std::fs::write(files_dir.join("file_0"), r#"{"id":1,"title":"first"}"#).expect("write data");
 
-    let source_id = SourceId("src_demo".to_string());
     let capability = file_capability();
-    let binding = generate_sql_bindings(
-        &capability,
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    )
-    .pop()
-    .expect("sql binding");
+    let binding = single_demo_sql_binding(&capability);
     let workspace = super::SqlWorkspace::new(vec![super::SqlRuntimeBinding {
         capability,
         binding,
@@ -1210,18 +1044,8 @@ async fn show_discovery_statements_execute() {
     std::fs::create_dir_all(&files_dir).expect("create files dir");
     std::fs::write(files_dir.join("file_0"), r#"{"id":1,"title":"first"}"#).expect("write data");
 
-    let source_id = SourceId("src_demo".to_string());
     let capability = file_capability();
-    let binding = generate_sql_bindings(
-        &capability,
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    )
-    .pop()
-    .expect("sql binding");
+    let binding = single_demo_sql_binding(&capability);
     let workspace = super::SqlWorkspace::new(vec![super::SqlRuntimeBinding {
         capability,
         binding,
@@ -1273,22 +1097,12 @@ async fn executes_json_array_file_sql_binding_from_installed_artifact() {
     )
     .expect("write data");
 
-    let source_id = SourceId("src_demo".to_string());
     let mut capability = file_capability();
     let UpstreamBinding::FileRead(file_binding) = &mut capability.upstream_binding else {
         panic!("expected file binding");
     };
     file_binding.format = FileFormatDescriptor::Json;
-    let binding = generate_sql_bindings(
-        &capability,
-        &BindingBuildContext {
-            source_id,
-            display_name: "Demo".to_string(),
-            source_key: SourceKey("demo".to_string()),
-        },
-    )
-    .pop()
-    .expect("sql binding");
+    let binding = single_demo_sql_binding(&capability);
     let workspace = super::SqlWorkspace::new(vec![super::SqlRuntimeBinding {
         capability,
         binding,

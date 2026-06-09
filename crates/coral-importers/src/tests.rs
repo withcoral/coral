@@ -57,6 +57,59 @@ fn graphql_output_schema_value(capability: &Capability) -> &Value {
     &schema.schema
 }
 
+fn demo_rest_spec() -> coral_spec::SourceSpec {
+    parse_source_manifest_yaml(
+        r"
+spec_version: 1
+kind: source
+name: demo
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    base_url: https://api.example.com
+",
+    )
+    .expect("parse rest source spec")
+}
+
+fn linear_graphql_spec(name: &str) -> coral_spec::SourceSpec {
+    parse_source_manifest_yaml(&format!(
+        r"
+spec_version: 1
+kind: source
+name: {name}
+interfaces:
+  - id: graph
+    type: graphql
+    endpoint: https://api.linear.app/graphql
+    schema:
+      kind: introspection_query
+"
+    ))
+    .expect("parse source spec")
+}
+
+fn import_demo(
+    source_id: &str,
+    spec: &coral_spec::SourceSpec,
+    raw: &BTreeMap<String, RawInterfaceInput>,
+) -> crate::ImportResult {
+    import_source(
+        coral_capabilities::SourceId(source_id.to_string()),
+        spec,
+        raw,
+    )
+    .expect("import")
+}
+
+fn find_op<'a>(capabilities: &'a [Capability], operation_id: &str) -> &'a Capability {
+    capabilities
+        .iter()
+        .find(|capability| capability.operation_id == operation_id)
+        .unwrap_or_else(|| panic!("missing capability: {operation_id}"))
+}
+
 #[test]
 fn mcp_read_only_hint_wins_over_destructive_description_terms() {
     let profile = mcp_effect_profile(&json!({
@@ -165,19 +218,9 @@ interfaces:
         },
     )]);
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_mcp_ref".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
+    let result = import_demo("src_mcp_ref", &spec, &raw);
 
-    let capability = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "list_members")
-        .expect("mcp capability");
+    let capability = find_op(&result.capabilities.capabilities, "list_members");
     assert_eq!(capability.shape_hints, ShapeHints::root_list());
 }
 
@@ -275,20 +318,10 @@ fn imports_vertical_capability_slice() {
             },
         );
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_demo".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
+    let result = import_demo("src_demo", &spec, &raw);
     assert_eq!(result.provider_snapshots.len(), 4);
     assert_eq!(result.capabilities.capabilities.len(), 8);
-    let deprecated_issue_search = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "query_issue_search")
-        .expect("generic deprecated GraphQL field should still be imported");
+    let deprecated_issue_search = find_op(&result.capabilities.capabilities, "query_issue_search");
     assert!(deprecated_issue_search.display.deprecated);
     assert_eq!(
         deprecated_issue_search.display.support_status,
@@ -315,12 +348,7 @@ fn imports_vertical_capability_slice() {
         issue_search.get("deprecation_reason"),
         Some(&json!("This endpoint deprecated."))
     );
-    let repository = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "query_repository")
-        .expect("object-returning GraphQL field should be imported");
+    let repository = find_op(&result.capabilities.capabilities, "query_repository");
     let UpstreamBinding::Graphql(repository_binding) = &repository.upstream_binding else {
         panic!("expected GraphQL binding");
     };
@@ -342,12 +370,7 @@ fn imports_vertical_capability_slice() {
                 ProviderOriginKind::McpTool
             ))
     );
-    let rest_post = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "create_issue")
-        .expect("post capability");
+    let rest_post = find_op(&result.capabilities.capabilities, "create_issue");
     assert!(matches!(
         rest_post.upstream_binding,
         UpstreamBinding::Rest(_)
@@ -356,20 +379,10 @@ fn imports_vertical_capability_slice() {
         rest_post.effect_profile.capability_kind,
         CapabilityKind::Mutation
     );
-    let mcp = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "list_issues")
-        .expect("mcp capability");
+    let mcp = find_op(&result.capabilities.capabilities, "list_issues");
     assert!(mcp.effect_profile.effects.contains(&EffectKind::Read));
     assert_eq!(mcp.shape_hints, ShapeHints::root_singleton());
-    let files = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "read_files")
-        .expect("file capability");
+    let files = find_op(&result.capabilities.capabilities, "read_files");
     let UpstreamBinding::FileRead(file_binding) = &files.upstream_binding else {
         panic!("expected file read binding");
     };
@@ -391,20 +404,7 @@ fn imports_vertical_capability_slice() {
 
 #[test]
 fn linear_issue_search_is_suppressed_even_when_introspection_marks_it_active() {
-    let spec = parse_source_manifest_yaml(
-        r"
-spec_version: 1
-kind: source
-name: renamed_linear_workspace
-interfaces:
-  - id: graph
-    type: graphql
-    endpoint: https://api.linear.app/graphql
-    schema:
-      kind: introspection_query
-",
-    )
-    .expect("parse source spec");
+    let spec = linear_graphql_spec("renamed_linear_workspace");
     let raw = BTreeMap::from([(
         "graph".to_string(),
         RawInterfaceInput::GraphqlIntrospection {
@@ -432,12 +432,7 @@ interfaces:
         },
     )]);
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_linear".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
+    let result = import_demo("src_linear", &spec, &raw);
 
     assert!(result.capabilities.capabilities.is_empty());
     let graph_snapshot = result
@@ -469,20 +464,7 @@ interfaces:
 )]
 #[test]
 fn graphql_import_generates_connection_capability_with_variables() {
-    let spec = parse_source_manifest_yaml(
-        r"
-spec_version: 1
-kind: source
-name: linear_graphql
-interfaces:
-  - id: graph
-    type: graphql
-    endpoint: https://api.linear.app/graphql
-    schema:
-      kind: introspection_query
-",
-    )
-    .expect("parse source spec");
+    let spec = linear_graphql_spec("linear_graphql");
     let raw = BTreeMap::from([(
         "graph".to_string(),
         RawInterfaceInput::GraphqlIntrospection {
@@ -549,18 +531,8 @@ interfaces:
         },
     )]);
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_linear_graphql".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
-    let issues = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "query_issues")
-        .expect("issues capability");
+    let result = import_demo("src_linear_graphql", &spec, &raw);
+    let issues = find_op(&result.capabilities.capabilities, "query_issues");
     let UpstreamBinding::Graphql(binding) = &issues.upstream_binding else {
         panic!("expected GraphQL binding");
     };
@@ -661,19 +633,7 @@ fn operation_id_allocator_suffixes_normalized_collisions() {
 
 #[test]
 fn openapi_import_suffixes_normalized_operation_id_collisions() {
-    let spec = parse_source_manifest_yaml(
-        r"
-spec_version: 1
-kind: source
-name: demo
-interfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.json
-    base_url: https://api.example.com
-",
-    )
-    .expect("parse rest source spec");
+    let spec = demo_rest_spec();
     let raw = BTreeMap::from([(
         "rest".to_string(),
         RawInterfaceInput::OpenApiDocument {
@@ -698,12 +658,7 @@ interfaces:
         },
     )]);
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_demo".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
+    let result = import_demo("src_demo", &spec, &raw);
     result
         .capabilities
         .validate()
@@ -715,12 +670,7 @@ interfaces:
         .map(|capability| capability.operation_id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(operation_ids, vec!["issue_search", "issue_search_2"]);
-    let suffixed = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "issue_search_2")
-        .expect("suffixed operation");
+    let suffixed = find_op(&result.capabilities.capabilities, "issue_search_2");
     assert_eq!(suffixed.provider_origin.provider_name, "issue_search");
 }
 
@@ -758,18 +708,8 @@ interfaces:
         },
     )]);
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_datadog".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
-    let capability = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "validate_monitor")
-        .expect("validate monitor capability");
+    let result = import_demo("src_datadog", &spec, &raw);
+    let capability = find_op(&result.capabilities.capabilities, "validate_monitor");
     assert_eq!(capability.provider_origin.provider_name, "ValidateMonitor");
     assert_eq!(
         capability.provider_origin.tags,
@@ -801,19 +741,7 @@ interfaces:
     reason = "OpenAPI fixture keeps singleton, root-list, and nested-list shape hints together"
 )]
 fn openapi_get_shape_hints_distinguish_singletons_and_lists() {
-    let spec = parse_source_manifest_yaml(
-        r"
-spec_version: 1
-kind: source
-name: demo
-interfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.json
-    base_url: https://api.example.com
-",
-    )
-    .expect("parse rest source spec");
+    let spec = demo_rest_spec();
     let raw = BTreeMap::from([(
         "rest".to_string(),
         RawInterfaceInput::OpenApiDocument {
@@ -903,18 +831,8 @@ interfaces:
         },
     )]);
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_demo".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
-    let authenticated = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "users_get_authenticated")
-        .expect("authenticated user capability");
+    let result = import_demo("src_demo", &spec, &raw);
+    let authenticated = find_op(&result.capabilities.capabilities, "users_get_authenticated");
     assert_eq!(
         authenticated.shape_hints.result_shape,
         ResultShapeHint::Singleton
@@ -923,23 +841,13 @@ interfaces:
         authenticated.shape_hints.row_path_candidates,
         vec![Vec::<String>::new()]
     );
-    let issues = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "issues_list")
-        .expect("issues list capability");
+    let issues = find_op(&result.capabilities.capabilities, "issues_list");
     assert_eq!(issues.shape_hints.result_shape, ResultShapeHint::List);
     assert_eq!(
         issues.shape_hints.row_path_candidates,
         vec![Vec::<String>::new()]
     );
-    let search = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "search_issues_and_pull_requests")
-        .expect("search capability");
+    let search = find_op(&result.capabilities.capabilities, "search_issues_and_pull_requests");
     assert_eq!(search.shape_hints.result_shape, ResultShapeHint::List);
     assert_eq!(
         search.shape_hints.row_path_candidates,
@@ -949,19 +857,7 @@ interfaces:
 
 #[test]
 fn openapi_shape_hints_resolve_referenced_wrapped_array_properties() {
-    let spec = parse_source_manifest_yaml(
-        r"
-spec_version: 1
-kind: source
-name: demo
-interfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.json
-    base_url: https://api.example.com
-",
-    )
-    .expect("parse rest source spec");
+    let spec = demo_rest_spec();
     let raw = BTreeMap::from([(
         "rest".to_string(),
         RawInterfaceInput::OpenApiDocument {
@@ -1008,18 +904,8 @@ interfaces:
         },
     )]);
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_demo".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
-    let capability = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "search_issues")
-        .expect("search issues capability");
+    let result = import_demo("src_demo", &spec, &raw);
+    let capability = find_op(&result.capabilities.capabilities, "search_issues");
 
     assert_eq!(capability.shape_hints.result_shape, ResultShapeHint::List);
     assert_eq!(
@@ -1030,19 +916,7 @@ interfaces:
 
 #[test]
 fn openapi_shape_hints_detect_nested_wrapped_array_properties() {
-    let spec = parse_source_manifest_yaml(
-        r"
-spec_version: 1
-kind: source
-name: demo
-interfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.json
-    base_url: https://api.example.com
-",
-    )
-    .expect("parse rest source spec");
+    let spec = demo_rest_spec();
     let raw = BTreeMap::from([(
         "rest".to_string(),
         RawInterfaceInput::OpenApiDocument {
@@ -1089,18 +963,8 @@ interfaces:
         },
     )]);
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_demo".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
-    let capability = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "search_messages")
-        .expect("search messages capability");
+    let result = import_demo("src_demo", &spec, &raw);
+    let capability = find_op(&result.capabilities.capabilities, "search_messages");
 
     assert_eq!(capability.shape_hints.result_shape, ResultShapeHint::List);
     assert_eq!(
@@ -1111,19 +975,7 @@ interfaces:
 
 #[test]
 fn openapi_shape_hints_detect_wrapped_singleton_object_properties() {
-    let spec = parse_source_manifest_yaml(
-        r"
-spec_version: 1
-kind: source
-name: demo
-interfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.json
-    base_url: https://api.example.com
-",
-    )
-    .expect("parse rest source spec");
+    let spec = demo_rest_spec();
     let raw = BTreeMap::from([(
         "rest".to_string(),
         RawInterfaceInput::OpenApiDocument {
@@ -1165,18 +1017,8 @@ interfaces:
         },
     )]);
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_demo".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
-    let capability = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "files_info")
-        .expect("files info capability");
+    let result = import_demo("src_demo", &spec, &raw);
+    let capability = find_op(&result.capabilities.capabilities, "files_info");
 
     assert_eq!(
         capability.shape_hints.result_shape,
@@ -1194,19 +1036,7 @@ interfaces:
 )]
 #[test]
 fn openapi_import_resolves_referenced_request_body_and_response() {
-    let spec = parse_source_manifest_yaml(
-        r"
-spec_version: 1
-kind: source
-name: demo
-interfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.json
-    base_url: https://api.example.com
-",
-    )
-    .expect("parse source spec");
+    let spec = demo_rest_spec();
     let raw = BTreeMap::from([(
         "rest".to_string(),
         RawInterfaceInput::OpenApiDocument {
@@ -1275,18 +1105,8 @@ interfaces:
         },
     )]);
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_demo".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
-    let capability = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "create_issue")
-        .expect("create issue capability");
+    let result = import_demo("src_demo", &spec, &raw);
+    let capability = find_op(&result.capabilities.capabilities, "create_issue");
     let UpstreamBinding::Rest(rest) = &capability.upstream_binding else {
         panic!("expected REST binding");
     };
@@ -1434,12 +1254,7 @@ interfaces:
             },
         )]);
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_demo".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
+    let result = import_demo("src_demo", &spec, &raw);
 
     assert!(result.capabilities.capabilities.is_empty());
     assert!(
@@ -1485,12 +1300,7 @@ interfaces:
             },
         )]);
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_demo".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
+    let result = import_demo("src_demo", &spec, &raw);
 
     assert!(result.capabilities.capabilities.is_empty());
     assert!(
@@ -1568,18 +1378,8 @@ interfaces:
         },
     );
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_github_like".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
-    let capability = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "search_issues_and_pull_requests")
-        .expect("search capability");
+    let result = import_demo("src_github_like", &spec, &raw);
+    let capability = find_op(&result.capabilities.capabilities, "search_issues_and_pull_requests");
     let schema = &capability.input_schema.schema;
     assert_eq!(
         schema
@@ -1628,18 +1428,8 @@ interfaces:
         },
     );
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_github_like".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
-    let capability = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "pulls_list_reviews")
-        .expect("reviews capability");
+    let result = import_demo("src_github_like", &spec, &raw);
+    let capability = find_op(&result.capabilities.capabilities, "pulls_list_reviews");
     let schema = &capability.input_schema.schema;
     assert_eq!(
         schema
@@ -1699,18 +1489,8 @@ interfaces:
         },
     );
 
-    let result = import_source(
-        coral_capabilities::SourceId("src_github_like".to_string()),
-        &spec,
-        &raw,
-    )
-    .expect("import");
-    let capability = result
-        .capabilities
-        .capabilities
-        .iter()
-        .find(|capability| capability.operation_id == "activity_list_events_for_authenticated_user")
-        .expect("events capability");
+    let result = import_demo("src_github_like", &spec, &raw);
+    let capability = find_op(&result.capabilities.capabilities, "activity_list_events_for_authenticated_user");
     let schema = &capability.input_schema.schema;
     assert_eq!(
         schema

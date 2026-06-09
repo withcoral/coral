@@ -1961,49 +1961,6 @@ interfaces:
     }
 
     #[test]
-    fn auth_must_reference_declared_input() {
-        let error = parse_source_manifest_yaml(
-            r"
-spec_version: 1
-kind: source
-name: bad
-interfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.json
-    auth:
-      kind: bearer_input
-      key: missing
-",
-        )
-        .expect_err("missing input rejected");
-        assert!(error.to_string().contains("undeclared input"));
-    }
-
-    #[test]
-    fn auth_must_reference_secret_input() {
-        let error = parse_source_manifest_yaml(
-            r"
-spec_version: 1
-kind: source
-name: bad
-inputs:
-  - key: account_id
-    kind: variable
-interfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.json
-    auth:
-      kind: bearer_input
-      key: account_id
-",
-        )
-        .expect_err("variable auth input rejected");
-        assert!(error.to_string().contains("must reference secret input"));
-    }
-
-    #[test]
     fn parses_multi_header_auth() {
         let manifest = parse_source_manifest_yaml(
             r"
@@ -2041,56 +1998,6 @@ interfaces:
     }
 
     #[test]
-    fn multi_header_auth_must_reference_secret_inputs() {
-        let error = parse_source_manifest_yaml(
-            r"
-spec_version: 1
-kind: source
-name: bad
-inputs:
-  - key: DD_API_KEY
-    kind: secret
-  - key: account_id
-    kind: variable
-interfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.json
-    auth:
-      kind: headers
-      headers:
-        - name: DD-API-KEY
-          key: DD_API_KEY
-        - name: Account-ID
-          key: account_id
-",
-        )
-        .expect_err("variable auth input rejected");
-        assert!(error.to_string().contains("must reference secret input"));
-    }
-
-    #[test]
-    fn secret_inputs_must_not_declare_defaults() {
-        let error = parse_source_manifest_yaml(
-            r"
-spec_version: 1
-kind: source
-name: bad
-inputs:
-  - key: api_token
-    kind: secret
-    default: abc123
-interfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.json
-",
-        )
-        .expect_err("secret default rejected");
-        assert!(error.to_string().contains("must not declare a default"));
-    }
-
-    #[test]
     fn parses_variable_allowed_values() {
         let manifest = parse_source_manifest_yaml(
             r"
@@ -2121,129 +2028,6 @@ interfaces:
             input.allowed_values,
             vec!["datadoghq.com".to_string(), "datadoghq.eu".to_string()]
         );
-    }
-
-    #[test]
-    fn variable_default_must_be_in_allowed_values() {
-        let error = parse_source_manifest_yaml(
-            r"
-spec_version: 1
-kind: source
-name: bad
-inputs:
-  - key: DD_SITE
-    kind: variable
-    default: datadoghq.com
-    allowed_values:
-      - datadoghq.eu
-interfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.json
-    base_url: https://api.{{input.DD_SITE}}
-",
-        )
-        .expect_err("default outside allowed_values should fail");
-        assert!(error.to_string().contains("default must be one of"));
-    }
-
-    #[test]
-    fn credential_like_variables_must_be_secret_inputs() {
-        let error = parse_source_manifest_yaml(
-            r"
-spec_version: 1
-kind: source
-name: bad
-inputs:
-  - key: service_api_key
-    kind: variable
-interfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.json
-",
-        )
-        .expect_err("credential-like variable rejected");
-        assert!(error.to_string().contains("looks credential-like"));
-    }
-
-    #[test]
-    fn credential_methods_must_be_declared_on_secret_inputs() {
-        let error = parse_source_manifest_yaml(
-            r"
-spec_version: 1
-kind: source
-name: bad
-inputs:
-  - key: workspace
-    kind: variable
-    credential:
-      methods:
-        - type: source_config
-interfaces:
-  - id: mcp
-    type: mcp
-    server:
-      transport:
-        type: streamable_http
-        url: https://mcp.example.com/mcp
-",
-        )
-        .expect_err("variable credential methods rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("credential methods must use kind: secret")
-        );
-    }
-
-    #[test]
-    fn oauth_credential_method_requires_oauth_config() {
-        let error = parse_source_manifest_yaml(
-            r"
-spec_version: 1
-kind: source
-name: bad
-inputs:
-  - key: API_TOKEN
-    kind: secret
-    credential:
-      methods:
-        - type: oauth
-interfaces:
-  - id: mcp
-    type: mcp
-    server:
-      transport:
-        type: streamable_http
-        url: https://mcp.example.com/mcp
-      auth:
-        kind: bearer_input
-        key: API_TOKEN
-",
-        )
-        .expect_err("oauth method without config rejected");
-        assert!(error.to_string().contains("must declare oauth"));
-    }
-
-    #[test]
-    fn input_keys_must_not_use_reserved_prefixes() {
-        let error = parse_source_manifest_yaml(
-            r"
-spec_version: 1
-kind: source
-name: bad
-inputs:
-  - key: __coral_api_token
-    kind: secret
-interfaces:
-  - id: rest
-    type: openapi
-    url: https://example.com/openapi.json
-",
-        )
-        .expect_err("reserved input rejected");
-        assert!(error.to_string().contains("reserved prefix"));
     }
 
     #[test]
@@ -2298,10 +2082,182 @@ interfaces:
         .expect("provider URL templates parse");
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "table of inline rejection fixtures keeps each (yaml, expected error) case visible"
+    )]
     #[test]
-    fn provider_url_templates_reject_secret_inputs() {
-        let error = parse_source_manifest_yaml(
-            r"
+    fn rejects_invalid_source_specs_with_expected_error() {
+        let cases: &[(&str, &str)] = &[
+            (
+                r"
+spec_version: 1
+kind: source
+name: bad
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    auth:
+      kind: bearer_input
+      key: missing
+",
+                "undeclared input",
+            ),
+            (
+                r"
+spec_version: 1
+kind: source
+name: bad
+inputs:
+  - key: account_id
+    kind: variable
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    auth:
+      kind: bearer_input
+      key: account_id
+",
+                "must reference secret input",
+            ),
+            (
+                r"
+spec_version: 1
+kind: source
+name: bad
+inputs:
+  - key: DD_API_KEY
+    kind: secret
+  - key: account_id
+    kind: variable
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    auth:
+      kind: headers
+      headers:
+        - name: DD-API-KEY
+          key: DD_API_KEY
+        - name: Account-ID
+          key: account_id
+",
+                "must reference secret input",
+            ),
+            (
+                r"
+spec_version: 1
+kind: source
+name: bad
+inputs:
+  - key: api_token
+    kind: secret
+    default: abc123
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+",
+                "must not declare a default",
+            ),
+            (
+                r"
+spec_version: 1
+kind: source
+name: bad
+inputs:
+  - key: DD_SITE
+    kind: variable
+    default: datadoghq.com
+    allowed_values:
+      - datadoghq.eu
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+    base_url: https://api.{{input.DD_SITE}}
+",
+                "default must be one of",
+            ),
+            (
+                r"
+spec_version: 1
+kind: source
+name: bad
+inputs:
+  - key: service_api_key
+    kind: variable
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+",
+                "looks credential-like",
+            ),
+            (
+                r"
+spec_version: 1
+kind: source
+name: bad
+inputs:
+  - key: workspace
+    kind: variable
+    credential:
+      methods:
+        - type: source_config
+interfaces:
+  - id: mcp
+    type: mcp
+    server:
+      transport:
+        type: streamable_http
+        url: https://mcp.example.com/mcp
+",
+                "credential methods must use kind: secret",
+            ),
+            (
+                r"
+spec_version: 1
+kind: source
+name: bad
+inputs:
+  - key: API_TOKEN
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+interfaces:
+  - id: mcp
+    type: mcp
+    server:
+      transport:
+        type: streamable_http
+        url: https://mcp.example.com/mcp
+      auth:
+        kind: bearer_input
+        key: API_TOKEN
+",
+                "must declare oauth",
+            ),
+            (
+                r"
+spec_version: 1
+kind: source
+name: bad
+inputs:
+  - key: __coral_api_token
+    kind: secret
+interfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.json
+",
+                "reserved prefix",
+            ),
+            (
+                r"
 spec_version: 1
 kind: source
 name: bad
@@ -2316,15 +2272,10 @@ interfaces:
         type: streamable_http
         url: https://{{input.API_TOKEN}}.example.com/mcp
 ",
-        )
-        .expect_err("secret URL input rejected");
-        assert!(error.to_string().contains("not a secret"));
-    }
-
-    #[test]
-    fn provider_url_templates_reject_remote_http() {
-        let error = parse_source_manifest_yaml(
-            r"
+                "not a secret",
+            ),
+            (
+                r"
 spec_version: 1
 kind: source
 name: bad
@@ -2339,15 +2290,10 @@ interfaces:
         type: streamable_http
         url: http://{{input.HOST}}/mcp
 ",
-        )
-        .expect_err("remote HTTP URL template rejected");
-        assert!(error.to_string().contains("must start with https://"));
-    }
-
-    #[test]
-    fn localhost_lookalike_urls_are_rejected() {
-        let error = parse_source_manifest_yaml(
-            r"
+                "must start with https://",
+            ),
+            (
+                r"
 spec_version: 1
 kind: source
 name: bad
@@ -2359,8 +2305,17 @@ interfaces:
         type: streamable_http
         url: http://localhost.evil.example/mcp
 ",
-        )
-        .expect_err("localhost lookalike should fail");
-        assert!(error.to_string().contains("must use https"));
+                "must use https",
+            ),
+        ];
+
+        for (yaml, expected_substring) in cases {
+            let error = parse_source_manifest_yaml(yaml)
+                .expect_err("invalid source spec should be rejected");
+            assert!(
+                error.to_string().contains(expected_substring),
+                "error `{error}` should contain `{expected_substring}`"
+            );
+        }
     }
 }

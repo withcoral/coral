@@ -23,6 +23,38 @@ use crate::{
     UpstreamError, UpstreamInvocationPlan, UpstreamResponseEnvelope, execute_plan, list_mcp_tools,
 };
 
+fn probe_graphql_plan(endpoint: Url) -> GraphqlRequestPlan {
+    GraphqlRequestPlan {
+        endpoint,
+        headers: Vec::new(),
+        operation_name: "Probe".to_string(),
+        graphql_operation_kind: coral_capabilities::GraphqlOperationKind::Query,
+        document: "query Probe { viewer { id } }".to_string(),
+        variables: Map::new(),
+        timeout: None,
+        trace_labels: BTreeMap::new(),
+    }
+}
+
+fn http_get_plan(url: Url, headers: Vec<(String, RedactableString)>) -> HttpRequestPlan {
+    HttpRequestPlan {
+        method: coral_capabilities::HttpMethod::Get,
+        url,
+        headers,
+        body: None,
+        timeout: None,
+        trace_labels: BTreeMap::new(),
+    }
+}
+
+fn decode_provider_error(error: UpstreamError) -> (ProviderErrorKind, Value) {
+    let UpstreamError::Provider { kind, detail } = error else {
+        panic!("unexpected error: {error}");
+    };
+    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
+    (kind, detail)
+}
+
 #[test]
 fn redactable_string_does_not_debug_secret() {
     let secret = RedactableString::new("super-secret");
@@ -96,11 +128,8 @@ fn graphql_error_only_response_bounds_provider_detail() {
     )
     .expect_err("GraphQL errors without data fail");
 
-    let UpstreamError::Provider { kind, detail } = error else {
-        panic!("unexpected error: {error}");
-    };
+    let (kind, detail) = decode_provider_error(error);
     assert_eq!(kind, ProviderErrorKind::GraphqlError);
-    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
     assert_eq!(
         detail.pointer("/http_status").and_then(Value::as_u64),
         Some(200)
@@ -127,11 +156,8 @@ fn graphql_http_error_without_graphql_body_is_http_error() {
         b"server error",
     )
     .expect_err("http error");
-    let UpstreamError::Provider { kind, detail } = error else {
-        panic!("unexpected error");
-    };
+    let (kind, detail) = decode_provider_error(error);
     assert_eq!(kind, ProviderErrorKind::HttpError);
-    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
     assert_eq!(
         detail.pointer("/http_status").and_then(Value::as_u64),
         Some(500)
@@ -154,24 +180,14 @@ async fn oversized_graphql_http_error_preserves_status_and_bounded_body() {
         .mount(&server)
         .await;
 
-    let error = execute_plan(&UpstreamInvocationPlan::Graphql(GraphqlRequestPlan {
-        endpoint: server.uri().parse().expect("mock server URL"),
-        headers: Vec::new(),
-        operation_name: "Probe".to_string(),
-        graphql_operation_kind: coral_capabilities::GraphqlOperationKind::Query,
-        document: "query Probe { viewer { id } }".to_string(),
-        variables: Map::new(),
-        timeout: None,
-        trace_labels: BTreeMap::new(),
-    }))
+    let error = execute_plan(&UpstreamInvocationPlan::Graphql(probe_graphql_plan(
+        server.uri().parse().expect("mock server URL"),
+    )))
     .await
     .expect_err("GraphQL HTTP 502 should fail with bounded diagnostics");
 
-    let UpstreamError::Provider { kind, detail } = error else {
-        panic!("unexpected error: {error}");
-    };
+    let (kind, detail) = decode_provider_error(error);
     assert_eq!(kind, ProviderErrorKind::HttpError);
-    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
     assert_eq!(
         detail.pointer("/http_status").and_then(Value::as_u64),
         Some(502)
@@ -203,24 +219,14 @@ async fn oversized_graphql_media_error_preserves_status_and_bounded_body() {
         .mount(&server)
         .await;
 
-    let error = execute_plan(&UpstreamInvocationPlan::Graphql(GraphqlRequestPlan {
-        endpoint: server.uri().parse().expect("mock server URL"),
-        headers: Vec::new(),
-        operation_name: "Probe".to_string(),
-        graphql_operation_kind: coral_capabilities::GraphqlOperationKind::Query,
-        document: "query Probe { viewer { id } }".to_string(),
-        variables: Map::new(),
-        timeout: None,
-        trace_labels: BTreeMap::new(),
-    }))
+    let error = execute_plan(&UpstreamInvocationPlan::Graphql(probe_graphql_plan(
+        server.uri().parse().expect("mock server URL"),
+    )))
     .await
     .expect_err("GraphQL media HTTP 400 should fail with bounded diagnostics");
 
-    let UpstreamError::Provider { kind, detail } = error else {
-        panic!("unexpected error: {error}");
-    };
+    let (kind, detail) = decode_provider_error(error);
     assert_eq!(kind, ProviderErrorKind::GraphqlError);
-    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
     assert_eq!(
         detail.pointer("/http_status").and_then(Value::as_u64),
         Some(400)
@@ -252,24 +258,14 @@ async fn malformed_graphql_media_http_error_preserves_bounded_diagnostics() {
         .mount(&server)
         .await;
 
-    let error = execute_plan(&UpstreamInvocationPlan::Graphql(GraphqlRequestPlan {
-        endpoint: server.uri().parse().expect("mock server URL"),
-        headers: Vec::new(),
-        operation_name: "Probe".to_string(),
-        graphql_operation_kind: coral_capabilities::GraphqlOperationKind::Query,
-        document: "query Probe { viewer { id } }".to_string(),
-        variables: Map::new(),
-        timeout: None,
-        trace_labels: BTreeMap::new(),
-    }))
+    let error = execute_plan(&UpstreamInvocationPlan::Graphql(probe_graphql_plan(
+        server.uri().parse().expect("mock server URL"),
+    )))
     .await
     .expect_err("malformed non-2xx GraphQL media should fail with provider diagnostics");
 
-    let UpstreamError::Provider { kind, detail } = error else {
-        panic!("unexpected error: {error}");
-    };
+    let (kind, detail) = decode_provider_error(error);
     assert_eq!(kind, ProviderErrorKind::GraphqlError);
-    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
     assert_eq!(
         detail.pointer("/http_status").and_then(Value::as_u64),
         Some(400)
@@ -299,24 +295,14 @@ async fn graphql_media_http_error_without_errors_does_not_succeed() {
         .mount(&server)
         .await;
 
-    let error = execute_plan(&UpstreamInvocationPlan::Graphql(GraphqlRequestPlan {
-        endpoint: server.uri().parse().expect("mock server URL"),
-        headers: Vec::new(),
-        operation_name: "Probe".to_string(),
-        graphql_operation_kind: coral_capabilities::GraphqlOperationKind::Query,
-        document: "query Probe { viewer { id } }".to_string(),
-        variables: Map::new(),
-        timeout: None,
-        trace_labels: BTreeMap::new(),
-    }))
+    let error = execute_plan(&UpstreamInvocationPlan::Graphql(probe_graphql_plan(
+        server.uri().parse().expect("mock server URL"),
+    )))
     .await
     .expect_err("non-2xx GraphQL media without errors should still fail");
 
-    let UpstreamError::Provider { kind, detail } = error else {
-        panic!("unexpected error: {error}");
-    };
+    let (kind, detail) = decode_provider_error(error);
     assert_eq!(kind, ProviderErrorKind::GraphqlError);
-    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
     assert_eq!(
         detail.pointer("/http_status").and_then(Value::as_u64),
         Some(400)
@@ -342,11 +328,8 @@ fn mcp_is_error_preserves_tool_result_payload_in_provider_detail() {
     .into_success()
     .expect_err("isError=true should fail closed");
 
-    let UpstreamError::Provider { kind, detail } = error else {
-        panic!("unexpected error: {error}");
-    };
+    let (kind, detail) = decode_provider_error(error);
     assert_eq!(kind, ProviderErrorKind::ToolError);
-    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
     assert_eq!(
         detail.pointer("/message").and_then(Value::as_str),
         Some("upstream MCP tool returned isError=true")
@@ -385,11 +368,8 @@ fn mcp_is_error_bounds_large_tool_result_payload_in_provider_detail() {
     .into_success()
     .expect_err("isError=true should fail closed");
 
-    let UpstreamError::Provider { kind, detail } = error else {
-        panic!("unexpected error: {error}");
-    };
+    let (kind, detail) = decode_provider_error(error);
     assert_eq!(kind, ProviderErrorKind::ToolError);
-    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
     assert_eq!(
         detail
             .pointer("/mcp_tool_result/truncated")
@@ -415,14 +395,10 @@ async fn http_requests_include_default_user_agent_when_missing() {
         .mount(&server)
         .await;
 
-    execute_plan(&UpstreamInvocationPlan::Http(HttpRequestPlan {
-        method: coral_capabilities::HttpMethod::Get,
-        url: server.uri().parse().expect("mock server URL"),
-        headers: Vec::new(),
-        body: None,
-        timeout: None,
-        trace_labels: BTreeMap::new(),
-    }))
+    execute_plan(&UpstreamInvocationPlan::Http(http_get_plan(
+        server.uri().parse().expect("mock server URL"),
+        Vec::new(),
+    )))
     .await
     .expect("HTTP request should include default User-Agent");
 }
@@ -442,22 +418,15 @@ async fn http_provider_error_preserves_status_and_json_body() {
         .mount(&server)
         .await;
 
-    let error = execute_plan(&UpstreamInvocationPlan::Http(HttpRequestPlan {
-        method: coral_capabilities::HttpMethod::Get,
-        url: server.uri().parse().expect("mock server URL"),
-        headers: Vec::new(),
-        body: None,
-        timeout: None,
-        trace_labels: BTreeMap::new(),
-    }))
+    let error = execute_plan(&UpstreamInvocationPlan::Http(http_get_plan(
+        server.uri().parse().expect("mock server URL"),
+        Vec::new(),
+    )))
     .await
     .expect_err("HTTP 400 should fail");
 
-    let UpstreamError::Provider { kind, detail } = error else {
-        panic!("unexpected error: {error}");
-    };
+    let (kind, detail) = decode_provider_error(error);
     assert_eq!(kind, ProviderErrorKind::HttpError);
-    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
     assert_eq!(
         detail.pointer("/http_status").and_then(Value::as_u64),
         Some(400)
@@ -484,22 +453,15 @@ async fn oversized_http_provider_error_preserves_status_and_bounded_body() {
         .mount(&server)
         .await;
 
-    let error = execute_plan(&UpstreamInvocationPlan::Http(HttpRequestPlan {
-        method: coral_capabilities::HttpMethod::Get,
-        url: server.uri().parse().expect("mock server URL"),
-        headers: Vec::new(),
-        body: None,
-        timeout: None,
-        trace_labels: BTreeMap::new(),
-    }))
+    let error = execute_plan(&UpstreamInvocationPlan::Http(http_get_plan(
+        server.uri().parse().expect("mock server URL"),
+        Vec::new(),
+    )))
     .await
     .expect_err("HTTP 500 should fail with bounded diagnostics");
 
-    let UpstreamError::Provider { kind, detail } = error else {
-        panic!("unexpected error: {error}");
-    };
+    let (kind, detail) = decode_provider_error(error);
     assert_eq!(kind, ProviderErrorKind::HttpError);
-    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
     assert_eq!(
         detail.pointer("/http_status").and_then(Value::as_u64),
         Some(500)
@@ -533,17 +495,13 @@ async fn http_requests_preserve_explicit_user_agent() {
         .mount(&server)
         .await;
 
-    execute_plan(&UpstreamInvocationPlan::Http(HttpRequestPlan {
-        method: coral_capabilities::HttpMethod::Get,
-        url: server.uri().parse().expect("mock server URL"),
-        headers: vec![(
+    execute_plan(&UpstreamInvocationPlan::Http(http_get_plan(
+        server.uri().parse().expect("mock server URL"),
+        vec![(
             "User-Agent".to_string(),
             RedactableString::new("custom-coral-agent"),
         )],
-        body: None,
-        timeout: None,
-        trace_labels: BTreeMap::new(),
-    }))
+    )))
     .await
     .expect("HTTP request should preserve explicit User-Agent");
 }
@@ -677,11 +635,8 @@ async fn streamable_http_mcp_tool_json_rpc_error_preserves_payload() {
     .await
     .expect_err("JSON-RPC tool error should fail");
 
-    let UpstreamError::Provider { kind, detail } = error else {
-        panic!("unexpected error: {error}");
-    };
+    let (kind, detail) = decode_provider_error(error);
     assert_eq!(kind, ProviderErrorKind::ToolError);
-    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
     assert_eq!(
         detail.pointer("/mcp_error/message").and_then(Value::as_str),
         Some("invalid status value")
@@ -736,11 +691,8 @@ async fn streamable_http_mcp_json_rpc_error_bounds_large_payload() {
     .await
     .expect_err("JSON-RPC tool error should fail");
 
-    let UpstreamError::Provider { kind, detail } = error else {
-        panic!("unexpected error: {error}");
-    };
+    let (kind, detail) = decode_provider_error(error);
     assert_eq!(kind, ProviderErrorKind::ToolError);
-    let detail: Value = serde_json::from_str(&detail).expect("structured provider detail");
     assert_eq!(
         detail
             .pointer("/mcp_error/truncated")
@@ -1083,14 +1035,10 @@ async fn rejects_http_provider_responses_above_size_limit() {
         .mount(&server)
         .await;
 
-    let error = execute_plan(&UpstreamInvocationPlan::Http(HttpRequestPlan {
-        method: coral_capabilities::HttpMethod::Get,
-        url: server.uri().parse().expect("mock server URL"),
-        headers: Vec::new(),
-        body: None,
-        timeout: None,
-        trace_labels: BTreeMap::new(),
-    }))
+    let error = execute_plan(&UpstreamInvocationPlan::Http(http_get_plan(
+        server.uri().parse().expect("mock server URL"),
+        Vec::new(),
+    )))
     .await
     .expect_err("oversized response should fail");
 
@@ -1115,17 +1063,13 @@ async fn does_not_follow_provider_redirects_with_request_headers() {
         .mount(&server)
         .await;
 
-    let error = execute_plan(&UpstreamInvocationPlan::Http(HttpRequestPlan {
-        method: coral_capabilities::HttpMethod::Get,
-        url: server.uri().parse().expect("mock server URL"),
-        headers: vec![(
+    let error = execute_plan(&UpstreamInvocationPlan::Http(http_get_plan(
+        server.uri().parse().expect("mock server URL"),
+        vec![(
             "Authorization".to_string(),
             RedactableString::new("Bearer secret"),
         )],
-        body: None,
-        timeout: None,
-        trace_labels: BTreeMap::new(),
-    }))
+    )))
     .await
     .expect_err("redirect should not be followed");
 
