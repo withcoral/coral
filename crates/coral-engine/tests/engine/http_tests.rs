@@ -862,6 +862,78 @@ async fn unconsumed_like_filter_is_applied_before_limit() {
 }
 
 #[tokio::test]
+async fn exact_local_filter_does_not_apply_limit_before_residual_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .and(query_param_is_missing("q"))
+        .and(query_param_is_missing("state"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "id": 1, "name": "Ada", "state": "closed", "q": "needle item" },
+                { "id": 1, "name": "Grace", "state": "open", "q": "closed item" },
+                { "id": 1, "name": "Linus", "state": "open", "q": "needle item" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_route_local_residual_limit",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "state" },
+                { "name": "q", "mode": "search" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "state", "from": "filter", "key": "state" },
+                    { "name": "q", "from": "filter", "key": "q" }
+                ]
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" },
+                { "name": "q", "type": "Utf8" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name FROM http_route_local_residual_limit.users \
+             WHERE id = 1 AND state = 'open' AND q LIKE '%needle%' LIMIT 1",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({ "id": 1, "name": "Linus" })]);
+}
+
+#[tokio::test]
 async fn complete_search_fetch_preserves_candidates_for_residual_filters() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

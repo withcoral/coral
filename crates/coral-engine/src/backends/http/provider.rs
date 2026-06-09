@@ -150,7 +150,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
     let local_filter_values = Arc::new(local_filter_values);
     let active_filter_values = Arc::new(active_filter_values);
     let arg_values = Arc::new(arg_values);
-    let post_filter_limit = if local_filter_values.is_empty() {
+    let post_filter_limit = if local_filter_values.is_empty() || has_residual_filters {
         None
     } else {
         limit.or(target.fetch_limit_default())
