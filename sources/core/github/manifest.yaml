@@ -89777,8 +89777,8 @@ tables:
     guide: >
       Requires owner and repo. By default this table requests state=all from GitHub so aggregates include open and closed
       pull requests; add state when you need only open, closed, or all. Other useful optional filters are head and base. Add
-      pull_number to jump from the default list call to a specific record lookup. GitHub only populates diff-stat columns
-      such as additions, deletions, changed_files, and the merged boolean on that per-PR lookup, so include pull_number
+      number to jump from the default list call to a specific record lookup. GitHub only populates diff-stat columns
+      such as additions, deletions, changed_files, and the merged boolean on that per-PR lookup, so include number
       before using them. For list queries, use merged_at IS NOT NULL to identify merged pull requests.
     filters:
       - name: owner
@@ -89797,7 +89797,8 @@ tables:
         required: false
       - name: direction
         required: false
-      - name: pull_number
+      - name: number
+        type: Int64
         required: false
         bindable: true
       - name: commit_sha
@@ -89826,9 +89827,9 @@ tables:
       - when_filters:
           - owner
           - repo
-          - pull_number
+          - number
         method: GET
-        path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.pull_number}}
+        path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.number}}
       - when_filters:
           - owner
           - repo
@@ -90037,7 +90038,7 @@ tables:
         type: Int64
         nullable: true
         virtual: false
-        description: Lines added. GitHub only populates this on the per-PR lookup, so filter pull_number before using it.
+        description: Lines added. GitHub only populates this on the per-PR lookup, so filter number before using it.
         expr:
           kind: path
           path:
@@ -91662,7 +91663,7 @@ tables:
         type: Int64
         nullable: true
         virtual: false
-        description: Number of changed files. GitHub only populates this on the per-PR lookup, so filter pull_number before using it.
+        description: Number of changed files. GitHub only populates this on the per-PR lookup, so filter number before using it.
         expr:
           kind: path
           path:
@@ -91719,7 +91720,7 @@ tables:
         type: Int64
         nullable: true
         virtual: false
-        description: Lines deleted. GitHub only populates this on the per-PR lookup, so filter pull_number before using it.
+        description: Lines deleted. GitHub only populates this on the per-PR lookup, so filter number before using it.
         expr:
           kind: path
           path:
@@ -93214,7 +93215,7 @@ tables:
         type: Boolean
         nullable: true
         virtual: false
-        description: Only populated by the per-PR lookup. Filter pull_number before using this boolean; for list workflows, use merged_at IS NOT NULL.
+        description: Only populated by the per-PR lookup. Filter number before using this boolean; for list workflows, use merged_at IS NOT NULL.
         expr:
           kind: path
           path:
@@ -93841,15 +93842,6 @@ tables:
           kind: path
           path:
             - patch_url
-      - name: pull_number
-        type: Int64
-        nullable: true
-        virtual: false
-        description: Pull request number. Also usable as an optional pushed-down filter for per-PR lookup.
-        expr:
-          kind: path
-          path:
-            - number
       - name: rebaseable
         type: Utf8
         nullable: true

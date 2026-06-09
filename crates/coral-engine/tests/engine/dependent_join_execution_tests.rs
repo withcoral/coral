@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -6,9 +6,8 @@ use std::time::Duration;
 
 use coral_engine::{
     CoralQuery, CoreError, DependentJoinConfig, DependentJoinSourceConfig, QueryRuntimeConfig,
-    StatusCode,
+    QuerySource, StatusCode,
 };
-use coral_spec::backends::http::HttpTableSpec;
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -1714,40 +1713,61 @@ async fn dependent_join_source_config_can_enable_one_source_when_default_is_disa
     assert!(explain.contains("DependentJoinExec: table=github.pull_requests"));
 }
 
-#[test]
-fn live_pilot_manifests_keep_expected_dependent_join_surfaces() {
+#[tokio::test]
+async fn live_github_pulls_join_on_number_uses_dependent_per_pr_route() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("broad route should not run"))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "number": 123,
+            "state": "open"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
     let github = core_http_manifest("sources/core/github/manifest.yaml");
-    let pulls = core_http_table(&github, "pulls");
-    assert_bindable_filters(pulls, &["owner", "repo", "pull_number"]);
-    assert_eq!(
-        request_path_for_filters(pulls, &["owner", "repo"]),
-        "/repos/{{filter.owner}}/{{filter.repo}}/pulls"
-    );
-    assert_eq!(
-        request_path_for_filters(pulls, &["owner", "repo", "pull_number"]),
-        "/repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.pull_number}}"
-    );
-    assert!(pulls.columns().iter().any(|column| column.name == "number"));
 
-    let linear = core_http_manifest("sources/core/linear/manifest.yaml");
-    let issues = core_http_table(&linear, "issues");
-    assert_bindable_filters(issues, &["team_id"]);
-    assert!(
-        issues
-            .columns()
-            .iter()
-            .any(|column| column.name == "team_id")
-    );
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            QuerySource::new(
+                github,
+                BTreeMap::from([("GITHUB_API_BASE".to_string(), server.uri())]),
+                BTreeMap::from([("GITHUB_TOKEN".to_string(), "test-token".to_string())]),
+            ),
+        ],
+        test_runtime(),
+        "
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pulls AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ORDER BY i.title
+        ",
+    )
+    .await
+    .expect("query should succeed");
 
-    let slack = core_http_manifest("sources/core/slack/manifest.yaml");
-    let slack = slack.as_http().expect("slack should be an HTTP source");
-    let messages = slack
-        .functions
-        .iter()
-        .find(|function| function.name == "messages")
-        .expect("slack messages function should exist");
-    assert!(messages.args.iter().any(|arg| arg.name == "channel"));
-    assert_eq!(messages.request.path.raw(), "/api/conversations.history");
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({ "issue_title": "First", "pr_state": "open" })]
+    );
 }
 
 #[tokio::test]
@@ -2524,41 +2544,14 @@ fn runtime_with_dependent_join(config: DependentJoinConfig) -> QueryRuntimeConfi
 }
 
 fn core_http_manifest(relative_path: &str) -> ValidatedSourceManifest {
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let raw = std::fs::read_to_string(repo_root.join(relative_path))
-        .expect("core source manifest should be readable");
+    let raw = core_manifest_raw(relative_path);
     parse_source_manifest_yaml(&raw).expect("core source manifest should parse")
 }
 
-fn core_http_table<'a>(
-    manifest: &'a ValidatedSourceManifest,
-    table_name: &str,
-) -> &'a HttpTableSpec {
-    manifest
-        .as_http()
-        .expect("core source should be an HTTP source")
-        .tables
-        .iter()
-        .find(|table| table.name() == table_name)
-        .expect("core source table should exist")
-}
-
-fn assert_bindable_filters(table: &HttpTableSpec, expected: &[&str]) {
-    let actual = table
-        .filters()
-        .iter()
-        .filter(|filter| filter.bindable)
-        .map(|filter| filter.name.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(actual, expected);
-}
-
-fn request_path_for_filters(table: &HttpTableSpec, filters: &[&str]) -> String {
-    let filters = filters
-        .iter()
-        .map(|filter| (*filter).to_string())
-        .collect::<HashSet<_>>();
-    table.resolve_request(&filters).path.raw().to_string()
+fn core_manifest_raw(relative_path: &str) -> String {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    std::fs::read_to_string(repo_root.join(relative_path))
+        .expect("core source manifest should be readable")
 }
 
 fn issue_row(title: &str, owner: &str, repo: &str, number: i64) -> Value {

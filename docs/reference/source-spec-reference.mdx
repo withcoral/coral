@@ -933,13 +933,14 @@ tables:
   - name: pull_requests
     description: Pull requests
     request:
-      path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.pull_number}}
+      path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.number}}
     filters:
       - name: owner
         bindable: true
       - name: repo
         bindable: true
-      - name: pull_number
+      - name: number
+        type: Int64
         bindable: true
     columns:
       - name: number
