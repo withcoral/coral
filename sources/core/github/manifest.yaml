@@ -26325,10 +26325,14 @@ tables:
     filters:
       - name: owner
         required: true
+        lookup_key: true
       - name: repo
         required: true
+        lookup_key: true
       - name: comment_id
+        type: Int64
         required: false
+        lookup_key: true
       - name: commit_sha
         required: false
     request:
@@ -46951,6 +46955,7 @@ tables:
     guide: >
       Use this table to list issues assigned to the authenticated user. Works without WHERE filters.
       Start with org or state before paging; the feed is viewer-specific, not a global issue search.
+      Add owner, repo, and number to jump to one specific repository issue.
     filters:
       - name: filter
         required: false
@@ -46976,8 +46981,10 @@ tables:
         required: false
       - name: owner
         required: false
+        lookup_key: true
       - name: repo
         required: false
+        lookup_key: true
       - name: milestone
         required: false
       - name: assignee
@@ -46986,8 +46993,10 @@ tables:
         required: false
       - name: mentioned
         required: false
-      - name: issue_number
+      - name: number
+        type: Int64
         required: false
+        lookup_key: true
     request:
       method: GET
       path: /issues
@@ -47020,6 +47029,12 @@ tables:
           from: filter
           key: pulls
     requests:
+      - when_filters:
+          - owner
+          - repo
+          - number
+        method: GET
+        path: /repos/{{filter.owner}}/{{filter.repo}}/issues/{{filter.number}}
       - when_filters:
           - org
         method: GET
@@ -51136,14 +51151,6 @@ tables:
         expr:
           kind: from_filter
           key: repo
-      - name: issue_number
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: The number that identifies the issue.
-        expr:
-          kind: from_filter
-          key: issue_number
   - name: issues_list_comments
     description: List issue comments
     guide: >
@@ -126163,14 +126170,18 @@ tables:
     filters:
       - name: owner
         required: true
+        lookup_key: true
       - name: repo
         required: true
+        lookup_key: true
       - name: sort
         required: false
       - name: direction
         required: false
       - name: comment_id
+        type: Int64
         required: false
+        lookup_key: true
     request:
       method: GET
       path: /repos/{{filter.owner}}/{{filter.repo}}/issues/comments
@@ -138495,6 +138506,7 @@ tables:
         required: true
       - name: repo
         required: true
+        lookup_key: true
     request:
       method: GET
       path: /repos/{{filter.owner}}/{{filter.repo}}
