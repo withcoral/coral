@@ -897,6 +897,52 @@ async fn resolver_rows_cap_retries_original_query_without_dependent_join_rewrite
 }
 
 #[tokio::test]
+async fn resolver_rows_cap_preserves_cap_error_when_required_filter_fallback_fails() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[
+            issue_row("First", "withcoral", "coral", 1),
+            issue_row("Second", "withcoral", "coral", 2),
+        ],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/1"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("unreachable dependent fetch"))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let error = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_required_manifest(&server.uri())),
+        ],
+        runtime_with_dependent_join(DependentJoinConfig {
+            max_resolver_rows: 1,
+            ..DependentJoinConfig::default()
+        }),
+        dependent_join_sql(),
+    )
+    .await
+    .expect_err("required-filter fallback should preserve resolver row cap error");
+
+    assert_error_contains(
+        &error,
+        "The side of the join that supplies keys for github.pull_requests produced 2 rows",
+    );
+    assert_dependent_join_limit_error(
+        &error,
+        "DEPENDENT_JOIN_RESOLVER_ROW_LIMIT_EXCEEDED",
+        "2",
+        "1",
+    );
+}
+
+#[tokio::test]
 async fn parent_limit_caps_dependent_row_limit() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(

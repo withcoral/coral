@@ -147,24 +147,21 @@ fn classify_filter_with_consumed(
         );
     }
     if let Expr::Column(col) = expr
-        && allowed.contains(col.name())
-        && filter_is_consumed(col.name(), consumed_filters)
+        && let Some(pushdown) = extractable_filter_pushdown(col.name(), allowed, consumed_filters)
     {
-        return TableProviderFilterPushDown::Exact;
+        return pushdown;
     }
     if let Expr::Not(inner) = expr
         && let Expr::Column(col) = inner.as_ref()
-        && allowed.contains(col.name())
-        && filter_is_consumed(col.name(), consumed_filters)
+        && let Some(pushdown) = extractable_filter_pushdown(col.name(), allowed, consumed_filters)
     {
-        return TableProviderFilterPushDown::Exact;
+        return pushdown;
     }
     if let Expr::IsTrue(inner) | Expr::IsFalse(inner) = expr
         && let Expr::Column(col) = inner.as_ref()
-        && allowed.contains(col.name())
-        && filter_is_consumed(col.name(), consumed_filters)
+        && let Some(pushdown) = extractable_filter_pushdown(col.name(), allowed, consumed_filters)
     {
-        return TableProviderFilterPushDown::Exact;
+        return pushdown;
     }
     if let Expr::BinaryExpr(binary) = expr
         && binary.op == Operator::Eq
@@ -173,8 +170,10 @@ fn classify_filter_with_consumed(
             extract_column_equality(binary.left.as_ref(), binary.right.as_ref(), allowed).or_else(
                 || extract_column_equality(binary.right.as_ref(), binary.left.as_ref(), allowed),
             );
-        if equality.is_some_and(|(col, _)| filter_is_consumed(&col, consumed_filters)) {
-            return TableProviderFilterPushDown::Exact;
+        if let Some((col, _)) = equality
+            && let Some(pushdown) = extractable_filter_pushdown(&col, allowed, consumed_filters)
+        {
+            return pushdown;
         }
     }
     if let Expr::Like(like) = expr
@@ -196,14 +195,28 @@ fn classify_filter_with_consumed(
         && !in_list.negated
         && in_list.list.len() == 1
         && let Expr::Column(col) = in_list.expr.as_ref()
-        && allowed.contains(col.name())
-        && filter_is_consumed(col.name(), consumed_filters)
+        && let Some(pushdown) = extractable_filter_pushdown(col.name(), allowed, consumed_filters)
         && let Some(literal) = in_list.list.first()
         && literal_to_string(literal).is_some()
     {
-        return TableProviderFilterPushDown::Exact;
+        return pushdown;
     }
     TableProviderFilterPushDown::Unsupported
+}
+
+fn extractable_filter_pushdown(
+    col_name: &str,
+    allowed: &HashSet<&str>,
+    consumed_filters: Option<&HashSet<String>>,
+) -> Option<TableProviderFilterPushDown> {
+    if !allowed.contains(col_name) {
+        return None;
+    }
+    if filter_is_consumed(col_name, consumed_filters) {
+        Some(TableProviderFilterPushDown::Exact)
+    } else {
+        Some(TableProviderFilterPushDown::Inexact)
+    }
 }
 
 fn filter_is_consumed(col_name: &str, consumed_filters: Option<&HashSet<String>>) -> bool {
@@ -617,8 +630,8 @@ mod tests {
 
 #[cfg(test)]
 mod pushdown_classification_tests {
-    use super::classify_filter;
-    use coral_spec::FilterMode;
+    use super::{classify_filter, classify_filter_pushdown_for_consumed};
+    use coral_spec::{FilterMode, FilterSpec};
     use datafusion::common::Column;
     use datafusion::logical_expr::{
         Expr, Operator, TableProviderFilterPushDown, binary_expr, expr::Like, lit,
@@ -632,6 +645,17 @@ mod pushdown_classification_tests {
 
     fn modes<'a>(entries: &'a [(&'a str, FilterMode)]) -> HashMap<&'a str, FilterMode> {
         entries.iter().copied().collect()
+    }
+
+    fn filter(name: &str) -> FilterSpec {
+        FilterSpec {
+            name: name.to_string(),
+            data_type: "Utf8".to_string(),
+            required: false,
+            mode: FilterMode::Equality,
+            description: String::new(),
+            bindable: false,
+        }
     }
 
     fn like_expr(col_name: &str, pattern: &str) -> Expr {
@@ -724,6 +748,16 @@ mod pushdown_classification_tests {
             &modes(&[]),
         );
         assert_eq!(pushdown, TableProviderFilterPushDown::Inexact);
+    }
+
+    #[test]
+    fn unconsumed_exact_filter_pushes_down_inexactly_for_local_filtering() {
+        let filters = [filter("tenant")];
+        let consumed_filters = HashSet::new();
+        let expr = binary_expr(col("tenant"), Operator::Eq, lit("acme"));
+        let pushdown = classify_filter_pushdown_for_consumed(&[&expr], &filters, &consumed_filters);
+
+        assert_eq!(pushdown, vec![TableProviderFilterPushDown::Inexact]);
     }
 
     #[test]

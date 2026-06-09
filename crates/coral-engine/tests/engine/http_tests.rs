@@ -663,6 +663,75 @@ async fn local_route_filter_can_use_request_filter_values_in_template_column() {
 }
 
 #[tokio::test]
+async fn exact_local_from_filter_column_survives_residual_recheck() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .and(query_param_is_missing("tenant"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": 1, "name": "Ada" }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_local_from_filter_residual",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "tenant" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users"
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                {
+                    "name": "tenant",
+                    "type": "Utf8",
+                    "nullable": true,
+                    "expr": { "kind": "from_filter", "key": "tenant" }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, tenant FROM http_local_from_filter_residual.users \
+             WHERE id = 1 AND tenant = 'acme'",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({ "id": 1, "name": "Ada", "tenant": "acme" })]
+    );
+}
+
+#[tokio::test]
 async fn unconsumed_search_filter_does_not_populate_from_filter_column() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

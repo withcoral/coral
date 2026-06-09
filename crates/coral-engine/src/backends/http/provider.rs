@@ -146,6 +146,12 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         limit,
     } = request;
     let target = Arc::new(target);
+    let mut conversion_filter_values = request_filter_values.clone();
+    conversion_filter_values.extend(
+        local_filter_values
+            .iter()
+            .map(|(filter, value)| (filter.clone(), value.clone())),
+    );
     let request_filter_values = Arc::new(request_filter_values);
     let local_filter_values = Arc::new(local_filter_values);
     let active_filter_values = Arc::new(active_filter_values);
@@ -167,7 +173,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
     let converter = {
         let target = target.clone();
         let schema = schema.clone();
-        let request_filter_values = request_filter_values.clone();
+        let conversion_filter_values = Arc::new(conversion_filter_values);
         let local_filter_values = local_filter_values.clone();
         let active_filter_values = active_filter_values.clone();
         let arg_values = arg_values.clone();
@@ -191,7 +197,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
             convert_items(
                 target.columns(),
                 schema.clone(),
-                &request_filter_values,
+                &conversion_filter_values,
                 &arg_values,
                 items,
             )

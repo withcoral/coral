@@ -14,13 +14,14 @@ use tokio::sync::OnceCell;
 use tracing::{Instrument as _, info_span};
 
 use crate::backends::compile_query_source;
+use crate::backends::http::ProviderQueryError;
 use crate::runtime::catalog;
 use crate::runtime::dependent_join::error::resolver_rows_exceeded;
 use crate::runtime::dependent_join::optimizer;
 use crate::runtime::dependent_join::planner::DependentJoinExtensionPlanner;
 use crate::runtime::error::{
-    datafusion_to_core, datafusion_to_core_with_sql,
-    datafusion_to_core_with_sql_and_table_functions, query_result_observer_error_to_core,
+    datafusion_to_core, datafusion_to_core_with_sql_and_table_functions,
+    query_result_observer_error_to_core,
 };
 use crate::runtime::json::register_json_support;
 use crate::runtime::pattern_validator::register_pattern_validator;
@@ -331,8 +332,9 @@ impl QueryRuntimeAdapter {
                 let Some(cap_error) = resolver_rows_exceeded(&error) else {
                     return Err(datafusion_to_core(&error, &self.tables));
                 };
+                let cap_core_error = datafusion_to_core(&error, &self.tables);
                 let Some(fallback_runtime) = &self.fallback_runtime else {
-                    return Err(datafusion_to_core(&error, &self.tables));
+                    return Err(cap_core_error);
                 };
 
                 tracing::warn!(
@@ -349,9 +351,16 @@ impl QueryRuntimeAdapter {
                     .get_or_build_without_dependent_join()
                     .await?;
 
-                self.execute_sql_once(&fallback.ctx, sql)
-                    .await
-                    .map_err(|error| self.sql_execution_failure_to_core(error, sql))
+                match self.execute_sql_once(&fallback.ctx, sql).await {
+                    Ok(execution) => Ok(execution),
+                    Err(error) => {
+                        if is_missing_required_filter_failure(&error) {
+                            return Err(cap_core_error);
+                        }
+                        let fallback_error = self.sql_execution_failure_to_core(error, sql);
+                        Err(fallback_error)
+                    }
+                }
             }
             Err(error) => Err(self.sql_execution_failure_to_core(error, sql)),
         }
@@ -379,7 +388,12 @@ impl QueryRuntimeAdapter {
     fn sql_execution_failure_to_core(&self, error: SqlExecutionFailure, sql: &str) -> CoreError {
         match error {
             SqlExecutionFailure::Planning(error) => {
-                datafusion_to_core_with_sql(&error, &self.tables, Some(sql))
+                datafusion_to_core_with_sql_and_table_functions(
+                    &error,
+                    &self.tables,
+                    &self.table_functions,
+                    Some(sql),
+                )
             }
             SqlExecutionFailure::Collection(error) => datafusion_to_core(&error, &self.tables),
             SqlExecutionFailure::Observer(error) => error,
@@ -439,6 +453,19 @@ impl QueryRuntimeAdapter {
                 )
             })
     }
+}
+
+fn is_missing_required_filter_failure(error: &SqlExecutionFailure) -> bool {
+    let SqlExecutionFailure::Collection(error) = error else {
+        return false;
+    };
+    let DataFusionError::External(inner) = error.find_root() else {
+        return false;
+    };
+    matches!(
+        inner.downcast_ref::<ProviderQueryError>(),
+        Some(ProviderQueryError::MissingRequiredFilter { .. })
+    )
 }
 
 impl FallbackRuntimeConfig {
