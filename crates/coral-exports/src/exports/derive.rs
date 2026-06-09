@@ -38,6 +38,9 @@ pub fn build_source_exports(
             entry.bindings.extend(contribution.bindings);
             entry.search_text.extend(contribution.search_text);
             entry.diagnostics.extend(contribution.diagnostics);
+            entry
+                .binding_diagnostics
+                .extend(contribution.binding_diagnostics);
         }
         dedup_preserve_order(&mut entry.search_text);
         if !entry.bindings.is_empty() {
@@ -404,6 +407,7 @@ mod tests {
                 })],
                 search_text: Vec::new(),
                 diagnostics: Vec::new(),
+                binding_diagnostics: Vec::new(),
             })
         }
     }
@@ -435,6 +439,7 @@ mod tests {
                 })],
                 search_text: Vec::new(),
                 diagnostics: Vec::new(),
+                binding_diagnostics: Vec::new(),
             })
         }
     }
@@ -463,6 +468,7 @@ mod tests {
                 })],
                 search_text: Vec::new(),
                 diagnostics: Vec::new(),
+                binding_diagnostics: Vec::new(),
             })
         }
     }

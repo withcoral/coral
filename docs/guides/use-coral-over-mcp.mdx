@@ -17,7 +17,7 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Tool | `search`   | Search current workspace exports and generated capabilities   |
 | Tool | `describe` | Describe a typed ref, capability id, or unambiguous alias     |
 | Tool | `exec`     | Run Code Mode, waiting briefly for fast completion            |
-| Tool | `wait`     | Read ordered events, or terminate a still-running Code Mode run |
+| Tool | `wait`     | Wait for new Code Mode output, or terminate a running run     |
 | Tool | `feedback` | Blocked-agent feedback tool                                  |
 
 Clients see generated TypeScript refs, SQL refs, capability ids, source identity, effect-profile summaries, and diagnostics. The MCP tool list is intentionally stable: adding or removing sources changes `search` and `describe` results, not the MCP tools themselves.
@@ -36,7 +36,7 @@ Use `search` to find generated exports. Arguments are optional unless you want t
 - `effect`: `read`, `write`, `delete`, or `unknown`
 - `limit`, `offset`: pagination
 
-Exact typed-ref, capability-id, generated tool path, TypeScript-path, and SQL-ref matches rank ahead of fuzzy text matches. Search results include `full_path` for generated TypeScript calls plus a visible `score`, `matched_fields`, and `rank_reason`. Top-level `diagnostics` reports workspace discovery problems, such as installed sources whose generated artifacts need to be regenerated.
+Exact typed-ref, capability-id, generated tool path, TypeScript-path, and SQL-ref matches rank ahead of fuzzy text matches. Search results are compact by default: each item includes a preferred `ref`, generated Code Mode `call` path when TypeScript is visible, SQL `sql` ref when SQL is visible, `name`, `source`, `title`, `description`, and `kind`. Default values such as `support: "generated"`, `deprecated: false`, and zero diagnostics are omitted. Top-level `next` appears only when more search results are available, and top-level `diagnostics` reports workspace discovery problems, such as installed sources whose generated artifacts need to be regenerated.
 
 ### `describe`
 
@@ -44,11 +44,11 @@ Use `describe` before invoking anything. Pass `reference` as a generated tool pa
 
 If an untyped reference is ambiguous, `describe` returns grouped candidates instead of guessing. Retry with a typed ref from the candidate list. If a source is installed but stale, not-found responses include top-level `diagnostics` instead of silently looking like the source does not exist.
 
-For found capabilities, MCP `describe` defaults to a compact invocation view under `entry`: `full_path`, typed refs, effect profile, required and optional inputs, SQL bindings, diagnostics, credential requirements, and the generated result wrapper reminder. Use `describe` with `view: "detailed"` when you need full provider schemas, canonical input schema, provider output contract, or generated Code Mode schemas. Generated calls return Coral's wrapper object; read provider data from `response.value` only after `response.ok` is true.
+For found capabilities, MCP `describe` defaults to a compact invocation view under `entry`: preferred `ref`, generated `call` path when TypeScript is visible, SQL `sql` ref when SQL is visible, `name`, `kind`, compact `args`, SQL bindings, and diagnostics. `args.required` lists flat required argument names; `args.require_one_of` lists equivalent aliases where any one member satisfies the executable schema; `args.properties` summarizes argument types, enums, defaults, short top-level descriptions, and small nested objects. Use `describe` with `view: "detailed"` when you need full provider schemas, canonical input schema, provider output contract, credential requirements, or generated Code Mode schemas. Generated calls return Coral's wrapper object; read provider data from `response.value` only after `response.ok` is true.
 
 ### `exec` and `wait`
 
-Use Code Mode for execution. `exec` accepts JavaScript source in the `source` argument and returns a `run_id`, `cell_id`, enum `status` object, and typed events. It waits briefly first, so fast scripts return `status.name: "CODE_MODE_RUN_STATUS_COMPLETED"` directly. Call `wait` only when `status.name` is `"CODE_MODE_RUN_STATUS_RUNNING"`; `wait` accepts `run_id` plus optional `after_event_id` and returns ordered events after that cursor. To stop a running run, call `wait` with `terminate: true`.
+Use Code Mode for execution. `exec` accepts JavaScript source in the `source` argument and returns a compact summary with `run_id`, string `status`, `cursor`, and any new `result`, `output`, `error`, or `calls`. It waits briefly first, so fast scripts usually return `status: "completed"` directly. Call `wait` only when the response includes a `wait` object; pass that `run_id` and `after_event_id` cursor back to `wait`. To stop a running run, call `wait` with `terminate: true`.
 
 Code Mode runs in Coral's V8 isolate. Supported globals are generated `tools.*`, Coral helpers under `coral.*`, standard JavaScript, `console.*`, and the documented helpers in the `exec` description.
 
@@ -69,19 +69,11 @@ return value;
 
 When TypeScript exposure is disabled, generated TypeScript methods fail before capability invocation. When SQL exposure is disabled, `coral.sql.query(...)` and SQL refs are hidden.
 
-Generated TypeScript methods call `CapabilityService.Invoke` inside Coral. They do not call providers directly, do not receive credentials, and do not bypass source-level provider auth. Query, mutation, and action capabilities are callable by default. For dynamic workflows, use `full_path` from `search` or `describe` and call the generated method under `tools.*` inside Code Mode. Generated methods reject on provider or transport failure by default; the rejection is catchable with JavaScript `try`/`catch`, and an uncaught rejection fails the run. Successful calls return `{ ok, complete, partial, errors, source_status, value, error, envelope }`. REST calls expose transport details such as `envelope.provider.status` and lowercase response headers at `envelope.provider.headers`. To deliberately collect a raw error envelope, pass a second options object: `await tools.github.rest.issues.list(args, { allowErrorResult: true })`; raw error results are visibly incomplete through `complete`, `partial`, `errors`, and `source_status`. Provider error details are bounded structured diagnostics when available, such as HTTP status/body previews, MCP protocol errors, or MCP `isError` tool results.
+Generated TypeScript methods call `CapabilityService.Invoke` inside Coral. They do not call providers directly, do not receive credentials, and do not bypass source-level provider auth. Query, mutation, and action capabilities are callable by default. For dynamic workflows, use `call` from `search` or `describe` and call the generated method under `tools.*` inside Code Mode. Generated methods reject on provider or transport failure by default; the rejection is catchable with JavaScript `try`/`catch`, and an uncaught rejection fails the run. Successful calls return `{ ok, complete, partial, errors, source_status, value, error, envelope }`. REST calls expose transport details such as `envelope.provider.status` and lowercase response headers at `envelope.provider.headers`. MCP calls expose `structuredContent` as `value`; when an upstream MCP server returns no `structuredContent` but does return one text block containing exact JSON, Coral parses that JSON into `value` while leaving the raw MCP content in `envelope`. To deliberately collect a raw error envelope, pass a second options object: `await tools.github.rest.issues.list(args, { allowErrorResult: true })`; raw error results are visibly incomplete through `complete`, `partial`, `errors`, and `source_status`. Provider error details are bounded structured diagnostics when available, such as HTTP status/body previews, MCP protocol errors, or MCP `isError` tool results.
 
 Code Mode enforces explicit default nested-call budgets. A run fails at the top level when it exceeds `max_nested_tool_calls=100` or `max_parallel_tool_calls=100`; total nested invocations are counted by `max_nested_tool_calls`. Budget errors include the limit name, configured value, observed count, and invocation path. Direct result previews default to `max_output_tokens=10000` unless overridden with the first-line `// @exec` pragma; oversized direct results complete with a bounded preview, truncation metadata, and `truncation.full_output_path` when Coral can spill the complete JSON result to disk. Spilled direct results are capped by `max_output_result_spill_bytes=1048576`; larger results still return the preview plus `truncation.max_spill_bytes`, but no full-output path. Verbose `console.*` diagnostics are bounded separately as content events; when Coral truncates, drops, or spills console text, the event stream includes an `output_shaping` content item with the limit name, observed/dropped counts, and `full_output_path` when available. Spilled console text is capped by `max_output_text_spill_bytes=1048576`; after that, diagnostics are dropped with metadata instead of failing the run or growing the spill file indefinitely.
 
 When a SQL binding exists, run SQL from Code Mode through `coral.sql.query(...)`. Coral does not expose direct SQL MCP tools.
-
-For a one-shot local fallback outside MCP, invoke a generated capability directly with the CLI:
-
-```shellscript
-coral invoke tools.github.rest.issues.list --json '{"owner":"withcoral","repo":"coral"}'
-```
-
-`coral invoke` accepts a typed ref, generated path, capability id, or unambiguous alias and prints the same fail-closed wrapper shape used by Code Mode.
 
 ## Client setup
 
@@ -259,7 +251,7 @@ Once your client is connected, ask the agent to search available capabilities or
 
 > "Run `select 1` through Coral Code Mode."
 
-The agent should call `search` to find generated tool paths and typed refs, `describe` to inspect the exact binding, and `exec` to run Code Mode. Call `wait` only when `exec` returns `status.name: "CODE_MODE_RUN_STATUS_RUNNING"`. SQL runs inside Code Mode with `coral.sql.query(...)`.
+The agent should call `search` to find generated call paths and typed refs, `describe` to inspect compact `args`, and `exec` to run Code Mode. Call `wait` only when `exec` returns a `wait` object. SQL runs inside Code Mode with `coral.sql.query(...)`.
 
 ## Troubleshooting
 

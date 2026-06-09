@@ -44,6 +44,7 @@ impl BindingContributor for TypescriptBindingContributor {
             bindings: vec![Binding::Typescript(binding)],
             search_text: path.clone(),
             diagnostics: Vec::new(),
+            binding_diagnostics: Vec::new(),
         })
     }
 }

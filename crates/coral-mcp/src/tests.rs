@@ -155,14 +155,9 @@ async fn assert_describe_exposes_entry(client: &RunningService<RoleClient, ()>) 
         .await
         .expect("search demo source");
     let search = search.structured_content.expect("structured search");
-    assert_eq!(search["items"][0]["deprecated"], false);
-    assert_eq!(search["items"][0]["support_status"], "generated");
-    let reference = search["items"][0]["refs"]
-        .as_array()
-        .expect("refs")
-        .iter()
-        .find_map(Value::as_str)
-        .expect("reference");
+    assert!(search["items"][0].get("deprecated").is_none());
+    assert!(search["items"][0].get("support").is_none());
+    let reference = search["items"][0]["ref"].as_str().expect("reference");
     let describe = client
         .call_tool(
             CallToolRequestParams::new("describe").with_arguments(json_object(&json!({
@@ -172,28 +167,21 @@ async fn assert_describe_exposes_entry(client: &RunningService<RoleClient, ()>) 
         .await
         .expect("describe demo source");
     let describe = describe.structured_content.expect("structured describe");
+    assert_eq!(describe["status"], "found");
     assert!(describe.get("description").is_none());
     assert!(describe["entry"].get("capability").is_none());
     assert!(describe["entry"].get("code_mode_output_schema").is_none());
-    assert_eq!(describe["entry"]["deprecated"], false);
-    assert_eq!(describe["entry"]["support_status"], "generated");
-    assert_eq!(describe["runtime"]["exposure"], "both");
-    assert_eq!(describe["runtime"]["typescript_enabled"], true);
-    assert_eq!(describe["runtime"]["sql_enabled"], true);
+    assert!(describe["entry"].get("input").is_none());
+    assert!(describe["entry"]["args"].is_object());
+    assert!(describe["entry"].get("deprecated").is_none());
+    assert!(describe["entry"].get("support").is_none());
+    assert!(describe.get("runtime").is_none());
+    assert_eq!(describe["entry"]["ref"], search["items"][0]["ref"]);
+    assert_eq!(describe["entry"]["call"], search["items"][0]["call"]);
     assert!(
-        describe["runtime"]["visible_bindings"]["typescript"]
-            .as_u64()
-            .expect("typescript binding count")
-            > 0
-    );
-    assert_eq!(
-        describe["entry"]["full_path"],
-        search["items"][0]["full_path"]
-    );
-    assert!(
-        describe["entry"]["full_path"]
+        describe["entry"]["call"]
             .as_str()
-            .expect("full path")
+            .expect("call path")
             .starts_with("tools.localMessages.events.")
     );
 
@@ -240,20 +228,8 @@ async fn mcp_surface_exposes_discovery_and_code_mode_tools() {
         .expect("structured search");
     assert!(structured_search.get("rows").is_none());
     assert!(structured_search.get("pagination").is_none());
-    assert_eq!(structured_search["runtime"]["exposure"], "both");
-    assert_eq!(structured_search["runtime"]["installed_source_count"], 0);
-    assert_eq!(
-        structured_search["runtime"]["visible_bindings"]["typescript"],
-        0
-    );
-    assert_eq!(
-        structured_search["runtime"]["visible_bindings"]["sql_table"],
-        0
-    );
-    assert_eq!(
-        structured_search["runtime"]["visible_bindings"]["sql_function"],
-        0
-    );
+    assert!(structured_search.get("runtime").is_none());
+    assert_eq!(structured_search["total"], 0);
     assert_eq!(
         structured_search["items"].as_array().expect("items").len(),
         0
@@ -272,8 +248,8 @@ async fn mcp_surface_exposes_discovery_and_code_mode_tools() {
         describe
             .structured_content
             .as_ref()
-            .expect("structured describe")["found"],
-        false
+            .expect("structured describe")["status"],
+        "not_found"
     );
 
     let exec = client
@@ -287,7 +263,9 @@ async fn mcp_surface_exposes_discovery_and_code_mode_tools() {
     assert_eq!(exec.is_error, Some(false));
     let exec = exec.structured_content.expect("structured exec");
     let run_id = exec["run_id"].as_str().expect("run id");
-    assert_eq!(exec["status"]["name"], "CODE_MODE_RUN_STATUS_COMPLETED");
+    assert_eq!(exec["status"], "completed");
+    assert!(exec.get("events").is_none());
+    assert!(exec.get("wait").is_none());
 
     let wait = client
         .call_tool(
@@ -301,7 +279,8 @@ async fn mcp_surface_exposes_discovery_and_code_mode_tools() {
     assert_eq!(wait.is_error, Some(false));
     let wait = wait.structured_content.expect("structured wait");
     assert_eq!(wait["run_id"], run_id);
-    assert_eq!(wait["status"]["name"], "CODE_MODE_RUN_STATUS_COMPLETED");
+    assert_eq!(wait["status"], "completed");
+    assert!(wait.get("events").is_none());
 
     session.shutdown().await;
 }
@@ -383,43 +362,22 @@ async fn mcp_removed_sql_tools_are_not_exposed() {
 }
 
 fn assert_sql_only_search_hides_typescript(search: &Value) -> String {
-    assert_eq!(search["runtime"]["exposure"], "sql");
-    assert_eq!(search["runtime"]["typescript_enabled"], false);
-    assert_eq!(search["runtime"]["sql_enabled"], true);
-    assert_eq!(search["runtime"]["visible_bindings"]["typescript"], 0);
+    assert!(search.get("runtime").is_none());
     let items = search["items"].as_array().expect("search items");
     assert!(
         !items.is_empty(),
         "SQL-only search should return SQL projections"
     );
     for item in items {
-        assert_eq!(item["alias"], "");
-        assert_eq!(item["full_path"], "");
+        assert!(item.get("call").is_none());
         assert!(
-            item["refs"]
-                .as_array()
-                .expect("refs")
-                .iter()
-                .filter_map(Value::as_str)
-                .all(|ref_| ref_.starts_with("sql_table:") || ref_.starts_with("sql_function:")),
+            item["ref"].as_str().is_some_and(
+                |ref_| ref_.starts_with("sql_table:") || ref_.starts_with("sql_function:")
+            ),
             "hidden TypeScript ref leaked in {item:?}"
         );
-        assert!(
-            item["available_bindings"]
-                .as_array()
-                .expect("available bindings")
-                .iter()
-                .all(|kind| kind.as_i64() != Some(1)),
-            "hidden TypeScript binding kind leaked in {item:?}"
-        );
     }
-    items[0]["refs"]
-        .as_array()
-        .expect("refs")
-        .iter()
-        .find_map(Value::as_str)
-        .expect("sql ref")
-        .to_string()
+    items[0]["ref"].as_str().expect("sql ref").to_string()
 }
 
 async fn assert_sql_only_describe_hides_typescript(
@@ -437,10 +395,8 @@ async fn assert_sql_only_describe_hides_typescript(
     let visible_describe = visible_describe
         .structured_content
         .expect("structured visible describe");
-    assert_eq!(visible_describe["found"], true);
-    assert_eq!(visible_describe["entry"]["alias"], "");
-    assert_eq!(visible_describe["entry"]["full_path"], "");
-    assert!(visible_describe["entry"]["typescript_binding"].is_null());
+    assert_eq!(visible_describe["status"], "found");
+    assert!(visible_describe["entry"].get("call").is_none());
     assert!(
         !visible_describe["entry"]["sql_bindings"]
             .as_array()
@@ -558,13 +514,10 @@ async fn mcp_runtime_exposure_none_returns_empty_search_without_hidden_counts() 
         .await
         .expect("none-exposure search");
     let search = search.structured_content.expect("structured search");
-    assert_eq!(search["runtime"]["exposure"], "none");
-    assert_eq!(search["runtime"]["typescript_enabled"], false);
-    assert_eq!(search["runtime"]["sql_enabled"], false);
+    assert!(search.get("runtime").is_none());
     assert_eq!(search["items"].as_array().expect("search items").len(), 0);
     assert_eq!(search["total"], 0);
-    assert_eq!(search["has_more"], false);
-    assert_eq!(search["next_offset"], 0);
+    assert!(search.get("next").is_none());
 
     session.shutdown().await;
 }
@@ -717,7 +670,7 @@ async fn mcp_tool_error_does_not_end_session() {
     assert_eq!(
         search_after_error
             .structured_content
-            .expect("structured content")["items"][0]["source_key"],
+            .expect("structured content")["items"][0]["source"],
         "local_messages"
     );
     assert_eq!(search_after_error.is_error, Some(false));
@@ -743,27 +696,10 @@ async fn mcp_sql_returns_large_int64_as_string() {
         .await
         .expect("exec");
     assert_eq!(exec.is_error, Some(false));
-    let run_id = exec.structured_content.expect("structured exec")["run_id"]
-        .as_str()
-        .expect("run id")
-        .to_string();
-
-    let wait = client
-        .call_tool(
-            CallToolRequestParams::new("wait").with_arguments(json_object(&json!({
-                "run_id": run_id
-            }))),
-        )
-        .await
-        .expect("wait");
-    assert_eq!(wait.is_error, Some(false));
-    let wait = wait.structured_content.expect("structured wait");
-    let events = wait["events"].as_array().expect("events");
-    let output = events
-        .iter()
-        .find_map(|event| event.pointer("/result_item/item").cloned())
-        .expect("result event");
-    let rows = &output["rows"];
+    let exec = exec.structured_content.expect("structured exec");
+    assert_eq!(exec["status"], "completed");
+    assert!(exec.get("events").is_none());
+    let rows = &exec["result"]["rows"];
     assert_eq!(
         rows[0]["user_id"],
         Value::String("-8504475857937456387".to_string()),

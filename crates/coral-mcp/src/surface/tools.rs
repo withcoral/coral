@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rmcp::{
     ErrorData,
-    model::{CallToolResult, Content, Tool, ToolAnnotations},
+    model::{CallToolResult, Tool, ToolAnnotations},
 };
 use serde_json::{Map, Value, json};
 
@@ -166,7 +166,7 @@ fn search_kind_enum(exposure: McpRuntimeExposure) -> Value {
 pub(crate) fn exec_tool() -> Tool {
     Tool::new(
         "exec",
-        "Run Code Mode source, waiting briefly for fast completion before returning a run id plus structured events.",
+        "Run Code Mode source, waiting briefly for fast completion before returning a compact status/result summary.",
         json_object_schema(&json!({
             "type": "object",
             "required": ["source"],
@@ -190,7 +190,7 @@ pub(crate) fn exec_tool() -> Tool {
 pub(crate) fn wait_tool() -> Tool {
     Tool::new(
         "wait",
-        "Wait for Code Mode run events by run id, or terminate the run.",
+        "Wait for a Code Mode run by run id, returning new compact output/result state or terminating the run.",
         json_object_schema(&json!({
             "type": "object",
             "required": ["run_id"],
@@ -204,7 +204,7 @@ pub(crate) fn wait_tool() -> Tool {
                 "terminate": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Terminate the run instead of waiting for more events."
+                    "description": "Terminate the run instead of waiting for more output."
                 }
             }
         })),
@@ -329,10 +329,8 @@ pub(crate) fn required_string_argument(
 }
 
 pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
-    let pretty = serde_json::to_string_pretty(&value)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
     let mut result = CallToolResult::structured(value);
-    result.content = vec![Content::text(format!("```json\n{pretty}\n```"))];
+    result.content.clear();
     Ok(result)
 }
 
@@ -486,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn build_tool_result_fences_json_text_preview() {
+    fn build_tool_result_returns_structured_json_without_text_preview() {
         let raw_markdown = "Format dates as ![](slack_date:2026-06-06)";
         let result =
             build_tool_result(json!({ "description": raw_markdown })).expect("tool result");
@@ -498,16 +496,7 @@ mod tests {
                 .expect("structured content")["description"],
             raw_markdown
         );
-        let content = serde_json::to_value(&result.content).expect("serialize content");
-        let text = content
-            .get(0)
-            .and_then(|content| content.get("text"))
-            .and_then(|value| value.as_str())
-            .expect("text content");
-
-        assert!(text.starts_with("```json\n"));
-        assert!(text.ends_with("\n```"));
-        assert!(text.contains(raw_markdown));
+        assert!(result.content.is_empty());
     }
 
     #[test]

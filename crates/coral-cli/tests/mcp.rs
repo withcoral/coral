@@ -596,10 +596,21 @@ async fn assert_search_tool(
         }))),
     )
     .await?;
-    assert_eq!(search["items"][0]["alias"], "github.rest.issues.listIssues");
-    assert_eq!(search["items"][0]["deprecated"], false);
-    assert_eq!(search["items"][0]["support_status"], "generated");
-    assert_eq!(search["limit"], 5);
+    assert_eq!(search["items"][0]["name"], "github.rest.issues.listIssues");
+    assert_eq!(
+        search["items"][0]["ref"],
+        "typescript:github.rest.issues.listIssues"
+    );
+    assert_eq!(
+        search["items"][0]["call"],
+        "tools.github.rest.issues.listIssues"
+    );
+    assert_eq!(search["items"][0]["source"], "github");
+    assert_eq!(search["items"][0]["kind"], "query/read");
+    assert!(search["items"][0].get("deprecated").is_none());
+    assert!(search["items"][0].get("support").is_none());
+    assert_eq!(search["total"], 1);
+    assert!(search.get("next").is_none());
     assert_eq!(
         search["diagnostics"][0]["code"],
         "SOURCE_ARTIFACTS_UNAVAILABLE"
@@ -672,8 +683,11 @@ async fn assert_exec_and_wait_tools(
         }))),
     )
     .await?;
-    assert_eq!(exec["status"]["name"], "CODE_MODE_RUN_STATUS_COMPLETED");
+    assert_eq!(exec["status"], "completed");
     assert_eq!(exec["run_id"], "run_1");
+    assert_eq!(exec["cursor"], 3);
+    assert!(exec.get("events").is_none());
+    assert!(exec.get("wait").is_none());
     assert_eq!(server.initialize_code_mode_requests().len(), 1);
     let exec_requests = server.exec_code_mode_requests();
     let exec_request = exec_requests.last().expect("exec code mode request");
@@ -688,7 +702,9 @@ async fn assert_exec_and_wait_tools(
     )
     .await?;
     assert_eq!(wait["run_id"], "run_1");
-    assert_eq!(wait["status"]["name"], "CODE_MODE_RUN_STATUS_COMPLETED");
+    assert_eq!(wait["status"], "completed");
+    assert_eq!(wait["cursor"], 1);
+    assert!(wait.get("events").is_none());
     let wait_requests = server.wait_code_mode_requests();
     let wait_request = wait_requests.last().expect("wait code mode request");
     assert_eq!(wait_request.run_id, "run_1");
@@ -703,10 +719,8 @@ async fn assert_exec_and_wait_tools(
     )
     .await?;
     assert_eq!(terminated["run_id"], "run_1");
-    assert_eq!(
-        terminated["status"]["name"],
-        "CODE_MODE_RUN_STATUS_TERMINATED"
-    );
+    assert_eq!(terminated["status"], "terminated");
+    assert_eq!(terminated["cursor"], 0);
     let terminate_requests = server.terminate_code_mode_requests();
     let terminate_request = terminate_requests
         .last()
@@ -730,7 +744,7 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
         .await?;
     assert_eq!(search.is_error, Some(false));
     assert_eq!(
-        search.structured_content.expect("structured content")["items"][0]["alias"],
+        search.structured_content.expect("structured content")["items"][0]["name"],
         "github.rest.issues.listIssues"
     );
 

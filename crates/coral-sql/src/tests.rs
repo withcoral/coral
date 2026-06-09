@@ -150,13 +150,21 @@ fn mcp_read_tool_without_output_schema_reports_sql_diagnostic() {
         .expect("contribute");
 
     assert!(contribution.bindings.is_empty());
-    assert_eq!(contribution.diagnostics.len(), 1);
+    assert!(contribution.diagnostics.is_empty());
+    assert_eq!(contribution.binding_diagnostics.len(), 1);
+    let binding_diagnostic = contribution
+        .binding_diagnostics
+        .first()
+        .expect("missing binding diagnostic");
     assert_eq!(
-        contribution
-            .diagnostics
-            .first()
-            .expect("missing diagnostic")
-            .code,
+        binding_diagnostic.applies_to,
+        vec![
+            coral_exports::ExportKind::SqlTable,
+            coral_exports::ExportKind::SqlFunction
+        ]
+    );
+    assert_eq!(
+        binding_diagnostic.diagnostic.code,
         "MCP_SQL_OUTPUT_SCHEMA_MISSING"
     );
 }
@@ -208,6 +216,7 @@ fn mcp_read_tool_with_list_output_schema_gets_sql_binding() {
 
     assert_eq!(contribution.bindings.len(), 1);
     assert!(contribution.diagnostics.is_empty());
+    assert!(contribution.binding_diagnostics.is_empty());
 }
 
 #[test]

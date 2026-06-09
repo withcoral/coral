@@ -481,6 +481,7 @@ mod tests {
                 idempotency: IdempotencyKind::Idempotent,
             },
             diagnostics: Vec::new(),
+            binding_diagnostics: Vec::new(),
         }
     }
 

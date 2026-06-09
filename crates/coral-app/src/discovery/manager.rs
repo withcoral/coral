@@ -413,9 +413,6 @@ fn filter_runtime_exposure(
     mut exports: WorkspaceExports,
     runtime_exposure: RuntimeExposureMode,
 ) -> WorkspaceExports {
-    if runtime_exposure == RuntimeExposureMode::Both {
-        return exports;
-    }
     exports.entries = exports
         .entries
         .into_iter()
@@ -423,10 +420,24 @@ fn filter_runtime_exposure(
             entry
                 .bindings
                 .retain(|binding| runtime_exposure.exposes_binding(binding));
+            expose_binding_diagnostics(&mut entry, runtime_exposure);
             (!entry.bindings.is_empty()).then_some(entry)
         })
         .collect();
     exports
+}
+
+fn expose_binding_diagnostics(entry: &mut CapabilityExport, runtime_exposure: RuntimeExposureMode) {
+    let binding_diagnostics = std::mem::take(&mut entry.binding_diagnostics);
+    entry
+        .diagnostics
+        .extend(binding_diagnostics.into_iter().filter_map(|diagnostic| {
+            diagnostic
+                .applies_to
+                .iter()
+                .any(|kind| runtime_exposure.exposes_kind(*kind))
+                .then_some(diagnostic.diagnostic)
+        }));
 }
 
 #[derive(Debug, Clone, Default)]
@@ -573,17 +584,17 @@ fn read_yaml_artifact<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use coral_capabilities::{
-        Capability, CapabilityId, CapabilityKind, EffectKind, EffectProfile,
-        GraphqlOperationBinding, GraphqlOperationKind, HttpMethod, IdempotencyKind,
-        InvocationSchema, OutputContract, ProviderOrigin, ProviderOriginKind, RestUpstreamBinding,
-        SOURCE_CAPABILITY_GENERATOR_VERSION, ShapeHints, SourceCapabilitySet, SourceId,
-        SupportStatus, UpstreamBinding,
+        Capability, CapabilityId, CapabilityKind, Diagnostic, DiagnosticSeverity, DiagnosticStage,
+        EffectKind, EffectProfile, GraphqlOperationBinding, GraphqlOperationKind, HttpMethod,
+        IdempotencyKind, InvocationSchema, OutputContract, ProviderOrigin, ProviderOriginKind,
+        RestUpstreamBinding, SOURCE_CAPABILITY_GENERATOR_VERSION, ShapeHints, SourceCapabilitySet,
+        SourceId, SupportStatus, UpstreamBinding,
     };
     use coral_exports::{
-        Binding, BindingBuildContext, CapabilityExport, EffectProfileSnapshot, ExportRef,
-        SOURCE_EXPORTS_GENERATOR_VERSION, SourceExports, SourceKey, SqlBinding, SqlBindingKind,
-        SqlProjectionV1, SqlRowShape, TypescriptBinding, TypescriptBindingContributor,
-        WorkspaceExports, build_source_exports,
+        Binding, BindingBuildContext, BindingDiagnostic, CapabilityExport, EffectProfileSnapshot,
+        ExportKind, ExportRef, SOURCE_EXPORTS_GENERATOR_VERSION, SourceExports, SourceKey,
+        SqlBinding, SqlBindingKind, SqlProjectionV1, SqlRowShape, TypescriptBinding,
+        TypescriptBindingContributor, WorkspaceExports, build_source_exports,
     };
     use serde_json::json;
 
@@ -645,6 +656,7 @@ mod tests {
                     idempotency: IdempotencyKind::Idempotent,
                 },
                 diagnostics: Vec::new(),
+                binding_diagnostics: Vec::new(),
             }],
             diagnostics: Vec::new(),
         }
@@ -667,6 +679,67 @@ mod tests {
         assert_eq!(sql_only.entries.len(), 1);
         let entry = sql_only.entries.first().expect("sql entry");
         assert!(matches!(entry.bindings.as_slice(), [Binding::Sql(_)]));
+    }
+
+    #[test]
+    fn runtime_exposure_filters_binding_diagnostics_before_discovery() {
+        let mut workspace = workspace_with_dual_binding_entry();
+        let entry = workspace.entries.first_mut().expect("entry");
+        entry.diagnostics.push(test_diagnostic("GLOBAL_SOURCE"));
+        entry.binding_diagnostics = vec![
+            BindingDiagnostic::new(
+                vec![ExportKind::SqlTable, ExportKind::SqlFunction],
+                test_diagnostic("SQL_ONLY"),
+            ),
+            BindingDiagnostic::new(
+                vec![ExportKind::Typescript],
+                test_diagnostic("TYPESCRIPT_ONLY"),
+            ),
+        ];
+
+        let typescript_only =
+            filter_runtime_exposure(workspace.clone(), RuntimeExposureMode::TypeScript);
+        let typescript_codes = diagnostic_codes(&typescript_only);
+        assert_eq!(typescript_codes, vec!["GLOBAL_SOURCE", "TYPESCRIPT_ONLY"]);
+        assert!(
+            typescript_only
+                .entries
+                .first()
+                .expect("entry")
+                .binding_diagnostics
+                .is_empty()
+        );
+
+        let sql_only = filter_runtime_exposure(workspace.clone(), RuntimeExposureMode::Sql);
+        let sql_codes = diagnostic_codes(&sql_only);
+        assert_eq!(sql_codes, vec!["GLOBAL_SOURCE", "SQL_ONLY"]);
+
+        let both = filter_runtime_exposure(workspace, RuntimeExposureMode::Both);
+        let both_codes = diagnostic_codes(&both);
+        assert_eq!(
+            both_codes,
+            vec!["GLOBAL_SOURCE", "SQL_ONLY", "TYPESCRIPT_ONLY"]
+        );
+    }
+
+    fn test_diagnostic(code: &str) -> Diagnostic {
+        Diagnostic::new(
+            code,
+            DiagnosticSeverity::Info,
+            DiagnosticStage::ExportGeneration,
+            code,
+        )
+    }
+
+    fn diagnostic_codes(exports: &WorkspaceExports) -> Vec<&str> {
+        exports
+            .entries
+            .first()
+            .expect("entry")
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect()
     }
 
     #[test]
@@ -957,7 +1030,7 @@ mod tests {
 
         let error = error.to_string();
         assert!(
-            error.contains("requires 'source-exports-v10'"),
+            error.contains("requires 'source-exports-v11'"),
             "unexpected error: {error}"
         );
         assert!(
@@ -968,7 +1041,7 @@ mod tests {
             error.contains("Restart any MCP/client session"),
             "expected restart guidance in error: {error}"
         );
-        assert_eq!(SOURCE_EXPORTS_GENERATOR_VERSION, "source-exports-v10");
+        assert_eq!(SOURCE_EXPORTS_GENERATOR_VERSION, "source-exports-v11");
     }
 
     #[test]

@@ -25,11 +25,11 @@ pub use discovery::{
     search_exports, search_exports_page,
 };
 pub use exports::{
-    Binding, BindingBuildContext, BindingContribution, BindingContributor, CapabilityExport,
-    EffectProfileSnapshot, ExportError, ExportKind, ExportRef, FileScanProjection,
-    PaginationProfile, ResponseSelection, Result, SOURCE_EXPORTS_GENERATOR_VERSION, SourceExports,
-    SqlBinding, SqlBindingKind, SqlColumn, SqlInput, SqlProjectionV1, SqlRowShape,
-    TypescriptBinding, WorkspaceExportSource, WorkspaceExports, build_source_exports,
-    compose_workspace_exports,
+    Binding, BindingBuildContext, BindingContribution, BindingContributor, BindingDiagnostic,
+    CapabilityExport, EffectProfileSnapshot, ExportError, ExportKind, ExportRef,
+    FileScanProjection, PaginationProfile, ResponseSelection, Result,
+    SOURCE_EXPORTS_GENERATOR_VERSION, SourceExports, SqlBinding, SqlBindingKind, SqlColumn,
+    SqlInput, SqlProjectionV1, SqlRowShape, TypescriptBinding, WorkspaceExportSource,
+    WorkspaceExports, build_source_exports, compose_workspace_exports,
 };
 pub use package::SourceKey;

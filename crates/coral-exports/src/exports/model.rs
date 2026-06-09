@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::package::SourceKey;
 
 /// Generator version for source export artifacts produced by this binary.
-pub const SOURCE_EXPORTS_GENERATOR_VERSION: &str = "source-exports-v10";
+pub const SOURCE_EXPORTS_GENERATOR_VERSION: &str = "source-exports-v11";
 
 /// Build context for one installed source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +23,7 @@ pub struct BindingContribution {
     pub bindings: Vec<Binding>,
     pub search_text: Vec<String>,
     pub diagnostics: Vec<Diagnostic>,
+    pub binding_diagnostics: Vec<BindingDiagnostic>,
 }
 
 impl BindingContribution {
@@ -33,6 +34,7 @@ impl BindingContribution {
             bindings: Vec::new(),
             search_text: Vec::new(),
             diagnostics: Vec::new(),
+            binding_diagnostics: Vec::new(),
         }
     }
 }
@@ -120,6 +122,8 @@ pub struct CapabilityExport {
     pub search_text: Vec<String>,
     pub effect_profile: EffectProfileSnapshot,
     pub diagnostics: Vec<Diagnostic>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub binding_diagnostics: Vec<BindingDiagnostic>,
 }
 
 fn default_support_status() -> SupportStatus {
@@ -145,6 +149,7 @@ impl CapabilityExport {
             search_text: base_search_text(capability, ctx),
             effect_profile: EffectProfileSnapshot::from(&capability.effect_profile),
             diagnostics: capability.diagnostics.clone(),
+            binding_diagnostics: Vec::new(),
         }
     }
 }
@@ -173,6 +178,24 @@ pub struct EffectProfileSnapshot {
     pub capability_kind: CapabilityKind,
     pub effects: Vec<EffectKind>,
     pub idempotency: IdempotencyKind,
+}
+
+/// Diagnostic produced by a product binding contributor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BindingDiagnostic {
+    pub applies_to: Vec<ExportKind>,
+    pub diagnostic: Diagnostic,
+}
+
+impl BindingDiagnostic {
+    /// Creates a binding-scoped diagnostic.
+    #[must_use]
+    pub fn new(applies_to: Vec<ExportKind>, diagnostic: Diagnostic) -> Self {
+        Self {
+            applies_to,
+            diagnostic,
+        }
+    }
 }
 
 impl From<&EffectProfile> for EffectProfileSnapshot {

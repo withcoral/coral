@@ -62,6 +62,10 @@ answering from assumptions or changing code when live external state matters.
 - Do not invent raw provider tool names, direct provider URLs, or `coral.call`.
   The public execution path is Code Mode through generated bindings discovered
   with `search` and `describe`.
+- For long bounded scans, state the fallback strategy once, then report only
+  meaningful milestones such as enumeration complete, chunk complete, errors,
+  scope changes, and final results. Do not send repeated no-change progress
+  updates.
 
 ## Query Rules
 

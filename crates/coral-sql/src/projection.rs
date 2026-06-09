@@ -3,9 +3,9 @@ use coral_capabilities::{
     OutputContract, RestParameterLocation, ResultShapeHint, UpstreamBinding,
 };
 use coral_exports::{
-    Binding, BindingBuildContext, BindingContribution, BindingContributor, ExportRef,
-    FileScanProjection, SqlBinding, SqlBindingKind, SqlColumn, SqlInput, SqlProjectionV1,
-    SqlRowShape,
+    Binding, BindingBuildContext, BindingContribution, BindingContributor, BindingDiagnostic,
+    ExportKind, ExportRef, FileScanProjection, SqlBinding, SqlBindingKind, SqlColumn, SqlInput,
+    SqlProjectionV1, SqlRowShape,
 };
 use serde_json::json;
 
@@ -35,15 +35,24 @@ impl BindingContributor for SqlBindingContributor {
             .into_iter()
             .map(Binding::Sql)
             .collect::<Vec<_>>();
-        let diagnostics = if bindings.is_empty() {
+        let binding_diagnostics = if bindings.is_empty() {
             sql_projection_diagnostics(capability)
+                .into_iter()
+                .map(|diagnostic| {
+                    BindingDiagnostic::new(
+                        vec![ExportKind::SqlTable, ExportKind::SqlFunction],
+                        diagnostic,
+                    )
+                })
+                .collect()
         } else {
             Vec::new()
         };
         Ok(BindingContribution {
             bindings,
             search_text: Vec::new(),
-            diagnostics,
+            diagnostics: Vec::new(),
+            binding_diagnostics,
         })
     }
 }

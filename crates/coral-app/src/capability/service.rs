@@ -25,9 +25,10 @@ use coral_spec::{
     parse_source_manifest_yaml,
 };
 use coral_upstream::{
-    GraphqlRequestPlan, HttpRequestPlan, McpConnectionTarget, McpToolCallPlan, RedactableString,
-    UpstreamError, UpstreamInvocationPlan, UpstreamRequestBody, UpstreamResponseBody,
-    UpstreamResponseEnvelope, bounded_provider_diagnostic_value, execute_plan,
+    GraphqlRequestPlan, HttpRequestPlan, McpConnectionTarget, McpContentBlock, McpToolCallPlan,
+    McpUpstreamResponse, RedactableString, UpstreamError, UpstreamInvocationPlan,
+    UpstreamRequestBody, UpstreamResponseBody, UpstreamResponseEnvelope,
+    bounded_provider_diagnostic_value, execute_plan,
 };
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use tonic::{Request, Response, Status};
@@ -1796,11 +1797,40 @@ fn upstream_value(envelope: &UpstreamResponseEnvelope) -> JsonValue {
         UpstreamResponseEnvelope::Graphql(response) => {
             response.data.clone().unwrap_or(JsonValue::Null)
         }
-        UpstreamResponseEnvelope::Mcp(response) => response
-            .structured_content
-            .clone()
-            .unwrap_or_else(|| json!({ "content": response.content })),
+        UpstreamResponseEnvelope::Mcp(response) => mcp_response_value(response),
     }
+}
+
+fn mcp_response_value(response: &McpUpstreamResponse) -> JsonValue {
+    if let Some(structured_content) = response.structured_content.clone() {
+        return structured_content;
+    }
+    if let [McpContentBlock::Text { text }] = response.content.as_slice()
+        && let Some(value) = parse_json_text_content(text)
+    {
+        return value;
+    }
+    json!({ "content": response.content })
+}
+
+fn parse_json_text_content(text: &str) -> Option<JsonValue> {
+    let trimmed = text.trim();
+    if let Ok(value) = serde_json::from_str::<JsonValue>(trimmed) {
+        return Some(value);
+    }
+    let fenced = fenced_json_body(trimmed)?;
+    serde_json::from_str::<JsonValue>(fenced.trim()).ok()
+}
+
+fn fenced_json_body(text: &str) -> Option<&str> {
+    let body = text.strip_prefix("```")?;
+    let (language, rest) = body.split_once('\n')?;
+    let language = language.trim();
+    if !(language.is_empty() || language.eq_ignore_ascii_case("json")) {
+        return None;
+    }
+    let rest = rest.strip_suffix("```")?;
+    Some(rest)
 }
 
 fn public_upstream_envelope(envelope: &UpstreamResponseEnvelope) -> JsonValue {
@@ -2424,6 +2454,114 @@ mod tests {
 
     fn assert_json_pointer(value: &JsonValue, pointer: &str, expected: &JsonValue) {
         assert_eq!(value.pointer(pointer), Some(expected));
+    }
+
+    #[test]
+    fn mcp_response_value_parses_single_json_text_content() {
+        let envelope = UpstreamResponseEnvelope::Mcp(McpUpstreamResponse {
+            structured_content: None,
+            content: vec![McpContentBlock::Text {
+                text: r##"{"results":"# Search Results","pagination_info":"next cursor"}"##
+                    .to_string(),
+            }],
+            is_error: false,
+            meta: None,
+            response_trust: coral_capabilities::ResponseTrust::UntrustedProviderData,
+        });
+
+        assert_eq!(
+            upstream_value(&envelope),
+            json!({
+                "results": "# Search Results",
+                "pagination_info": "next cursor"
+            })
+        );
+        assert_json_pointer(
+            &public_upstream_envelope(&envelope),
+            "/content/0/text",
+            &json!(r##"{"results":"# Search Results","pagination_info":"next cursor"}"##),
+        );
+    }
+
+    #[test]
+    fn mcp_response_value_parses_single_fenced_json_text_content() {
+        let envelope = UpstreamResponseEnvelope::Mcp(McpUpstreamResponse {
+            structured_content: None,
+            content: vec![McpContentBlock::Text {
+                text: "```json\n{\"channels\":[{\"id\":\"C123\",\"name\":\"general\"}]}\n```"
+                    .to_string(),
+            }],
+            is_error: false,
+            meta: None,
+            response_trust: coral_capabilities::ResponseTrust::UntrustedProviderData,
+        });
+
+        assert_eq!(
+            upstream_value(&envelope),
+            json!({
+                "channels": [
+                    {
+                        "id": "C123",
+                        "name": "general"
+                    }
+                ]
+            })
+        );
+        assert_json_pointer(
+            &public_upstream_envelope(&envelope),
+            "/content/0/text",
+            &json!("```json\n{\"channels\":[{\"id\":\"C123\",\"name\":\"general\"}]}\n```"),
+        );
+    }
+
+    #[test]
+    fn mcp_response_value_keeps_non_json_text_content_block() {
+        let envelope = UpstreamResponseEnvelope::Mcp(McpUpstreamResponse {
+            structured_content: None,
+            content: vec![McpContentBlock::Text {
+                text: "plain markdown".to_string(),
+            }],
+            is_error: false,
+            meta: None,
+            response_trust: coral_capabilities::ResponseTrust::UntrustedProviderData,
+        });
+
+        assert_eq!(
+            upstream_value(&envelope),
+            json!({
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "plain markdown"
+                    }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn mcp_response_value_keeps_non_json_fenced_text_content_block() {
+        let envelope = UpstreamResponseEnvelope::Mcp(McpUpstreamResponse {
+            structured_content: None,
+            content: vec![McpContentBlock::Text {
+                text: "```text\nnot json\n```".to_string(),
+            }],
+            is_error: false,
+            meta: None,
+            response_trust: coral_capabilities::ResponseTrust::UntrustedProviderData,
+        });
+
+        assert_eq!(
+            upstream_value(&envelope),
+            json!({
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "```text\nnot json\n```"
+                    }
+                ]
+            })
+        );
     }
 
     fn assert_rest_response_headers_are_exposed(envelope: &JsonValue) {

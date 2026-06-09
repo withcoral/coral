@@ -1,5 +1,10 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
+};
+
 use coral_api::v1::{
     CodeModeJsonValue, CodeModeRunError, CodeModeRunErrorCause, CodeModeRunEvent,
     CodeModeRunStatus, DescribeExportCandidate, DescribeExportRequest, DescribeExportResponse,
@@ -45,6 +50,13 @@ enum ToolCallOutcome {
     },
 }
 
+const COMPACT_ARG_PROPERTY_LIMIT: usize = 48;
+const COMPACT_ARG_DESCRIPTION_CHARS: usize = 120;
+const COMPACT_NESTED_PROPERTY_LIMIT: usize = 8;
+const COMPACT_ENUM_VALUE_LIMIT: usize = 12;
+const COMPACT_SQL_COLUMN_LIMIT: usize = 24;
+const REST_PARAMETER_LOCATIONS: &[&str] = &["path", "query", "header", "cookie"];
+
 #[derive(Serialize)]
 struct FeedbackStoredValue {
     feedback_id: String,
@@ -63,132 +75,191 @@ fn exec_code_mode_tool_value(response: ExecCodeModeResponse) -> Value {
         status,
         events,
     } = response;
-    code_mode_response_tool_value(run_id.as_str(), cell_id.as_str(), status, events)
+    code_mode_response_tool_value(run_id.as_str(), cell_id.as_str(), status, events, 0)
 }
 
-fn wait_code_mode_tool_value(response: WaitCodeModeResponse) -> Value {
+fn wait_code_mode_tool_value(response: WaitCodeModeResponse, initial_cursor: u64) -> Value {
     let WaitCodeModeResponse {
         run_id,
         cell_id,
         status,
         events,
     } = response;
-    code_mode_response_tool_value(run_id.as_str(), cell_id.as_str(), status, events)
+    code_mode_response_tool_value(
+        run_id.as_str(),
+        cell_id.as_str(),
+        status,
+        events,
+        initial_cursor,
+    )
 }
 
 fn code_mode_response_tool_value(
     run_id: &str,
-    cell_id: &str,
+    _cell_id: &str,
     status: i32,
     events: Vec<CodeModeRunEvent>,
+    initial_cursor: u64,
 ) -> Value {
-    let events = events
-        .into_iter()
-        .map(code_mode_event_tool_value)
-        .collect::<Vec<_>>();
-    json!({
-        "run_id": run_id,
-        "cell_id": cell_id,
-        "status": code_mode_status_value(status),
-        "events": events,
-    })
+    let mut cursor = initial_cursor;
+    let mut output = Vec::new();
+    let mut result = None;
+    let mut error = None;
+    let mut calls = BTreeMap::new();
+    for event in events {
+        cursor = cursor.max(event.id);
+        summarize_code_mode_event(event, &mut output, &mut result, &mut error, &mut calls);
+    }
+
+    let status_label = code_mode_status_label(status);
+    let include_calls = status_label == "running"
+        || error.is_some()
+        || calls
+            .values()
+            .any(|call| call.get("status").and_then(Value::as_str) == Some("failed"));
+    let mut value = Map::from_iter([
+        ("run_id".to_string(), json!(run_id)),
+        ("status".to_string(), json!(status_label)),
+        ("cursor".to_string(), json!(cursor)),
+    ]);
+    if status_label == "running" {
+        value.insert(
+            "wait".to_string(),
+            json!({
+                "run_id": run_id,
+                "after_event_id": cursor,
+            }),
+        );
+    }
+    if !output.is_empty() {
+        value.insert("output".to_string(), Value::Array(output));
+    }
+    if let Some(result) = result {
+        value.insert("result".to_string(), result);
+    }
+    if let Some(error) = error {
+        value.insert("error".to_string(), error);
+    }
+    if include_calls && !calls.is_empty() {
+        value.insert(
+            "calls".to_string(),
+            Value::Array(calls.into_values().map(Value::Object).collect()),
+        );
+    }
+    Value::Object(value)
 }
 
-fn code_mode_status_value(status: i32) -> Value {
+fn code_mode_status_label(status: i32) -> &'static str {
     let status = CodeModeRunStatus::try_from(status).unwrap_or(CodeModeRunStatus::Unspecified);
-    json!({
-        "code": status as i32,
-        "name": status.as_str_name(),
-    })
+    match status {
+        CodeModeRunStatus::Running => "running",
+        CodeModeRunStatus::Completed => "completed",
+        CodeModeRunStatus::Failed => "failed",
+        CodeModeRunStatus::Terminated => "terminated",
+        CodeModeRunStatus::Unspecified => "unknown",
+    }
 }
 
-fn code_mode_error_cause_value(cause: i32) -> Value {
+fn code_mode_error_cause_label(cause: i32) -> &'static str {
     let cause =
         CodeModeRunErrorCause::try_from(cause).unwrap_or(CodeModeRunErrorCause::Unspecified);
-    json!({
-        "code": cause as i32,
-        "name": cause.as_str_name(),
-    })
+    match cause {
+        CodeModeRunErrorCause::UserException => "user_exception",
+        CodeModeRunErrorCause::OutputBudgetExceeded => "output_budget_exceeded",
+        CodeModeRunErrorCause::HeapLimitExceeded => "heap_limit_exceeded",
+        CodeModeRunErrorCause::ToolUnavailable => "tool_unavailable",
+        CodeModeRunErrorCause::NestedToolFailed => "nested_tool_failed",
+        CodeModeRunErrorCause::SqlError => "sql_error",
+        CodeModeRunErrorCause::Internal => "internal",
+        CodeModeRunErrorCause::Unspecified => "unknown",
+    }
 }
 
-fn code_mode_event_tool_value(event: CodeModeRunEvent) -> Value {
+fn summarize_code_mode_event(
+    event: CodeModeRunEvent,
+    output: &mut Vec<Value>,
+    result: &mut Option<Value>,
+    error: &mut Option<Value>,
+    calls: &mut BTreeMap<String, Map<String, Value>>,
+) {
+    let event_id = event.id;
     let Some(payload) = event.event else {
-        return json!({
-            "id": event.id,
-            "type": "unspecified",
-        });
+        return;
     };
     match payload {
-        code_mode_run_event::Event::RunStarted(payload) => json!({
-            "id": event.id,
-            "type": "run_started",
-            "run_started": { "run_id": payload.run_id },
-        }),
-        code_mode_run_event::Event::CellStarted(payload) => json!({
-            "id": event.id,
-            "type": "cell_started",
-            "cell_started": {
-                "run_id": payload.run_id,
-                "cell_id": payload.cell_id,
-            },
-        }),
-        code_mode_run_event::Event::ContentItem(payload) => json!({
-            "id": event.id,
-            "type": "content_item",
-            "content_item": {
-                "cell_id": payload.cell_id,
-                "item": payload.item.map_or(Value::Null, json_value_from_code_mode),
-            },
-        }),
-        code_mode_run_event::Event::ResultItem(payload) => json!({
-            "id": event.id,
-            "type": "result_item",
-            "result_item": {
-                "cell_id": payload.cell_id,
-                "item": payload.item.map_or(Value::Null, json_value_from_code_mode),
-            },
-        }),
-        code_mode_run_event::Event::RunCompleted(payload) => json!({
-            "id": event.id,
-            "type": "run_completed",
-            "run_completed": { "run_id": payload.run_id },
-        }),
-        code_mode_run_event::Event::RunFailed(payload) => json!({
-            "id": event.id,
-            "type": "run_failed",
-            "run_failed": {
-                "run_id": payload.run_id,
-                "error": payload.error.as_ref().map_or(Value::Null, code_mode_error_value),
-            },
-        }),
-        code_mode_run_event::Event::ToolStarted(payload) => json!({
-            "id": event.id,
-            "type": "tool_started",
-            "tool_started": {
-                "cell_id": payload.cell_id,
-                "tool_call_id": payload.tool_call_id,
-                "tool_name": payload.tool_name,
-            },
-        }),
-        code_mode_run_event::Event::ToolCompleted(payload) => json!({
-            "id": event.id,
-            "type": "tool_completed",
-            "tool_completed": {
-                "cell_id": payload.cell_id,
-                "tool_call_id": payload.tool_call_id,
-                "tool_name": payload.tool_name,
-            },
-        }),
-        code_mode_run_event::Event::ToolFailed(payload) => json!({
-            "id": event.id,
-            "type": "tool_failed",
-            "tool_failed": {
-                "cell_id": payload.cell_id,
-                "tool_call_id": payload.tool_call_id,
-                "tool_name": payload.tool_name,
-                "error": payload.error.as_ref().map_or(Value::Null, code_mode_error_value),
-            },
-        }),
+        code_mode_run_event::Event::ContentItem(payload) => {
+            output.push(payload.item.map_or(Value::Null, json_value_from_code_mode));
+        }
+        code_mode_run_event::Event::ResultItem(payload) => {
+            *result = Some(payload.item.map_or(Value::Null, json_value_from_code_mode));
+        }
+        code_mode_run_event::Event::RunFailed(payload) => {
+            *error = Some(
+                payload
+                    .error
+                    .as_ref()
+                    .map_or(Value::Null, code_mode_error_value),
+            );
+        }
+        code_mode_run_event::Event::ToolStarted(payload) => {
+            summarize_tool_call(
+                calls,
+                event_id,
+                &payload.tool_call_id,
+                &payload.tool_name,
+                "started",
+                None,
+            );
+        }
+        code_mode_run_event::Event::ToolCompleted(payload) => {
+            summarize_tool_call(
+                calls,
+                event_id,
+                &payload.tool_call_id,
+                &payload.tool_name,
+                "completed",
+                None,
+            );
+        }
+        code_mode_run_event::Event::ToolFailed(payload) => {
+            summarize_tool_call(
+                calls,
+                event_id,
+                &payload.tool_call_id,
+                &payload.tool_name,
+                "failed",
+                payload.error.as_ref().map(code_mode_error_value),
+            );
+        }
+        code_mode_run_event::Event::RunStarted(_)
+        | code_mode_run_event::Event::CellStarted(_)
+        | code_mode_run_event::Event::RunCompleted(_) => {}
+    }
+}
+
+fn summarize_tool_call(
+    calls: &mut BTreeMap<String, Map<String, Value>>,
+    event_id: u64,
+    tool_call_id: &str,
+    tool_name: &str,
+    status: &str,
+    error: Option<Value>,
+) {
+    let id = if tool_call_id.is_empty() {
+        format!("event:{event_id}")
+    } else {
+        tool_call_id.to_string()
+    };
+    let call = calls.entry(id.clone()).or_insert_with(|| {
+        Map::from_iter([
+            ("id".to_string(), json!(id)),
+            ("name".to_string(), json!(tool_name)),
+        ])
+    });
+    call.insert("name".to_string(), json!(tool_name));
+    call.insert("status".to_string(), json!(status));
+    if let Some(error) = error {
+        call.insert("error".to_string(), error);
     }
 }
 
@@ -196,7 +267,7 @@ fn code_mode_error_value(error: &CodeModeRunError) -> Value {
     let mut value = Map::from_iter([
         (
             "cause".to_string(),
-            code_mode_error_cause_value(error.cause),
+            json!(code_mode_error_cause_label(error.cause)),
         ),
         ("message".to_string(), json!(&error.message)),
     ]);
@@ -510,7 +581,7 @@ impl CoralMcpServer {
                     run_id: arguments.run_id,
                 }))
                 .await
-                .map(|response| wait_code_mode_tool_value(response.into_inner()))
+                .map(|response| wait_code_mode_tool_value(response.into_inner(), 0))
         } else {
             code_mode_client
                 .wait(Request::new(WaitCodeModeRequest {
@@ -519,7 +590,9 @@ impl CoralMcpServer {
                     after_event_id: arguments.after_event_id,
                 }))
                 .await
-                .map(|response| wait_code_mode_tool_value(response.into_inner()))
+                .map(|response| {
+                    wait_code_mode_tool_value(response.into_inner(), arguments.after_event_id)
+                })
         };
         Ok(ToolCallOutcome::from_value_result("Code Mode wait", result))
     }
@@ -566,12 +639,96 @@ fn empty_search_response(limit: u32, offset: u32) -> SearchExportsResponse {
 
 fn search_tool_value(
     response: &SearchExportsResponse,
-    runtime: &Value,
+    _runtime: &Value,
 ) -> Result<Value, tonic::Status> {
-    let mut value = serialize_tool_value(response)?;
-    normalize_diagnostics_field(&mut value, &response.diagnostics);
-    insert_runtime_metadata(&mut value, runtime);
-    Ok(value)
+    let items = response
+        .items
+        .iter()
+        .map(compact_search_item_value)
+        .collect::<Vec<_>>();
+    let mut value = Map::from_iter([
+        ("items".to_string(), Value::Array(items)),
+        ("total".to_string(), json!(response.total)),
+    ]);
+    if response.has_more {
+        value.insert(
+            "next".to_string(),
+            json!({
+                "limit": response.limit,
+                "offset": response.next_offset,
+            }),
+        );
+    }
+    if !response.diagnostics.is_empty() {
+        value.insert(
+            "diagnostics".to_string(),
+            diagnostics_value(&response.diagnostics)?,
+        );
+    }
+    Ok(Value::Object(value))
+}
+
+fn compact_search_item_value(item: &SearchExportItem) -> Value {
+    let mut value = Map::new();
+    insert_nonempty(&mut value, "ref", preferred_ref(&item.refs));
+    insert_nonempty(&mut value, "call", &item.full_path);
+    insert_nonempty(&mut value, "sql", preferred_sql_ref(&item.refs));
+    insert_nonempty(&mut value, "name", preferred_name(item));
+    insert_nonempty(&mut value, "source", &item.source_key);
+    insert_nonempty(&mut value, "title", &item.title);
+    insert_nonempty(&mut value, "description", &item.description);
+    insert_nonempty(
+        &mut value,
+        "kind",
+        kind_effect_label(&item.capability_kind, &item.effects),
+    );
+    if item.deprecated {
+        value.insert("deprecated".to_string(), Value::Bool(true));
+    }
+    if item.support_status != "generated" && !item.support_status.is_empty() {
+        value.insert("support".to_string(), json!(&item.support_status));
+    }
+    if item.diagnostic_count > 0 {
+        value.insert("diagnostics".to_string(), json!(item.diagnostic_count));
+    }
+    Value::Object(value)
+}
+
+fn preferred_name(item: &SearchExportItem) -> &str {
+    if item.alias.is_empty() {
+        &item.capability_id
+    } else {
+        &item.alias
+    }
+}
+
+fn preferred_ref(refs: &[String]) -> &str {
+    refs.iter()
+        .find(|ref_| ref_.starts_with("typescript:"))
+        .or_else(|| refs.iter().find(|ref_| ref_.starts_with("sql_table:")))
+        .or_else(|| refs.iter().find(|ref_| ref_.starts_with("sql_function:")))
+        .or_else(|| refs.first())
+        .map_or("", String::as_str)
+}
+
+fn preferred_sql_ref(refs: &[String]) -> &str {
+    refs.iter()
+        .find(|ref_| ref_.starts_with("sql_table:") || ref_.starts_with("sql_function:"))
+        .map_or("", String::as_str)
+}
+
+fn kind_effect_label(kind: &str, effects: &[String]) -> String {
+    if effects.is_empty() {
+        return kind.to_string();
+    }
+    format!("{kind}/{}", effects.join("+"))
+}
+
+fn insert_nonempty(value: &mut Map<String, Value>, key: &str, entry: impl AsRef<str>) {
+    let entry = entry.as_ref();
+    if !entry.is_empty() {
+        value.insert(key.to_string(), json!(entry));
+    }
 }
 
 fn visible_binding_kinds(exposure: McpRuntimeExposure) -> Vec<ExportBindingKind> {
@@ -741,22 +898,36 @@ fn insert_runtime_metadata(value: &mut Value, runtime: &Value) {
 
 fn compact_describe_tool_value(
     response: &DescribeExportResponse,
-    runtime: &Value,
+    _runtime: &Value,
 ) -> Result<Value, tonic::Status> {
-    let diagnostics = diagnostics_value(&response.diagnostics)?;
-    let entry = response
-        .entry
-        .as_ref()
-        .map(compact_entry_value)
-        .transpose()?;
-    Ok(json!({
-        "found": response.found,
-        "ambiguous": response.ambiguous,
-        "entry": entry.unwrap_or(Value::Null),
-        "candidates": response.candidates,
-        "diagnostics": diagnostics,
-        "runtime": runtime,
-    }))
+    let mut value = Map::new();
+    if response.found {
+        value.insert("status".to_string(), json!("found"));
+        if let Some(entry) = response.entry.as_ref() {
+            value.insert("entry".to_string(), compact_entry_value(entry)?);
+        }
+    } else if response.ambiguous {
+        value.insert("status".to_string(), json!("ambiguous"));
+        value.insert(
+            "candidates".to_string(),
+            Value::Array(
+                response
+                    .candidates
+                    .iter()
+                    .map(compact_candidate_value)
+                    .collect(),
+            ),
+        );
+    } else {
+        value.insert("status".to_string(), json!("not_found"));
+    }
+    if !response.diagnostics.is_empty() {
+        value.insert(
+            "diagnostics".to_string(),
+            diagnostics_value(&response.diagnostics)?,
+        );
+    }
+    Ok(Value::Object(value))
 }
 
 fn compact_entry_value(description: &ExportDescription) -> Result<Value, tonic::Status> {
@@ -774,77 +945,442 @@ fn compact_entry_value(description: &ExportDescription) -> Result<Value, tonic::
                     .unwrap_or(Value::Null),
             )
         })?;
-    let input_summary = input_schema_summary(&code_mode_input_schema);
-    let effect_profile = capability_value
-        .get("effect_profile")
-        .cloned()
-        .unwrap_or_else(|| {
-            json!({
-                "capability_kind": description.capability_kind,
-                "effects": description.effects,
-            })
-        });
-    Ok(json!({
-        "capability_id": description.capability_id,
-        "alias": description.alias,
-        "refs": description.refs,
-        "source_id": description.source_id,
-        "display_name": description.display_name,
-        "source_key": description.source_key,
-        "interface_id": description.interface_id,
-        "operation_id": description.operation_id,
-        "title": description.title,
-        "description": description.description,
-        "deprecated": description.deprecated,
-        "support_status": description.support_status,
-        "capability_kind": description.capability_kind,
-        "effects": description.effects,
-        "effect_profile": effect_profile,
-        "full_path": description.full_path,
-        "typescript_binding": description.typescript_binding,
-        "input": input_summary,
-        "result_wrapper": {
-            "shape": "{ ok, complete, partial, errors, source_status, value, error, envelope }",
-            "success_value_path": "value",
-            "fail_closed": "Generated tools reject by default on provider or transport failure; try/catch can recover, uncaught rejections fail the run. Use allowErrorResult only for explicit raw-error collection."
-        },
-        "credential_requirements": capability_value
-            .get("credential_requirements")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "sql_bindings": description.sql_bindings,
-        "diagnostics": diagnostics_value(&description.diagnostics)?,
-    }))
+    let mut value = Map::new();
+    insert_nonempty(&mut value, "ref", preferred_ref(&description.refs));
+    insert_nonempty(&mut value, "call", &description.full_path);
+    insert_nonempty(&mut value, "sql", preferred_sql_ref(&description.refs));
+    insert_nonempty(&mut value, "name", preferred_description_name(description));
+    insert_nonempty(
+        &mut value,
+        "kind",
+        kind_effect_label(&description.capability_kind, &description.effects),
+    );
+    value.insert(
+        "args".to_string(),
+        argument_summary(&code_mode_input_schema),
+    );
+    let sql = description
+        .sql_bindings
+        .iter()
+        .map(compact_sql_binding_value)
+        .collect::<Vec<_>>();
+    if !sql.is_empty() {
+        value.insert("sql_bindings".to_string(), Value::Array(sql));
+    }
+    if description.deprecated {
+        value.insert("deprecated".to_string(), Value::Bool(true));
+    }
+    if description.support_status != "generated" && !description.support_status.is_empty() {
+        value.insert("support".to_string(), json!(&description.support_status));
+    }
+    if !description.diagnostics.is_empty() {
+        value.insert(
+            "diagnostics".to_string(),
+            diagnostics_value(&description.diagnostics)?,
+        );
+    }
+    Ok(Value::Object(value))
 }
 
-fn input_schema_summary(schema: &Value) -> Value {
-    let required = schema
+fn argument_summary(schema: &Value) -> Value {
+    let Some(root) = schema.as_object() else {
+        return Value::Object(Map::new());
+    };
+    let Some(raw_properties) = root.get("properties").and_then(Value::as_object) else {
+        return Value::Object(Map::new());
+    };
+    let visible_properties = visible_argument_properties(raw_properties);
+    let visible_names = visible_properties
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect::<BTreeSet<_>>();
+    let (required, require_one_of) = argument_required_groups(root, &visible_names);
+    let mut value = Map::new();
+    if !required.is_empty() {
+        value.insert(
+            "required".to_string(),
+            Value::Array(required.into_iter().map(Value::String).collect()),
+        );
+    }
+    if !require_one_of.is_empty() {
+        value.insert("require_one_of".to_string(), json!(require_one_of));
+    }
+    if !visible_properties.is_empty() {
+        if visible_properties.len() > COMPACT_ARG_PROPERTY_LIMIT {
+            value.insert(
+                "property_count".to_string(),
+                json!(visible_properties.len()),
+            );
+        }
+        value.insert(
+            "properties".to_string(),
+            Value::Object(
+                visible_properties
+                    .iter()
+                    .take(COMPACT_ARG_PROPERTY_LIMIT)
+                    .map(|(name, schema)| {
+                        (
+                            name.clone(),
+                            Value::String(argument_property_summary(schema)),
+                        )
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    Value::Object(value)
+}
+
+fn argument_property_summary(schema: &Value) -> String {
+    let mut summary = schema_summary(schema, 0);
+    let Some(description) = schema
+        .as_object()
+        .and_then(|object| object.get("description"))
+        .and_then(Value::as_str)
+        .map(compact_description)
+    else {
+        return summary;
+    };
+    if !description.is_empty() {
+        summary.push_str(" - ");
+        summary.push_str(&description);
+    }
+    summary
+}
+
+fn compact_description(description: &str) -> String {
+    let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_chars(&description, COMPACT_ARG_DESCRIPTION_CHARS)
+}
+
+fn truncate_chars(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_string();
+    }
+    let keep = limit.saturating_sub(3);
+    let mut truncated = value.chars().take(keep).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+fn visible_argument_properties(properties: &Map<String, Value>) -> Vec<(String, &Value)> {
+    properties
+        .iter()
+        .filter(|(name, _)| !hidden_rest_location_property(name, properties))
+        .map(|(name, schema)| (name.clone(), schema))
+        .collect()
+}
+
+fn hidden_rest_location_property(name: &str, properties: &Map<String, Value>) -> bool {
+    if !REST_PARAMETER_LOCATIONS.contains(&name) {
+        return false;
+    }
+    properties
+        .get(name)
+        .and_then(Value::as_object)
+        .and_then(|schema| schema.get("properties"))
+        .and_then(Value::as_object)
+        .is_some_and(|location_properties| {
+            location_properties
+                .keys()
+                .any(|property_name| properties.contains_key(property_name))
+        })
+}
+
+fn argument_required_groups(
+    root: &Map<String, Value>,
+    visible_names: &BTreeSet<&str>,
+) -> (Vec<String>, Vec<Vec<String>>) {
+    let mut required = root
         .get("required")
         .and_then(Value::as_array)
-        .map(|values| {
-            values
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|name| visible_names.contains(name))
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>();
+    let mut require_one_of = BTreeSet::new();
+
+    if let Some(all_of) = root.get("allOf").and_then(Value::as_array) {
+        for constraint in all_of {
+            if let Some(alternatives) = required_alternatives(constraint, visible_names) {
+                match alternatives.as_slice() {
+                    [single] if single.len() == 1 => {
+                        if let Some(name) = single.first() {
+                            required.insert(name.clone());
+                        }
+                    }
+                    [] => {}
+                    _ => {
+                        let group = alternatives
+                            .into_iter()
+                            .flatten()
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
+                            .collect::<Vec<_>>();
+                        if !group.is_empty() {
+                            require_one_of.insert(group);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (
+        required.into_iter().collect(),
+        require_one_of.into_iter().collect(),
+    )
+}
+
+fn required_alternatives(
+    constraint: &Value,
+    visible_names: &BTreeSet<&str>,
+) -> Option<Vec<Vec<String>>> {
+    let alternatives = constraint
+        .get("anyOf")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|alternative| {
+            let required = alternative
+                .get("required")
+                .and_then(Value::as_array)?
                 .iter()
                 .filter_map(Value::as_str)
+                .filter(|name| visible_names.contains(name))
                 .map(ToString::to_string)
-                .collect::<std::collections::BTreeSet<_>>()
+                .collect::<Vec<_>>();
+            if required.is_empty() {
+                None
+            } else {
+                Some(required)
+            }
         })
-        .unwrap_or_default();
-    let optional = schema
-        .get("properties")
-        .and_then(Value::as_object)
-        .map(|properties| {
-            properties
-                .keys()
-                .filter(|key| !required.contains(*key))
-                .cloned()
+        .collect::<Vec<_>>();
+    if alternatives.is_empty() {
+        None
+    } else {
+        Some(alternatives)
+    }
+}
+
+fn schema_summary(schema: &Value, depth: usize) -> String {
+    let Some(object) = schema.as_object() else {
+        return "unknown".to_string();
+    };
+    if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+        return format!("ref({})", reference.rsplit('/').next().unwrap_or(reference));
+    }
+    if let Some(value) = object.get("const") {
+        return format!("const({})", compact_json_value(value));
+    }
+    if let Some(values) = object.get("enum").and_then(Value::as_array) {
+        let rendered = values
+            .iter()
+            .take(COMPACT_ENUM_VALUE_LIMIT)
+            .map(compact_json_value)
+            .collect::<Vec<_>>();
+        let mut summary = format!("enum[{}]", rendered.join("|"));
+        if values.len() > COMPACT_ENUM_VALUE_LIMIT {
+            write!(summary, "+{}", values.len() - COMPACT_ENUM_VALUE_LIMIT)
+                .expect("write enum truncation marker");
+        }
+        return add_default(summary, object);
+    }
+    if let Some(variants) = object.get("anyOf").and_then(Value::as_array) {
+        let rendered = variants
+            .iter()
+            .map(|variant| schema_summary(variant, depth))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if !rendered.is_empty() {
+            return add_default(rendered.join("|"), object);
+        }
+    }
+    if let Some(variants) = object.get("oneOf").and_then(Value::as_array) {
+        let rendered = variants
+            .iter()
+            .map(|variant| schema_summary(variant, depth))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if !rendered.is_empty() {
+            return add_default(rendered.join("|"), object);
+        }
+    }
+    if object.contains_key("properties") {
+        return add_default(object_summary(object, depth), object);
+    }
+    if let Some(schema_type) = object.get("type") {
+        let summary = if let Some(types) = schema_type.as_array() {
+            types
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|schema_type| schema_type_summary(schema_type, object, depth))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
                 .collect::<Vec<_>>()
+                .join("|")
+        } else if let Some(schema_type) = schema_type.as_str() {
+            schema_type_summary(schema_type, object, depth)
+        } else {
+            "unknown".to_string()
+        };
+        return add_default(summary, object);
+    }
+    if let Some(variants) = object.get("allOf").and_then(Value::as_array) {
+        let rendered = variants
+            .iter()
+            .map(|variant| schema_summary(variant, depth))
+            .collect::<Vec<_>>();
+        if !rendered.is_empty() {
+            return add_default(rendered.join("&"), object);
+        }
+    }
+    add_default("unknown".to_string(), object)
+}
+
+fn schema_type_summary(schema_type: &str, object: &Map<String, Value>, depth: usize) -> String {
+    match schema_type {
+        "array" => {
+            let item = object.get("items").map_or_else(
+                || "unknown".to_string(),
+                |items| schema_summary(items, depth + 1),
+            );
+            format!("array<{item}>")
+        }
+        "object" => object_summary(object, depth),
+        _ => schema_type.to_string(),
+    }
+}
+
+fn object_summary(object: &Map<String, Value>, depth: usize) -> String {
+    let Some(properties) = object.get("properties").and_then(Value::as_object) else {
+        if let Some(additional) = object.get("additionalProperties") {
+            return match additional {
+                Value::Object(_) => {
+                    format!("object<string,{}>", schema_summary(additional, depth + 1))
+                }
+                Value::Bool(true) => "object<string,unknown>".to_string(),
+                _ => "object".to_string(),
+            };
+        }
+        return "object".to_string();
+    };
+    if depth >= 1 {
+        return "object".to_string();
+    }
+    let required = object
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut fields = properties
+        .iter()
+        .take(COMPACT_NESTED_PROPERTY_LIMIT)
+        .map(|(name, schema)| {
+            let required_marker = if required.contains(name.as_str()) {
+                "*"
+            } else {
+                ""
+            };
+            format!(
+                "{name}{required_marker}:{}",
+                schema_summary(schema, depth + 1)
+            )
         })
-        .unwrap_or_default();
-    json!({
-        "schema": schema,
-        "required": required.into_iter().collect::<Vec<_>>(),
-        "optional": optional,
-    })
+        .collect::<Vec<_>>();
+    if properties.len() > COMPACT_NESTED_PROPERTY_LIMIT {
+        fields.push(format!(
+            "+{}",
+            properties.len() - COMPACT_NESTED_PROPERTY_LIMIT
+        ));
+    }
+    format!("object{{{}}}", fields.join(","))
+}
+
+fn add_default(mut summary: String, object: &Map<String, Value>) -> String {
+    if let Some(value) = object.get("default") {
+        summary.push('=');
+        summary.push_str(&compact_json_value(value));
+    }
+    summary
+}
+
+fn compact_json_value(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Number(value) => value.to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Null => "null".to_string(),
+        _ => serde_json::to_string(value).unwrap_or_else(|_| "value".to_string()),
+    }
+}
+
+fn compact_candidate_value(candidate: &DescribeExportCandidate) -> Value {
+    let mut value = Map::new();
+    insert_nonempty(&mut value, "ref", preferred_ref(&candidate.refs));
+    insert_nonempty(&mut value, "call", &candidate.full_path);
+    insert_nonempty(&mut value, "sql", preferred_sql_ref(&candidate.refs));
+    insert_nonempty(&mut value, "name", candidate_name(candidate));
+    if candidate.deprecated {
+        value.insert("deprecated".to_string(), Value::Bool(true));
+    }
+    if candidate.support_status != "generated" && !candidate.support_status.is_empty() {
+        value.insert("support".to_string(), json!(&candidate.support_status));
+    }
+    Value::Object(value)
+}
+
+fn candidate_name(candidate: &DescribeExportCandidate) -> &str {
+    if candidate.alias.is_empty() {
+        &candidate.capability_id
+    } else {
+        &candidate.alias
+    }
+}
+
+fn preferred_description_name(description: &ExportDescription) -> &str {
+    if description.alias.is_empty() {
+        &description.operation_id
+    } else {
+        &description.alias
+    }
+}
+
+fn compact_sql_binding_value(binding: &coral_api::v1::SqlBindingDescription) -> Value {
+    let mut value = Map::new();
+    insert_nonempty(&mut value, "ref", &binding.r#ref);
+    insert_nonempty(&mut value, "sql", &binding.sql_reference);
+    insert_nonempty(&mut value, "shape", &binding.row_shape);
+    if binding.columns.len() > COMPACT_SQL_COLUMN_LIMIT {
+        value.insert("column_count".to_string(), json!(binding.columns.len()));
+    }
+    let columns = binding
+        .columns
+        .iter()
+        .take(COMPACT_SQL_COLUMN_LIMIT)
+        .map(|column| format!("{}:{}", column.name, column.data_type))
+        .collect::<Vec<_>>();
+    if !columns.is_empty() {
+        value.insert("columns".to_string(), json!(columns));
+    }
+    let inputs = binding
+        .inputs
+        .iter()
+        .map(|input| {
+            let required = if input.required { "*" } else { "" };
+            format!("{}{required}:{}", input.name, input.data_type)
+        })
+        .collect::<Vec<_>>();
+    if !inputs.is_empty() {
+        value.insert("inputs".to_string(), json!(inputs));
+    }
+    Value::Object(value)
 }
 
 fn diagnostics_value(diagnostics: &[ExportDiagnosticDescription]) -> Result<Value, tonic::Status> {
@@ -985,5 +1521,91 @@ fn binding_kind_from_tool(kind: &str) -> ExportBindingKind {
         "sql_table" => ExportBindingKind::SqlTable,
         "sql_function" => ExportBindingKind::SqlFunction,
         _ => ExportBindingKind::Unspecified,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::indexing_slicing,
+        reason = "test code: assertion-style JSON indexing is idiomatic in tests"
+    )]
+
+    use serde_json::json;
+
+    use super::argument_summary;
+
+    #[test]
+    fn argument_summary_reports_flat_rest_required_aliases() {
+        let summary = argument_summary(&json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "object",
+                    "required": ["owner"],
+                    "properties": {
+                        "owner": { "type": "string" }
+                    }
+                },
+                "owner": { "type": "string" },
+                "body": {
+                    "type": "object",
+                    "required": ["title"],
+                    "properties": {
+                        "title": { "type": "string" }
+                    }
+                },
+                "json": {
+                    "type": "object",
+                    "required": ["title"],
+                    "properties": {
+                        "title": { "type": "string" }
+                    }
+                }
+            },
+            "allOf": [
+                {
+                    "anyOf": [
+                        { "required": ["owner"] },
+                        {
+                            "required": ["path"],
+                            "properties": {
+                                "path": { "required": ["owner"] }
+                            }
+                        }
+                    ]
+                },
+                {
+                    "anyOf": [
+                        { "required": ["body"] },
+                        { "required": ["json"] }
+                    ]
+                }
+            ]
+        }));
+
+        assert_eq!(summary["required"], json!(["owner"]));
+        assert_eq!(summary["require_one_of"], json!([["body", "json"]]));
+        assert_eq!(summary["properties"]["owner"], "string");
+        assert_eq!(summary["properties"]["body"], "object{title*:string}");
+        assert!(summary["properties"].get("path").is_none());
+    }
+
+    #[test]
+    fn argument_summary_includes_bounded_top_level_property_descriptions() {
+        let summary = argument_summary(&json!({
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of results to return, up to a max of 20. Defaults to 20."
+                }
+            }
+        }));
+
+        assert_eq!(
+            summary["properties"]["limit"],
+            "integer - Number of results to return, up to a max of 20. Defaults to 20."
+        );
     }
 }

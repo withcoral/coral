@@ -521,7 +521,11 @@ include:
 | `unsupported` | The imported capability exists, but this runtime cannot invoke that transport or shape yet. |
 
 Provider output is untrusted. Coral preserves structured content and content
-blocks, but it does not follow resource links or embedded resources
-automatically. Provider error details are bounded before they leave the provider
-runtime; HTTP failures include status and a body preview when available, and MCP
-failures include JSON-RPC or tool-result details when available.
+blocks in the raw invocation envelope, but it does not follow resource links or
+embedded resources automatically. For the successful invocation `value`, Coral
+uses MCP `structuredContent` when present. If the provider omits
+`structuredContent` and returns a single text content block containing exact
+JSON, Coral parses that JSON into `value`; otherwise the text content stays
+text. Provider error details are bounded before they leave the provider runtime;
+HTTP failures include status and a body preview when available, and MCP failures
+include JSON-RPC or tool-result details when available.
