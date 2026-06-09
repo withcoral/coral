@@ -790,15 +790,10 @@ fn insert_nonempty(value: &mut Map<String, Value>, key: &str, entry: impl AsRef<
 }
 
 fn visible_binding_kinds(exposure: McpRuntimeExposure) -> Vec<ExportBindingKind> {
-    let mut kinds = Vec::new();
-    if exposure.typescript_enabled {
-        kinds.push(ExportBindingKind::Typescript);
-    }
-    if exposure.sql_enabled {
-        kinds.push(ExportBindingKind::SqlTable);
-        kinds.push(ExportBindingKind::SqlFunction);
-    }
-    kinds
+    exposure
+        .visible_search_kinds()
+        .map(binding_kind_from_tool)
+        .collect()
 }
 
 fn prune_search_response_for_runtime(

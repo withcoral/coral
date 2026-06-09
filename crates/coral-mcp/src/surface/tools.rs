@@ -8,7 +8,11 @@ use serde_json::{Map, Value, json};
 
 use crate::McpRuntimeExposure;
 
-use super::{Pagination, parse_pagination_with_limits};
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Pagination {
+    pub(crate) limit: u32,
+    pub(crate) offset: u32,
+}
 
 pub(crate) struct SearchArguments {
     pub(crate) query: String,
@@ -154,15 +158,12 @@ pub(crate) fn describe_tool(exposure: McpRuntimeExposure) -> Tool {
 }
 
 fn search_kind_enum(exposure: McpRuntimeExposure) -> Value {
-    let mut kinds = Vec::new();
-    if exposure.typescript_enabled {
-        kinds.push(json!("typescript"));
-    }
-    if exposure.sql_enabled {
-        kinds.push(json!("sql_table"));
-        kinds.push(json!("sql_function"));
-    }
-    Value::Array(kinds)
+    Value::Array(
+        exposure
+            .visible_search_kinds()
+            .map(|kind| json!(kind))
+            .collect(),
+    )
 }
 
 pub(crate) fn exec_tool() -> Tool {
@@ -259,12 +260,8 @@ pub(crate) fn search_arguments(
         query: optional_string_argument(arguments, "query")?.unwrap_or_default(),
         source_key: optional_string_argument(arguments, "source_key")?.unwrap_or_default(),
         display_name: optional_string_argument(arguments, "display_name")?.unwrap_or_default(),
-        kind: optional_enum_argument(
-            arguments,
-            "kind",
-            &["typescript", "sql_table", "sql_function"],
-        )?
-        .unwrap_or_default(),
+        kind: optional_enum_argument(arguments, "kind", McpRuntimeExposure::ALL_SEARCH_KINDS)?
+            .unwrap_or_default(),
         capability_kind: optional_enum_argument(
             arguments,
             "capability_kind",
@@ -385,6 +382,44 @@ fn optional_u64_argument(
     value.as_u64().ok_or_else(|| {
         ErrorData::invalid_params(
             format!("argument '{key}' must be a non-negative integer"),
+            None,
+        )
+    })
+}
+
+fn parse_pagination_with_limits(
+    arguments: Option<&Map<String, Value>>,
+    default_limit: u32,
+    max_limit: u32,
+) -> Result<Pagination, ErrorData> {
+    Ok(Pagination {
+        limit: optional_u32_argument(arguments, "limit", default_limit, 1, max_limit)?,
+        offset: optional_u32_argument(arguments, "offset", 0, 0, u32::MAX)?,
+    })
+}
+
+fn optional_u32_argument(
+    arguments: Option<&Map<String, Value>>,
+    key: &str,
+    default: u32,
+    min: u32,
+    max: u32,
+) -> Result<u32, ErrorData> {
+    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
+        return Ok(default);
+    };
+    let value = value.as_i64().ok_or_else(|| {
+        ErrorData::invalid_params(format!("argument '{key}' must be an integer"), None)
+    })?;
+    if value < i64::from(min) || value > i64::from(max) {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must be between {min} and {max}"),
+            None,
+        ));
+    }
+    u32::try_from(value).map_err(|_err| {
+        ErrorData::invalid_params(
+            format!("argument '{key}' must be between {min} and {max}"),
             None,
         )
     })

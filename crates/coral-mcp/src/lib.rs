@@ -57,6 +57,15 @@ pub struct McpRuntimeExposure {
 }
 
 impl McpRuntimeExposure {
+    /// Search-kind tokens for every binding the surface can expose, in the
+    /// canonical order used by tool schemas and search filters.
+    ///
+    /// This is the single source of truth for the exposure vocabulary; the
+    /// `kind` enum, search argument validation, and runtime binding filters all
+    /// derive from it via [`McpRuntimeExposure::exposes_tool_kind`].
+    pub(crate) const ALL_SEARCH_KINDS: &'static [&'static str] =
+        &["typescript", "sql_table", "sql_function"];
+
     /// Expose both generated TypeScript and SQL bindings.
     #[must_use]
     pub const fn both() -> Self {
@@ -92,6 +101,14 @@ impl McpRuntimeExposure {
             "sql_table" | "sql_function" => self.sql_enabled,
             _ => false,
         }
+    }
+
+    /// Search-kind tokens visible under this exposure, in canonical order.
+    pub(crate) fn visible_search_kinds(self) -> impl Iterator<Item = &'static str> {
+        Self::ALL_SEARCH_KINDS
+            .iter()
+            .copied()
+            .filter(move |kind| self.exposes_tool_kind(kind))
     }
 
     /// Stable label for this exposure policy.
