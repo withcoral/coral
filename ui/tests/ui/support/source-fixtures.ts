@@ -58,8 +58,8 @@ const githubInfo = create(SourceInfoSchema, {
   description: 'Query repositories, issues, and pull requests from GitHub.',
   version: '1.1.6',
   installed: true,
-  // Modelled as an imported install whose effective metadata the backend now
-  // resolves through DiscoverSources (no client-side catalog merge).
+  // Modelled as the effective metadata returned by GetSourceInfo for an
+  // installed imported source.
   origin: SourceOrigin.IMPORTED,
   credentialStorage: SourceCredentialStorage.FILE,
   inputs: [
@@ -114,6 +114,11 @@ const githubInfo = create(SourceInfoSchema, {
       },
     }),
   ],
+})
+
+const githubBundledInstalledInfo = create(SourceInfoSchema, {
+  ...githubInfo,
+  origin: SourceOrigin.BUNDLED,
 })
 
 export const githubOauthCatalogInfo = create(SourceInfoSchema, {
@@ -190,7 +195,7 @@ const sentryInfo = makeSourceInfo(
 
 export const bundledCatalog: SourceInfo[] = [
   cloudwatchLogsInfo,
-  githubInfo,
+  githubBundledInstalledInfo,
   linearInfo,
   slackInfo,
   sentryInfo,

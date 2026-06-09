@@ -95,3 +95,35 @@ export const alertError = style({
   paddingBlock: 8,
   paddingInline: 12,
 })
+
+export const removeConfirm = style({
+  alignItems: 'center',
+  background: theme.pill.red.background,
+  border: `1px solid ${theme.pill.red.stroke}`,
+  borderRadius: 8,
+  display: 'flex',
+  gap: 12,
+  justifyContent: 'space-between',
+  marginBlockStart: 12,
+  padding: 12,
+  '@media': {
+    '(max-width: 520px)': {
+      alignItems: 'stretch',
+      flexDirection: 'column',
+    },
+  },
+})
+
+export const removeConfirmText = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  minWidth: 0,
+})
+
+export const removeConfirmActions = style({
+  display: 'flex',
+  flexShrink: 0,
+  gap: 10,
+  justifyContent: 'flex-end',
+})

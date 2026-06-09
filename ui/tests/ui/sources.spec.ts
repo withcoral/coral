@@ -19,7 +19,7 @@ test('lists core sources by category, searches, and shows configured status', as
   const githubCard = page.getByRole('button', { name: /Github/i })
   await expect(githubCard).toBeVisible()
   await expect(githubCard.getByText('Configured')).toBeVisible()
-  await expect(githubCard.getByText('Imported')).toBeVisible()
+  await expect(githubCard.getByText('Core')).toBeVisible()
   await expect(githubCard.getByText('v1.1.6')).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Observability' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Communication' })).toBeVisible()
@@ -97,15 +97,20 @@ test('installs a core source via paste, edits a binding, and removes it', async 
   await expect(detailDialog).toHaveCount(0)
   await review.pause()
 
-  await review.chapter('Remove the source', 'Confirm the remove flow via the stacked confirm modal')
+  await review.chapter('Remove the source', 'Confirm the remove flow inside the detail dialog')
   await page.getByRole('button', { name: /Linear/i }).click()
   const reopenedDetailDialog = page.getByRole('dialog', { name: /Linear/i })
   await expect(reopenedDetailDialog).toBeVisible()
   await reopenedDetailDialog.getByRole('button', { name: 'Remove' }).click()
 
-  const confirmDialog = page.getByRole('dialog', { name: /Remove linear\?/ })
-  await expect(confirmDialog).toBeVisible()
-  await confirmDialog.getByRole('button', { name: 'Remove' }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(1)
+  await expect(reopenedDetailDialog.getByText('Remove linear?')).toBeVisible()
+  await reopenedDetailDialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(reopenedDetailDialog.getByText('Remove linear?')).toHaveCount(0)
+
+  await reopenedDetailDialog.getByRole('button', { name: 'Remove' }).click()
+  await expect(reopenedDetailDialog.getByText('Remove linear?')).toBeVisible()
+  await reopenedDetailDialog.getByRole('button', { name: 'Remove' }).click()
 
   await expect(page.getByText('Removed linear')).toBeVisible()
   await expect(page.getByRole('button', { name: /Linear/i })).toBeVisible()
@@ -165,7 +170,7 @@ test('imported installed source detail uses effective source info', async ({
 
   await review.chapter(
     'Open an imported installed source',
-    'GitHub is configured as an imported source; discovery resolves its effective metadata',
+    'GitHub is configured as an imported source; detail loads its effective metadata',
   )
   await page.getByRole('button', { name: /Github/i }).click()
 
@@ -212,6 +217,7 @@ test('installs GitHub through OAuth device code', async ({ network, page, review
   await review.pause()
 
   await expect(page.getByText('Configured github')).toBeVisible()
+  await expect(page.getByText('Credentials were saved but not verified.')).toBeVisible()
 })
 
 test('cmd-F focuses the search input', async ({ network, page, review }) => {
