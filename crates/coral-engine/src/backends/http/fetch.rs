@@ -83,12 +83,13 @@ pub(super) async fn fetch_rows(
             }));
         }
 
+        let resolved_inputs = client.resolved_inputs_for_request().await?;
         let state_values = pagination_state_values(&state);
         let render_context = RenderContext::new(
             filter_values,
             arg_values,
             &state_values,
-            client.resolved_inputs.as_ref(),
+            resolved_inputs.as_ref(),
         );
         let base_url = render_template(&client.base_url, &render_context)?;
         let base_url = normalize_base_url(&base_url);
@@ -161,6 +162,7 @@ pub(super) async fn fetch_rows(
                 response_format: target.response().format,
                 source_schema: &client.source_schema,
                 rate_limit: &client.rate_limit,
+                body_capture: client.body_capture,
                 render_context,
                 allow_404_empty: target.response().allow_404_empty,
                 link_header_require_results: pagination.link_header_require_results,

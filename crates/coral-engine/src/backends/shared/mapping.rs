@@ -52,7 +52,10 @@ pub(crate) fn convert_items(
             ManifestDataType::Json => {
                 let array: StringArray = items
                     .iter()
-                    .map(|row| to_json_utf8(eval_expr(&expr, row, filters, args)))
+                    .map(|row| {
+                        eval_expr(&expr, row, filters, args)
+                            .and_then(|value| json_value_to_text(&value))
+                    })
                     .collect();
                 arrays.push(Arc::new(array));
             }
@@ -374,24 +377,27 @@ fn to_utf8(value: Option<Value>) -> Option<String> {
     }
 }
 
-fn to_json_utf8(value: Option<Value>) -> Option<String> {
-    match value? {
+pub(crate) fn json_value_to_text(value: &Value) -> Option<String> {
+    match value {
         Value::Null => None,
-        other => serde_json::to_string(&other).ok(),
+        Value::String(value) if is_json_text(value) => Some(value.clone()),
+        other => serde_json::to_string(other).ok(),
     }
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "JSON numeric coercion intentionally accepts lossy conversions into i64 for downstream consumers"
-)]
+fn is_json_text(value: &str) -> bool {
+    let trimmed = value.trim_start();
+    if !matches!(trimmed.as_bytes().first(), Some(b'{' | b'[' | b'"')) {
+        return false;
+    }
+    serde_json::from_str::<Value>(value).is_ok()
+}
+
 fn to_i64(value: Option<Value>) -> Option<i64> {
     match value? {
         Value::Number(v) => v
             .as_i64()
-            .or_else(|| v.as_f64().map(|f| f as i64))
-            .or_else(|| v.as_u64().map(|u| u as i64)),
+            .or_else(|| v.as_u64().and_then(|u| i64::try_from(u).ok())),
         Value::String(v) => v.parse::<i64>().ok(),
         Value::Bool(v) => Some(i64::from(v)),
         Value::Null | Value::Array(_) | Value::Object(_) => None,
@@ -435,7 +441,9 @@ mod tests {
     use coral_spec::{
         ExprSpec, ParsedTemplate, RequestSpec, TimestampInput, parse_source_manifest_value,
     };
-    use datafusion::arrow::array::{Array, BooleanArray, StringArray, TimestampMicrosecondArray};
+    use datafusion::arrow::array::{
+        Array, BooleanArray, Int64Array, StringArray, TimestampMicrosecondArray,
+    };
     use serde_json::{Value, json};
     use std::collections::HashMap;
 
@@ -801,6 +809,64 @@ mod tests {
     }
 
     #[test]
+    fn int64_columns_reject_lossy_json_numbers() {
+        let table = table_with_expr(
+            "id",
+            "Int64",
+            &ExprSpec::Path {
+                path: vec!["id".into()],
+            },
+        );
+        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let items = vec![
+            serde_json::from_str(r#"{"id": 1.9}"#).unwrap(),
+            serde_json::from_str(r#"{"id": -1.9}"#).unwrap(),
+            serde_json::from_str(r#"{"id": 1.0}"#).unwrap(),
+            serde_json::from_str(r#"{"id": 1e3}"#).unwrap(),
+            serde_json::from_str(r#"{"id": 1.0000000000000001}"#).unwrap(),
+            json!({"id": i64::MAX}),
+            json!({"id": 9_223_372_036_854_775_808_u64}),
+            json!({"id": u64::MAX}),
+            json!({"id": i64::MAX.to_string()}),
+            json!({"id": "9223372036854775808"}),
+        ];
+
+        let batch = convert_items(
+            table.columns(),
+            schema,
+            &HashMap::new(),
+            &HashMap::new(),
+            &items,
+        )
+        .unwrap();
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+
+        let expected = [
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(i64::MAX),
+            None,
+            None,
+            Some(i64::MAX),
+            None,
+        ];
+        assert_eq!(col.len(), expected.len());
+        for (idx, expected) in expected.into_iter().enumerate() {
+            match expected {
+                Some(value) => assert_eq!(col.value(idx), value, "row {idx}"),
+                None => assert!(col.is_null(idx), "row {idx} should be null"),
+            }
+        }
+    }
+
+    #[test]
     fn replace_expr_rewrites_string_values() {
         let table = table_with_expr(
             "slug",
@@ -921,6 +987,7 @@ mod tests {
         let items = vec![
             json!({"properties": {"country": "US", "count": 3}}),
             json!({"properties": "hello"}),
+            json!({"properties": "{\"country\":\"DE\",\"count\":7}"}),
             json!({"properties": true}),
             json!({"properties": 3}),
             json!({"properties": null}),
@@ -950,13 +1017,17 @@ mod tests {
         );
         assert_eq!(
             serde_json::from_str::<Value>(col.value(2)).unwrap(),
-            json!(true)
+            json!({"country": "DE", "count": 7}),
         );
         assert_eq!(
             serde_json::from_str::<Value>(col.value(3)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(col.value(4)).unwrap(),
             json!(3)
         );
-        assert!(col.is_null(4));
         assert!(col.is_null(5));
+        assert!(col.is_null(6));
     }
 }

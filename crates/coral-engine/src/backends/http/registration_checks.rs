@@ -106,7 +106,7 @@ fn table_request_route_label(table_name: &str, route: &RequestRouteSpec) -> Stri
     }
 }
 
-/// Auth is source-scoped: all template dependencies must resolve from inputs
+/// Auth is source-scoped: all value-source input dependencies must resolve
 /// before any request is issued.
 fn check_auth_inputs(
     manifest: &HttpSourceManifest,
@@ -190,11 +190,18 @@ fn validate_header_inputs(
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
+    use std::sync::OnceLock;
 
     use serde_json::json;
 
     use crate::backends::http::client::HttpSourceClient;
     use crate::backends::http::test_support::parse_http_manifest;
+
+    static TEST_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+    fn test_http_client() -> reqwest::Client {
+        TEST_HTTP_CLIENT.get_or_init(reqwest::Client::new).clone()
+    }
 
     #[test]
     fn backend_client_requires_source_scoped_credentials() {
@@ -232,6 +239,8 @@ mod tests {
             &source_secrets,
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            test_http_client(),
         )
         .expect_err("missing source-scoped credentials must fail");
 
@@ -272,6 +281,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            test_http_client(),
         )
         .expect_err("missing table request path inputs must fail");
 
@@ -316,6 +327,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            test_http_client(),
         )
         .expect_err("missing table request header inputs must fail");
 
@@ -360,6 +373,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            test_http_client(),
         )
         .expect_err("missing table request query inputs must fail");
 
@@ -405,6 +420,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            test_http_client(),
         )
         .expect_err("missing table request body inputs must fail");
 
@@ -450,6 +467,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            test_http_client(),
         )
         .expect_err("missing request route inputs must fail");
 
@@ -542,6 +561,8 @@ mod tests {
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 &HashMap::new(),
+                None,
+                test_http_client(),
             )
             .expect_err(&format!(
                 "missing function request {name} input should fail"

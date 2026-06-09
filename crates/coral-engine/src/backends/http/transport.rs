@@ -20,7 +20,7 @@ use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::request::RequestBody;
 use crate::backends::http::response::{ResponseDecodeContext, decode_response_body};
 use crate::backends::http::trace::{
-    inject_trace_context, record_http_processing_error, record_http_status_error,
+    HttpBodyCapture, inject_trace_context, record_http_processing_error, record_http_status_error,
     record_trace_http_endpoint, request_body_size, sanitize_trace_url, trace_http_endpoint,
     trace_reqwest_error, trace_reqwest_error_type,
 };
@@ -44,6 +44,7 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) response_format: ResponseBodyFormat,
     pub(super) source_schema: &'a str,
     pub(super) rate_limit: &'a RateLimitSpec,
+    pub(super) body_capture: HttpBodyCapture,
     pub(super) render_context: RenderContext<'a>,
     pub(super) allow_404_empty: bool,
     pub(super) link_header_require_results: bool,
@@ -77,12 +78,14 @@ pub(super) async fn execute_request(
         response_format,
         source_schema,
         rate_limit,
+        body_capture,
         render_context,
         allow_404_empty,
         link_header_require_results,
     } = request;
     let mut server_error_retries = 0usize;
     let mut throttle_retries = 0usize;
+    let mut decode_retries = 0usize;
     loop {
         let method_label = http_method_label(method);
         let mut request = build_http_request(http, method, url);
@@ -117,7 +120,7 @@ pub(super) async fn execute_request(
         let logged_url = build_logged_url(url, query_pairs);
 
         let request_id = NEXT_HTTP_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-        let attempt = server_error_retries + throttle_retries + 1;
+        let attempt = server_error_retries + throttle_retries + decode_retries + 1;
         let traced_url = sanitize_trace_url(&logged_url);
         let trace_endpoint = trace_http_endpoint(&traced_url);
         let request_span = tracing::info_span!(
@@ -178,6 +181,7 @@ pub(super) async fn execute_request(
             None => {}
         }
 
+        body_capture.record_request(&request_span, request_id, body);
         let built = match resolve_auth_headers(
             auth,
             request,
@@ -223,12 +227,18 @@ pub(super) async fn execute_request(
                 RateLimitDecision::Continue => {}
                 RateLimitDecision::Retry(wait) => {
                     record_http_status_error(&request_span, status, "rate limited; retrying");
+                    body_capture
+                        .record_unconsumed_response(&request_span, request_id, response)
+                        .await;
                     throttle_retries += 1;
                     break 'response ResponseOutcome::Retry(wait);
                 }
                 RateLimitDecision::Fail(error) => {
                     let error_message = error.to_string();
                     record_http_status_error(&request_span, status, error_message.as_str());
+                    body_capture
+                        .record_unconsumed_response(&request_span, request_id, response)
+                        .await;
                     break 'response ResponseOutcome::Done(Err(DataFusionError::External(
                         Box::new(ProviderQueryError::RateLimited {
                             source_schema: source_schema.to_string(),
@@ -243,11 +253,17 @@ pub(super) async fn execute_request(
 
             if status.is_server_error() && server_error_retries < 2 {
                 record_http_status_error(&request_span, status, "server error; retrying");
+                body_capture
+                    .record_unconsumed_response(&request_span, request_id, response)
+                    .await;
                 server_error_retries += 1;
                 break 'response ResponseOutcome::Retry(Duration::from_secs(2));
             }
 
             if status == reqwest::StatusCode::NOT_FOUND && allow_404_empty {
+                body_capture
+                    .record_unconsumed_response(&request_span, request_id, response)
+                    .await;
                 break 'response ResponseOutcome::Done(Ok(None));
             }
 
@@ -263,6 +279,7 @@ pub(super) async fn execute_request(
                     response_error_summary(status, &body),
                 );
                 request_span.record("http.response.body.size", body.len());
+                body_capture.record_response(&request_span, request_id, &body);
                 break 'response ResponseOutcome::Done(Err(DataFusionError::External(Box::new(
                     ProviderQueryError::ApiRequest {
                         source_schema: source_schema.to_string(),
@@ -293,7 +310,7 @@ pub(super) async fn execute_request(
                 Err(error) => break 'response ResponseOutcome::Done(Err(error)),
             };
 
-            let payload = decode_response_body(
+            match decode_response_body(
                 response,
                 response_format,
                 ResponseDecodeContext {
@@ -301,16 +318,45 @@ pub(super) async fn execute_request(
                     table_name,
                     method_label,
                     logged_url: &logged_url,
+                    body_capture: &body_capture,
                     response_span: &request_span,
+                    request_id,
                 },
             )
             .instrument(request_span.clone())
             .await
-            .inspect_err(|error| {
-                record_http_processing_error(&request_span, "DECODE", error);
-            })
-            .map(|payload| Some((payload, next_url)));
-            ResponseOutcome::Done(payload)
+            {
+                Ok(payload) => ResponseOutcome::Done(Ok(Some((payload, next_url)))),
+                Err(mut error) => {
+                    // `Decode { retryable }` marks a transient (truncated/EOF) body. Only
+                    // idempotent GET requests may be retried or surfaced as retryable.
+                    let is_get = matches!(method, HttpMethod::GET);
+                    let retry = is_get
+                        && matches!(
+                            error,
+                            ProviderQueryError::Decode {
+                                retryable: true,
+                                ..
+                            }
+                        );
+                    if retry && decode_retries < 2 {
+                        record_http_processing_error(
+                            &request_span,
+                            "DECODE_RETRY",
+                            provider_error(error),
+                        );
+                        decode_retries += 1;
+                        ResponseOutcome::Retry(Duration::from_secs(2))
+                    } else {
+                        if let ProviderQueryError::Decode { retryable, .. } = &mut error {
+                            *retryable &= is_get;
+                        }
+                        let error = provider_error(error);
+                        record_http_processing_error(&request_span, "DECODE", &error);
+                        ResponseOutcome::Done(Err(error))
+                    }
+                }
+            }
         };
 
         drop(request_span);
@@ -403,6 +449,7 @@ mod tests {
 
     use super::{OutgoingHttpRequest as TestOutgoingHttpRequest, execute_request};
     use crate::backends::http::ProviderQueryError;
+    use crate::backends::http::trace::HttpBodyCapture;
     use crate::backends::shared::template::RenderContext;
     use coral_spec::backends::http::RateLimitSpec;
     use coral_spec::{AuthSpec, HttpMethod, ResponseBodyFormat};
@@ -454,6 +501,7 @@ mod tests {
                 response_format: ResponseBodyFormat::default(),
                 source_schema: "demo",
                 rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
                 render_context,
                 allow_404_empty: false,
                 link_header_require_results: false,

@@ -77,6 +77,10 @@ fn value_source_json(value: &ValueSourceSpec) -> serde_json::Value {
             "from": "literal",
             "value": value,
         }),
+        ValueSourceSpec::OneOf { values } => json!({
+            "from": "one_of",
+            "values": values.iter().map(value_source_json).collect::<Vec<_>>(),
+        }),
         ValueSourceSpec::Filter { key, default } => json!({
             "from": "filter",
             "key": key,
@@ -149,6 +153,10 @@ fn value_source_json(value: &ValueSourceSpec) -> serde_json::Value {
         }),
         ValueSourceSpec::Input { key } => json!({
             "from": "input",
+            "key": key,
+        }),
+        ValueSourceSpec::Bearer { key } => json!({
+            "from": "bearer",
             "key": key,
         }),
         ValueSourceSpec::Template { template } => json!({
