@@ -442,7 +442,6 @@ fn expose_binding_diagnostics(entry: &mut CapabilityExport, runtime_exposure: Ru
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DiscoverySearchFilter {
-    pub(crate) source_id: Option<String>,
     pub(crate) source_key: Option<String>,
     pub(crate) display_name: Option<String>,
     pub(crate) kind: Option<ExportKind>,
@@ -453,17 +452,13 @@ pub(crate) struct DiscoverySearchFilter {
 
 impl DiscoverySearchFilter {
     fn has_source_selector(&self) -> bool {
-        self.source_id.is_some() || self.source_key.is_some() || self.display_name.is_some()
+        self.source_key.is_some() || self.display_name.is_some()
     }
 
     fn matches_installed_source(&self, source: &InstalledSource) -> bool {
-        self.source_id
+        self.source_key
             .as_ref()
-            .is_none_or(|source_id| source_id == &source.source_id)
-            && self
-                .source_key
-                .as_ref()
-                .is_none_or(|source_key| source_key == &source.source_key)
+            .is_none_or(|source_key| source_key == &source.source_key)
             && self
                 .display_name
                 .as_ref()
@@ -472,7 +467,6 @@ impl DiscoverySearchFilter {
 
     fn into_search_filter(self) -> SearchFilter {
         SearchFilter {
-            source_id: self.source_id.map(SourceId),
             source_key: self.source_key,
             display_name: self.display_name,
             kind: self.kind,
@@ -1030,7 +1024,7 @@ mod tests {
 
         let error = error.to_string();
         assert!(
-            error.contains("requires 'source-exports-v11'"),
+            error.contains("requires 'source-exports-v12'"),
             "unexpected error: {error}"
         );
         assert!(
@@ -1041,7 +1035,7 @@ mod tests {
             error.contains("Restart any MCP/client session"),
             "expected restart guidance in error: {error}"
         );
-        assert_eq!(SOURCE_EXPORTS_GENERATOR_VERSION, "source-exports-v11");
+        assert_eq!(SOURCE_EXPORTS_GENERATOR_VERSION, "source-exports-v12");
     }
 
     #[test]

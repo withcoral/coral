@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::package::SourceKey;
 
 /// Generator version for source export artifacts produced by this binary.
-pub const SOURCE_EXPORTS_GENERATOR_VERSION: &str = "source-exports-v11";
+pub const SOURCE_EXPORTS_GENERATOR_VERSION: &str = "source-exports-v12";
 
 /// Build context for one installed source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,7 +169,51 @@ fn base_search_text(capability: &Capability, ctx: &BindingBuildContext) -> Vec<S
     .map(ToOwned::to_owned)
     .collect::<Vec<_>>();
     values.extend(capability.provider_origin.tags.iter().cloned());
+    // Index input-parameter names + descriptions and output field names. These
+    // are the richest natural-language surface a capability has (e.g. a Slack
+    // search tool's `content_types` description mentions "messages"), and they
+    // were previously dropped at export time — the single largest recall gap.
+    collect_schema_terms(&capability.input_schema.schema, 0, &mut values);
+    if let Ok(output) = serde_json::to_value(&capability.output_contract) {
+        collect_schema_terms(&output, 0, &mut values);
+    }
+    values.retain(|value| !value.trim().is_empty());
     values
+}
+
+/// Walks a JSON Schema (or serialized output contract) collecting human terms:
+/// property names plus `description`/`title` strings, recursing into nested
+/// objects and arrays. Bounded depth keeps pathological schemas cheap and the
+/// result deterministic. The downstream search index tokenizes these strings,
+/// so domain vocabulary enters the index from the provider's own docs rather
+/// than from hardcoded per-provider synonyms in the scorer.
+fn collect_schema_terms(value: &serde_json::Value, depth: usize, out: &mut Vec<String>) {
+    const MAX_DEPTH: usize = 8;
+    if depth >= MAX_DEPTH {
+        return;
+    }
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::Object(properties)) = map.get("properties") {
+                out.extend(properties.keys().cloned());
+            }
+            for (key, child) in map {
+                if matches!(key.as_str(), "description" | "title")
+                    && let serde_json::Value::String(text) = child
+                {
+                    out.push(text.clone());
+                } else {
+                    collect_schema_terms(child, depth + 1, out);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_schema_terms(item, depth + 1, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Snapshot of capability effect metadata in exports.

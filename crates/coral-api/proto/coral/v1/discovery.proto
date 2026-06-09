@@ -22,9 +22,7 @@ message SearchExportsRequest {
   Workspace workspace = 1;
   // Text, typed ref, capability id, generated tool path, TypeScript path, or SQL ref to search.
   string query = 2;
-  // Optional immutable source id filter.
-  string source_id = 3;
-  // Optional immutable source key filter.
+  // Optional source key filter (the human-facing source handle, e.g. "slack").
   string source_key = 4;
   // Optional mutable display-name filter.
   string display_name = 5;
@@ -48,8 +46,6 @@ message SearchExportItem {
   string capability_id = 2;
   // Usable typed refs, such as typescript:..., sql_table:..., sql_function:...
   repeated string refs = 3;
-  // Immutable installed source id.
-  string source_id = 4;
   // Mutable display name.
   string display_name = 5;
   // Immutable source key used for generated aliases.
@@ -78,6 +74,8 @@ message SearchExportItem {
   bool deprecated = 17;
   // Support status, rendered as snake_case text.
   string support_status = 18;
+  // Query terms that contributed to the rank.
+  repeated string matched_terms = 19;
 }
 
 // Generated-export search response.
@@ -200,8 +198,6 @@ message ExportDescription {
   string alias = 2;
   // Usable typed refs, such as typescript:..., sql_table:..., sql_function:...
   repeated string refs = 3;
-  // Immutable installed source id.
-  string source_id = 4;
   // Mutable display name.
   string display_name = 5;
   // Immutable source key used for generated aliases.

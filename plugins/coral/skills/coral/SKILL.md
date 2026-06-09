@@ -34,10 +34,12 @@ answering from assumptions or changing code when live external state matters.
 2. Use `search` to find relevant generated exports. Prefer typed refs in the
    result, such as `typescript:*`, `sql_table:*`, and `sql_function:*`.
 3. Use `describe` on the typed ref or capability id before invoking anything.
-   If an untyped alias is ambiguous, retry with a typed ref from the candidates.
-4. Execute work through Code Mode with `exec`, then read events with `wait`.
+   Read the returned JSON `input_schema`/`output_schema`; if an untyped alias is
+   ambiguous, retry with a typed ref from the candidates.
+4. Execute work through Code Mode with `exec`; call `wait` while
+   `events.has_more` is true, using `events.next_after_event_id`.
 5. For SQL bindings, call `coral.sql.query(...)` inside Code Mode.
-6. For callable TypeScript bindings, use generated methods from `full_path`,
+6. For callable TypeScript bindings, use generated methods from `call`,
    such as `tools.github.rest.search.issuesAndPullRequests(...)`, inside Code
    Mode.
 7. Summarize evidence, gaps, and next action. If editing code, use the Coral

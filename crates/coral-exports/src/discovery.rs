@@ -1,6 +1,6 @@
 //! Search and describe helpers over workspace exports.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use coral_capabilities::{CapabilityId, CapabilityKind, EffectKind, SourceId, SupportStatus};
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,6 @@ const SEARCH_DESCRIPTION_PREVIEW_CHARS: usize = 320;
 /// Search filter.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchFilter {
-    pub source_id: Option<SourceId>,
     pub source_key: Option<String>,
     pub display_name: Option<String>,
     pub kind: Option<ExportKind>,
@@ -41,6 +40,7 @@ pub struct SearchResult {
     pub diagnostic_count: usize,
     pub score: u32,
     pub matched_fields: Vec<String>,
+    pub matched_terms: Vec<String>,
     pub rank_reason: String,
 }
 
@@ -85,18 +85,32 @@ pub fn search_exports_page(
     offset: usize,
 ) -> SearchResultsPage {
     let query = query.trim();
-    let mut scored = exports
+    let candidates = exports
         .entries
         .iter()
         .filter(|entry| matches_filter(entry, filter))
-        .filter_map(|entry| {
-            if query.is_empty() {
-                filter_has_active_constraints(filter).then_some((empty_query_score(), entry))
-            } else {
-                score_entry(entry, query).map(|score| (score, entry))
-            }
-        })
         .collect::<Vec<_>>();
+    let mut scored = if query.is_empty() {
+        if filter_has_active_constraints(filter) {
+            candidates
+                .into_iter()
+                .map(|entry| (empty_query_score(), entry))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        }
+    } else {
+        // Inverse document frequency is computed over the candidate corpus so
+        // common tokens (e.g. `search`, `list`, the source key) self-attenuate
+        // without a hand-maintained stopword blacklist. It is a pure function of
+        // (query, candidates), so ranking stays deterministic.
+        let query_tokens = query_tokens(query);
+        let idf = compute_idf(&candidates, &query_tokens);
+        candidates
+            .into_iter()
+            .filter_map(|entry| score_entry(entry, query, &idf).map(|score| (score, entry)))
+            .collect::<Vec<_>>()
+    };
     scored.sort_by(|(left_score, left), (right_score, right)| {
         right_score
             .value
@@ -119,13 +133,13 @@ fn empty_query_score() -> SearchScore {
     SearchScore {
         value: 0,
         matched_fields: Vec::new(),
+        matched_terms: Vec::new(),
         rank_reason: "matched active filters".to_string(),
     }
 }
 
 fn filter_has_active_constraints(filter: &SearchFilter) -> bool {
-    filter.source_id.is_some()
-        || filter.source_key.is_some()
+    filter.source_key.is_some()
         || filter.display_name.is_some()
         || filter.kind.is_some()
         || !filter.allowed_kinds.is_empty()
@@ -174,13 +188,6 @@ pub fn describe_export(exports: &WorkspaceExports, raw_ref: &str) -> DescribeRes
 
 fn matches_filter(entry: &CapabilityExport, filter: &SearchFilter) -> bool {
     if filter
-        .source_id
-        .as_ref()
-        .is_some_and(|source_id| source_id != &entry.source_id)
-    {
-        return false;
-    }
-    if filter
         .source_key
         .as_ref()
         .is_some_and(|source_key| source_key != entry.source_key.as_str())
@@ -225,6 +232,7 @@ fn matches_filter(entry: &CapabilityExport, filter: &SearchFilter) -> bool {
 struct SearchScore {
     value: u32,
     matched_fields: Vec<String>,
+    matched_terms: Vec<String>,
     rank_reason: String,
 }
 
@@ -243,15 +251,11 @@ struct FieldScore {
     phrase_matched: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum RankIntent {
-    CountSearch,
-    ReviewSearch,
-    PullRequestSearch,
-    AuthenticatedUserLookup,
-}
-
-fn score_entry(entry: &CapabilityExport, query: &str) -> Option<SearchScore> {
+fn score_entry(
+    entry: &CapabilityExport,
+    query: &str,
+    idf: &BTreeMap<String, u32>,
+) -> Option<SearchScore> {
     if query.is_empty() {
         return None;
     }
@@ -263,39 +267,18 @@ fn score_entry(entry: &CapabilityExport, query: &str) -> Option<SearchScore> {
     if query_tokens.is_empty() {
         return None;
     }
-    let raw_query_tokens = raw_tokens(query);
-    let has_count_search_intent = raw_query_tokens
-        .iter()
-        .any(|token| is_count_search_intent(token));
-    let has_explicit_search_intent = raw_query_tokens
-        .iter()
-        .any(|token| is_explicit_search_intent(token));
-    let has_review_search_intent = has_review_search_intent(&raw_query_tokens, &query_tokens);
-    let has_pull_request_search_intent = query_tokens.contains("pull")
-        && query_tokens.contains("request")
-        && (has_count_search_intent || has_explicit_search_intent || has_review_search_intent);
-    let mut intents = BTreeSet::new();
-    if has_count_search_intent {
-        intents.insert(RankIntent::CountSearch);
-    }
-    if has_review_search_intent {
-        intents.insert(RankIntent::ReviewSearch);
-    }
-    if has_pull_request_search_intent {
-        intents.insert(RankIntent::PullRequestSearch);
-    }
-    if has_authenticated_user_lookup_intent(&raw_query_tokens, &query_tokens) {
-        intents.insert(RankIntent::AuthenticatedUserLookup);
-    }
-    let mut score = score_fields(entry, query, &query_tokens);
-    if !has_required_token_coverage(&score, &query_tokens) {
+    let mut score = score_fields(entry, query, &query_tokens, idf);
+    // Rank, never gate. A capability becomes a candidate as soon as a single
+    // query token or the query phrase overlaps one of its fields. The score
+    // only orders results from there; it can never drop a term-overlapping
+    // capability. (Earlier builds dropped capabilities here via an all-tokens
+    // coverage gate and via specialization penalties that could zero a genuine
+    // match — both removed deliberately, since a search miss is unrecoverable
+    // for the LLM consumer while an over-broad page is a cheap describe pass.)
+    if score.matched_tokens.is_empty() && !score.phrase_matched {
         return None;
     }
-
-    apply_rank_boosts(entry, &query_tokens, &intents, &mut score);
-    if score.value == 0 {
-        return None;
-    }
+    apply_rank_boosts(entry, &query_tokens, &mut score);
     Some(search_score(score, query_tokens.len()))
 }
 
@@ -335,11 +318,12 @@ fn score_fields(
     entry: &CapabilityExport,
     query: &str,
     query_tokens: &BTreeSet<String>,
+    idf: &BTreeMap<String, u32>,
 ) -> FieldScore {
     let query_phrase = normalized_phrase(query);
     let mut score = FieldScore::default();
     for field in search_fields(entry) {
-        score_field(&mut score, &field, &query_phrase, query_tokens);
+        score_field(&mut score, &field, &query_phrase, query_tokens, idf);
     }
     score
 }
@@ -349,6 +333,7 @@ fn score_field(
     field: &SearchField,
     query_phrase: &str,
     query_tokens: &BTreeSet<String>,
+    idf: &BTreeMap<String, u32>,
 ) {
     let field_phrase = normalized_phrase(&field.text);
     if field_phrase == query_phrase {
@@ -368,110 +353,107 @@ fn score_field(
         score.matched_tokens.extend(query_tokens.iter().cloned());
         score.phrase_matched = true;
     }
-    score_token_matches(score, field, query_tokens);
+    score_token_matches(score, field, query_tokens, idf);
 }
 
 fn score_token_matches(
     score: &mut FieldScore,
     field: &SearchField,
     query_tokens: &BTreeSet<String>,
+    idf: &BTreeMap<String, u32>,
 ) {
     let field_tokens = token_set(&field.text);
-    let mut field_matches = 0_u32;
+    let mut field_value = 0_u32;
+    let mut matched_any = false;
     for token in query_tokens {
         if field_tokens.contains(token) {
-            field_matches = field_matches.saturating_add(1);
+            matched_any = true;
             score.matched_tokens.insert(token.clone());
+            let weight = idf.get(token).copied().unwrap_or(1);
+            field_value =
+                field_value.saturating_add(field.weight.saturating_mul(10).saturating_mul(weight));
         }
     }
-    if field_matches > 0 {
-        score.value = score.value.saturating_add(
-            field_matches
-                .saturating_mul(field.weight)
-                .saturating_mul(10),
-        );
+    if matched_any {
+        score.value = score.value.saturating_add(field_value);
         score.matched_fields.insert(field.name.to_string());
     }
 }
 
-fn has_required_token_coverage(score: &FieldScore, query_tokens: &BTreeSet<String>) -> bool {
-    if score.matched_tokens.is_empty() {
-        return false;
+/// Bucketed inverse document frequency for the query tokens, computed over the
+/// candidate corpus. Buckets are small integers so ranking stays bit-exact and
+/// deterministic; common tokens (e.g. `search`, `list`, the source key)
+/// contribute less than rare ones without a hand-maintained stopword blacklist.
+fn compute_idf(
+    candidates: &[&CapabilityExport],
+    query_tokens: &BTreeSet<String>,
+) -> BTreeMap<String, u32> {
+    let total = candidates.len();
+    let mut document_frequency = query_tokens
+        .iter()
+        .map(|token| (token.clone(), 0_usize))
+        .collect::<BTreeMap<String, usize>>();
+    for entry in candidates {
+        let mut entry_tokens = BTreeSet::new();
+        for field in search_fields(entry) {
+            entry_tokens.extend(token_set(&field.text));
+        }
+        for token in query_tokens {
+            if entry_tokens.contains(token)
+                && let Some(count) = document_frequency.get_mut(token)
+            {
+                *count += 1;
+            }
+        }
     }
-    if score.phrase_matched {
-        return true;
+    document_frequency
+        .into_iter()
+        .map(|(token, frequency)| (token, idf_bucket(frequency, total)))
+        .collect()
+}
+
+fn idf_bucket(document_frequency: usize, total: usize) -> u32 {
+    if total == 0 || document_frequency == 0 {
+        return 3;
     }
-    if query_tokens.len() <= 2 {
-        return score.matched_tokens.len() == query_tokens.len();
+    let percent = document_frequency.saturating_mul(100) / total;
+    if percent <= 10 {
+        3
+    } else if percent <= 50 {
+        2
+    } else {
+        1
     }
-    score.matched_tokens.len().saturating_mul(10) >= query_tokens.len().saturating_mul(3)
 }
 
 fn apply_rank_boosts(
     entry: &CapabilityExport,
     query_tokens: &BTreeSet<String>,
-    intents: &BTreeSet<RankIntent>,
     score: &mut FieldScore,
 ) {
+    // Effect is a soft, transparent signal — a small tie-breaker the LLM can
+    // also see and filter on — never a cliff that can bury a content match.
     if entry.effect_profile.effects.contains(&EffectKind::Read) {
         score.value = score.value.saturating_add(100);
-    }
-    if entry
-        .effect_profile
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, EffectKind::Write | EffectKind::Delete))
-        && !query_tokens.iter().any(|token| is_write_intent(token))
-    {
-        score.value = score.value.saturating_sub(250);
     }
     if entry.effect_profile.capability_kind == CapabilityKind::Query {
         score.value = score.value.saturating_add(50);
     }
-    if intents.contains(&RankIntent::CountSearch) && entry_mentions_search(entry) {
-        score.value = score.value.saturating_add(1_000);
-        score.matched_fields.insert("search_intent".to_string());
+    let mutates = entry
+        .effect_profile
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, EffectKind::Write | EffectKind::Delete));
+    if mutates && !query_tokens.iter().any(|token| is_write_intent(token)) {
+        score.value = score.value.saturating_sub(25);
     }
-    if intents.contains(&RankIntent::ReviewSearch) && entry_mentions_search(entry) {
-        score.value = score.value.saturating_add(12_000);
-        score
-            .matched_fields
-            .insert("review_search_intent".to_string());
-    }
-    if intents.contains(&RankIntent::PullRequestSearch) && entry_mentions_pull_request_search(entry)
-    {
-        score.value = score.value.saturating_add(20_000);
-        score
-            .matched_fields
-            .insert("pull_request_search_intent".to_string());
-    }
-    if intents.contains(&RankIntent::AuthenticatedUserLookup)
-        && entry_mentions_authenticated_user_lookup(entry)
-    {
-        score.value = score.value.saturating_add(16_000);
-        score
-            .matched_fields
-            .insert("authenticated_user_lookup_intent".to_string());
-    }
-    if !intents.contains(&RankIntent::ReviewSearch)
-        && !intents.contains(&RankIntent::PullRequestSearch)
-        && query_tokens.contains("pull")
-        && query_tokens.contains("request")
-        && query_tokens.contains("review")
-        && entry_mentions_direct_review_listing(entry)
-    {
-        score.value = score.value.saturating_add(8_000);
-        score
-            .matched_fields
-            .insert("direct_review_intent".to_string());
-    }
-    apply_unrequested_specialization_penalty(entry, query_tokens, score);
 }
 
 fn search_score(score: FieldScore, query_token_count: usize) -> SearchScore {
     let matched_token_count = score.matched_tokens.len();
     let mut matched_fields = score.matched_fields.into_iter().collect::<Vec<_>>();
     matched_fields.sort();
+    let matched_terms = score.matched_tokens.into_iter().collect::<Vec<_>>();
     SearchScore {
         value: score.value,
         rank_reason: format!(
@@ -481,6 +463,7 @@ fn search_score(score: FieldScore, query_token_count: usize) -> SearchScore {
             matched_fields.join(", ")
         ),
         matched_fields,
+        matched_terms,
     }
 }
 
@@ -488,43 +471,50 @@ fn exact_score(value: u32, field: &str, reason: &str) -> SearchScore {
     SearchScore {
         value,
         matched_fields: vec![field.to_string()],
+        matched_terms: Vec::new(),
         rank_reason: reason.to_string(),
     }
 }
 
 fn search_fields(entry: &CapabilityExport) -> Vec<SearchField> {
+    // Human-readable surfaces (title, parameter text via `search_text`,
+    // description) outweigh machine identifiers. Weak models paraphrase the
+    // title, not the camelCase identifier path, so identifiers are demoted and
+    // indexed once rather than three times.
     let mut fields = vec![
-        SearchField {
-            name: "source_key",
-            text: entry.source_key.as_str().to_string(),
-            weight: 8,
-        },
-        SearchField {
-            name: "display_name",
-            text: entry.display_name.clone(),
-            weight: 8,
-        },
-        SearchField {
-            name: "interface_id",
-            text: entry.interface_id.clone(),
-            weight: 8,
-        },
-        SearchField {
-            name: "operation_id",
-            text: entry.operation_id.clone(),
-            weight: 10,
-        },
         SearchField {
             name: "title",
             text: entry.title.clone(),
             weight: 10,
         },
         SearchField {
+            name: "operation_id",
+            text: entry.operation_id.clone(),
+            weight: 7,
+        },
+        SearchField {
+            name: "display_name",
+            text: entry.display_name.clone(),
+            weight: 6,
+        },
+        SearchField {
+            name: "interface_id",
+            text: entry.interface_id.clone(),
+            weight: 5,
+        },
+        SearchField {
             name: "description",
             text: entry.description.clone(),
             weight: 5,
         },
+        SearchField {
+            name: "source_key",
+            text: entry.source_key.as_str().to_string(),
+            weight: 4,
+        },
     ];
+    // `search_text` carries the enriched document, including input-parameter
+    // names and descriptions and output field names (see `base_search_text`).
     for text in &entry.search_text {
         fields.push(SearchField {
             name: "search_text",
@@ -537,35 +527,39 @@ fn search_fields(entry: &CapabilityExport) -> Vec<SearchField> {
             Binding::Typescript(binding) => {
                 if !binding.path.is_empty() {
                     fields.push(SearchField {
-                        name: "typescript_full_path",
-                        text: format!("tools.{}", binding.path.join(".")),
-                        weight: 12,
-                    });
-                }
-                fields.push(SearchField {
-                    name: "typescript_path",
-                    text: binding.ref_.value.clone(),
-                    weight: 12,
-                });
-                for segment in &binding.path {
-                    fields.push(SearchField {
                         name: "typescript_path",
-                        text: segment.clone(),
-                        weight: 12,
+                        text: format!("tools.{}", binding.path.join(".")),
+                        weight: 3,
                     });
                 }
             }
             Binding::Sql(binding) => {
                 fields.push(SearchField {
                     name: "sql_reference",
-                    text: binding.ref_.value.clone(),
-                    weight: 12,
-                });
-                fields.push(SearchField {
-                    name: "sql_reference",
                     text: binding.sql_reference.clone(),
-                    weight: 12,
+                    weight: 3,
                 });
+                for column in &binding.projection.columns {
+                    fields.push(SearchField {
+                        name: "sql_column",
+                        text: column.name.clone(),
+                        weight: 3,
+                    });
+                    if !column.description.trim().is_empty() {
+                        fields.push(SearchField {
+                            name: "sql_column",
+                            text: column.description.clone(),
+                            weight: 2,
+                        });
+                    }
+                }
+                for input in &binding.projection.inputs {
+                    fields.push(SearchField {
+                        name: "sql_input",
+                        text: input.name.clone(),
+                        weight: 3,
+                    });
+                }
             }
         }
     }
@@ -576,15 +570,12 @@ fn query_tokens(query: &str) -> BTreeSet<String> {
     raw_tokens(query)
         .into_iter()
         .filter(|token| !is_query_stopword(token))
-        .flat_map(|token| query_token_expansions(&token))
+        .map(|token| stem(&token))
         .collect()
 }
 
 fn token_set(text: &str) -> BTreeSet<String> {
-    raw_tokens(text)
-        .into_iter()
-        .flat_map(|token| token_forms(&token))
-        .collect()
+    raw_tokens(text).into_iter().map(|token| stem(&token)).collect()
 }
 
 fn raw_tokens(text: &str) -> Vec<String> {
@@ -616,174 +607,51 @@ fn normalized_phrase(text: &str) -> String {
     raw_tokens(text).join(" ")
 }
 
-fn query_token_expansions(token: &str) -> Vec<String> {
-    match token {
-        "pr" | "prs" => vec!["pull".to_string(), "request".to_string()],
-        "repo" => vec!["repo".to_string(), "repository".to_string()],
-        _ => token_forms(token),
+/// Folds a token to a canonical stem. Applied identically at index time and
+/// query time so that `messages` and `message` collapse to the same term on
+/// both sides — earlier builds expanded a token to multiple forms and then
+/// required every form to match, which silently dropped pluralized queries.
+/// Provider-specific vocabulary (e.g. `pr` → `pull request`) is intentionally
+/// absent: domain synonyms live in the indexed document, never in the scorer.
+fn stem(token: &str) -> String {
+    if token.len() > 3
+        && let Some(prefix) = token.strip_suffix('s')
+    {
+        return prefix.to_string();
     }
+    token.to_string()
 }
 
-fn token_forms(token: &str) -> Vec<String> {
-    let mut forms = vec![token.to_string()];
-    if token.len() > 3 && token.ends_with('s') {
-        forms.push(token.trim_end_matches('s').to_string());
-    }
-    if matches!(token, "reviewed" | "reviewing" | "reviews") {
-        forms.push("review".to_string());
-    }
-    if token == "pulls" {
-        forms.push("pull".to_string());
-    }
-    forms
-}
-
+/// True function words only. Intent- and domain-bearing words (`find`, `count`,
+/// `open`, `review`, `coral`, …) are no longer stripped: inverse document
+/// frequency down-weights common tokens, and ranking never gates on coverage,
+/// so a non-matching token is simply inert rather than fatal.
 fn is_query_stopword(token: &str) -> bool {
     matches!(
         token,
-        "a" | "an"
-            | "and"
-            | "coral"
-            | "count"
-            | "did"
-            | "find"
-            | "for"
-            | "get"
-            | "how"
-            | "i"
-            | "in"
-            | "last"
-            | "many"
-            | "my"
-            | "of"
-            | "open"
-            | "or"
-            | "show"
-            | "the"
-            | "to"
-            | "use"
-            | "using"
-            | "when"
+        "a" | "an" | "and" | "for" | "i" | "in" | "of" | "or" | "the" | "to"
     )
 }
 
 fn is_write_intent(token: &str) -> bool {
     matches!(
         token,
-        "approve" | "create" | "delete" | "mutate" | "mutation" | "remove" | "update" | "write"
+        "add"
+            | "approve"
+            | "create"
+            | "delete"
+            | "edit"
+            | "mutate"
+            | "mutation"
+            | "post"
+            | "remove"
+            | "schedule"
+            | "send"
+            | "set"
+            | "update"
+            | "upload"
+            | "write"
     )
-}
-
-fn is_count_search_intent(token: &str) -> bool {
-    matches!(
-        token,
-        "count" | "find" | "how" | "many" | "number" | "total"
-    )
-}
-
-fn is_explicit_search_intent(token: &str) -> bool {
-    matches!(token, "search" | "searches" | "searching")
-}
-
-fn has_review_search_intent(raw_tokens: &[String], query_tokens: &BTreeSet<String>) -> bool {
-    let mentions_plural_prs = raw_tokens
-        .iter()
-        .any(|token| matches!(token.as_str(), "pr" | "prs" | "requests"));
-    mentions_plural_prs
-        && query_tokens.contains("pull")
-        && query_tokens.contains("request")
-        && query_tokens.contains("review")
-}
-
-fn has_authenticated_user_lookup_intent(
-    raw_tokens: &[String],
-    query_tokens: &BTreeSet<String>,
-) -> bool {
-    let lookup_word = raw_tokens.iter().any(|token| {
-        matches!(
-            token.as_str(),
-            "username" | "login" | "me" | "my" | "current"
-        )
-    });
-    lookup_word && query_tokens.contains("authenticated") && query_tokens.contains("user")
-}
-
-fn entry_mentions_search(entry: &CapabilityExport) -> bool {
-    [
-        entry.operation_id.as_str(),
-        entry.title.as_str(),
-        entry.description.as_str(),
-    ]
-    .into_iter()
-    .chain(entry.search_text.iter().map(String::as_str))
-    .flat_map(raw_tokens)
-    .any(|token| token == "search")
-}
-
-fn entry_mentions_direct_review_listing(entry: &CapabilityExport) -> bool {
-    let tokens = entry_ranking_tokens(entry);
-    tokens.contains("pull")
-        && tokens.contains("request")
-        && tokens.contains("review")
-        && tokens.contains("list")
-        && !tokens.contains("comment")
-        && !tokens.contains("reaction")
-        && !tokens.contains("protection")
-}
-
-fn entry_mentions_pull_request_search(entry: &CapabilityExport) -> bool {
-    let tokens = entry_identity_tokens(entry);
-    tokens.contains("search")
-        && tokens.contains("issue")
-        && tokens.contains("pull")
-        && tokens.contains("request")
-}
-
-fn entry_mentions_authenticated_user_lookup(entry: &CapabilityExport) -> bool {
-    normalized_phrase(&entry.title) == "get the authenticated user"
-        || raw_tokens(&entry.operation_id)
-            == [
-                "users".to_string(),
-                "get".to_string(),
-                "authenticated".to_string(),
-            ]
-}
-
-fn entry_identity_tokens(entry: &CapabilityExport) -> BTreeSet<String> {
-    [entry.operation_id.as_str(), entry.title.as_str()]
-        .into_iter()
-        .flat_map(token_set)
-        .collect()
-}
-
-fn apply_unrequested_specialization_penalty(
-    entry: &CapabilityExport,
-    query_tokens: &BTreeSet<String>,
-    score: &mut FieldScore,
-) {
-    let entry_tokens = entry_ranking_tokens(entry);
-    for (token, penalty) in [
-        ("code", 15_000),
-        ("comment", 20_000),
-        ("protection", 25_000),
-        ("reaction", 20_000),
-        ("workflow", 15_000),
-    ] {
-        if entry_tokens.contains(token) && !query_tokens.contains(token) {
-            score.value = score.value.saturating_sub(penalty);
-        }
-    }
-}
-
-fn entry_ranking_tokens(entry: &CapabilityExport) -> BTreeSet<String> {
-    [
-        entry.operation_id.as_str(),
-        entry.title.as_str(),
-        entry.description.as_str(),
-    ]
-    .into_iter()
-    .flat_map(token_set)
-    .collect()
 }
 
 fn search_result(entry: &CapabilityExport, score: SearchScore) -> SearchResult {
@@ -817,6 +685,7 @@ fn search_result(entry: &CapabilityExport, score: SearchScore) -> SearchResult {
         diagnostic_count: entry.diagnostics.len(),
         score: score.value,
         matched_fields: score.matched_fields,
+        matched_terms: score.matched_terms,
         rank_reason: score.rank_reason,
     }
 }
@@ -846,8 +715,8 @@ fn search_description_preview(description: &str) -> String {
 mod tests {
     use coral_capabilities::{
         Capability, EffectKind, EffectProfile, FileFormatDescriptor, FileScanBinding,
-        ProviderOrigin, ProviderOriginKind, SourceCapabilitySet, SourceId, SupportStatus,
-        UpstreamBinding,
+        InvocationSchema, ProviderOrigin, ProviderOriginKind, SourceCapabilitySet, SourceId,
+        SupportStatus, UpstreamBinding,
     };
 
     use crate::contributors::TypescriptBindingContributor;
@@ -1167,6 +1036,10 @@ mod tests {
             hits.iter().all(|hit| hit.score > 0),
             "scores should be visible and positive: {hits:#?}"
         );
+        assert!(
+            hits.iter().any(|hit| !hit.matched_terms.is_empty()),
+            "matched terms should explain why search results matched: {hits:#?}"
+        );
     }
 
     #[test]
@@ -1185,183 +1058,152 @@ mod tests {
         assert!(first.matched_fields.contains(&"title".to_string()));
     }
 
-    #[test]
-    fn review_count_query_prefers_search_over_review_comment_helpers() {
-        let workspace = github_workspace();
-        let hits = search_exports(
-            &workspace,
-            "use coral to find how many PRs to review in withcoral/coral",
-            &SearchFilter::default(),
-            10,
-        );
+    fn slack_workspace() -> crate::WorkspaceExports {
+        let source_id = SourceId("src_slack".to_string());
+        let ctx = BindingBuildContext {
+            source_id: source_id.clone(),
+            display_name: "Slack".to_string(),
+            source_key: SourceKey("slack".to_string()),
+        };
+        let set = SourceCapabilitySet::new(source_id.clone(), slack_capabilities(&source_id));
+        let exports = build_source_exports(&set, &ctx, &[&TypescriptBindingContributor::new()])
+            .expect("source exports");
+        compose_workspace_exports("default", &[exports]).expect("workspace exports")
+    }
 
-        let first = hits.first().expect("first hit");
-        assert!(
-            first
-                .capability_id
-                .as_str()
-                .contains("operation/searchIssuesAndPullRequests"),
-            "expected GitHub search as first hit: {hits:#?}"
+    fn slack_capabilities(source_id: &SourceId) -> Vec<Capability> {
+        // The search tool's description mentions "Reaction filters". Under the
+        // old scorer the GitHub-flavored `reaction` penalty (-20_000) floored
+        // its score to zero and `score_entry` returned `None`, dropping it from
+        // every query that lacked the word "reaction" — including "messages" and
+        // "search". This corpus is the regression guard for that bug.
+        let mut search = github_rest_capability(
+            source_id,
+            "slack_search_public_and_private",
+            "search",
+            "Search messages and files",
+            "Searches for messages, files in ALL Slack channels, including public and private channels and DMs. Modifiers include has::emoji: Reaction filters and is:thread.",
+            EffectProfile::read(),
         );
-        assert!(first.matched_fields.contains(&"search_intent".to_string()));
+        search.input_schema = InvocationSchema::new(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query using Slack search syntax."
+                },
+                "content_types": {
+                    "type": "string",
+                    "description": "A comma-separated list of messages, files."
+                }
+            }
+        }));
+        let read = github_rest_capability(
+            source_id,
+            "slack_read_channel",
+            "read",
+            "Read channel messages",
+            "Reads messages from a Slack channel in reverse chronological order.",
+            EffectProfile::read(),
+        );
+        let schedule = github_rest_capability(
+            source_id,
+            "slack_schedule_message",
+            "schedule",
+            "Schedule message",
+            "Schedules a message for future delivery to a Slack channel.",
+            EffectProfile::write(),
+        );
+        vec![search, read, schedule]
     }
 
     #[test]
-    fn pull_request_review_search_prefers_direct_review_listing() {
+    fn term_overlap_capability_is_never_dropped() {
+        // P1: a capability whose title contains a query term is always returned
+        // with a positive score — never gated away before ranking.
+        let workspace = github_workspace();
+        let hits = search_exports(&workspace, "authenticated", &SearchFilter::default(), 20);
+        assert!(
+            hits.iter().any(|hit| hit
+                .capability_id
+                .as_str()
+                .contains("operation/usersGetAuthenticated")),
+            "title-term match must never be dropped: {hits:#?}"
+        );
+        assert!(hits.iter().all(|hit| hit.score > 0));
+    }
+
+    #[test]
+    fn off_topic_description_token_never_excludes_a_match() {
+        // P5 / regression for the reaction-penalty bug: the Slack message-search
+        // tool must be returned for "messages", "search", and "search messages".
+        let workspace = slack_workspace();
+        for query in ["messages", "search", "search messages"] {
+            let hits = search_exports(&workspace, query, &SearchFilter::default(), 20);
+            let hit = hits
+                .iter()
+                .find(|hit| {
+                    hit.capability_id
+                        .as_str()
+                        .contains("operation/slack_search_public_and_private")
+                })
+                .unwrap_or_else(|| {
+                    panic!("slack search tool must be returned for {query:?}: {hits:#?}")
+                });
+            assert!(hit.score > 0, "score must be positive for {query:?}");
+        }
+    }
+
+    #[test]
+    fn parameter_text_is_indexed_for_recall() {
+        // Enrichment: "comma-separated" appears only in the `content_types`
+        // parameter description, not in the title or top-line description.
+        let workspace = slack_workspace();
+        let hits = search_exports(&workspace, "comma separated", &SearchFilter::default(), 20);
+        assert!(
+            hits.iter().any(|hit| hit
+                .capability_id
+                .as_str()
+                .contains("operation/slack_search_public_and_private")),
+            "input-parameter descriptions must be searchable: {hits:#?}"
+        );
+    }
+
+    #[test]
+    fn pluralized_query_matches_singular_index_term() {
+        // Symmetric stemming: "messages" and "message" resolve to the same tool.
+        let workspace = slack_workspace();
+        let target = "operation/slack_search_public_and_private";
+        for query in ["messages", "message"] {
+            let hits = search_exports(&workspace, query, &SearchFilter::default(), 20);
+            assert!(
+                hits.iter().any(|hit| hit.capability_id.as_str().contains(target)),
+                "query {query:?} should match the message-search tool: {hits:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_search_hit_resolves_via_describe() {
+        // P4 round-trip: each returned ref must resolve to Found via describe.
         let workspace = github_workspace();
         let hits = search_exports(
             &workspace,
             "pull request review",
             &SearchFilter::default(),
-            10,
+            20,
         );
-
-        let first = hits.first().expect("first hit");
-        assert!(
-            first
-                .capability_id
-                .as_str()
-                .contains("operation/pullsListReviews"),
-            "expected direct review listing as first hit: {hits:#?}"
-        );
-        assert!(
-            hits.iter()
-                .take(3)
-                .all(|hit| !hit.capability_id.as_str().contains("ReviewComment")),
-            "review-comment helpers should not dominate broad review search: {hits:#?}"
-        );
-        assert!(
-            first
-                .matched_fields
-                .contains(&"direct_review_intent".to_string())
-        );
-    }
-
-    #[test]
-    fn plural_pr_review_search_prefers_search_endpoint() {
-        let workspace = github_workspace();
-        let hits = search_exports(
-            &workspace,
-            "github PR review pull requests",
-            &SearchFilter::default(),
-            10,
-        );
-
-        let first = hits.first().expect("first hit");
-        assert!(
-            first
-                .capability_id
-                .as_str()
-                .contains("operation/searchIssuesAndPullRequests"),
-            "expected GitHub search as first hit: {hits:#?}"
-        );
-        assert!(
-            first
-                .matched_fields
-                .contains(&"review_search_intent".to_string())
-        );
-        assert!(
-            first
-                .matched_fields
-                .contains(&"pull_request_search_intent".to_string())
-        );
-    }
-
-    #[test]
-    fn explicit_pr_review_search_prefers_issue_pr_search_over_code_search() {
-        let workspace = github_workspace();
-        let hits = search_exports(
-            &workspace,
-            "github pull request review search",
-            &SearchFilter::default(),
-            10,
-        );
-
-        let first = hits.first().expect("first hit");
-        assert!(
-            first
-                .capability_id
-                .as_str()
-                .contains("operation/searchIssuesAndPullRequests"),
-            "expected GitHub issue/PR search as first hit: {hits:#?}"
-        );
-        assert!(
-            !hits
-                .iter()
-                .take(3)
-                .any(|hit| hit.capability_id.as_str().contains("operation/searchCode")),
-            "code search should not dominate PR review search: {hits:#?}"
-        );
-    }
-
-    #[test]
-    fn review_required_pull_requests_prefers_issue_pr_search_over_code_search() {
-        let workspace = github_workspace();
-        let hits = search_exports(
-            &workspace,
-            "review required pull requests",
-            &SearchFilter::default(),
-            10,
-        );
-
-        let first = hits.first().expect("first hit");
-        assert!(
-            first
-                .capability_id
-                .as_str()
-                .contains("operation/searchIssuesAndPullRequests"),
-            "expected GitHub issue/PR search as first hit: {hits:#?}"
-        );
-    }
-
-    #[test]
-    fn last_reviewed_pr_query_prefers_issue_pr_search() {
-        let workspace = github_workspace();
-        let hits = search_exports(
-            &workspace,
-            "when did I last review a PR",
-            &SearchFilter::default(),
-            10,
-        );
-
-        let first = hits.first().expect("first hit");
-        assert!(
-            first
-                .capability_id
-                .as_str()
-                .contains("operation/searchIssuesAndPullRequests"),
-            "expected GitHub issue/PR search as first hit: {hits:#?}"
-        );
-        assert!(
-            first
-                .matched_fields
-                .contains(&"pull_request_search_intent".to_string())
-        );
-    }
-
-    #[test]
-    fn authenticated_user_username_query_prefers_get_authenticated_user() {
-        let workspace = github_workspace();
-        let hits = search_exports(
-            &workspace,
-            "authenticated user username github",
-            &SearchFilter::default(),
-            10,
-        );
-
-        let first = hits.first().expect("first hit");
-        assert!(
-            first
-                .capability_id
-                .as_str()
-                .contains("operation/usersGetAuthenticated"),
-            "expected get authenticated user first: {hits:#?}"
-        );
-        assert!(
-            first
-                .matched_fields
-                .contains(&"authenticated_user_lookup_intent".to_string())
-        );
+        assert!(!hits.is_empty());
+        for hit in &hits {
+            let reference = hit.refs.first().expect("hit exposes a ref");
+            assert!(
+                matches!(
+                    describe_export(&workspace, reference),
+                    DescribeResolution::Found { .. }
+                ),
+                "search hit {reference} must resolve via describe"
+            );
+        }
     }
 
     #[test]

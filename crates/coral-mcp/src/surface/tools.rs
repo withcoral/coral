@@ -12,7 +12,6 @@ use super::{Pagination, parse_pagination_with_limits};
 
 pub(crate) struct SearchArguments {
     pub(crate) query: String,
-    pub(crate) source_id: String,
     pub(crate) source_key: String,
     pub(crate) display_name: String,
     pub(crate) kind: String,
@@ -67,13 +66,16 @@ pub(crate) fn search_tool(exposure: McpRuntimeExposure) -> Tool {
         description,
         json_object_schema(&json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "query": {
                     "type": "string",
                     "description": query_description
                 },
-                "source_id": { "type": "string" },
-                "source_key": { "type": "string" },
+                "source_key": {
+                    "type": "string",
+                    "description": "Restrict results to one source by its handle (e.g. \"slack\", \"github\")."
+                },
                 "display_name": { "type": "string" },
                 "kind": {
                     "type": "string",
@@ -137,7 +139,7 @@ pub(crate) fn describe_tool(exposure: McpRuntimeExposure) -> Tool {
                     "type": "string",
                     "enum": ["compact", "detailed"],
                     "default": "compact",
-                    "description": "compact returns invocation shape and refs; detailed also includes full provider schemas."
+                    "description": "compact returns refs plus JSON input/output schemas; detailed returns full generated provider artifacts."
                 }
             }
         })),
@@ -166,7 +168,7 @@ fn search_kind_enum(exposure: McpRuntimeExposure) -> Value {
 pub(crate) fn exec_tool() -> Tool {
     Tool::new(
         "exec",
-        "Run Code Mode source, waiting briefly for fast completion before returning a compact status/result summary.",
+        "Run Code Mode source, waiting briefly for fast completion before returning { run, result, events }.",
         json_object_schema(&json!({
             "type": "object",
             "required": ["source"],
@@ -190,7 +192,7 @@ pub(crate) fn exec_tool() -> Tool {
 pub(crate) fn wait_tool() -> Tool {
     Tool::new(
         "wait",
-        "Wait for a Code Mode run by run id, returning new compact output/result state or terminating the run.",
+        "Wait for a Code Mode run by run id, returning the same { run, result, events } envelope or terminating the run.",
         json_object_schema(&json!({
             "type": "object",
             "required": ["run_id"],
@@ -204,7 +206,7 @@ pub(crate) fn wait_tool() -> Tool {
                 "terminate": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Terminate the run instead of waiting for more output."
+                    "description": "Terminate the run instead of waiting for more events."
                 }
             }
         })),
@@ -255,7 +257,6 @@ pub(crate) fn search_arguments(
 ) -> Result<SearchArguments, ErrorData> {
     Ok(SearchArguments {
         query: optional_string_argument(arguments, "query")?.unwrap_or_default(),
-        source_id: optional_string_argument(arguments, "source_id")?.unwrap_or_default(),
         source_key: optional_string_argument(arguments, "source_key")?.unwrap_or_default(),
         display_name: optional_string_argument(arguments, "display_name")?.unwrap_or_default(),
         kind: optional_enum_argument(
@@ -328,10 +329,10 @@ pub(crate) fn required_string_argument(
     Ok(value.to_string())
 }
 
-pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
+pub(crate) fn build_tool_result(value: Value) -> CallToolResult {
     let mut result = CallToolResult::structured(value);
     result.content.clear();
-    Ok(result)
+    result
 }
 
 fn optional_string_argument(
@@ -486,8 +487,7 @@ mod tests {
     #[test]
     fn build_tool_result_returns_structured_json_without_text_preview() {
         let raw_markdown = "Format dates as ![](slack_date:2026-06-06)";
-        let result =
-            build_tool_result(json!({ "description": raw_markdown })).expect("tool result");
+        let result = build_tool_result(json!({ "description": raw_markdown }));
 
         assert_eq!(
             result

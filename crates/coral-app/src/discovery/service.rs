@@ -122,7 +122,6 @@ fn search_filter_from_proto(
     request: &SearchExportsRequest,
 ) -> Result<DiscoverySearchFilter, Status> {
     Ok(DiscoverySearchFilter {
-        source_id: optional_trimmed(&request.source_id),
         source_key: optional_trimmed(&request.source_key),
         display_name: optional_trimmed(&request.display_name),
         kind: export_kind_from_proto(request.kind()),
@@ -142,7 +141,6 @@ fn search_item_to_proto(item: coral_exports::SearchResult) -> SearchExportItem {
         full_path: item.full_path.unwrap_or_default(),
         capability_id: item.capability_id.to_string(),
         refs: item.refs,
-        source_id: item.source_id.to_string(),
         display_name: item.display_name,
         source_key: item.source_key,
         capability_kind: capability_kind_to_text(item.capability_kind).to_string(),
@@ -162,6 +160,7 @@ fn search_item_to_proto(item: coral_exports::SearchResult) -> SearchExportItem {
         diagnostic_count: u32::try_from(item.diagnostic_count).unwrap_or(u32::MAX),
         score: item.score,
         matched_fields: item.matched_fields,
+        matched_terms: item.matched_terms,
         rank_reason: item.rank_reason,
         deprecated: item.deprecated,
         support_status: support_status_to_text(item.support_status).to_string(),
@@ -214,7 +213,6 @@ fn description_to_proto(
         capability_id: entry.capability_id.to_string(),
         alias,
         refs,
-        source_id: entry.source_id.to_string(),
         display_name: entry.display_name,
         source_key: entry.source_key.as_str().to_string(),
         interface_id: entry.interface_id,
@@ -506,6 +504,7 @@ mod tests {
             diagnostic_count: 0,
             score: 1,
             matched_fields: Vec::new(),
+            matched_terms: Vec::new(),
             rank_reason: "test".to_string(),
         });
         assert!(search.deprecated);

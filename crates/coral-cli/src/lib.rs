@@ -785,6 +785,16 @@ async fn run_invoke(app: &AppClient, args: InvokeArgs) -> Result<(), CliError> {
     }
 }
 
+/// Extracts the immutable source id from a capability id of the form
+/// `source/<source_id>/interface/...`. Returns an empty string when the id does
+/// not follow that shape.
+fn source_id_from_capability_id(capability_id: &str) -> &str {
+    capability_id
+        .strip_prefix("source/")
+        .and_then(|rest| rest.split_once("/interface/"))
+        .map_or("", |(source_id, _)| source_id)
+}
+
 fn invoke_response_to_json(
     response: InvokeCapabilityResponse,
     entry: &ExportDescription,
@@ -811,7 +821,7 @@ fn invoke_response_to_json(
         "partial": partial,
         "errors": errors,
         "source_status": [{
-            "source_id": entry.source_id.as_str(),
+            "source_id": source_id_from_capability_id(entry.capability_id.as_str()),
             "capability_id": entry.capability_id.as_str(),
             "binding_ref": binding_ref,
             "full_path": full_path,
@@ -1243,8 +1253,7 @@ mod tests {
     #[test]
     fn invoke_response_wrapper_preserves_partial_provider_metadata() {
         let entry = ExportDescription {
-            source_id: "src_github".to_string(),
-            capability_id: "src_github/rest/search_issues".to_string(),
+            capability_id: "source/src_github/interface/rest/operation/search_issues".to_string(),
             ..ExportDescription::default()
         };
         let response = InvokeCapabilityResponse {
@@ -1290,7 +1299,7 @@ mod tests {
             wrapped
                 .pointer("/source_status/0/capability_id")
                 .and_then(Value::as_str),
-            Some("src_github/rest/search_issues")
+            Some("source/src_github/interface/rest/operation/search_issues")
         );
         assert_eq!(
             wrapped

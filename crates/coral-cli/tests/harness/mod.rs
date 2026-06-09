@@ -200,6 +200,7 @@ fn mock_search_exports_response(request: &SearchExportsRequest) -> SearchExports
             diagnostic_count: 0,
             score: 100,
             matched_fields: vec!["title".to_string()],
+            matched_terms: vec!["issues".to_string()],
             rank_reason: "mock rank".to_string(),
             deprecated: false,
             support_status: "generated".to_string(),
