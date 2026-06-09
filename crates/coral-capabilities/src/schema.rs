@@ -217,24 +217,45 @@ fn strip_unresolved_schema_refs(value: Value) -> Value {
     strip_unresolved_schema_refs_inner(value, &root)
 }
 
-fn hoist_nested_schema_defs(mut value: Value) -> Value {
+/// Hoists every nested `$defs` block up to the schema root.
+///
+/// Nested definitions are merged into the root `$defs` object using
+/// vacant-only insertion (existing root entries win on collision). When the
+/// root already carries a non-object `$defs`, it is left untouched.
+#[must_use]
+pub fn hoist_nested_schema_defs(mut value: Value) -> Value {
     let mut defs = Map::new();
     collect_nested_schema_defs(&mut value, true, &mut defs);
-    if !defs.is_empty()
-        && let Value::Object(root) = &mut value
-    {
-        match root.get_mut(JSON_SCHEMA_DEFS_KEY) {
-            Some(Value::Object(existing)) => merge_schema_defs(existing, defs),
-            Some(_) => {}
-            None => {
-                root.insert(JSON_SCHEMA_DEFS_KEY.to_string(), Value::Object(defs));
-            }
-        }
+    if !defs.is_empty() {
+        insert_schema_defs(&mut value, defs);
     }
     value
 }
 
-fn collect_nested_schema_defs(value: &mut Value, is_root: bool, defs: &mut Map<String, Value>) {
+/// Merges `defs` into the schema's root `$defs` block.
+///
+/// Existing root definitions win on collision (vacant-only insertion). A
+/// non-object root `$defs` is left untouched, and non-object schemas are
+/// ignored.
+pub fn insert_schema_defs(schema: &mut Value, defs: Map<String, Value>) {
+    let Value::Object(root) = schema else {
+        return;
+    };
+    match root.get_mut(JSON_SCHEMA_DEFS_KEY) {
+        Some(Value::Object(existing)) => merge_schema_defs(existing, defs),
+        Some(_) => {}
+        None => {
+            root.insert(JSON_SCHEMA_DEFS_KEY.to_string(), Value::Object(defs));
+        }
+    }
+}
+
+/// Collects nested `$defs` blocks into `defs`, removing them from the tree.
+///
+/// The root `$defs` (when `is_root` is true) is preserved in place; every
+/// other `$defs` encountered is removed and merged into `defs` using
+/// vacant-only insertion.
+pub fn collect_nested_schema_defs(value: &mut Value, is_root: bool, defs: &mut Map<String, Value>) {
     match value {
         Value::Object(object) => {
             if !is_root
@@ -258,7 +279,10 @@ fn collect_nested_schema_defs(value: &mut Value, is_root: bool, defs: &mut Map<S
     }
 }
 
-fn merge_schema_defs(target: &mut Map<String, Value>, source: Map<String, Value>) {
+/// Merges `source` definitions into `target` using vacant-only insertion.
+///
+/// Keys already present in `target` are preserved; only missing keys are added.
+pub fn merge_schema_defs(target: &mut Map<String, Value>, source: Map<String, Value>) {
     for (key, value) in source {
         match target.entry(key) {
             serde_json::map::Entry::Vacant(entry) => {
@@ -512,13 +536,35 @@ fn supported_rest_request_bodies(binding: &RestUpstreamBinding) -> Vec<&RestRequ
         .collect()
 }
 
-fn is_json_media_type(media_type: &str) -> bool {
+/// Returns whether `media_type` denotes a JSON payload.
+///
+/// Any media-type parameters (after `;`) are dropped, the essence is trimmed
+/// and lowercased, then matched against `application/json` and any `+json`
+/// structured-suffix type (which includes `application/problem+json`).
+#[must_use]
+pub fn is_json_media_type(media_type: &str) -> bool {
     let media_type = media_type
         .split_once(';')
         .map_or(media_type, |(value, _)| value)
         .trim()
         .to_ascii_lowercase();
     media_type == "application/json" || media_type.ends_with("+json")
+}
+
+/// Extracts the primary JSON-Schema `type` keyword for a schema.
+///
+/// A string `type` is returned unless it is `"null"`. For a `type` array, the
+/// first non-`"null"` entry is returned. All other shapes yield `None`.
+#[must_use]
+pub fn json_schema_primary_type(schema: &Value) -> Option<&str> {
+    match schema.get("type") {
+        Some(Value::String(value)) if value != "null" => Some(value.as_str()),
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|value| *value != "null"),
+        _ => None,
+    }
 }
 
 fn effective_file_read_input_schema(capability: &Capability) -> Value {

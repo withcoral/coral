@@ -15,7 +15,7 @@ use coral_capabilities::{
     Capability, CapabilityId, FileArtifactRef, FileFormatDescriptor, FileScanBinding,
     GraphqlOperationBinding, McpToolUpstreamBinding, RestParameterBinding, RestParameterLocation,
     RestRequestBody, RestUpstreamBinding, ResultShapeHint, UpstreamBinding,
-    code_mode_tool_input_schema, executable_schema_unresolved_refs,
+    code_mode_tool_input_schema, executable_schema_unresolved_refs, is_json_media_type,
 };
 use coral_exports::{Binding, CapabilityExport};
 use coral_spec::{
@@ -1611,16 +1611,6 @@ fn requested_rest_body_media_type(
         selected = Some((key, media_type));
     }
     Ok(selected.map(|(_, media_type)| media_type))
-}
-
-fn is_json_media_type(media_type: &str) -> bool {
-    let media_type = media_type
-        .split(';')
-        .next()
-        .unwrap_or(media_type)
-        .trim()
-        .to_ascii_lowercase();
-    media_type == "application/json" || media_type.ends_with("+json")
 }
 
 async fn auth_headers(

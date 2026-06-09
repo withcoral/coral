@@ -1,6 +1,7 @@
 use coral_capabilities::{
     Capability, CapabilityKind, Diagnostic, DiagnosticSeverity, DiagnosticStage, EffectKind,
     OutputContract, RestParameterLocation, ResultShapeHint, UpstreamBinding,
+    json_schema_primary_type,
 };
 use coral_exports::{
     Binding, BindingBuildContext, BindingContribution, BindingContributor, BindingDiagnostic,
@@ -558,17 +559,6 @@ fn json_schema_type_to_sql(schema: &serde_json::Value) -> String {
         _ => "Utf8",
     }
     .to_string()
-}
-
-fn json_schema_primary_type(schema: &serde_json::Value) -> Option<&str> {
-    match schema.get("type") {
-        Some(serde_json::Value::String(value)) if value != "null" => Some(value.as_str()),
-        Some(serde_json::Value::Array(values)) => values
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .find(|value| *value != "null"),
-        _ => None,
-    }
 }
 
 pub(crate) fn sql_identifier(raw: &str) -> String {

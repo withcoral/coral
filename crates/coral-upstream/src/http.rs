@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use coral_capabilities::{HttpMethod, ResponseTrust};
+use coral_capabilities::{HttpMethod, ResponseTrust, is_json_media_type};
 use reqwest::header::{CONTENT_TYPE, USER_AGENT};
 use serde_json::{Map, Value};
 
@@ -211,11 +211,7 @@ fn decode_response_body(media_type: Option<&str>, bytes: &[u8]) -> Result<Upstre
     if bytes.is_empty() {
         return Ok(UpstreamResponseBody::Empty);
     }
-    if media_type.is_some_and(|value| {
-        value == "application/json"
-            || value.ends_with("+json")
-            || value == "application/problem+json"
-    }) {
+    if media_type.is_some_and(is_json_media_type) {
         let value = serde_json::from_slice(bytes)
             .map_err(|error| UpstreamError::InvalidResponse(error.to_string()))?;
         return Ok(UpstreamResponseBody::Json(value));
@@ -288,11 +284,7 @@ fn provider_error_body_value(
         .get(..preview_len)
         .expect("preview length is capped to the source byte length");
     if preview_len == bytes.len()
-        && media_type.is_some_and(|value| {
-            value == "application/json"
-                || value.ends_with("+json")
-                || value == "application/problem+json"
-        })
+        && media_type.is_some_and(is_json_media_type)
         && let Ok(value) = serde_json::from_slice(preview)
     {
         return (value, "json", preview_len);

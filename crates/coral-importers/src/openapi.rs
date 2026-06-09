@@ -5,6 +5,7 @@ use coral_capabilities::{
     InvocationSchema, OutputContract, ProviderOrigin, ProviderOriginKind, RestOutputVariant,
     RestParameterBinding, RestParameterLocation, RestRequestBody, RestResponseVariant,
     RestUpstreamBinding, ShapeHints, SourceId, StatusRange, SupportStatus, UpstreamBinding,
+    hoist_nested_schema_defs, insert_schema_defs,
 };
 use coral_spec::{OpenApiInterface, SourceSpec, openapi_document_metadata_from_value};
 use serde_json::{Map, Value};
@@ -294,8 +295,7 @@ fn rest_input_schema(parameters: &[Value], request_bodies: &[RestRequestBody]) -
             .expect("root schema object")
             .insert("required".to_string(), serde_json::json!(root_required));
     }
-    hoist_nested_schema_defs(&mut schema);
-    InvocationSchema::new(schema)
+    InvocationSchema::new(hoist_nested_schema_defs(schema))
 }
 
 fn rest_parameter_bindings(parameters: &[Value]) -> Vec<RestParameterBinding> {
@@ -586,59 +586,6 @@ fn normalize_openapi_schema_object(
         })
         .collect::<Map<_, _>>();
     lower_openapi_nullable(Value::Object(normalized), nullable)
-}
-
-fn insert_schema_defs(schema: &mut Value, defs: Map<String, Value>) {
-    let Value::Object(object) = schema else {
-        return;
-    };
-    match object.get_mut("$defs") {
-        Some(Value::Object(existing)) => {
-            for (key, value) in defs {
-                existing.entry(key).or_insert(value);
-            }
-        }
-        Some(_) => {}
-        None => {
-            object.insert("$defs".to_string(), Value::Object(defs));
-        }
-    }
-}
-
-fn hoist_nested_schema_defs(schema: &mut Value) {
-    let mut defs = Map::new();
-    collect_nested_schema_defs(schema, true, &mut defs);
-    if !defs.is_empty() {
-        insert_schema_defs(schema, defs);
-    }
-}
-
-fn collect_nested_schema_defs(value: &mut Value, is_root: bool, defs: &mut Map<String, Value>) {
-    match value {
-        Value::Object(object) => {
-            if !is_root && let Some(Value::Object(nested_defs)) = object.remove("$defs") {
-                merge_schema_defs(defs, nested_defs);
-            }
-            for (key, value) in object {
-                if key == "$defs" {
-                    continue;
-                }
-                collect_nested_schema_defs(value, false, defs);
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                collect_nested_schema_defs(value, false, defs);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn merge_schema_defs(target: &mut Map<String, Value>, source: Map<String, Value>) {
-    for (key, value) in source {
-        target.entry(key).or_insert(value);
-    }
 }
 
 fn lower_openapi_nullable(mut schema: Value, nullable: bool) -> Value {

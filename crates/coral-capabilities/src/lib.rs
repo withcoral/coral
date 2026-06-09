@@ -18,5 +18,7 @@ mod schema;
 
 pub use model::*;
 pub use schema::{
-    code_mode_tool_input_schema, executable_schema_unresolved_refs, generated_tool_output_schema,
+    code_mode_tool_input_schema, collect_nested_schema_defs, executable_schema_unresolved_refs,
+    generated_tool_output_schema, hoist_nested_schema_defs, insert_schema_defs, is_json_media_type,
+    json_schema_primary_type, merge_schema_defs,
 };

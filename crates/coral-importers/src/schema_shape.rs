@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use coral_capabilities::ShapeHints;
+use coral_capabilities::{ShapeHints, json_schema_primary_type as json_schema_type};
 use serde_json::Value;
 
 pub(crate) fn shape_hints_from_json_schema(schema: &Value) -> ShapeHints {
@@ -138,15 +138,4 @@ fn property_schema_type(root: &Value, property: &Value) -> Option<String> {
     json_schema_type(&resolved)
         .or_else(|| json_schema_type(property))
         .map(ToString::to_string)
-}
-
-fn json_schema_type(schema: &Value) -> Option<&str> {
-    match schema.get("type") {
-        Some(Value::String(value)) if value != "null" => Some(value.as_str()),
-        Some(Value::Array(values)) => values
-            .iter()
-            .filter_map(Value::as_str)
-            .find(|value| *value != "null"),
-        _ => None,
-    }
 }
