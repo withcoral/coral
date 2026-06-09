@@ -965,6 +965,10 @@ fn terminate_paused_runtime(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::needless_raw_string_hashes,
+    reason = "code-mode service tests preserve copied V8 source fixtures verbatim"
+)]
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;

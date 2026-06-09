@@ -23,8 +23,6 @@ pub(crate) async fn execute_http_plan(plan: &HttpRequestPlan) -> Result<HttpUpst
     }
     request = match &plan.body {
         Some(UpstreamRequestBody::Json(value)) => request.json(value),
-        Some(UpstreamRequestBody::Form(fields)) => request.form(fields),
-        Some(UpstreamRequestBody::Bytes(bytes)) => request.body(bytes.clone()),
         Some(UpstreamRequestBody::Empty) | None => request,
     };
 
@@ -89,10 +87,18 @@ fn reqwest_method(method: HttpMethod) -> reqwest::Method {
 }
 
 pub(crate) fn upstream_http_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    // One process-wide client so reqwest's connection pool and TLS config are
+    // reused across provider invocations instead of rebuilt per request. The
+    // configuration is constant, so cache the first successful build.
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|error| UpstreamError::Transport(error.to_string()))
+        .map_err(|error| UpstreamError::Transport(error.to_string()))?;
+    Ok(CLIENT.get_or_init(|| client).clone())
 }
 
 pub(crate) async fn limited_response_bytes(

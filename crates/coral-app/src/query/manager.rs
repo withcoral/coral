@@ -7,9 +7,9 @@ use std::time::Instant;
 use coral_capabilities::{CapabilityId, SourceId};
 use coral_exports::{Binding, CapabilityExport};
 use coral_sql::{
-    QueryExecution, QueryPlan, QueryRuntimeContext, QueryTestResult, SourceValidationReport,
-    SqlError, SqlMetadataInfo, SqlProviderInvocation, SqlProviderInvoker, SqlRuntimeBinding,
-    SqlWorkspace, StatusCode, validate_read_only_sql,
+    QueryExecution, QueryPlan, QueryTestResult, SourceValidationReport, SqlError, SqlMetadataInfo,
+    SqlProviderInvocation, SqlProviderInvoker, SqlRuntimeBinding, SqlWorkspace, StatusCode,
+    validate_read_only_sql,
 };
 use opentelemetry::{KeyValue, trace::Status as OtelStatus};
 use tracing::Instrument as _;
@@ -42,11 +42,6 @@ pub(crate) struct QueryManager {
     config_store: ConfigStore,
     layout: AppStateLayout,
     credential_manager: CredentialManager,
-    #[expect(
-        dead_code,
-        reason = "runtime context remains part of app bootstrap contract"
-    )]
-    runtime_context: QueryRuntimeContext,
     runtime_exposure: RuntimeExposureMode,
 }
 
@@ -54,7 +49,6 @@ impl QueryManager {
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
-        runtime_context: QueryRuntimeContext,
         layout: AppStateLayout,
         runtime_exposure: RuntimeExposureMode,
     ) -> Self {
@@ -62,7 +56,6 @@ impl QueryManager {
             config_store,
             layout,
             credential_manager,
-            runtime_context,
             runtime_exposure,
         }
     }
@@ -498,7 +491,6 @@ mod tests {
         let manager = QueryManager::new(
             config_store,
             CredentialManager::new(CredentialStore::new(layout.clone())),
-            QueryRuntimeContext::default(),
             layout,
             RuntimeExposureMode::Both,
         );

@@ -158,8 +158,7 @@ fn recognized_graphql_response(http_status: u16, media_type: Option<&str>) -> bo
 }
 
 /// Renders a GraphQL request plan body.
-#[must_use]
-pub fn graphql_request_body(plan: &GraphqlRequestPlan) -> Value {
+fn graphql_request_body(plan: &GraphqlRequestPlan) -> Value {
     serde_json::json!({
         "query": plan.document,
         "variables": plan.variables,

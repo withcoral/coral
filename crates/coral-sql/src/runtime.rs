@@ -20,22 +20,6 @@ use crate::metadata::{
 use crate::table_provider::register_runtime_table;
 use crate::validation::validate_read_only_sql;
 
-/// App-owned non-secret runtime inputs available while executing SQL.
-#[derive(Debug, Clone, Default)]
-pub struct QueryRuntimeContext {
-    pub home_dir: Option<PathBuf>,
-    pub body_capture_max_bytes: Option<usize>,
-}
-
-impl QueryRuntimeContext {
-    /// Adds app-owned local trace body capture byte cap to this runtime context.
-    #[must_use]
-    pub fn with_body_capture_max_bytes(mut self, max_bytes: Option<usize>) -> Self {
-        self.body_capture_max_bytes = max_bytes.filter(|bytes| *bytes > 0);
-        self
-    }
-}
-
 /// App-resolved SQL runtime binding. The app owns export composition,
 /// credentials, and installed artifact paths; this crate only executes SQL.
 #[derive(Debug, Clone)]

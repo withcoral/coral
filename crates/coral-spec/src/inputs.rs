@@ -321,30 +321,6 @@ pub enum ManifestOAuthScopeDelimiter {
     Comma,
 }
 
-/// Merge user-provided secrets and variables with manifest defaults into one
-/// runtime-ready input map.
-#[must_use]
-pub fn resolve_inputs(
-    declared: &[ManifestInputSpec],
-    source_secrets: &BTreeMap<String, String>,
-    source_variables: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
-    let mut resolved = BTreeMap::new();
-    for input in declared {
-        let value = match input.kind {
-            ManifestInputKind::Secret => source_secrets.get(&input.key).cloned(),
-            ManifestInputKind::Variable => source_variables
-                .get(&input.key)
-                .cloned()
-                .or_else(|| (!input.required).then(|| input.default_value.clone())),
-        };
-        if let Some(value) = value {
-            resolved.insert(input.key.clone(), value);
-        }
-    }
-    resolved
-}
-
 fn redirect_bind_port(
     raw: &str,
     port_mode: ManifestOAuthRedirectUriPortMode,
@@ -410,10 +386,9 @@ fn redirect_uri_has_explicit_port(raw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec,
-        ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
-        ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
-        ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode, resolve_inputs,
+        ManifestOAuthClientIdSpec, ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec,
+        ManifestOAuthCredentialSpec, ManifestOAuthFlowKind, ManifestOAuthFlowSpec,
+        ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode,
     };
     use std::collections::BTreeMap;
 
@@ -443,53 +418,6 @@ mod tests {
             },
             scopes: None,
         }
-    }
-
-    #[test]
-    fn resolve_inputs_uses_secret_store_variables_and_optional_defaults() {
-        let declared = vec![
-            ManifestInputSpec {
-                key: "api_token".to_string(),
-                kind: ManifestInputKind::Secret,
-                required: true,
-                default_value: String::new(),
-                allowed_values: Vec::new(),
-                hint: None,
-                credential: None,
-            },
-            ManifestInputSpec {
-                key: "api_base".to_string(),
-                kind: ManifestInputKind::Variable,
-                required: false,
-                default_value: "https://api.example.com".to_string(),
-                allowed_values: Vec::new(),
-                hint: None,
-                credential: None,
-            },
-            ManifestInputSpec {
-                key: "tenant".to_string(),
-                kind: ManifestInputKind::Variable,
-                required: true,
-                default_value: String::new(),
-                allowed_values: Vec::new(),
-                hint: None,
-                credential: None,
-            },
-        ];
-        let secrets = BTreeMap::from([("api_token".to_string(), "secret-value".to_string())]);
-        let variables = BTreeMap::from([("tenant".to_string(), "acme".to_string())]);
-
-        let resolved = resolve_inputs(&declared, &secrets, &variables);
-
-        assert_eq!(
-            resolved.get("api_token").map(String::as_str),
-            Some("secret-value")
-        );
-        assert_eq!(
-            resolved.get("api_base").map(String::as_str),
-            Some("https://api.example.com")
-        );
-        assert_eq!(resolved.get("tenant").map(String::as_str), Some("acme"));
     }
 
     #[test]

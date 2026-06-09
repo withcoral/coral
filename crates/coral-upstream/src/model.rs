@@ -39,12 +39,8 @@ pub enum ProviderErrorKind {
     HttpError,
     ProtocolError,
     ToolError,
-    ToolNotFound,
-    StaleBinding,
     GraphqlError,
     InvalidResponse,
-    OutputSchemaMismatch,
-    TransportError,
 }
 
 impl fmt::Display for ProviderErrorKind {
@@ -300,8 +296,6 @@ pub struct GraphqlUpstreamResponse {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum UpstreamRequestBody {
     Json(Value),
-    Form(Vec<(String, String)>),
-    Bytes(Vec<u8>),
     Empty,
 }
 

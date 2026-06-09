@@ -607,7 +607,13 @@ impl CoralMcpServer {
             ));
         }
         let mut discovery_client = self.discovery.clone();
-        let runtime = self.runtime_metadata_value().await;
+        // Runtime metadata costs several sequential discovery RPCs and is only
+        // rendered by the detailed view; the default compact view ignores it.
+        let runtime = if arguments.view == DescribeView::Detailed {
+            self.runtime_metadata_value().await
+        } else {
+            Value::Null
+        };
         let result = discovery_client
             .describe(Request::new(DescribeExportRequest {
                 workspace: Some(default_workspace()),
@@ -1187,16 +1193,22 @@ fn compact_sql_binding_value(binding: &coral_api::v1::SqlBindingDescription) -> 
     Value::Object(value)
 }
 
+/// Hydrates each serialized diagnostic object with its provider `details`,
+/// pairing the rendered values with their proto diagnostics by position.
+fn inject_diagnostic_details(values: &mut [Value], diagnostics: &[ExportDiagnosticDescription]) {
+    for (value, proto_diagnostic) in values.iter_mut().zip(diagnostics.iter()) {
+        if let Some(object) = value.as_object_mut()
+            && let Some(details) = proto_diagnostic.details.clone()
+        {
+            object.insert("details".to_string(), json_value_from_proto(details));
+        }
+    }
+}
+
 fn diagnostics_value(diagnostics: &[ExportDiagnosticDescription]) -> Result<Value, tonic::Status> {
     let mut value = serialize_tool_value(diagnostics)?;
     if let Value::Array(diagnostic_values) = &mut value {
-        for (diagnostic, proto_diagnostic) in diagnostic_values.iter_mut().zip(diagnostics.iter()) {
-            if let Some(diagnostic) = diagnostic.as_object_mut()
-                && let Some(details) = proto_diagnostic.details.clone()
-            {
-                diagnostic.insert("details".to_string(), json_value_from_proto(details));
-            }
-        }
+        inject_diagnostic_details(diagnostic_values, diagnostics);
     }
     Ok(value)
 }
@@ -1205,13 +1217,7 @@ fn normalize_diagnostics_field(value: &mut Value, diagnostics: &[ExportDiagnosti
     let Some(Value::Array(diagnostic_values)) = value.get_mut("diagnostics") else {
         return;
     };
-    for (diagnostic, proto_diagnostic) in diagnostic_values.iter_mut().zip(diagnostics.iter()) {
-        if let Some(diagnostic) = diagnostic.as_object_mut()
-            && let Some(details) = proto_diagnostic.details.clone()
-        {
-            diagnostic.insert("details".to_string(), json_value_from_proto(details));
-        }
-    }
+    inject_diagnostic_details(diagnostic_values, diagnostics);
 }
 
 fn normalize_describe_tool_value(value: &mut Value, response: &DescribeExportResponse) {
@@ -1228,15 +1234,7 @@ fn normalize_describe_tool_value(value: &mut Value, response: &DescribeExportRes
         }
         insert_code_mode_output_schema(entry);
         if let Some(Value::Array(diagnostics)) = entry.get_mut("diagnostics") {
-            for (diagnostic, proto_diagnostic) in
-                diagnostics.iter_mut().zip(description.diagnostics.iter())
-            {
-                if let Some(diagnostic) = diagnostic.as_object_mut()
-                    && let Some(details) = proto_diagnostic.details.clone()
-                {
-                    diagnostic.insert("details".to_string(), json_value_from_proto(details));
-                }
-            }
+            inject_diagnostic_details(diagnostics, &description.diagnostics);
         }
     }
 }

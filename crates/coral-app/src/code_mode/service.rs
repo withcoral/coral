@@ -1631,7 +1631,6 @@ mod tests {
         WaitCodeModeRequest, WaitCodeModeResponse, Workspace,
     };
     use coral_sql::ColumnInfo;
-    use coral_sql::QueryRuntimeContext;
     use serde_json::json;
     use tempfile::TempDir;
     use tonic::{Code, Request};
@@ -2601,7 +2600,6 @@ return "ran";
         let queries = QueryManager::new(
             config_store,
             credential_manager.clone(),
-            QueryRuntimeContext::default(),
             layout,
             runtime_exposure,
         );

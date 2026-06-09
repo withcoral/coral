@@ -3,8 +3,6 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use coral_sql::QueryRuntimeContext;
-
 use super::consts::{CORAL_CONFIG_DIR, CORAL_RUNTIME_EXPOSURE};
 use super::error::AppError;
 use crate::RuntimeExposureMode;
@@ -14,7 +12,6 @@ use crate::state::AppStateLayout;
 pub(crate) struct AppEnvironment {
     coral_config_dir_override: Option<PathBuf>,
     runtime_exposure_override: Option<String>,
-    user_home_dir: Option<PathBuf>,
 }
 
 impl AppEnvironment {
@@ -22,7 +19,6 @@ impl AppEnvironment {
         Self {
             coral_config_dir_override: coral_config_dir_override(),
             runtime_exposure_override: runtime_exposure_override(),
-            user_home_dir: etcetera::home_dir().ok(),
         }
     }
 
@@ -44,13 +40,6 @@ impl AppEnvironment {
             .as_deref()
             .map(str::parse)
             .transpose()
-    }
-
-    pub(crate) fn query_runtime_context(&self) -> QueryRuntimeContext {
-        QueryRuntimeContext {
-            home_dir: self.user_home_dir.clone(),
-            ..QueryRuntimeContext::default()
-        }
     }
 }
 

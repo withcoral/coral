@@ -547,6 +547,35 @@ impl HttpMethod {
             Self::Delete => EffectProfile::delete(),
         }
     }
+
+    /// Lowercase method token (`get`, `post`, ...).
+    #[must_use]
+    pub const fn as_lowercase_str(self) -> &'static str {
+        match self {
+            Self::Get => "get",
+            Self::Head => "head",
+            Self::Options => "options",
+            Self::Post => "post",
+            Self::Put => "put",
+            Self::Patch => "patch",
+            Self::Delete => "delete",
+        }
+    }
+
+    /// Parses a method from its lowercase token.
+    #[must_use]
+    pub fn from_lowercase(value: &str) -> Option<Self> {
+        match value {
+            "get" => Some(Self::Get),
+            "head" => Some(Self::Head),
+            "options" => Some(Self::Options),
+            "post" => Some(Self::Post),
+            "put" => Some(Self::Put),
+            "patch" => Some(Self::Patch),
+            "delete" => Some(Self::Delete),
+            _ => None,
+        }
+    }
 }
 
 /// REST parameter location.

@@ -22,8 +22,6 @@
 //! - [`parse_source_manifest_yaml`] is the full acceptance path used by
 //!   lint, add, import, and discovery — it parses one manifest from `YAML`
 //!   text, running the same validation as the server
-//! - [`load_manifest_path`] loads a persisted manifest file from disk for the
-//!   query/runtime path
 //! - [`parse_source_manifest_value`] parses a pre-built structured value for
 //!   engine callers that construct manifests programmatically
 //! - [`SourceSpec`] is the validated source contract with one or more
@@ -72,7 +70,6 @@
 )]
 mod error;
 mod inputs;
-mod loader;
 mod openapi;
 mod parser;
 mod schema;
@@ -86,12 +83,10 @@ pub use inputs::{
     ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
     ManifestOAuthEndpointUrls, ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
     ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
-    ManifestOAuthScopeSpec, ManifestOAuthScopesSpec, resolve_inputs,
+    ManifestOAuthScopeSpec, ManifestOAuthScopesSpec,
 };
-pub use loader::load_manifest_path;
 pub use openapi::{
-    OpenApiDocumentMetadata, normalize_openapi_document, openapi_document_metadata,
-    openapi_document_metadata_from_value,
+    OpenApiDocumentMetadata, openapi_document_metadata, openapi_document_metadata_from_value,
 };
 pub use parser::{parse_source_manifest_value, parse_source_manifest_yaml};
 pub use source::{

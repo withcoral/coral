@@ -18,11 +18,9 @@
     clippy::must_use_candidate,
     clippy::needless_continue,
     clippy::needless_pass_by_value,
-    clippy::needless_raw_string_hashes,
     clippy::redundant_else,
     clippy::single_match_else,
     clippy::too_many_lines,
-    clippy::unnecessary_sort_by,
     reason = "coral-code-mode preserves copied V8 runtime structure while the Coral bridge is reviewed separately"
 )]
 
@@ -38,22 +36,11 @@ mod service;
 use tokio as _;
 
 pub use description::CODE_MODE_PRAGMA_PREFIX;
-pub use description::CodeModeSchemaColumn;
-pub use description::CodeModeSchemaTable;
 pub use description::CodeModeToolKind;
 pub use description::ToolDefinition;
 pub use description::ToolName;
-pub use description::ToolNamespaceDescription;
-pub use description::augment_tool_definition;
-pub use description::build_coral_exec_tool_description;
-pub use description::build_exec_tool_description;
-pub use description::build_wait_tool_description;
-pub use description::is_code_mode_nested_tool;
 pub use description::normalize_code_mode_identifier;
 pub use description::parse_exec_source;
-pub use description::render_code_mode_sample;
-pub use description::render_coral_schema_declarations;
-pub use description::render_json_schema_to_typescript;
 pub use input::normalize_nested_tool_input;
 pub use input::wrap_exec_source;
 pub use response::DEFAULT_IMAGE_DETAIL;

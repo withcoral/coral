@@ -102,23 +102,9 @@ pub(super) fn import_openapi(
         let Some(path_item) = path_item.as_object() else {
             continue;
         };
-        let path_parameters = path_item
-            .get("parameters")
-            .and_then(Value::as_array)
-            .map(|parameters| {
-                parameters
-                    .iter()
-                    .map(|parameter| {
-                        resolve_openapi_parameter_schema_refs(
-                            &document,
-                            resolve_local_openapi_ref(&document, parameter),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let path_parameters = resolve_container_parameters(&document, path_item);
         for (method_name, operation) in path_item {
-            let Some(method) = http_method(method_name) else {
+            let Some(method) = HttpMethod::from_lowercase(method_name) else {
                 continue;
             };
             let Some(operation) = operation.as_object() else {
@@ -131,21 +117,7 @@ pub(super) fn import_openapi(
             let operation_id = operation_ids.allocate(&provider_operation_id);
             let provider_tags = operation_tags(operation);
             let mut parameters = path_parameters.clone();
-            let operation_parameters = operation
-                .get("parameters")
-                .and_then(Value::as_array)
-                .map(|parameters| {
-                    parameters
-                        .iter()
-                        .map(|parameter| {
-                            resolve_openapi_parameter_schema_refs(
-                                &document,
-                                resolve_local_openapi_ref(&document, parameter),
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            let operation_parameters = resolve_container_parameters(&document, operation);
             merge_operation_parameters(&mut parameters, operation_parameters);
             let request_bodies = rest_request_bodies(&document, operation);
             let responses = rest_responses(&document, operation);
@@ -527,6 +499,27 @@ fn resolve_openapi_parameter_schema_refs(document: &Value, mut parameter: Value)
     Value::Object(parameter.clone())
 }
 
+/// Resolves the `parameters` of an `OpenAPI` path item or operation, following
+/// local `$ref`s and inlining parameter schema refs. Shared by the path-level
+/// and operation-level parameter collection so the two stay in lockstep.
+fn resolve_container_parameters(document: &Value, container: &Map<String, Value>) -> Vec<Value> {
+    container
+        .get("parameters")
+        .and_then(Value::as_array)
+        .map(|parameters| {
+            parameters
+                .iter()
+                .map(|parameter| {
+                    resolve_openapi_parameter_schema_refs(
+                        document,
+                        resolve_local_openapi_ref(document, parameter),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn resolve_openapi_schema_refs(document: &Value, schema: &Value) -> Value {
     let mut defs = Map::new();
     let mut resolving = BTreeSet::new();
@@ -719,19 +712,6 @@ fn parameter_key(parameter: &Value) -> Option<(String, String)> {
         parameter.get("in")?.as_str()?.to_string(),
         parameter.get("name")?.as_str()?.to_string(),
     ))
-}
-
-fn http_method(method: &str) -> Option<HttpMethod> {
-    match method {
-        "get" => Some(HttpMethod::Get),
-        "head" => Some(HttpMethod::Head),
-        "options" => Some(HttpMethod::Options),
-        "post" => Some(HttpMethod::Post),
-        "put" => Some(HttpMethod::Put),
-        "patch" => Some(HttpMethod::Patch),
-        "delete" => Some(HttpMethod::Delete),
-        _ => None,
-    }
 }
 
 fn is_success_or_default_status(status: &str) -> bool {

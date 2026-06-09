@@ -482,9 +482,12 @@ fn provider_response_batch(
     value: &serde_json::Value,
 ) -> SqlResult<RecordBatch> {
     let rows = response_rows(binding, value);
+    // Input column names are constant for the whole scan; compute them once
+    // rather than rebuilding the set/vec for every row.
+    let input_names = projected_input_names_without_column_collision(&binding.binding.projection);
     let full_rows = rows
         .iter()
-        .map(|row| provider_row_values(binding, args, value, row))
+        .map(|row| provider_row_values(binding, args, value, row, &input_names))
         .collect::<Vec<_>>();
     record_batch_from_rows(schema, &full_rows)
 }
@@ -521,14 +524,15 @@ fn provider_row_values(
     args: &serde_json::Map<String, serde_json::Value>,
     root: &serde_json::Value,
     row: &serde_json::Value,
+    input_names: &[&str],
 ) -> Vec<serde_json::Value> {
     let mut values = Vec::new();
     for column in &binding.binding.projection.columns {
         values.push(project_row_column(row, root, &column.name));
     }
-    for input_name in projected_input_names_without_column_collision(&binding.binding.projection) {
+    for input_name in input_names {
         values.push(
-            args.get(input_name)
+            args.get(*input_name)
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         );

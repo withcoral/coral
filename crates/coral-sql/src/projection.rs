@@ -217,25 +217,29 @@ fn projection_for_capability(capability: &Capability) -> SqlProjectionV1 {
     }
 }
 
-fn columns_from_output_contract(
-    output_contract: &OutputContract,
-    response_path: Option<&[String]>,
-) -> Vec<SqlColumn> {
-    let root_schema = match output_contract {
+/// Returns the root JSON schema for an output contract's primary variant, or
+/// None when the contract carries no schema. Shared by column derivation and
+/// response-selection so both read the same variant.
+fn primary_output_schema(contract: &OutputContract) -> Option<&serde_json::Value> {
+    match contract {
         OutputContract::Single { schema }
         | OutputContract::GraphqlData { schema }
         | OutputContract::McpStructuredContent {
             schema: Some(schema),
-        } => &schema.schema,
+        } => Some(&schema.schema),
         OutputContract::RestResponseVariants { variants } => {
-            let Some(first) = variants.first() else {
-                return Vec::new();
-            };
-            &first.schema.schema
+            variants.first().map(|variant| &variant.schema.schema)
         }
-        OutputContract::McpStructuredContent { schema: None } | OutputContract::Unknown => {
-            return Vec::new();
-        }
+        OutputContract::McpStructuredContent { schema: None } | OutputContract::Unknown => None,
+    }
+}
+
+fn columns_from_output_contract(
+    output_contract: &OutputContract,
+    response_path: Option<&[String]>,
+) -> Vec<SqlColumn> {
+    let Some(root_schema) = primary_output_schema(output_contract) else {
+        return Vec::new();
     };
     let schema = row_schema(root_schema, response_path);
     let mut columns = schema_properties(root_schema, schema)
@@ -386,19 +390,7 @@ fn schema_array_items<'a>(
 fn response_selection_for_capability(
     capability: &Capability,
 ) -> Option<coral_exports::ResponseSelection> {
-    let schema_root = match &capability.output_contract {
-        OutputContract::Single { schema }
-        | OutputContract::GraphqlData { schema }
-        | OutputContract::McpStructuredContent {
-            schema: Some(schema),
-        } => &schema.schema,
-        OutputContract::RestResponseVariants { variants } => {
-            variants.first().map(|variant| &variant.schema.schema)?
-        }
-        OutputContract::McpStructuredContent { schema: None } | OutputContract::Unknown => {
-            return None;
-        }
-    };
+    let schema_root = primary_output_schema(&capability.output_contract)?;
     let root_schema = resolve_local_schema_ref(schema_root, schema_root);
     for path in &capability.shape_hints.row_path_candidates {
         if path.is_empty() {

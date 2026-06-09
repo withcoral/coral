@@ -5,16 +5,8 @@ use crate::{ManifestError, Result};
 /// Metadata Coral extracts from an `OpenAPI` source document.
 #[derive(Debug, Clone, Default)]
 pub struct OpenApiDocumentMetadata {
-    /// The trimmed `info.description`, when present.
-    pub description: Option<String>,
     /// The first resolvable `servers[].url`, with `OpenAPI` variable defaults applied.
     pub server_url: Option<String>,
-}
-
-/// Parses an `OpenAPI` JSON/YAML document and serializes it as normalized YAML.
-pub fn normalize_openapi_document(bytes: &[u8]) -> Result<String> {
-    let value: Value = serde_yaml::from_slice(bytes).map_err(ManifestError::parse_yaml)?;
-    serde_yaml::to_string(&value).map_err(ManifestError::parse_yaml)
 }
 
 /// Extracts metadata from an `OpenAPI` JSON/YAML document.
@@ -36,7 +28,6 @@ pub fn openapi_document_metadata_from_value(document: &Value) -> Result<OpenApiD
         )));
     }
     Ok(OpenApiDocumentMetadata {
-        description: trimmed_string_at(document, &["info", "description"]),
         server_url: document
             .get("servers")
             .and_then(Value::as_array)
@@ -71,17 +62,6 @@ fn resolve_openapi_server_url(url: &str, variables: Option<&Map<String, Value>>)
     Some(resolved)
 }
 
-fn trimmed_string_at(document: &Value, path: &[&str]) -> Option<String> {
-    let value = path
-        .iter()
-        .try_fold(document, |value, key| value.get(*key))?;
-    value
-        .as_str()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,7 +82,6 @@ paths: {}
         )
         .expect("metadata");
 
-        assert_eq!(metadata.description.as_deref(), Some("Query demo data."));
         assert_eq!(
             metadata.server_url.as_deref(),
             Some("https://api.example.com/v1")

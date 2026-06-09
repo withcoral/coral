@@ -27,7 +27,7 @@ pub use projection::{
     upstream_plan_type_name,
 };
 pub use runtime::{
-    QueryRuntimeContext, SqlProviderInvocation, SqlProviderInvoker, SqlRuntimeBinding, SqlWorkspace,
+    SqlProviderInvocation, SqlProviderInvoker, SqlRuntimeBinding, SqlWorkspace,
 };
 pub use validation::validate_read_only_sql;
 

@@ -6,7 +6,7 @@ use crate::exports::{
     Binding, BindingBuildContext, BindingContribution, BindingContributor, ExportRef,
     TypescriptBinding,
 };
-use crate::paths::{identifier_segment, pascal_segment};
+use crate::paths::{identifier_segment, is_version_segment, pascal_segment};
 
 /// Built-in TypeScript binding contributor.
 #[derive(Debug, Default)]
@@ -111,30 +111,6 @@ fn useful_path_segment(segment: &str) -> bool {
         return false;
     }
     !is_version_segment(segment)
-}
-
-fn is_version_segment(segment: &str) -> bool {
-    let lower = segment.to_ascii_lowercase();
-    if let Some(rest) = lower.strip_prefix('v') {
-        return is_prefixed_version_body(rest);
-    }
-    is_version_body(&lower)
-}
-
-fn is_prefixed_version_body(value: &str) -> bool {
-    !value.is_empty()
-        && value.starts_with(|ch: char| ch.is_ascii_digit())
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
-}
-
-fn is_version_body(value: &str) -> bool {
-    !value.is_empty()
-        && value.chars().any(|ch| ch.is_ascii_digit())
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_digit() || matches!(ch, '.' | '_' | '-'))
 }
 
 fn rest_operation_leaf(capability: &Capability, group: &str) -> String {

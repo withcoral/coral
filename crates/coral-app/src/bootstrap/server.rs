@@ -277,17 +277,10 @@ impl ServerBuilder {
             );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
-        let body_capture_max_bytes = telemetry_config
-            .trace_history
-            .http_body_recording_max_bytes();
-        let query_runtime_context = env
-            .query_runtime_context()
-            .with_body_capture_max_bytes(body_capture_max_bytes);
 
         let query_manager = QueryManager::new(
             config_store,
             credential_manager.clone(),
-            query_runtime_context,
             layout,
             runtime_exposure,
         );
@@ -671,7 +664,6 @@ mod tests {
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{ExecuteSqlRequest, ListSourcesRequest, ListTracesRequest, Workspace};
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
-    use coral_sql::QueryRuntimeContext;
     use tempfile::TempDir;
     use tonic::transport::Endpoint;
     use tonic::{Code, Request};
@@ -795,7 +787,6 @@ enabled = false
         let query_manager = QueryManager::new(
             config_store,
             credential_manager.clone(),
-            QueryRuntimeContext::default(),
             layout,
             RuntimeExposureMode::Both,
         );
@@ -1066,7 +1057,6 @@ enabled = false
         let query_manager = QueryManager::new(
             config_store,
             credential_manager.clone(),
-            QueryRuntimeContext::default(),
             layout,
             RuntimeExposureMode::Both,
         );

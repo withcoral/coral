@@ -780,13 +780,19 @@ fn preferred_graphql_scalar_fields(type_info: &GraphqlTypeInfo) -> Vec<String> {
     selected
 }
 
+/// Relation fields preferred when generating GraphQL selection sets and the
+/// matching output schema. Consumed by both `preferred_graphql_relation_fields`
+/// and `insert_selected_relation_schemas` so the selection set and the declared
+/// output schema never drift apart.
+const PREFERRED_GRAPHQL_RELATION_FIELDS: &[&str] =
+    &["state", "assignee", "team", "owner", "creator", "project"];
+
 fn preferred_graphql_relation_fields(
     type_info: &GraphqlTypeInfo,
     schema_index: &GraphqlSchemaIndex,
 ) -> Vec<String> {
-    const PREFERRED: &[&str] = &["state", "assignee", "team", "owner", "creator", "project"];
     let mut selected = Vec::new();
-    for preferred in PREFERRED {
+    for preferred in PREFERRED_GRAPHQL_RELATION_FIELDS {
         let Some(field) = type_info.fields.get(*preferred) else {
             continue;
         };
@@ -982,7 +988,7 @@ fn insert_selected_relation_schemas(
     type_info: &GraphqlTypeInfo,
     schema_index: &GraphqlSchemaIndex,
 ) {
-    for field_name in ["state", "assignee", "team", "owner", "creator", "project"] {
+    for field_name in PREFERRED_GRAPHQL_RELATION_FIELDS.iter().copied() {
         let Some(field) = type_info.fields.get(field_name) else {
             continue;
         };

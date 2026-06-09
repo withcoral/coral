@@ -18,7 +18,6 @@ mod http;
 mod mcp;
 mod model;
 
-pub use graphql::graphql_request_body;
 pub use mcp::list_mcp_tools;
 pub use model::{
     GraphqlRequestPlan, GraphqlUpstreamResponse, HttpRequestPlan, HttpUpstreamResponse,

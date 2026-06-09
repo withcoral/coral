@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use coral_capabilities::{
-    Capability, CapabilityId, Diagnostic, DiagnosticSeverity, DiagnosticStage, HttpMethod,
-    SourceCapabilitySet, UpstreamBinding,
+    Capability, CapabilityId, Diagnostic, DiagnosticSeverity, DiagnosticStage, SourceCapabilitySet,
+    UpstreamBinding,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -14,7 +14,7 @@ use super::model::{
 use super::validate::ExportError;
 use super::validate::{Result, validate_source_exports, validate_workspace_exports};
 use crate::contributors::typescript_type_name;
-use crate::paths::{identifier_segment, pascal_segment};
+use crate::paths::{identifier_segment, is_version_segment, pascal_segment};
 
 /// Build source exports from capabilities and binding contributors.
 ///
@@ -253,32 +253,8 @@ fn rest_version_segment(capability: &Capability) -> Option<String> {
     binding
         .path_template
         .split('/')
-        .find(|segment| is_version_path_segment(segment))
+        .find(|segment| is_version_segment(segment))
         .map(identifier_segment)
-}
-
-fn is_version_path_segment(segment: &str) -> bool {
-    let lower = segment.to_ascii_lowercase();
-    if let Some(rest) = lower.strip_prefix('v') {
-        return is_prefixed_version_path_body(rest);
-    }
-    is_version_path_body(&lower)
-}
-
-fn is_prefixed_version_path_body(value: &str) -> bool {
-    !value.is_empty()
-        && value.starts_with(|ch: char| ch.is_ascii_digit())
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
-}
-
-fn is_version_path_body(value: &str) -> bool {
-    !value.is_empty()
-        && value.chars().any(|ch| ch.is_ascii_digit())
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_digit() || matches!(ch, '.' | '_' | '-'))
 }
 
 fn insert_typescript_version_segment(base_path: &[String], version: &str) -> Vec<String> {
@@ -309,15 +285,7 @@ fn http_method_suffix(capability: &Capability) -> String {
     let UpstreamBinding::Rest(binding) = &capability.upstream_binding else {
         return "Rest".to_string();
     };
-    pascal_segment(match binding.method {
-        HttpMethod::Get => "get",
-        HttpMethod::Head => "head",
-        HttpMethod::Options => "options",
-        HttpMethod::Post => "post",
-        HttpMethod::Put => "put",
-        HttpMethod::Patch => "patch",
-        HttpMethod::Delete => "delete",
-    })
+    pascal_segment(binding.method.as_lowercase_str())
 }
 
 fn typescript_collision_hash(capability: &Capability) -> String {
