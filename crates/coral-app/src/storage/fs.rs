@@ -50,9 +50,11 @@ pub(crate) fn append_file_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     set_file_permissions_private(path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    // Durably link the (possibly freshly created) file into its directory so a
-    // crash after we return `Ok` cannot lose the file or its newest record —
-    // mirrors `replace_atomic`'s parent-directory fsync.
+    // Best-effort: try to durably link the (possibly freshly created) file into
+    // its directory so a crash is less likely to lose it. Like `replace_atomic`,
+    // the parent-directory fsync is best-effort — opening or fsyncing a directory
+    // is not portable (e.g. it fails on Windows), so a failure here is ignored
+    // rather than surfaced.
     if let Some(parent) = path.parent()
         && let Ok(dir) = fs::File::open(parent)
     {
