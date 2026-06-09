@@ -870,7 +870,7 @@ tables:
   - name: orders
     description: >
       Orders placed across Lemon Squeezy stores. Each row captures the full
-      transaction including pricing breakdowns in both store currency and USD,
+      transaction including pricing breakdowns in both order currency and USD,
       tax details, and refund status. Filter by store_id or user_email.
     request:
       method: GET
