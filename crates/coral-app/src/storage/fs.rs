@@ -189,13 +189,13 @@ fn set_dir_permissions_private(_path: &Path) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn set_file_permissions_private(path: &Path) -> io::Result<()> {
+pub(crate) fn set_file_permissions_private(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let perms = fs::Permissions::from_mode(0o600);
     fs::set_permissions(path, perms)
 }
 
 #[cfg(not(unix))]
-fn set_file_permissions_private(_path: &Path) -> io::Result<()> {
+pub(crate) fn set_file_permissions_private(_path: &Path) -> io::Result<()> {
     Ok(())
 }

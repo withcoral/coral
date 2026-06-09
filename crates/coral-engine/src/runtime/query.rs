@@ -16,6 +16,7 @@ use crate::runtime::error::{
     datafusion_to_core, datafusion_to_core_with_sql_and_table_functions,
     query_result_observer_error_to_core,
 };
+use crate::runtime::fingerprint::fingerprint_plan;
 use crate::runtime::json::register_json_support;
 use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::registry::{
@@ -23,8 +24,9 @@ use crate::runtime::registry::{
 };
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
-    CatalogInfo, CoreError, DescribeTableInfo, QueryExecution, QueryPlan, QueryResultObserver,
-    QueryResultObserverError, QueryRuntimeConfig, QuerySource, TableFunctionInfo, TableInfo,
+    CatalogInfo, CoreError, DescribeTableInfo, QueryExecution, QueryFingerprint, QueryPlan,
+    QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig, QuerySource,
+    TableFunctionInfo, TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -259,6 +261,16 @@ impl QueryRuntimeAdapter {
             optimized_logical_plan_display,
             physical_plan,
         ))
+    }
+
+    pub(crate) async fn fingerprint_sql(&self, sql: &str) -> Result<QueryFingerprint, CoreError> {
+        let df = self.sql_dataframe(sql).await?;
+        let (session_state, logical_plan) = df.into_parts();
+        let optimized_logical_plan = session_state
+            .optimize(&logical_plan)
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        fingerprint_plan(&optimized_logical_plan)
+            .map_err(|err| datafusion_to_core(&err, &self.tables))
     }
 
     async fn sql_dataframe(&self, sql: &str) -> Result<DataFrame, CoreError> {

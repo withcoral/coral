@@ -43,6 +43,7 @@ use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::episode::service::EpisodeService;
 use crate::episode::store::EpisodeStore;
+use crate::features::{Feature, FeatureOverrides, FeatureStore};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
@@ -52,10 +53,12 @@ use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
-use crate::state::ConfigStore;
+use crate::state::{AppStateLayout, ConfigStore};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
+use crate::trajectory::TrajectoryMemory;
 use crate::transport::GrpcMethodAnnotatedService;
+use crate::workspaces::{DEFAULT_WORKSPACE_ID, WorkspaceName};
 
 /// A static asset (e.g., a built SPA file) served on the same port as
 /// gRPC-Web.
@@ -81,6 +84,7 @@ pub trait StaticAssetsProvider: Send + Sync + 'static {
 pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerMode,
+    feature_overrides: FeatureOverrides,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     enable_stderr_logs: bool,
@@ -97,6 +101,7 @@ impl ServerConfig {
         Self {
             config_dir: None,
             mode: ServerMode::NativeGrpc,
+            feature_overrides: FeatureOverrides::default(),
             engine_extensions_providers: Vec::new(),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             enable_stderr_logs: false,
@@ -110,6 +115,11 @@ impl ServerConfig {
 
     pub(crate) fn with_mode(mut self, mode: ServerMode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    pub(crate) fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
+        self.feature_overrides = feature_overrides;
         self
     }
 
@@ -203,6 +213,13 @@ impl ServerBuilder {
     }
 
     #[must_use]
+    /// Applies process-local runtime feature overrides to the local server.
+    pub fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
+        self.config = self.config.with_feature_overrides(feature_overrides);
+        self
+    }
+
+    #[must_use]
     /// Adds an engine extensions provider used for query runtime builds.
     ///
     /// Providers are evaluated in call order, so later providers can add or
@@ -250,6 +267,8 @@ impl ServerBuilder {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
+        let features = FeatureStore::new(layout.clone())
+            .load_with_overrides(&self.config.feature_overrides)?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
             .trace_history
@@ -284,9 +303,12 @@ impl ServerBuilder {
             config_store,
             credential_manager,
             query_runtime_context,
-            layout,
+            layout.clone(),
             self.config.engine_extensions_providers,
         );
+        if features.enabled(Feature::Episodes) {
+            start_trajectory_memory_rebuild(layout.clone(), query_manager.clone());
+        }
         let trace_service = if telemetry_config.trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
         } else {
@@ -302,6 +324,21 @@ impl ServerBuilder {
         )
         .await
     }
+}
+
+fn start_trajectory_memory_rebuild(layout: AppStateLayout, query_manager: QueryManager) {
+    let Ok(workspace_name) = WorkspaceName::parse(DEFAULT_WORKSPACE_ID) else {
+        return;
+    };
+    tokio::spawn(async move {
+        let trajectory_memory = TrajectoryMemory::new(layout);
+        if let Err(error) = trajectory_memory
+            .rebuild_workspace(&query_manager, &workspace_name)
+            .await
+        {
+            tracing::warn!(%error, "trajectory-memory rebuild failed");
+        }
+    });
 }
 
 /// Running Coral server.

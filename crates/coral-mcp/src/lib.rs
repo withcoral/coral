@@ -30,11 +30,24 @@ mod telemetry;
 #[cfg(test)]
 mod tests;
 
-use coral_client::AppClient;
+use coral_api::v1::OpenEpisodeRequest;
+use coral_client::{AppClient, default_workspace};
 use rmcp::ServiceExt;
+use tonic::Request;
 
 pub use error::McpError;
 pub(crate) use server::CoralMcpServer;
+
+/// Optional benchmark-owned episode context for trajectory-memory validation.
+#[derive(Debug, Clone, Default)]
+pub struct McpEpisodeOptions {
+    /// Client-minted episode id to attach to outgoing Coral calls.
+    pub episode_id: String,
+    /// Natural-language intent registered by `OpenEpisode`.
+    pub intent: String,
+    /// Optional parent episode id.
+    pub parent_episode_id: Option<String>,
+}
 
 /// Optional MCP surface features.
 #[derive(Debug, Clone, Default)]
@@ -43,6 +56,8 @@ pub struct McpOptions {
     pub feedback_enabled: bool,
     /// Optional W3C traceparent used to parent each MCP request span.
     pub trace_parent: Option<String>,
+    /// Optional benchmark-owned episode context for trajectory-memory validation.
+    pub episode: Option<McpEpisodeOptions>,
 }
 
 /// Runs the `MCP` stdio server using an existing Coral client.
@@ -52,10 +67,26 @@ pub struct McpOptions {
 /// Returns [`McpError`] if the stdio server cannot complete its `MCP`
 /// lifecycle.
 pub async fn run_stdio_with_client(app: AppClient, options: McpOptions) -> Result<(), McpError> {
+    if let Some(episode) = &options.episode {
+        open_episode(&app, episode).await?;
+    }
     let server = Box::pin(
         CoralMcpServer::new(&app, options).serve((tokio::io::stdin(), tokio::io::stdout())),
     )
     .await?;
     let _ = server.waiting().await?;
+    Ok(())
+}
+
+async fn open_episode(app: &AppClient, episode: &McpEpisodeOptions) -> Result<(), McpError> {
+    let mut episode_client = app.episode_client();
+    episode_client
+        .open_episode(Request::new(OpenEpisodeRequest {
+            workspace: Some(default_workspace()),
+            episode_id: episode.episode_id.clone(),
+            intent: episode.intent.clone(),
+            parent_episode_id: episode.parent_episode_id.clone().unwrap_or_default(),
+        }))
+        .await?;
     Ok(())
 }

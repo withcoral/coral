@@ -85,6 +85,9 @@ pub(crate) enum EpisodeStoreError {
         /// The configured maximum intent length, in characters.
         max: usize,
     },
+    /// A persisted episode record no longer satisfies the episode contract.
+    #[error("invalid persisted episode: {0}")]
+    InvalidPersistedEpisode(String),
 }
 
 /// Append-only, per-workspace JSONL episode store. Paths and the shared state
@@ -136,6 +139,15 @@ impl EpisodeStore {
         storage_fs::append_file_private(&path, &line)?;
         Ok(())
     }
+
+    /// Lists the latest registration for each episode in a workspace.
+    pub(crate) fn list_episodes(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<Episode>, EpisodeStoreError> {
+        let _lock = FileLock::shared(self.layout.state_lock())?;
+        read_episodes(&self.layout.episodes_file(workspace_name), workspace_name)
+    }
 }
 
 /// Unix-nanoseconds timestamp for `created_at_unix_nanos`.
@@ -167,6 +179,41 @@ fn read_episode(
         }
     }
     Ok(found)
+}
+
+fn read_episodes(
+    path: &Path,
+    workspace_name: &WorkspaceName,
+) -> Result<Vec<Episode>, EpisodeStoreError> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut episodes = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let persisted: PersistedEpisode = serde_json::from_str(&line)?;
+        let id = EpisodeId::parse(&persisted.id)
+            .map_err(|error| EpisodeStoreError::InvalidPersistedEpisode(error.to_string()))?;
+        let parent_episode_id = persisted
+            .parent_episode_id
+            .as_deref()
+            .map(EpisodeId::parse)
+            .transpose()
+            .map_err(|error| EpisodeStoreError::InvalidPersistedEpisode(error.to_string()))?;
+        episodes.push(Episode {
+            id,
+            workspace: workspace_name.clone(),
+            intent: persisted.intent,
+            parent_episode_id,
+            created_at_unix_nanos: persisted.created_at_unix_nanos,
+        });
+    }
+    Ok(episodes)
 }
 
 #[cfg(test)]

@@ -41,8 +41,8 @@ use coral_api::v1::ExecuteSqlResponse;
 use serde_json::Value;
 
 pub use client::{
-    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, QueryClient, SourceClient,
-    default_workspace,
+    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, EpisodeClient, FeedbackClient, QueryClient,
+    SourceClient, default_workspace,
 };
 pub use episode::{CORAL_EPISODE_ID_METADATA_KEY, EpisodeIdInterceptor, with_episode_id};
 pub use error::{ClientError, QueryResultError};

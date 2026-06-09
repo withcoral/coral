@@ -20,6 +20,20 @@ pub fn bootstrap_endpoint() -> Option<String> {
 }
 
 const CORAL_TRACE_PARENT_ENV: &str = "CORAL_TRACE_PARENT";
+const CORAL_BENCH_EPISODE_ID_ENV: &str = "CORAL_BENCH_EPISODE_ID";
+const CORAL_BENCH_EPISODE_INTENT_ENV: &str = "CORAL_BENCH_EPISODE_INTENT";
+const CORAL_BENCH_PARENT_EPISODE_ID_ENV: &str = "CORAL_BENCH_PARENT_EPISODE_ID";
+
+/// Benchmark-owned trajectory-memory episode context for Coral RPC calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BenchmarkEpisodeEnv {
+    /// Client-minted episode id to attach to outgoing Coral calls.
+    pub episode_id: String,
+    /// Natural-language intent to register for the episode.
+    pub intent: String,
+    /// Optional parent episode id.
+    pub parent_episode_id: Option<String>,
+}
 
 /// Reads the optional W3C `traceparent` used to link CLI spans to a parent trace.
 #[expect(
@@ -29,4 +43,23 @@ const CORAL_TRACE_PARENT_ENV: &str = "CORAL_TRACE_PARENT";
 #[must_use]
 pub fn trace_parent() -> Option<String> {
     std::env::var(CORAL_TRACE_PARENT_ENV).ok()
+}
+
+/// Reads the benchmark-owned episode context used to validate trajectory memory.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CORAL_BENCH_* is a CLI-owned internal benchmark hook for trajectory-memory validation."
+)]
+#[must_use]
+pub fn benchmark_episode() -> Option<BenchmarkEpisodeEnv> {
+    let episode_id = std::env::var(CORAL_BENCH_EPISODE_ID_ENV).ok()?;
+    let intent = std::env::var(CORAL_BENCH_EPISODE_INTENT_ENV).ok()?;
+    let parent_episode_id = std::env::var(CORAL_BENCH_PARENT_EPISODE_ID_ENV)
+        .ok()
+        .filter(|value| !value.is_empty());
+    Some(BenchmarkEpisodeEnv {
+        episode_id,
+        intent,
+        parent_episode_id,
+    })
 }

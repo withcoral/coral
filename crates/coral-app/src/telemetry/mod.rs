@@ -25,7 +25,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
 pub mod config;
-mod local_store;
+pub(crate) mod local_store;
 pub mod metrics;
 pub(crate) mod service;
 

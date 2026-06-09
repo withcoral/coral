@@ -95,6 +95,12 @@ impl AppStateLayout {
             .join("episodes.jsonl")
     }
 
+    pub(crate) fn trajectory_memory_db(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.workspace_dir(workspace_name)
+            .join("episodes")
+            .join("trajectory-memory.sqlite3")
+    }
+
     pub(crate) fn source_dir(
         &self,
         workspace_name: &WorkspaceName,

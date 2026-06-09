@@ -354,6 +354,44 @@ impl QueryRuntimeConfig {
     }
 }
 
+/// DataFusion-derived structural fingerprint for one planned `SQL` statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryFingerprint {
+    relations: Vec<String>,
+    shape_hash: String,
+    exact_key: String,
+}
+
+impl QueryFingerprint {
+    #[must_use]
+    /// Builds a query fingerprint from canonical relation and hash components.
+    pub fn new(relations: Vec<String>, shape_hash: String, exact_key: String) -> Self {
+        Self {
+            relations,
+            shape_hash,
+            exact_key,
+        }
+    }
+
+    #[must_use]
+    /// Returns table or table-function relations touched by the logical plan.
+    pub fn relations(&self) -> &[String] {
+        &self.relations
+    }
+
+    #[must_use]
+    /// Returns the literals-abstracted structural hash.
+    pub fn shape_hash(&self) -> &str {
+        &self.shape_hash
+    }
+
+    #[must_use]
+    /// Returns the literals-preserved structural hash used for exact dedup.
+    pub fn exact_key(&self) -> &str {
+        &self.exact_key
+    }
+}
+
 /// Query-engine plan renderings for one `SQL` statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryPlan {

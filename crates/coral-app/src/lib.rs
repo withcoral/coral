@@ -46,6 +46,7 @@ mod sources;
 mod state;
 mod storage;
 pub mod telemetry;
+mod trajectory;
 mod transport;
 mod workspaces;
 

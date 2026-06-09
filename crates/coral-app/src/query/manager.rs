@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use coral_engine::{
-    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
+    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryFingerprint,
+    QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
     SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
@@ -161,6 +161,20 @@ impl QueryManager {
             |_| None,
         )
         .await
+    }
+
+    pub(crate) async fn fingerprint_sql_batch(
+        &self,
+        workspace_name: &WorkspaceName,
+        sqls: &[String],
+    ) -> Result<Vec<QueryFingerprint>, QueryManagerError> {
+        let sources = self
+            .load_query_sources(workspace_name)
+            .map_err(QueryManagerError::App)?;
+        let runtime = self.runtime_config(workspace_name, &sources);
+        CoralQuery::fingerprint_sql_batch(&sources, runtime, sqls)
+            .await
+            .map_err(QueryManagerError::Core)
     }
 
     pub(crate) async fn validate_source(

@@ -495,7 +495,6 @@ struct TraceSpanIdentityRecord {
 }
 
 impl TraceStore {
-    #[cfg(test)]
     pub(crate) fn new(dir: PathBuf) -> Self {
         Self {
             dir,

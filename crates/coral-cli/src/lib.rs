@@ -27,12 +27,12 @@ use clap::{
     Parser, Subcommand, ValueEnum,
 };
 use clap_complete::{Shell, generate};
-use coral_api::v1::ExecuteSqlRequest;
+use coral_api::v1::{ExecuteSqlRequest, OpenEpisodeRequest};
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
 use coral_client::{
     AppClient, decode_execute_sql_response, default_workspace, format_batches_json,
-    format_batches_table, manifest_input_from_proto,
+    format_batches_table, manifest_input_from_proto, with_episode_id,
 };
 use dialoguer::console::measure_text_width;
 use tonic::Request;
@@ -437,6 +437,7 @@ pub async fn run_from_env() -> Result<(), CliError> {
             let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
             let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
                 enable_stderr_logs: command.enables_stderr_logs(),
+                feature_overrides: feature_overrides.clone(),
             })
             .await
             .map_err(anyhow::Error::from)?;
@@ -534,14 +535,23 @@ async fn run_app_command(
 ) -> Result<(), CliError> {
     match command {
         Command::Sql(args) => {
-            let response = match app
-                .query_client()
-                .execute_sql(Request::new(ExecuteSqlRequest {
-                    workspace: Some(default_workspace()),
-                    sql: args.sql,
-                }))
-                .await
-            {
+            let benchmark_episode = env::benchmark_episode();
+            if let Some(episode) = &benchmark_episode {
+                open_benchmark_episode(&app, episode).await?;
+            }
+
+            let format = args.format;
+            let mut query_client = app.query_client();
+            let request = Request::new(ExecuteSqlRequest {
+                workspace: Some(default_workspace()),
+                sql: args.sql,
+            });
+            let execute_sql = async move { query_client.execute_sql(request).await };
+            let response = match benchmark_episode {
+                Some(episode) => with_episode_id(episode.episode_id, execute_sql).await,
+                None => execute_sql.await,
+            };
+            let response = match response {
                 Ok(response) => response.into_inner(),
                 Err(status) => {
                     return Err(CliError::Query {
@@ -552,7 +562,7 @@ async fn run_app_command(
                 }
             };
             let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
-            print_batches(result.batches(), args.format)?;
+            print_batches(result.batches(), format)?;
         }
         Command::Source(args) => run_source(&app, args).await?,
         Command::Onboard => {
@@ -567,6 +577,11 @@ async fn run_app_command(
                 coral_mcp::McpOptions {
                     feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
+                    episode: env::benchmark_episode().map(|episode| coral_mcp::McpEpisodeOptions {
+                        episode_id: episode.episode_id,
+                        intent: episode.intent,
+                        parent_episode_id: episode.parent_episode_id,
+                    }),
                 },
             ))
             .await
@@ -616,6 +631,28 @@ fn run_features(
             println!("Disabled feature `{feature}` in config.toml.");
         }
     }
+    Ok(())
+}
+
+async fn open_benchmark_episode(
+    app: &AppClient,
+    episode: &env::BenchmarkEpisodeEnv,
+) -> Result<(), CliError> {
+    let mut episode_client = app.episode_client();
+    episode_client
+        .open_episode(Request::new(OpenEpisodeRequest {
+            workspace: Some(default_workspace()),
+            episode_id: episode.episode_id.clone(),
+            intent: episode.intent.clone(),
+            parent_episode_id: episode.parent_episode_id.clone().unwrap_or_default(),
+        }))
+        .await
+        .map_err(|status| {
+            anyhow::anyhow!(
+                "failed to open benchmark episode '{}': {status}",
+                episode.episode_id
+            )
+        })?;
     Ok(())
 }
 

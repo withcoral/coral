@@ -6,9 +6,12 @@ use coral_api::v1::{
     ListSourcesRequest, PaginationRequest, SearchCatalogRequest, Source, SubmitFeedbackRequest,
     TableSummary as ProtoTableSummary, catalog_item,
 };
+use std::future::Future;
+
 use coral_client::{
     AppClient, CatalogClient, FeedbackClient, QueryClient, SourceClient,
     batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
+    with_episode_id as scoped_episode_id,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -216,18 +219,29 @@ impl CoralMcpServer {
     }
 
     async fn query_rows(&self, sql: &str) -> Result<Vec<Value>, tonic::Status> {
-        let mut query_client = self.query.clone();
-        let response = query_client
-            .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(default_workspace()),
-                sql: sql.to_string(),
-            }))
+        let response = self
+            .with_episode_id(async {
+                let mut query_client = self.query.clone();
+                query_client
+                    .execute_sql(Request::new(ExecuteSqlRequest {
+                        workspace: Some(default_workspace()),
+                        sql: sql.to_string(),
+                    }))
+                    .await
+            })
             .await?
             .into_inner();
         let result = decode_execute_sql_response(&response)
             .map_err(|error| tonic::Status::internal(error.to_string()))?;
         batches_to_json_rows_json_safe_numbers(result.batches())
             .map_err(|error| tonic::Status::internal(error.to_string()))
+    }
+
+    async fn with_episode_id<T>(&self, future: impl Future<Output = T>) -> T {
+        match self.options.episode.as_ref() {
+            Some(episode) => scoped_episode_id(episode.episode_id.clone(), future).await,
+            None => future.await,
+        }
     }
 
     async fn execute_sql_value(&self, sql: &str) -> Result<Value, tonic::Status> {
@@ -457,10 +471,17 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<ListToolsResult, ErrorData> {
         let span = telemetry::list_tools_span(self.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
-            let (visible_table_count, visible_function_count) = self
-                .load_catalog_counts()
-                .await
-                .map_err(|status| status_to_error_data(&status))?;
+            let (visible_table_count, visible_function_count) =
+                match self.load_catalog_counts().await {
+                    Ok(counts) => counts,
+                    Err(status) => {
+                        tracing::warn!(
+                            error = %status,
+                            "falling back to zero catalog counts while listing MCP tools"
+                        );
+                        (0, 0)
+                    }
+                };
             let mut tools = vec![
                 sql_tool(visible_table_count),
                 list_catalog_tool(visible_table_count, visible_function_count),

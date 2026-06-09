@@ -66,10 +66,10 @@ pub use composition::{
     SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
 };
 pub use contracts::{
-    CatalogInfo, ColumnInfo, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult,
-    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode,
-    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
+    CatalogInfo, ColumnInfo, CoreError, DescribeTableInfo, QueryExecution, QueryFingerprint,
+    QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure,
+    QueryTestResult, RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport,
+    StatusCode, StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
     TableFunctionResultColumnInfo, TableInfo,
 };
 
@@ -184,6 +184,60 @@ impl CoralQuery {
             .await?
             .explain_sql(sql)
             .await
+    }
+
+    /// Fingerprints one `SQL` statement from its optimized logical plan.
+    ///
+    /// The statement is planned but not executed. Fingerprints are intended for
+    /// trajectory-memory deduplication and consensus; they should not be treated
+    /// as a user-facing stability contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty, if source compilation fails,
+    /// or if the query engine cannot plan the statement.
+    pub async fn fingerprint_sql(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        sql: &str,
+    ) -> Result<QueryFingerprint, CoreError> {
+        if sql.trim().is_empty() {
+            return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
+        }
+
+        runtime::query::build_runtime(sources, runtime)
+            .await?
+            .fingerprint_sql(sql)
+            .await
+    }
+
+    /// Fingerprints multiple `SQL` statements against one runtime.
+    ///
+    /// This is intended for offline indexing jobs that need to plan many
+    /// previously observed queries for the same workspace. It builds and
+    /// registers the source runtime once, then plans each statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if any SQL is empty, if source compilation fails,
+    /// or if any statement cannot be planned.
+    pub async fn fingerprint_sql_batch(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        sqls: &[String],
+    ) -> Result<Vec<QueryFingerprint>, CoreError> {
+        for sql in sqls {
+            if sql.trim().is_empty() {
+                return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
+            }
+        }
+
+        let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
+        let mut fingerprints = Vec::with_capacity(sqls.len());
+        for sql in sqls {
+            fingerprints.push(query_runtime.fingerprint_sql(sql).await?);
+        }
+        Ok(fingerprints)
     }
 
     /// Validates that a single source can be initialized and queried.

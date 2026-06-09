@@ -82,7 +82,9 @@ fn open_episode_status(error: &EpisodeStoreError) -> Status {
     match error {
         EpisodeStoreError::Conflict { .. } => Status::failed_precondition(error.to_string()),
         EpisodeStoreError::InvalidIntent { .. } => Status::invalid_argument(error.to_string()),
-        EpisodeStoreError::Io(_) | EpisodeStoreError::Serde(_) => {
+        EpisodeStoreError::Io(_)
+        | EpisodeStoreError::Serde(_)
+        | EpisodeStoreError::InvalidPersistedEpisode(_) => {
             warn!(%error, "failed to persist episode");
             Status::internal("failed to persist episode")
         }
