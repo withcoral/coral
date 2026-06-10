@@ -156,9 +156,13 @@ async fn list_catalog_does_not_refresh_expired_oauth_access_token() {
     );
 
     let tables = harness.list_tables().await;
+    let refreshed_tables = tables
+        .iter()
+        .filter(|table| table.schema_name == "refreshed_messages")
+        .collect::<Vec<_>>();
 
-    assert_eq!(tables.len(), 1);
-    assert_eq!(tables[0].name, "messages");
+    assert_eq!(refreshed_tables.len(), 1);
+    assert_eq!(refreshed_tables[0].name, "messages");
     assert!(
         fixture.token_forms().is_empty(),
         "passive catalog discovery should not call the token endpoint"

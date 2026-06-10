@@ -906,6 +906,47 @@ rate_limit:
   reset_header: X-RateLimit-Reset
 ```
 
+### HTTP dependent-join capability metadata
+
+HTTP table filters can opt in to dependent predicate pushdown. This metadata is
+table-local: it says a filter may be supplied from a runtime join key, not that
+the table depends on a specific source pair.
+
+The manifest contract is deliberately narrow:
+
+| Field | Scope | Type | Default | Description |
+| ----- | ----- | ---- | ------- | ----------- |
+| `filters[].lookup_key` | filter | boolean | `false` | Allows the filter to be supplied from a runtime join key |
+
+Lookup-key filters must use `mode: equality`. Do not mark ranked, capped, fuzzy,
+or otherwise incomplete search-result filters as lookup keys; dependent joins rely
+on complete filtered result sets to preserve SQL join correctness.
+
+Dependent join execution buffers resolver rows and dependent fetch results
+before producing joined output. Row, binding, and fanout limits are engine
+runtime policy, not manifest metadata.
+
+Example:
+
+```yaml
+tables:
+  - name: pull_requests
+    description: Pull requests
+    request:
+      path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.number}}
+    filters:
+      - name: owner
+        lookup_key: true
+      - name: repo
+        lookup_key: true
+      - name: number
+        type: Int64
+        lookup_key: true
+    columns:
+      - name: number
+        type: Int64
+```
+
 ### HTTP value sources
 
 Request query params, body fields, and headers support these `from` values:

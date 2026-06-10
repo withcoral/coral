@@ -48,9 +48,15 @@ pub(crate) fn guide_resource_content(
     );
     let mut schemas = tables
         .iter()
+        .filter(|table| table.schema_name != "coral")
         .map(|table| table.schema_name.as_str())
         .collect::<BTreeSet<_>>();
-    schemas.extend(table_function_schema_names.iter().map(String::as_str));
+    schemas.extend(
+        table_function_schema_names
+            .iter()
+            .map(String::as_str)
+            .filter(|schema| *schema != "coral"),
+    );
     if schemas.is_empty() {
         if sources.is_empty() {
             sources_section.push_str("\nNo user schemas are currently configured.\n");
@@ -116,6 +122,7 @@ fn tables_resource_description(visible_table_count: usize) -> String {
 fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str)> {
     tables
         .iter()
+        .filter(|table| table.schema_name != "coral")
         .min_by(|left, right| {
             (&left.schema_name, &left.name).cmp(&(&right.schema_name, &right.name))
         })
