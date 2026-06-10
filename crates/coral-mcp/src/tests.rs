@@ -1352,7 +1352,7 @@ async fn mcp_sql_large_result_returns_handle_and_result_get_pages() {
         ]
     );
 
-    client
+    let error = client
         .call_tool(
             CallToolRequestParams::new("result_get").with_arguments(json_object(&json!({
                 "result_id": "res_missing"
@@ -1360,6 +1360,11 @@ async fn mcp_sql_large_result_returns_handle_and_result_get_pages() {
         )
         .await
         .expect_err("unknown handle should fail");
+    let rmcp::service::ServiceError::McpError(error_data) = error else {
+        panic!("unknown handle should fail with a protocol error, got: {error:?}");
+    };
+    assert_eq!(error_data.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert!(error_data.message.contains("res_missing"));
 
     session.shutdown().await;
 }
