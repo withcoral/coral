@@ -1276,11 +1276,13 @@ async fn mcp_sql_large_result_returns_handle_and_result_get_pages() {
     );
 
     let structured = sql.structured_content.expect("structured content");
+    // The handle is opaque to clients; its format is pinned by result_store
+    // unit tests, while this contract test proves it round-trips below.
     let result_id = structured["result_id"]
         .as_str()
         .expect("result id")
         .to_string();
-    assert!(result_id.starts_with("res_"));
+    assert!(!result_id.is_empty());
     assert_eq!(structured["row_count"], 121);
     assert_eq!(structured["column_count"], 2);
     assert_eq!(structured["columns"][0]["name"], "id");
