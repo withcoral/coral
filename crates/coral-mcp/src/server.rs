@@ -11,8 +11,8 @@ use coral_client::{
     SourceClient, batches_to_json_rows_json_safe_numbers, decode_execute_sql_response,
     default_workspace,
     result_slice::{
-        ColumnSummary, ResultPage, ResultSliceRequest, result_estimated_bytes, schema_summary,
-        slice_result,
+        ColumnSummary, ResultPage, ResultSliceRequest, has_duplicate_column_names,
+        result_estimated_bytes, schema_summary, slice_result,
     },
 };
 use rmcp::{
@@ -294,6 +294,15 @@ impl CoralMcpServer {
         let result = self.execute_sql_result(sql).await?;
         if let Some(value) = inline_sql_value_if_small(&result)? {
             return Ok(value);
+        }
+
+        // JSON object rows collapse duplicate column names and result_get
+        // projects columns by name, so duplicate-named results cannot be
+        // paged through a handle. Keep the legacy inline shape for them.
+        if has_duplicate_column_names(&result) {
+            let rows = batches_to_json_rows_json_safe_numbers(result.batches())
+                .map_err(|error| query_result_status(&error))?;
+            return serialize_tool_value(SqlRowsValue { rows });
         }
 
         let result = Arc::new(result);

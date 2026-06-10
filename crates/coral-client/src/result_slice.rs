@@ -64,6 +64,18 @@ pub fn schema_summary(result: &CollectedQueryResult) -> Vec<ColumnSummary> {
         .collect()
 }
 
+/// Returns whether the result schema contains the same column name more than
+/// once. JSON object rows cannot represent duplicate keys, so such results
+/// cannot be sliced or paged by name.
+#[must_use]
+pub fn has_duplicate_column_names(result: &CollectedQueryResult) -> bool {
+    let fields = result.schema().fields();
+    let mut seen = HashSet::with_capacity(fields.len());
+    fields
+        .iter()
+        .any(|field| !seen.insert(field.name().as_str()))
+}
+
 /// Returns approximate in-memory bytes held by the decoded Arrow batches.
 #[must_use]
 pub fn result_estimated_bytes(result: &CollectedQueryResult) -> usize {
@@ -134,6 +146,17 @@ fn projection_indices(
 ) -> Result<Vec<usize>, QueryResultError> {
     let fields = result.schema().fields();
     let Some(columns) = columns else {
+        // Rows render as JSON objects, so duplicate names would silently
+        // collapse into one key and corrupt the page.
+        let mut seen = HashSet::with_capacity(fields.len());
+        for field in fields {
+            if !seen.insert(field.name().as_str()) {
+                return Err(invalid_result_request(format!(
+                    "result contains column '{}' more than once and cannot be rendered as JSON rows; alias the columns in SQL",
+                    field.name()
+                )));
+            }
+        }
         return Ok((0..fields.len()).collect());
     };
     if columns.is_empty() {
@@ -425,6 +448,21 @@ mod tests {
             },
         )
         .expect_err("ambiguous projection should fail");
+
+        assert!(super::has_duplicate_column_names(&ambiguous));
+        let error = slice_result(
+            &ambiguous,
+            ResultSliceRequest {
+                offset: 0,
+                limit: 1,
+                columns: None,
+            },
+        )
+        .expect_err("omitted columns on a duplicate-named result should fail");
+        assert!(matches!(
+            error,
+            crate::QueryResultError::InvalidSliceRequest(_)
+        ));
     }
 
     #[test]

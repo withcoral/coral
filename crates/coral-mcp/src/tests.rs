@@ -1208,6 +1208,41 @@ async fn mcp_tool_error_does_not_end_session() {
     session.shutdown().await;
 }
 
+/// Duplicate-named results cannot be paged by name through result_get, so
+/// even large ones must keep the legacy inline shape instead of a handle.
+#[tokio::test]
+async fn mcp_sql_duplicate_named_result_stays_inline() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+
+    let values = (0..121)
+        .map(|idx| format!("({idx})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": format!(
+                    "WITH t AS (SELECT * FROM (VALUES {values}) AS v(id)) \
+                     SELECT a.id, b.id FROM t a JOIN t b ON a.id = b.id ORDER BY a.id"
+                )
+            }))),
+        )
+        .await
+        .expect("sql");
+    assert_eq!(sql.is_error, Some(false));
+
+    let structured = sql.structured_content.expect("structured content");
+    assert!(
+        structured.get("result_id").is_none(),
+        "duplicate-named results should not return a handle"
+    );
+    assert_eq!(structured["rows"].as_array().expect("rows").len(), 121);
+
+    session.shutdown().await;
+}
+
 /// End-to-end guard for the MCP JSON contract: a large `Int64` result must
 /// arrive in `structured_content` as a JSON string, not a JSON number, so
 /// clients that parse JSON via IEEE-754 doubles preserve the exact value.
