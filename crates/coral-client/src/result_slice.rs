@@ -89,7 +89,9 @@ pub fn slice_result(
         .iter()
         .map(|idx| {
             let field = result.schema().fields().get(*idx).ok_or_else(|| {
-                invalid_result_request("validated projection index was outside the result schema")
+                QueryResultError::InvalidResponse(
+                    "validated projection index was outside the result schema".to_string(),
+                )
             })?;
             Ok::<ColumnSummary, QueryResultError>(column_summary(*idx, field))
         })
@@ -220,7 +222,7 @@ fn all_columns_selected(result: &CollectedQueryResult, indices: &[usize]) -> boo
 }
 
 fn invalid_result_request(message: impl Into<String>) -> QueryResultError {
-    QueryResultError::InvalidResponse(message.into())
+    QueryResultError::InvalidSliceRequest(message.into())
 }
 
 #[cfg(test)]
@@ -364,7 +366,7 @@ mod tests {
     fn slice_result_rejects_empty_duplicate_missing_and_ambiguous_columns() {
         let result = two_batch_result();
         let empty: Vec<String> = Vec::new();
-        slice_result(
+        let error = slice_result(
             &result,
             ResultSliceRequest {
                 offset: 0,
@@ -373,6 +375,10 @@ mod tests {
             },
         )
         .expect_err("empty projection should fail");
+        assert!(matches!(
+            error,
+            crate::QueryResultError::InvalidSliceRequest(_)
+        ));
 
         let duplicate = vec!["id".to_string(), "id".to_string()];
         slice_result(

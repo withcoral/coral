@@ -23,4 +23,8 @@ pub enum QueryResultError {
     /// The server returned an invalid query result payload.
     #[error("invalid query result: {0}")]
     InvalidResponse(String),
+    /// The caller requested an invalid result slice, such as an unknown or
+    /// ambiguous column projection.
+    #[error("invalid result request: {0}")]
+    InvalidSliceRequest(String),
 }

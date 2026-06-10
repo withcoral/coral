@@ -710,7 +710,14 @@ fn query_result_status(error: &QueryResultError) -> tonic::Status {
 }
 
 fn result_store_error_data(error: &ResultStoreError) -> ErrorData {
-    ErrorData::invalid_params(error.to_string(), None)
+    match error {
+        ResultStoreError::NotFound(_) | ResultStoreError::Expired(_) => {
+            ErrorData::invalid_params(error.to_string(), None)
+        }
+        ResultStoreError::TooLarge { .. } | ResultStoreError::Unavailable => {
+            ErrorData::internal_error(error.to_string(), None)
+        }
+    }
 }
 
 fn result_store_status(error: &ResultStoreError) -> tonic::Status {
@@ -719,7 +726,7 @@ fn result_store_status(error: &ResultStoreError) -> tonic::Status {
 
 fn result_page_error_data(error: QueryResultError) -> ErrorData {
     match error {
-        QueryResultError::InvalidResponse(message) => ErrorData::invalid_params(message, None),
+        QueryResultError::InvalidSliceRequest(message) => ErrorData::invalid_params(message, None),
         other => ErrorData::internal_error(other.to_string(), None),
     }
 }
