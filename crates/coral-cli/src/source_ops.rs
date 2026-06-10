@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Read as _, Write, stdin, stdout};
 use std::net::TcpStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use anyhow::{Context as _, bail};
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
@@ -19,6 +20,7 @@ use coral_api::v1::{
     import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
+use coral_spec::v4::SurfaceDescriptor;
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
     ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec, ValidatedSourceManifest,
@@ -28,6 +30,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use dialoguer::console::style;
 use dialoguer::{Input, Password, Select, theme::ColorfulTheme};
+use serde_yaml::Value as YamlValue;
 use tonic::Request;
 use url::{Host, Url};
 
@@ -382,7 +385,120 @@ pub(crate) fn load_validated_manifest_file(
 ) -> Result<(String, ValidatedSourceManifest), anyhow::Error> {
     let manifest_yaml = std::fs::read_to_string(file)?;
     let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
+    let manifest_dir = manifest_file_parent_dir(file)?;
+    let manifest_yaml =
+        durable_manifest_file_yaml(&manifest_yaml, &manifest, manifest_dir.as_path())?;
+    let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
     Ok((manifest_yaml, manifest))
+}
+
+fn manifest_file_parent_dir(file: &Path) -> Result<PathBuf, anyhow::Error> {
+    let parent = file
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    parent.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize manifest directory '{}'",
+            parent.display()
+        )
+    })
+}
+
+fn durable_manifest_file_yaml(
+    manifest_yaml: &str,
+    manifest: &ValidatedSourceManifest,
+    manifest_dir: &Path,
+) -> Result<String, anyhow::Error> {
+    let Some(v4) = manifest.as_v4() else {
+        return Ok(manifest_yaml.to_string());
+    };
+    let mut replacement_files = BTreeMap::new();
+    for surface in &v4.surfaces {
+        let SurfaceDescriptor::File { file } = &surface.descriptor else {
+            continue;
+        };
+        let canonical = canonicalize_manifest_descriptor(file, manifest_dir)?;
+        if canonical != *file {
+            replacement_files.insert(surface.id.as_str(), canonical);
+        }
+    }
+    if replacement_files.is_empty() {
+        return Ok(manifest_yaml.to_string());
+    }
+
+    let mut value: YamlValue = serde_yaml::from_str(manifest_yaml)?;
+    let surfaces_key = YamlValue::String("surfaces".to_string());
+    let id_key = YamlValue::String("id".to_string());
+    let file_key = YamlValue::String("file".to_string());
+    let surfaces = value
+        .as_mapping_mut()
+        .and_then(|mapping| mapping.get_mut(&surfaces_key))
+        .and_then(YamlValue::as_sequence_mut)
+        .ok_or_else(|| anyhow::anyhow!("DSL v4 manifest is missing surfaces"))?;
+    for surface in surfaces {
+        let Some(mapping) = surface.as_mapping_mut() else {
+            continue;
+        };
+        let Some(surface_id) = mapping.get(&id_key).and_then(YamlValue::as_str) else {
+            continue;
+        };
+        let Some(file) = replacement_files.get(surface_id) else {
+            continue;
+        };
+        mapping.insert(
+            file_key.clone(),
+            YamlValue::String(file.display().to_string()),
+        );
+    }
+    serde_yaml::to_string(&value).map_err(Into::into)
+}
+
+fn canonicalize_manifest_descriptor(
+    file: &Path,
+    manifest_dir: &Path,
+) -> Result<PathBuf, anyhow::Error> {
+    let (candidate, relative_base) = if file.is_absolute() {
+        (file.to_path_buf(), None)
+    } else {
+        (manifest_dir.join(file), Some(manifest_dir))
+    };
+    let metadata = std::fs::symlink_metadata(&candidate).with_context(|| {
+        format!(
+            "failed to inspect OpenAPI descriptor '{}' resolved from manifest directory '{}'",
+            file.display(),
+            manifest_dir.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "OpenAPI descriptor '{}' must not be a symlink",
+            file.display()
+        );
+    }
+    if !metadata.file_type().is_file() {
+        bail!(
+            "OpenAPI descriptor '{}' must be a regular file",
+            file.display()
+        );
+    }
+    let canonical = candidate.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize OpenAPI descriptor '{}' resolved from manifest directory '{}'",
+            file.display(),
+            manifest_dir.display()
+        )
+    })?;
+    if let Some(base) = relative_base
+        && !canonical.starts_with(base)
+    {
+        bail!(
+            "relative OpenAPI descriptor '{}' resolves outside manifest directory '{}'",
+            file.display(),
+            base.display()
+        );
+    }
+    Ok(canonical)
 }
 
 pub(crate) async fn print_source_info(
@@ -421,7 +537,9 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
             source_credential_storage_label(source.credential_storage)
         );
     }
-    println!("  Version:     {}", source.version);
+    if !source.version.is_empty() {
+        println!("  Version:     {}", source.version);
+    }
     if !source.description.is_empty() {
         println!("  Description: {}", source.description);
     }
@@ -456,6 +574,14 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
         if verbose && !input.hint.is_empty() {
             println!("      {}", style(&input.hint).dim());
         }
+    }
+}
+
+pub(crate) fn display_version(version: &str) -> String {
+    if version.is_empty() {
+        "-".to_string()
+    } else {
+        version.to_string()
     }
 }
 

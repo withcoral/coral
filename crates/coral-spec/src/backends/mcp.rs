@@ -289,6 +289,7 @@ impl McpTableFilterSpec {
             required: self.required,
             mode: self.mode,
             description: self.description.clone(),
+            lookup_key: false,
         }
     }
 

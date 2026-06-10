@@ -351,6 +351,15 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             origin: SourceOrigin::Imported as i32,
             credential_storage: SourceCredentialStorage::File as i32,
         }),
+        "versionless" => Ok(SourceInfo {
+            name: "versionless".to_string(),
+            description: String::new(),
+            version: String::new(),
+            inputs: Vec::new(),
+            installed: true,
+            origin: SourceOrigin::Imported as i32,
+            credential_storage: SourceCredentialStorage::File as i32,
+        }),
         _ => Err(Status::not_found(format!("unknown source '{name}'"))),
     }
 }
@@ -1110,6 +1119,14 @@ impl MockServer {
             .delete_source
             .lock()
             .expect("delete_source capture")
+            .clone()
+    }
+
+    pub(crate) fn import_source_requests(&self) -> Vec<ImportSourceRequest> {
+        self.captured
+            .import_source
+            .lock()
+            .expect("import_source capture")
             .clone()
     }
 

@@ -50,6 +50,15 @@ impl FixtureFormat {
         }
     }
 
+    fn file_name(self) -> &'static str {
+        match self {
+            Self::Parquet => "orders.parquet",
+            Self::Jsonl => "orders.jsonl",
+            Self::Json => "orders.json",
+            Self::Csv => "orders.csv",
+        }
+    }
+
     fn schema_name(self) -> &'static str {
         match self {
             Self::Parquet => "orders_parquet",
@@ -57,6 +66,55 @@ impl FixtureFormat {
             Self::Json => "orders_json",
             Self::Csv => "orders_csv",
         }
+    }
+}
+
+#[tokio::test]
+async fn file_scoped_metadata_queryable_across_file_formats() {
+    for format in [
+        FixtureFormat::Parquet,
+        FixtureFormat::Jsonl,
+        FixtureFormat::Json,
+        FixtureFormat::Csv,
+    ] {
+        let temp = TempDir::new().expect("temp dir");
+        write_orders_fixture(temp.path(), format, &orders());
+        let sources = vec![build_source(orders_manifest_with_file_metadata(
+            format,
+            temp.path(),
+        ))];
+        let schema = format.schema_name();
+
+        let rows = execution_to_rows(
+            &CoralQuery::execute_sql(
+                &sources,
+                test_runtime(),
+                &format!(
+                    "SELECT DISTINCT sale_date, file_path, file_name, file_stem \
+                     FROM {schema}.orders \
+                     ORDER BY sale_date"
+                ),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{format:?} metadata query failed: {error:?}")),
+        );
+
+        let file_name = format.file_name();
+        let expected = vec![
+            json!({
+                "sale_date": "2026-04-01",
+                "file_path": format!("sale_date=2026-04-01/{file_name}"),
+                "file_name": file_name,
+                "file_stem": "orders"
+            }),
+            json!({
+                "sale_date": "2026-04-02",
+                "file_path": format!("sale_date=2026-04-02/{file_name}"),
+                "file_name": file_name,
+                "file_stem": "orders"
+            }),
+        ];
+        assert_eq!(rows, expected, "{format:?} metadata rows differed");
     }
 }
 
@@ -256,6 +314,30 @@ fn orders_manifest(format: FixtureFormat, root: &Path) -> Value {
         "backend": "file",
         "tables": [table],
     })
+}
+
+fn orders_manifest_with_file_metadata(format: FixtureFormat, root: &Path) -> Value {
+    let mut manifest = orders_manifest(format, root);
+    let table = manifest
+        .as_object_mut()
+        .and_then(|manifest| manifest.get_mut("tables"))
+        .and_then(Value::as_array_mut)
+        .and_then(|tables| tables.first_mut())
+        .and_then(Value::as_object_mut)
+        .expect("orders manifest should have one table object");
+    let source = table
+        .get_mut("source")
+        .and_then(Value::as_object_mut)
+        .expect("orders table should have a source object");
+    source.insert(
+        "metadata".to_string(),
+        json!([
+            { "name": "file_path", "kind": "relative_path" },
+            { "name": "file_name", "kind": "file_name" },
+            { "name": "file_stem", "kind": "file_stem" }
+        ]),
+    );
+    manifest
 }
 
 fn nested_events_manifest(format: FixtureFormat, root: &Path) -> Value {

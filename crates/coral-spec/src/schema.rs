@@ -8,14 +8,41 @@ use serde_json::Value as JsonValue;
 use crate::{ManifestError, Result};
 
 static SOURCE_SCHEMA: OnceLock<JSONSchema> = OnceLock::new();
+static SOURCE_V4_SCHEMA: OnceLock<JSONSchema> = OnceLock::new();
 
 pub(crate) fn validate_manifest_schema(manifest_json: &JsonValue) -> Result<()> {
-    let validator = SOURCE_SCHEMA.get_or_init(|| {
+    validate_with_schema(manifest_json, source_schema())
+}
+
+pub(crate) fn validate_manifest_schema_for_dsl_version(
+    manifest_json: &JsonValue,
+    dsl_version: u32,
+) -> Result<()> {
+    if dsl_version == 4 {
+        return validate_with_schema(manifest_json, source_v4_schema());
+    }
+    validate_manifest_schema(manifest_json)
+}
+
+fn source_schema() -> &'static JSONSchema {
+    SOURCE_SCHEMA.get_or_init(|| {
         let schema_json: JsonValue =
             serde_json::from_str(include_str!("schema/source_manifest.schema.json"))
                 .expect("embedded source schema must be valid JSON");
         JSONSchema::compile(&schema_json).expect("embedded source schema must compile")
-    });
+    })
+}
+
+fn source_v4_schema() -> &'static JSONSchema {
+    SOURCE_V4_SCHEMA.get_or_init(|| {
+        let schema_json: JsonValue =
+            serde_json::from_str(include_str!("schema/source_manifest_v4.schema.json"))
+                .expect("embedded DSL v4 source schema must be valid JSON");
+        JSONSchema::compile(&schema_json).expect("embedded DSL v4 source schema must compile")
+    })
+}
+
+fn validate_with_schema(manifest_json: &JsonValue, validator: &JSONSchema) -> Result<()> {
     if let Err(errors) = validator.validate(manifest_json) {
         let problems: Vec<String> = errors
             .take(8)
@@ -117,6 +144,21 @@ functions:
         );
         assert!(message.contains("/functions/0/name"), "{message}");
         assert!(message.contains("^[A-Za-z_][A-Za-z0-9_]*$"), "{message}");
+    }
+
+    #[test]
+    fn validate_manifest_schema_directly_rejects_v4_manifest() {
+        let manifest = manifest_json(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+",
+        );
+        validate_manifest_schema(&manifest).expect_err("v3 schema should reject v4 manifests");
     }
 
     #[test]
@@ -295,6 +337,113 @@ tables:
         assert!(message.contains("/tables/0"), "{message}");
         assert!(message.contains("search_limits"), "{message}");
         assert!(message.contains("detail_hints"), "{message}");
+    }
+
+    #[test]
+    fn parse_source_manifest_yaml_accepts_jsonl_file_metadata() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: events
+    description: Demo events
+    format: jsonl
+    source:
+      location: file:///tmp/events/
+      metadata:
+        - name: session_path
+          kind: relative_path
+        - name: session_file
+          kind: file_stem
+        - name: event_index
+          kind: line_number
+    columns:
+      - name: type
+        type: Utf8
+",
+        )
+        .expect("JSONL file metadata should pass full manifest parsing");
+        assert!(manifest.as_file().is_some());
+    }
+
+    #[test]
+    fn validate_manifest_schema_accepts_empty_file_metadata_for_non_jsonl_tables() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: events
+    description: Demo events
+    format: parquet
+    source:
+      location: file:///tmp/events/
+      metadata: []
+",
+        );
+        validate_manifest_schema(&manifest)
+            .expect("empty non-JSONL metadata should match Rust parsing");
+    }
+
+    #[test]
+    fn validate_manifest_schema_accepts_file_scoped_metadata_for_non_jsonl_tables() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: events
+    description: Demo events
+    format: parquet
+    source:
+      location: file:///tmp/events/
+      metadata:
+        - name: file_path
+          kind: relative_path
+",
+        );
+        validate_manifest_schema(&manifest)
+            .expect("file-scoped metadata should be valid for non-JSONL file tables");
+    }
+
+    #[test]
+    fn validate_manifest_schema_rejects_line_number_metadata_for_non_jsonl_tables() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: events
+    description: Demo events
+    format: parquet
+    source:
+      location: file:///tmp/events/
+      metadata:
+        - name: event_index
+          kind: line_number
+",
+        );
+        let error = validate_manifest_schema(&manifest).expect_err("schema validation should fail");
+        let message = error.to_string();
+        assert!(
+            message.starts_with("source manifest failed schema validation:"),
+            "{message}"
+        );
+        assert!(message.contains("/tables/0/source"), "{message}");
+        assert!(message.contains("metadata"), "{message}");
+        assert!(
+            message.contains("line_number"),
+            "schema error should reject non-JSONL line_number metadata: {message}"
+        );
     }
 
     #[test]

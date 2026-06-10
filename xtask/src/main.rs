@@ -9,6 +9,7 @@
 //!   - `export-skills` exports installable agent skills from the canonical
 //!     plugin tree into a distribution checkout.
 //!   - `perf-check` runs command-level performance regression checks.
+//!   - `generate-schemas` refreshes checked-in generated JSON schemas.
 
 #![allow(
     clippy::print_stderr,
@@ -25,6 +26,7 @@ use clap::{Parser, Subcommand};
 mod detect;
 mod docs;
 mod perf;
+mod schemas;
 mod skills;
 mod sources;
 
@@ -48,6 +50,8 @@ enum Command {
     ExportSkills(ExportSkillsArgs),
     /// Run command-level performance regression checks.
     PerfCheck(perf::Args),
+    /// Regenerate checked-in generated JSON schemas.
+    GenerateSchemas(schemas::Args),
 }
 
 #[derive(Debug, clap::Args)]
@@ -95,5 +99,6 @@ fn run(command: &Command) -> Result<bool> {
         }
         Command::ExportSkills(args) => skills::export(&args.dest),
         Command::PerfCheck(args) => perf::run(args),
+        Command::GenerateSchemas(args) => schemas::run(args),
     }
 }

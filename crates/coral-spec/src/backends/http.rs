@@ -12,14 +12,16 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::{
     ColumnSpec, DeclaredRelation, DetailHintDeclaringSurface, DetailHintSpec,
-    DetailHintTargetTable, FilterSpec, HeaderSpec, ManifestError, ManifestInputSpec,
-    PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result,
-    SearchLimitsSpec, SourceBackend, SourceManifestCommon, SourceTableFunctionSpec, TableCommon,
+    DetailHintTargetTable, FilterSpec, HeaderSpec, HttpTableValidation, ManifestError,
+    ManifestInputSpec, PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec,
+    Result, SearchLimitsSpec, SourceBackend, SourceManifestCommon, SourceTableFunctionSpec,
+    TableCommon,
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
@@ -29,7 +31,7 @@ use crate::{
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum AuthSpec {
     /// HTTP Basic authentication; runtime base64-encodes `username:password`.
@@ -50,7 +52,7 @@ impl Default for AuthSpec {
 }
 
 /// HTTP Basic authenticator with separate username and password templates.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BasicAuthSpec {
     pub username: ParsedTemplate,
@@ -58,7 +60,7 @@ pub struct BasicAuthSpec {
 }
 
 /// Declarative authenticator that injects one or more headers.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HeaderAuthSpec {
     #[serde(default)]
@@ -66,7 +68,7 @@ pub struct HeaderAuthSpec {
 }
 
 /// Dispatches to a runtime-registered request authenticator by name.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct CustomAuthSpec {
     pub authenticator: String,
     #[serde(flatten)]
@@ -74,7 +76,7 @@ pub struct CustomAuthSpec {
 }
 
 /// Provider-specific response hints for classifying and delaying rate-limit retries.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimitSpec {
     #[serde(default)]
@@ -231,17 +233,17 @@ impl HttpSourceManifest {
 
 impl RawHttpTableSpec {
     fn into_validated(self, schema: &str) -> Result<HttpTableSpec> {
-        validate_http_table(
+        validate_http_table(HttpTableValidation {
             schema,
-            &self.name,
-            &self.filters,
-            &self.columns,
-            &self.request,
-            &self.requests,
-            &self.pagination,
-            self.search_limits.as_ref(),
-            &self.detail_hints,
-        )?;
+            table_name: &self.name,
+            filters: &self.filters,
+            columns: &self.columns,
+            request: &self.request,
+            requests: &self.requests,
+            pagination: &self.pagination,
+            search_limits: self.search_limits.as_ref(),
+            detail_hints: &self.detail_hints,
+        })?;
 
         Ok(HttpTableSpec {
             common: TableCommon::new(

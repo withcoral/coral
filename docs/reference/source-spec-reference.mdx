@@ -408,6 +408,41 @@ Hive-style partitioning. Positional segment partitioning is currently limited to
 JSON and JSONL tables because those formats already use Coral's custom JSON row
 mapper.
 
+### File metadata
+
+File-backed tables can expose metadata columns derived from each scanned file.
+JSONL tables can also expose row-scoped line numbers. Metadata columns are
+declared under `source.metadata` and are appended to the table schema:
+
+```yaml
+source:
+  location: file:///Users/james/.codex/sessions/
+  glob: "20??/**/*.jsonl"
+  metadata:
+    - name: session_path
+      kind: relative_path
+    - name: session_file
+      kind: file_stem
+    - name: event_index
+      kind: line_number
+```
+
+Supported `kind` values are:
+
+- `relative_path`: the file path relative to `source.location`; for a
+  single-file `source.location`, this is the scanned file name (`Utf8`)
+- `file_name`: the final file name, including its extension (`Utf8`)
+- `file_stem`: the final file name without its last extension (`Utf8`)
+- `line_number`: the one-based line number within the JSONL file (`Int64`);
+  only supported for `format: jsonl`
+
+Metadata column names must not duplicate declared payload columns or partition
+columns. For inferred Parquet tables, metadata column names must also not
+duplicate physical file columns. If an undeclared raw JSON property has the
+same name as a metadata column, queries see the declared metadata value for
+that column name. File metadata preserves the object-store path text; literal
+percent sequences in object keys are not URL-decoded again.
+
 ## HTTP-backed tables
 
 For `http`, the source spec declares request and response behavior.
@@ -869,6 +904,47 @@ rate_limit:
   extra_statuses: [403]
   remaining_header: X-RateLimit-Remaining
   reset_header: X-RateLimit-Reset
+```
+
+### HTTP dependent-join capability metadata
+
+HTTP table filters can opt in to dependent predicate pushdown. This metadata is
+table-local: it says a filter may be supplied from a runtime join key, not that
+the table depends on a specific source pair.
+
+The manifest contract is deliberately narrow:
+
+| Field | Scope | Type | Default | Description |
+| ----- | ----- | ---- | ------- | ----------- |
+| `filters[].lookup_key` | filter | boolean | `false` | Allows the filter to be supplied from a runtime join key |
+
+Lookup-key filters must use `mode: equality`. Do not mark ranked, capped, fuzzy,
+or otherwise incomplete search-result filters as lookup keys; dependent joins rely
+on complete filtered result sets to preserve SQL join correctness.
+
+Dependent join execution buffers resolver rows and dependent fetch results
+before producing joined output. Row, binding, and fanout limits are engine
+runtime policy, not manifest metadata.
+
+Example:
+
+```yaml
+tables:
+  - name: pull_requests
+    description: Pull requests
+    request:
+      path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.number}}
+    filters:
+      - name: owner
+        lookup_key: true
+      - name: repo
+        lookup_key: true
+      - name: number
+        type: Int64
+        lookup_key: true
+    columns:
+      - name: number
+        type: Int64
 ```
 
 ### HTTP value sources
