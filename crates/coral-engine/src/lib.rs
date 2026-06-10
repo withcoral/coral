@@ -60,6 +60,8 @@ mod composition;
 pub mod contracts;
 mod runtime;
 
+use crate::backends::shared::template::render_test_query_sql;
+
 pub use composition::{
     EngineExtensions, QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
     RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
@@ -227,9 +229,16 @@ impl CoralQuery {
 
         let mut query_tests = Vec::with_capacity(test_queries.len());
         for sql in test_queries {
-            match query_runtime.execute_sql(sql).await {
+            let rendered_sql = match render_test_query_sql(sql, source.variables()) {
+                Ok(rendered) => rendered,
+                Err(error) => {
+                    query_tests.push(QueryTestResult::failure(sql.clone(), error.to_string()));
+                    continue;
+                }
+            };
+            match query_runtime.execute_sql(&rendered_sql).await {
                 Ok(execution) => query_tests.push(QueryTestResult::success(
-                    sql.clone(),
+                    rendered_sql,
                     execution.row_count() as u64,
                 )),
                 Err(error) => {
@@ -239,7 +248,7 @@ impl CoralQuery {
                         }
                         _ => error.to_string(),
                     };
-                    query_tests.push(QueryTestResult::failure(sql.clone(), error_message));
+                    query_tests.push(QueryTestResult::failure(rendered_sql, error_message));
                 }
             }
         }

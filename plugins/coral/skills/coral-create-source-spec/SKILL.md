@@ -103,6 +103,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - Prefer explicit pagination when the API shape is known.
 - Verify pagination with actual row fetches, not only `COUNT(*)`.
 - Add or update `test_queries` when you want `coral source test` to perform a basic smoke/connection check.
+- In `test_queries`, reference installed `kind: variable` inputs with `{{input.VARIABLE_KEY}}` (same syntax as HTTP path and header templates). Secrets are not substituted; export variables before `coral source add --file`.
 
 ## Metadata UX Rules
 

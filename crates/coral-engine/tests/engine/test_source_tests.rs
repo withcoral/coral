@@ -4,13 +4,16 @@
     reason = "test code: assertion-style indexing is idiomatic in tests"
 )]
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use coral_engine::CoralQuery;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use crate::harness::{build_source, dir_url, test_runtime, users_rows, write_jsonl_file};
+use crate::harness::{
+    build_source, build_source_with_inputs, dir_url, test_runtime, users_rows, write_jsonl_file,
+};
 
 fn jsonl_manifest(name: &str, dir: &Path, glob: &str) -> Value {
     json!({
@@ -163,5 +166,52 @@ async fn validate_source_maps_non_read_only_queries_to_stable_error() {
     assert_eq!(
         report.query_tests[0].error_message(),
         Some("test query must be read-only SQL")
+    );
+}
+
+#[tokio::test]
+async fn validate_source_substitutes_input_variables_in_test_queries() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
+    let source = build_source_with_inputs(
+        jsonl_manifest("jsonl_test_source", temp.path(), "**/*.jsonl"),
+        BTreeMap::from([("SOURCE_SCHEMA".to_string(), "jsonl_test_source".to_string())]),
+        BTreeMap::new(),
+    );
+    let queries = vec!["SELECT * FROM {{input.SOURCE_SCHEMA}}.users LIMIT 1".to_string()];
+
+    let report = CoralQuery::validate_source(&source, test_runtime(), &queries)
+        .await
+        .expect("validate_source should succeed");
+
+    assert_eq!(report.query_tests.len(), 1);
+    assert!(report.query_tests[0].passed());
+    assert_eq!(report.query_tests[0].row_count(), Some(1));
+}
+
+#[tokio::test]
+async fn validate_source_reports_per_query_failure_for_undeclared_input_in_test_query() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
+    let source = build_source(jsonl_manifest(
+        "jsonl_test_source",
+        temp.path(),
+        "**/*.jsonl",
+    ));
+    let queries =
+        vec!["SELECT * FROM jsonl_test_source.users WHERE name = '{{input.MISSING}}'".to_string()];
+
+    let report = CoralQuery::validate_source(&source, test_runtime(), &queries)
+        .await
+        .expect("validate_source should succeed");
+
+    assert_eq!(report.query_tests.len(), 1);
+    assert!(!report.query_tests[0].passed());
+    assert!(
+        report.query_tests[0]
+            .error_message()
+            .expect("failed query should carry an error")
+            .contains("missing source input 'MISSING'"),
+        "expected missing-input render error"
     );
 }

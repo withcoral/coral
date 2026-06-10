@@ -365,6 +365,22 @@ pub(crate) fn value_to_string(value: &Value) -> String {
     }
 }
 
+/// Render a declared `test_queries` SQL string, substituting `{{input.KEY}}` tokens
+/// from installed source variables.
+pub(crate) fn render_test_query_sql(
+    sql: &str,
+    resolved_inputs: &BTreeMap<String, String>,
+) -> Result<String> {
+    if !sql.contains("{{") {
+        return Ok(sql.to_string());
+    }
+    let template = ParsedTemplate::parse(sql).map_err(|error| {
+        DataFusionError::Execution(format!("invalid test query template: {error}"))
+    })?;
+    validate_input_dependencies(&template, resolved_inputs)?;
+    render_template(&template, &RenderContext::source_scoped(resolved_inputs))
+}
+
 /// Validate only the input-token dependencies for a template.
 pub(crate) fn validate_input_dependencies(
     template: &ParsedTemplate,
@@ -447,7 +463,10 @@ mod tests {
     use coral_spec::ValueSourceSpec;
     use serde_json::json;
 
-    use super::{EMPTY_MAP, RenderContext, resolve_value_source, validate_value_source_inputs};
+    use super::{
+        EMPTY_MAP, RenderContext, render_test_query_sql, resolve_value_source,
+        validate_value_source_inputs,
+    };
 
     fn inputs(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
@@ -743,6 +762,40 @@ mod tests {
         .expect("one_of should resolve");
 
         assert_eq!(value, None);
+    }
+
+    #[test]
+    fn render_test_query_sql_substitutes_input_tokens() {
+        let resolved_inputs = inputs(&[("GCP_BILLING_ACCOUNT_ID", "012345-567890-ABCDEF")]);
+        let rendered = render_test_query_sql(
+            "SELECT * FROM demo.budgets(billing_account => 'billingAccounts/{{input.GCP_BILLING_ACCOUNT_ID}}') LIMIT 1",
+            &resolved_inputs,
+        )
+        .expect("test query should render");
+        assert_eq!(
+            rendered,
+            "SELECT * FROM demo.budgets(billing_account => 'billingAccounts/012345-567890-ABCDEF') LIMIT 1"
+        );
+    }
+
+    #[test]
+    fn render_test_query_sql_leaves_literals_untouched() {
+        let rendered =
+            render_test_query_sql("SELECT 1", &BTreeMap::new()).expect("literal query should pass");
+        assert_eq!(rendered, "SELECT 1");
+    }
+
+    #[test]
+    fn render_test_query_sql_errors_when_input_missing() {
+        let error = render_test_query_sql(
+            "SELECT * FROM demo.budgets(billing_account => '{{input.MISSING}}')",
+            &BTreeMap::new(),
+        )
+        .expect_err("missing input should fail");
+        assert!(
+            error.to_string().contains("missing source input 'MISSING'"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

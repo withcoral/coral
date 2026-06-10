@@ -463,6 +463,52 @@ pub(crate) fn fixture_manifest_with_test_queries_yaml(
     }))
 }
 
+pub(crate) fn fixture_manifest_with_variable_and_test_queries_yaml(
+    root: &Path,
+    variable_key: &str,
+    test_queries: &[&str],
+) -> String {
+    let data_dir = root.join("fixture-data");
+    fs::create_dir_all(&data_dir).expect("create data dir");
+    fs::write(
+        data_dir.join("messages.jsonl"),
+        r#"{"type":"user","sessionId":"s1","text":"hello"}
+{"type":"assistant","sessionId":"s1","text":"world"}
+"#,
+    )
+    .expect("write jsonl");
+    let mut manifest = json!({
+        "name": "local_messages",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "test_queries": test_queries,
+        "tables": [{
+            "name": "messages",
+            "description": "Fixture messages",
+            "format": "jsonl",
+            "source": {
+                "location": format!("file://{}/", data_dir.display()),
+                "glob": "**/*.jsonl",
+            },
+            "columns": [
+                {"name": "type", "type": "Utf8"},
+                {"name": "sessionId", "type": "Utf8"},
+                {"name": "text", "type": "Utf8"},
+            ],
+        }],
+    });
+    if let Value::Object(ref mut map) = manifest {
+        let mut inputs = serde_json::Map::new();
+        inputs.insert(
+            variable_key.to_string(),
+            json!({ "kind": "variable", "required": true }),
+        );
+        map.insert("inputs".to_string(), Value::Object(inputs));
+    }
+    manifest_yaml(&manifest)
+}
+
 pub(crate) fn fixture_manifest_with_inputs_yaml() -> String {
     manifest_yaml(&json!({
         "name": "secured_messages",

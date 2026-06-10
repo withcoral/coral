@@ -23,7 +23,8 @@ use crate::harness::{
     FailingHttpFixture, GrpcHarness, fixture_function_only_manifest_yaml,
     fixture_manifest_with_inputs_yaml, fixture_manifest_with_multiple_tables_yaml,
     fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
-    fixture_manifest_yaml, invalid_manifest_yaml, source_dir,
+    fixture_manifest_with_variable_and_test_queries_yaml, fixture_manifest_yaml,
+    invalid_manifest_yaml, source_dir,
 };
 
 #[tokio::test]
@@ -402,6 +403,36 @@ async fn validate_source_returns_query_test_results_without_unary_error() {
         &validated.query_tests[1].outcome,
         Some(query_test_result::Outcome::Failure(QueryTestFailure { error_message }))
             if !error_message.is_empty()
+    ));
+}
+
+#[tokio::test]
+async fn validate_source_renders_test_query_input_tokens() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixture_manifest_with_variable_and_test_queries_yaml(
+        harness.temp_path(),
+        "MESSAGE_TYPE",
+        &[
+            "SELECT COUNT(*) AS n FROM local_messages.messages WHERE type = '{{input.MESSAGE_TYPE}}'",
+        ],
+    );
+    harness
+        .import_source(
+            manifest_yaml,
+            vec![SourceVariable {
+                key: "MESSAGE_TYPE".to_string(),
+                value: "user".to_string(),
+            }],
+            Vec::new(),
+        )
+        .await;
+
+    let validated = harness.validate_source("local_messages").await;
+    assert_eq!(validated.tables.len(), 1);
+    assert_eq!(validated.query_tests.len(), 1);
+    assert!(matches!(
+        &validated.query_tests[0].outcome,
+        Some(query_test_result::Outcome::Success(QueryTestSuccess { row_count })) if *row_count == 1
     ));
 }
 

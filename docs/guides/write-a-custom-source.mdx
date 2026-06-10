@@ -162,6 +162,8 @@ This gives you confidence that the source spec works in the happy path and that 
 
 Use read-only SQL in `test_queries`. Prefer bounded checks such as `SELECT * FROM schema.table LIMIT 1` over expensive scans like `SELECT COUNT(*)`, especially for HTTP-backed sources or large datasets. Coral rejects DDL, DML, and other non-read-only statements as failed validation queries instead of applying them.
 
+You can reference installed source variables in `test_queries` with `{{input.VARIABLE_KEY}}` (for example `billingAccounts/{{input.GCP_BILLING_ACCOUNT_ID}}`). Export the variable before `coral source add --file`.
+
 ## Example: HTTP API source
 
 To connect an HTTP API, the source spec declares the base URL, auth, endpoints, and response shape.
