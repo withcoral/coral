@@ -23,8 +23,9 @@ use crate::backends::shared::filter_expr::{
     extract_filter_values, extract_filter_values_checked,
 };
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
-use crate::backends::shared::mapping::{convert_items, filter_items_by_column_values};
-use coral_spec::ExprSpec;
+use crate::backends::shared::mapping::{
+    convert_items, expr_reflects_filter_values, filter_items_by_column_values,
+};
 use coral_spec::backends::http::HttpTableSpec;
 
 /// Table provider that exposes one manifest-defined HTTP table to `DataFusion`.
@@ -304,12 +305,15 @@ impl TableProvider for HttpSourceTableProvider {
             };
 
         // A filter the selected request does not consume can only be enforced
-        // locally through a column carrying response data. A `from_filter`
-        // echo column reflects the filter value itself, so every row would
-        // "match" and the result set would be silently mislabeled. Filters no
-        // route ever consumes are deliberate client-side annotations and stay
-        // allowed; filters some other route consumes have real request
-        // semantics, so failing to route there must error instead of echoing.
+        // locally through a column carrying response data. A column whose
+        // expression renders from the active filter values — `from_filter`,
+        // but also templates over `{{filter.x}}` or wrappers like coalesce or
+        // replace around either — reflects the filter value itself, so every
+        // row would "match" and the result set would be silently mislabeled.
+        // Filters no route ever consumes are deliberate client-side
+        // annotations and stay allowed; filters some other route consumes
+        // have real request semantics, so failing to route there must error
+        // instead of echoing.
         if !local_filter_values.is_empty() {
             let mut routable_filters = self.backend.request_filter_names(&self.table.request);
             for route in &self.table.requests {
@@ -325,9 +329,7 @@ impl TableProvider for HttpSourceTableProvider {
                     .columns()
                     .iter()
                     .find(|column| column.name == *filter_name)
-                    .is_some_and(|column| {
-                        matches!(column.resolved_expr(), ExprSpec::FromFilter { .. })
-                    });
+                    .is_some_and(|column| expr_reflects_filter_values(&column.resolved_expr()));
                 if echoes_filter {
                     return Err(DataFusionError::External(Box::new(
                         ProviderQueryError::UnenforceableFilter {

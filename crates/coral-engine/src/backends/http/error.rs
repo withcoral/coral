@@ -614,6 +614,25 @@ mod tests {
     }
 
     #[test]
+    fn unenforceable_filter_sets_reason_status_and_metadata() {
+        let error = ProviderQueryError::UnenforceableFilter {
+            schema: "github".to_string(),
+            table: "issues".to_string(),
+            column: "owner".to_string(),
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "FILTER_NOT_APPLICABLE");
+        assert_eq!(error.status(), StatusCode::FailedPrecondition);
+        assert!(!error.retryable());
+        assert_eq!(error.metadata().get("schema").unwrap(), "github");
+        assert_eq!(error.metadata().get("table").unwrap(), "issues");
+        assert_eq!(error.metadata().get("column").unwrap(), "owner");
+        assert!(error.summary().contains("owner"));
+        assert!(error.detail().contains("does not consume"));
+        assert!(error.hint().is_some());
+    }
+
+    #[test]
     fn http_401_includes_both_install_paths() {
         let error = ProviderQueryError::ApiRequest {
             source_schema: "github".to_string(),
