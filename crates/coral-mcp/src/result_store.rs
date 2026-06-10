@@ -79,13 +79,15 @@ struct ResultStoreState {
     entries: HashMap<String, ResultStoreEntry>,
     total_bytes: usize,
     next_id: u64,
+    access_seq: u64,
 }
 
 struct ResultStoreEntry {
     result: Arc<CollectedQueryResult>,
     estimated_bytes: usize,
-    created_at: Instant,
-    last_accessed: Instant,
+    // Monotonic access order for LRU eviction; Instant ties between entries
+    // touched at the same clock reading would make eviction nondeterministic.
+    last_accessed_seq: u64,
     expires_at: Instant,
 }
 
@@ -130,14 +132,14 @@ impl ResultStore {
         let now = self.clock.now();
         let result_id = guard.next_result_id();
         guard.purge_expired(now);
+        let last_accessed_seq = guard.next_access_seq();
         guard.total_bytes = guard.total_bytes.saturating_add(estimated_bytes);
         guard.entries.insert(
             result_id.clone(),
             ResultStoreEntry {
                 result,
                 estimated_bytes,
-                created_at: now,
-                last_accessed: now,
+                last_accessed_seq,
                 expires_at: now + self.limits.ttl,
             },
         );
@@ -154,6 +156,7 @@ impl ResultStore {
             .state
             .lock()
             .map_err(|_error| ResultStoreError::Unavailable)?;
+        let last_accessed_seq = guard.next_access_seq();
         let Some(entry) = guard.entries.get_mut(result_id) else {
             return Err(ResultStoreError::NotFound(result_id.to_string()));
         };
@@ -163,7 +166,7 @@ impl ResultStore {
             guard.total_bytes = guard.total_bytes.saturating_sub(estimated_bytes);
             return Err(ResultStoreError::Expired(result_id.to_string()));
         }
-        entry.last_accessed = now;
+        entry.last_accessed_seq = last_accessed_seq;
         Ok(Arc::clone(&entry.result))
     }
 
@@ -195,6 +198,11 @@ impl std::fmt::Debug for ResultStore {
 }
 
 impl ResultStoreState {
+    fn next_access_seq(&mut self) -> u64 {
+        self.access_seq += 1;
+        self.access_seq
+    }
+
     fn next_result_id(&mut self) -> String {
         loop {
             self.next_id = self.next_id.checked_add(1).unwrap_or(1);
@@ -223,7 +231,7 @@ impl ResultStoreState {
             let Some(oldest_id) = self
                 .entries
                 .iter()
-                .min_by_key(|(_id, entry)| (entry.last_accessed, entry.created_at))
+                .min_by_key(|(_id, entry)| entry.last_accessed_seq)
                 .map(|(id, _entry)| id.clone())
             else {
                 break;
@@ -340,6 +348,27 @@ mod tests {
             Err(ResultStoreError::NotFound(id)) if id == second
         ));
         store.get(&third).expect("third should be stored");
+    }
+
+    #[test]
+    fn eviction_is_deterministic_when_clock_does_not_advance() {
+        let clock = Arc::new(ManualClock::new(Instant::now()));
+        let store = ResultStore::with_clock(
+            ResultStoreLimits::new(Duration::from_secs(30), 2, 100),
+            clock,
+        );
+        let first = stored_id(store.insert(result(1), 1));
+        let second = stored_id(store.insert(result(2), 1));
+        let third = stored_id(store.insert(result(3), 1));
+
+        assert!(matches!(
+            store.get(&first),
+            Err(ResultStoreError::NotFound(id)) if id == first
+        ));
+        store.get(&second).expect("second should still be stored");
+        store
+            .get(&third)
+            .expect("just-inserted third should never be evicted");
     }
 
     #[test]
