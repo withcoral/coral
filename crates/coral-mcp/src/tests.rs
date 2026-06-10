@@ -1208,7 +1208,7 @@ async fn mcp_tool_error_does_not_end_session() {
     session.shutdown().await;
 }
 
-/// Duplicate-named results cannot be paged by name through result_get, so
+/// Duplicate-named results cannot be paged by name through `result_get`, so
 /// even large ones must keep the legacy inline shape instead of a handle.
 #[tokio::test]
 async fn mcp_sql_duplicate_named_result_stays_inline() {
@@ -1338,7 +1338,11 @@ async fn mcp_sql_large_result_returns_handle_and_result_get_pages() {
     assert_eq!(structured["next_call"]["tool"], "result_get");
     assert_eq!(structured["next_call"]["arguments"]["result_id"], result_id);
     assert_eq!(structured["next_call"]["arguments"]["offset"], 20);
-    assert_eq!(structured["next_call"]["arguments"]["limit"], 50);
+    assert_eq!(structured["next_call"]["arguments"]["limit"], 500);
+    assert!(
+        structured.get("guidance").is_none(),
+        "results pageable in a couple of calls should not carry enumeration guidance"
+    );
     assert!(structured.get("rows").is_none());
 
     let page = client
@@ -1400,6 +1404,41 @@ async fn mcp_sql_large_result_returns_handle_and_result_get_pages() {
     };
     assert_eq!(error_data.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     assert!(error_data.message.contains("res_missing"));
+
+    session.shutdown().await;
+}
+
+/// Results too large to page through in a couple of calls must steer agents
+/// toward SQL-side reduction and maximum-size pages at the decision point.
+#[tokio::test]
+async fn mcp_sql_huge_result_includes_enumeration_guidance() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+
+    let values = (0..1000)
+        .map(|idx| format!("({idx})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql_text =
+        format!("SELECT CAST(id AS BIGINT) AS id FROM (VALUES {values}) AS t(id) ORDER BY id");
+
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": sql_text
+            }))),
+        )
+        .await
+        .expect("sql");
+    assert_eq!(sql.is_error, Some(false));
+
+    let structured = sql.structured_content.expect("structured content");
+    assert_eq!(structured["row_count"], 1000);
+    assert_eq!(structured["next_call"]["arguments"]["limit"], 500);
+    let guidance = structured["guidance"].as_str().expect("guidance");
+    assert!(guidance.contains("filters or aggregates"));
+    assert!(guidance.contains("limit 500"));
 
     session.shutdown().await;
 }

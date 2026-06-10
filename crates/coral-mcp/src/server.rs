@@ -33,13 +33,14 @@ use crate::{
     McpOptions,
     result_store::{ResultStore, ResultStoreError},
     surface::{
-        CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
-        describe_table_tool, describe_table_value, feedback_tool, guide_resource,
-        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_tool,
-        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
-        required_string_argument, result_get_arguments, result_get_tool, search_catalog_arguments,
-        search_catalog_tool, search_catalog_value, sql_tool, status_to_error_data, tables_resource,
-        tables_resource_content, tool_error_from_status, tool_error_result,
+        CatalogToolKind, RESULT_GET_MAX_LIMIT, ToolDescriptionContext, build_tool_result,
+        describe_table_arguments, describe_table_tool, describe_table_value, feedback_tool,
+        guide_resource, guide_resource_content, initial_instructions, list_catalog_arguments,
+        list_catalog_tool, list_catalog_value, list_columns_arguments, list_columns_tool,
+        list_columns_value, required_string_argument, result_get_arguments, result_get_tool,
+        search_catalog_arguments, search_catalog_tool, search_catalog_value, sql_tool,
+        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
+        tool_error_result,
     },
     telemetry,
 };
@@ -52,7 +53,8 @@ const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::
 const SQL_PREVIEW_ROWS: usize = 20;
 const SQL_INLINE_BYTE_CHECK_MAX_ROWS: usize = 100;
 const SQL_INLINE_MAX_BYTES: usize = 8192;
-const RESULT_GET_DEFAULT_LIMIT: usize = 50;
+const LARGE_RESULT_GUIDANCE_MIN_ROWS: usize = 1_000;
+const LARGE_RESULT_GUIDANCE: &str = "Result is large; answer from row_count or rerun the SQL with filters or aggregates instead of paging every row. If raw rows are required, call result_get with limit 500 and a columns projection.";
 
 enum ToolCallOutcome {
     Success(Value),
@@ -75,6 +77,8 @@ struct SqlHandledValue {
     columns: Vec<ColumnSummary>,
     preview: ResultPreviewValue,
     next_call: Option<NextCallValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guidance: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -314,14 +318,18 @@ impl CoralMcpServer {
             .insert(Arc::clone(&result), estimated_bytes)
         {
             Ok(result_id) => {
+                // Advertise the maximum page size: agents tend to copy these
+                // arguments verbatim, and small pages multiply round trips.
                 let next_call = preview.next_offset.map(|offset| NextCallValue {
                     tool: "result_get",
                     arguments: NextCallArgumentsValue {
                         result_id: result_id.clone(),
                         offset,
-                        limit: RESULT_GET_DEFAULT_LIMIT,
+                        limit: RESULT_GET_MAX_LIMIT,
                     },
                 });
+                let guidance = (result.row_count() >= LARGE_RESULT_GUIDANCE_MIN_ROWS)
+                    .then_some(LARGE_RESULT_GUIDANCE);
                 serialize_tool_value(SqlHandledValue {
                     result_id,
                     row_count: result.row_count(),
@@ -329,6 +337,7 @@ impl CoralMcpServer {
                     columns,
                     preview,
                     next_call,
+                    guidance,
                 })
             }
             Err(ResultStoreError::TooLarge { .. }) => serialize_tool_value(SqlPreviewOnlyValue {

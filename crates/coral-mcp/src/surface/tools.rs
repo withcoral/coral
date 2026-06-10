@@ -8,6 +8,9 @@ use serde_json::{Map, Value, json};
 
 use super::{Pagination, parse_pagination, parse_pagination_with_limits};
 
+pub(crate) const RESULT_GET_DEFAULT_LIMIT: usize = 200;
+pub(crate) const RESULT_GET_MAX_LIMIT: usize = 500;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolDescriptionContext {
     pub(crate) visible_table_count: usize,
@@ -107,7 +110,7 @@ pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
 pub(crate) fn result_get_tool() -> Tool {
     Tool::new(
         "result_get",
-        "Return a page from a SQL result handle previously returned by the sql tool.",
+        "Return a page from a SQL result handle previously returned by the sql tool. Prefer rerunning the SQL with filters or aggregates over paging every row; when you do page, use limit 500 and the columns projection to fetch only what the question needs.",
         json_object_schema(&json!({
             "type": "object",
             "required": ["result_id"],
@@ -124,10 +127,10 @@ pub(crate) fn result_get_tool() -> Tool {
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum rows to return, from 0 to 500. Defaults to 50. Use 0 for schema/metadata only.",
+                    "description": "Maximum rows to return, from 0 to 500. Defaults to 200. Use 0 for schema/metadata only.",
                     "minimum": 0,
                     "maximum": 500,
-                    "default": 50
+                    "default": 200
                 },
                 "columns": {
                     "type": "array",
@@ -458,7 +461,13 @@ pub(crate) fn result_get_arguments(
     Ok(ResultGetArguments {
         result_id: required_string_argument(arguments, "result_id")?,
         offset: optional_usize_argument(arguments, "offset", 0, 0, usize::MAX)?,
-        limit: optional_usize_argument(arguments, "limit", 50, 0, 500)?,
+        limit: optional_usize_argument(
+            arguments,
+            "limit",
+            RESULT_GET_DEFAULT_LIMIT,
+            0,
+            RESULT_GET_MAX_LIMIT,
+        )?,
         columns: optional_string_array_argument(arguments, "columns")?,
     })
 }
