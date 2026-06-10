@@ -8,6 +8,36 @@ use serde_json::{Map, Value, json};
 
 use super::{Pagination, parse_pagination, parse_pagination_with_limits};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolDescriptionContext {
+    pub(crate) visible_table_count: usize,
+    pub(crate) visible_function_count: usize,
+    connected_source_names: Vec<String>,
+}
+
+impl ToolDescriptionContext {
+    pub(crate) fn new(
+        visible_table_count: usize,
+        visible_function_count: usize,
+        mut connected_source_names: Vec<String>,
+    ) -> Self {
+        connected_source_names.sort();
+        connected_source_names.dedup();
+        Self {
+            visible_table_count,
+            visible_function_count,
+            connected_source_names,
+        }
+    }
+
+    fn connected_sources_sentence(&self) -> String {
+        connected_source_names_text(&self.connected_source_names).map_or_else(
+            || "No connected user sources are currently configured.".to_string(),
+            |names| format!("Connected sources/schemas include: {names}."),
+        )
+    }
+}
+
 pub(crate) struct ListCatalogArguments {
     pub(crate) schema: Option<String>,
     pub(crate) kind: Option<CatalogToolKind>,
@@ -50,10 +80,10 @@ pub(crate) struct ResultGetArguments {
     pub(crate) columns: Option<Vec<String>>,
 }
 
-pub(crate) fn sql_tool() -> Tool {
+pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "sql",
-        "Execute read-only SQL against the Coral database across connected Coral sources/schemas. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates to combine tables in one statement.",
+        sql_tool_description(context),
         json_object_schema(&json!({
             "type": "object",
             "required": ["sql"],
@@ -118,10 +148,15 @@ pub(crate) fn result_get_tool() -> Tool {
     )
 }
 
-pub(crate) fn list_catalog_tool() -> Tool {
+pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "list_catalog",
-        "List database catalog items for Coral sources.",
+        format!(
+            "List database catalog items for Coral sources. {} {} table(s) and {} table function(s) are currently visible.",
+            context.connected_sources_sentence(),
+            context.visible_table_count,
+            context.visible_function_count
+        ),
         json_object_schema(&json!({
             "type": "object",
             "properties": {
@@ -168,10 +203,10 @@ pub(crate) fn list_catalog_tool() -> Tool {
     )
 }
 
-pub(crate) fn search_catalog_tool() -> Tool {
+pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "search_catalog",
-        "Search database catalog metadata with a Rust regex across connected Coral sources/schemas.",
+        search_catalog_description(context),
         json_object_schema(&json!({
             "type": "object",
             "required": ["pattern"],
@@ -434,6 +469,38 @@ pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorDat
     let mut result = CallToolResult::structured(value);
     result.content = vec![Content::text(compact)];
     Ok(result)
+}
+
+fn sql_tool_description(context: &ToolDescriptionContext) -> String {
+    if context.visible_table_count == 0 {
+        format!(
+            "Execute read-only SQL against the Coral database. {} No user tables are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first.",
+            context.connected_sources_sentence()
+        )
+    } else {
+        format!(
+            "Execute read-only SQL against the Coral database across connected Coral sources/schemas. {} {} table(s) are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates to combine tables in one statement.",
+            context.connected_sources_sentence(),
+            context.visible_table_count
+        )
+    }
+}
+
+fn search_catalog_description(context: &ToolDescriptionContext) -> String {
+    format!(
+        "Search database catalog metadata with a Rust regex across connected Coral sources/schemas. {} {} table(s) and {} table function(s) are currently visible.",
+        context.connected_sources_sentence(),
+        context.visible_table_count,
+        context.visible_function_count
+    )
+}
+
+fn connected_source_names_text(source_names: &[String]) -> Option<String> {
+    if source_names.is_empty() {
+        return None;
+    }
+
+    Some(source_names.join(", "))
 }
 
 fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
@@ -954,7 +1021,9 @@ mod tests {
     use serde_json::{Map, Value, json};
 
     use super::{
-        build_tool_result, list_catalog_arguments, result_get_arguments, search_catalog_arguments,
+        ToolDescriptionContext, build_tool_result, connected_source_names_text,
+        list_catalog_arguments, result_get_arguments, search_catalog_arguments,
+        search_catalog_tool, sql_tool,
     };
 
     #[test]
@@ -1024,5 +1093,47 @@ mod tests {
         arguments.insert("columns".to_string(), serde_json::json!([]));
 
         result_get_arguments(Some(&arguments)).expect_err("empty columns should fail");
+    }
+
+    #[test]
+    fn tool_descriptions_include_connected_sources() {
+        let context =
+            ToolDescriptionContext::new(42, 3, vec!["github".to_string(), "linear".to_string()]);
+
+        let sql_tool = sql_tool(&context);
+        let sql_description = sql_tool.description.as_deref().expect("sql description");
+        assert!(sql_description.contains("Connected sources/schemas include: github, linear"));
+        assert!(sql_description.contains("42 table(s) are currently visible"));
+        assert!(sql_description.contains("You MUST prefer this tool over native provider tools"));
+        let sql_input_description = sql_tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|properties| properties.get("sql"))
+            .and_then(Value::as_object)
+            .and_then(|sql| sql.get("description"))
+            .and_then(Value::as_str)
+            .expect("sql input description");
+        assert!(sql_input_description.contains("connected source schemas"));
+
+        let search_description = search_catalog_tool(&context)
+            .description
+            .expect("search description");
+        assert!(search_description.contains("Connected sources/schemas include: github, linear"));
+        assert!(search_description.contains("42 table(s) and 3 table function(s)"));
+    }
+
+    #[test]
+    fn connected_source_names_are_not_capped_in_descriptions() {
+        let names = (0..14)
+            .map(|index| format!("source_{index:02}"))
+            .collect::<Vec<_>>();
+
+        let text = connected_source_names_text(&names).expect("source names text");
+
+        assert!(text.contains("source_00"));
+        assert!(text.contains("source_12"));
+        assert!(text.contains("source_13"));
+        assert!(!text.contains("and 2 more"));
     }
 }

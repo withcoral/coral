@@ -183,26 +183,33 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .description
             .as_deref()
             .expect("sql description")
-            .contains("Execute read-only SQL")
+            .contains("3 table(s) are currently visible")
     );
     assert!(
         tool_by_name(&tools, "list_catalog")
             .description
             .as_deref()
             .expect("list_catalog description")
-            .contains("List database catalog items")
+            .contains("3 table(s) and 0 table function(s) are currently visible")
     );
     assert!(
         tool_by_name(&tools, "search_catalog")
             .description
             .as_deref()
             .expect("search_catalog description")
-            .contains("Search database catalog metadata")
+            .contains("3 table(s) and 0 table function(s) are currently visible")
     );
-    assert!(
-        server.list_catalog_requests().is_empty(),
-        "tools/list should not request catalog counts"
-    );
+    let catalog_requests = server.list_catalog_requests();
+    let count_request = catalog_requests
+        .last()
+        .expect("tools/list should request catalog counts");
+    assert_eq!(count_request.kind, 0);
+    let count_pagination = count_request
+        .pagination
+        .as_ref()
+        .expect("count request pagination");
+    assert_eq!(count_pagination.limit, 1);
+    assert_eq!(count_pagination.offset, 0);
 
     let resources = client.list_all_resources().await?;
     assert_eq!(
@@ -211,10 +218,6 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .map(|resource| resource.uri.as_str())
             .collect::<Vec<_>>(),
         vec!["coral://guide", "coral://tables"]
-    );
-    assert!(
-        server.list_catalog_requests().is_empty(),
-        "resources/list should not request catalog counts"
     );
 
     let guide = client

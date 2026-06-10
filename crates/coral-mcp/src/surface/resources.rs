@@ -15,16 +15,24 @@ pub(crate) fn initial_instructions() -> &'static str {
     INITIAL_INSTRUCTIONS
 }
 
-pub(crate) fn guide_resource() -> Resource {
+pub(crate) fn guide_resource(
+    sources: &[Source],
+    visible_table_count: usize,
+    visible_function_count: usize,
+) -> Resource {
     RawResource::new("coral://guide", "guide")
-        .with_description("Database workflow and catalog discovery guidance for Coral.")
+        .with_description(guide_resource_description(
+            sources,
+            visible_table_count,
+            visible_function_count,
+        ))
         .with_mime_type("text/markdown")
         .no_annotation()
 }
 
-pub(crate) fn tables_resource() -> Resource {
+pub(crate) fn tables_resource(visible_table_count: usize) -> Resource {
     RawResource::new("coral://tables", "tables")
-        .with_description("Fully qualified database tables in Coral.")
+        .with_description(tables_resource_description(visible_table_count))
         .with_mime_type("application/json")
         .no_annotation()
 }
@@ -92,6 +100,23 @@ pub(crate) fn tables_resource_content(
 #[derive(Serialize)]
 struct TablesResourceContent {
     tables: Vec<Value>,
+}
+
+fn guide_resource_description(
+    sources: &[Source],
+    visible_table_count: usize,
+    visible_function_count: usize,
+) -> String {
+    format!(
+        "Database workflow and catalog discovery guidance for {} configured connection(s), {} visible table(s), and {} visible table function(s).",
+        sources.len(),
+        visible_table_count,
+        visible_function_count
+    )
+}
+
+fn tables_resource_description(visible_table_count: usize) -> String {
+    format!("Fully qualified database tables in Coral ({visible_table_count} table(s)).")
 }
 
 fn first_visible_table(tables: &[TableSummary]) -> Option<(&str, &str)> {

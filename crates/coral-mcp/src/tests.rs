@@ -391,7 +391,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("sql description")
-            .contains("Execute read-only SQL")
+            .contains("5 table(s) are currently visible")
+    );
+    assert!(
+        initial_tools[0]
+            .description
+            .as_deref()
+            .expect("sql description")
+            .contains("No connected user sources are currently configured")
     );
     for tool in &initial_tools {
         let Some(output_schema) = &tool.output_schema else {
@@ -420,7 +427,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("guide description")
-            .contains("Database workflow and catalog discovery guidance")
+            .contains("5 visible table")
     );
 
     let initial_guide = client
@@ -446,21 +453,42 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("sql description")
-            .contains("Execute read-only SQL")
+            .contains("8 table(s) are currently visible")
+    );
+    assert!(
+        updated_tools[0]
+            .description
+            .as_deref()
+            .expect("sql description")
+            .contains("Connected sources/schemas include: local_messages")
     );
     assert!(
         list_catalog_tool
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("List database catalog items")
+            .contains("8 table(s) and 0 table function(s) are currently visible")
+    );
+    assert!(
+        list_catalog_tool
+            .description
+            .as_deref()
+            .expect("catalog description")
+            .contains("Connected sources/schemas include: local_messages")
     );
     assert!(
         search_catalog_tool
             .description
             .as_deref()
             .expect("catalog search description")
-            .contains("Search database catalog metadata")
+            .contains("8 table(s) and 0 table function(s) are currently visible")
+    );
+    assert!(
+        search_catalog_tool
+            .description
+            .as_deref()
+            .expect("catalog search description")
+            .contains("Connected sources/schemas include: local_messages")
     );
 
     let updated_resources = client
@@ -472,7 +500,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("guide description")
-            .contains("Database workflow and catalog discovery guidance")
+            .contains("1 configured connection")
     );
 
     let tables_resource = client
@@ -882,7 +910,14 @@ async fn list_catalog_surfaces_table_functions() {
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("List database catalog items")
+            .contains("6 table(s) and 2 table function(s) are currently visible")
+    );
+    assert!(
+        tool_by_name(&tools, "search_catalog")
+            .description
+            .as_deref()
+            .expect("catalog search description")
+            .contains("Connected sources/schemas include: searchy")
     );
     assert!(tools.iter().all(|tool| tool.name != "list_tables"));
     assert!(tools.iter().all(|tool| tool.name != "search_tables"));
