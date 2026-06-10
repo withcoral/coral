@@ -15,7 +15,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coral_spec::backends::mcp::{McpServerSpec, McpSourceManifest};
+use coral_spec::SourceBackend;
+use coral_spec::backends::mcp::{McpServerSpec, McpSourceManifest, McpTableSpec};
 use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
@@ -28,7 +29,7 @@ use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
     RegisteredSource, SourceTableFunctions, build_registered_inputs, build_registered_table,
     build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
-    required_filter_names,
+    required_filter_names, validate_lookup_key_filter_backend_support,
 };
 use crate::{SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError};
 
@@ -144,6 +145,18 @@ impl CompiledBackendSource for McpCompiledSource {
 
     fn source_name(&self) -> &str {
         &self.manifest.common.name
+    }
+
+    fn validate_runtime_capabilities(&self) -> Result<()> {
+        validate_lookup_key_filter_backend_support(
+            self.source_name(),
+            SourceBackend::Mcp,
+            self.manifest
+                .tables
+                .iter()
+                .flat_map(McpTableSpec::filters)
+                .any(|filter| filter.lookup_key),
+        )
     }
 
     async fn register(
