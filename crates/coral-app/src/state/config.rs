@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig};
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
 use tracing::{info_span, warn};
@@ -15,8 +16,9 @@ use crate::storage::fs::{self as storage_fs, FileLock};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, Clone)]
-struct AppConfig {
+pub(crate) struct AppConfig {
     version: u32,
+    engine: PersistedEngineConfig,
     catalog: SourceCatalog,
 }
 
@@ -24,8 +26,33 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             version: default_config_version(),
+            engine: PersistedEngineConfig::default(),
             catalog: SourceCatalog::default(),
         }
+    }
+}
+
+impl AppConfig {
+    pub(crate) fn workspace_sources(&self, workspace_name: &WorkspaceName) -> Vec<InstalledSource> {
+        self.catalog.workspace_sources(workspace_name)
+    }
+
+    pub(crate) fn get_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Option<InstalledSource> {
+        self.catalog.get_source(workspace_name, source_name)
+    }
+
+    pub(crate) fn dependent_join_config(
+        &self,
+        selected_source_names: &[String],
+    ) -> Result<DependentJoinConfig, AppError> {
+        self.engine
+            .dependent_join
+            .clone()
+            .try_into_runtime_config(selected_source_names)
     }
 }
 
@@ -38,7 +65,49 @@ struct PersistedAppConfig {
     #[serde(default = "default_config_version")]
     version: u32,
     #[serde(default)]
+    engine: PersistedEngineConfig,
+    #[serde(default)]
     workspaces: BTreeMap<String, PersistedWorkspaceConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedEngineConfig {
+    #[serde(default)]
+    dependent_join: PersistedDependentJoinConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedDependentJoinConfig {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    max_bindings: Option<usize>,
+    #[serde(default)]
+    max_resolver_rows: Option<usize>,
+    #[serde(default)]
+    max_rows_per_binding: Option<usize>,
+    #[serde(default)]
+    max_resolver_rows_per_binding: Option<usize>,
+    #[serde(default)]
+    max_concurrency: Option<usize>,
+    #[serde(default)]
+    per_source: BTreeMap<String, PersistedDependentJoinSourceConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedDependentJoinSourceConfig {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    max_bindings: Option<usize>,
+    #[serde(default)]
+    max_resolver_rows: Option<usize>,
+    #[serde(default)]
+    max_rows_per_binding: Option<usize>,
+    #[serde(default)]
+    max_resolver_rows_per_binding: Option<usize>,
+    #[serde(default)]
+    max_concurrency: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -323,11 +392,15 @@ impl ConfigStore {
         FileLock::exclusive(self.layout.state_lock()).map_err(Into::into)
     }
 
+    pub(crate) fn load_config(&self) -> Result<AppConfig, AppError> {
+        let _lock = self.lock_shared()?;
+        self.load_unlocked()
+    }
+
     pub(crate) fn load_catalog(&self) -> Result<SourceCatalog, AppError> {
         let span = info_span!("coral.app.config.load_catalog");
         let _guard = span.enter();
-        let _lock = self.lock_shared()?;
-        self.load_unlocked().map(|config| config.catalog)
+        self.load_config().map(|config| config.catalog)
     }
 
     fn update_catalog<T>(
@@ -451,6 +524,7 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
         }
         Ok(Self {
             version: value.version,
+            engine: value.engine,
             catalog,
         })
     }
@@ -472,8 +546,118 @@ impl From<&AppConfig> for PersistedAppConfig {
         }
         Self {
             version: value.version,
+            engine: value.engine.clone(),
             workspaces,
         }
+    }
+}
+
+impl PersistedDependentJoinConfig {
+    fn try_into_runtime_config(
+        self,
+        selected_source_names: &[String],
+    ) -> Result<DependentJoinConfig, AppError> {
+        let default = DependentJoinConfig::default();
+        let mut per_source = BTreeMap::new();
+        for (source_name, source_config) in self.per_source {
+            let source_name = SourceName::parse(&source_name)?;
+            if !selected_source_names
+                .iter()
+                .any(|selected_source_name| selected_source_name == source_name.as_str())
+            {
+                continue;
+            }
+            per_source.insert(
+                source_name.as_str().to_string(),
+                source_config.try_into_runtime_config(source_name.as_str())?,
+            );
+        }
+        Ok(DependentJoinConfig {
+            enabled: self.enabled.unwrap_or(default.enabled),
+            max_bindings: positive_or_default(
+                "engine.dependent_join.max_bindings",
+                self.max_bindings,
+                default.max_bindings,
+            )?,
+            max_resolver_rows: positive_or_default(
+                "engine.dependent_join.max_resolver_rows",
+                self.max_resolver_rows,
+                default.max_resolver_rows,
+            )?,
+            max_rows_per_binding: positive_or_default(
+                "engine.dependent_join.max_rows_per_binding",
+                self.max_rows_per_binding,
+                default.max_rows_per_binding,
+            )?,
+            max_resolver_rows_per_binding: positive_or_default(
+                "engine.dependent_join.max_resolver_rows_per_binding",
+                self.max_resolver_rows_per_binding,
+                default.max_resolver_rows_per_binding,
+            )?,
+            max_concurrency: positive_or_default(
+                "engine.dependent_join.max_concurrency",
+                self.max_concurrency,
+                default.max_concurrency,
+            )?,
+            per_source,
+        })
+    }
+}
+
+impl PersistedDependentJoinSourceConfig {
+    fn try_into_runtime_config(
+        self,
+        source_name: &str,
+    ) -> Result<DependentJoinSourceConfig, AppError> {
+        Ok(DependentJoinSourceConfig {
+            enabled: self.enabled,
+            max_bindings: positive_optional(
+                &format!("engine.dependent_join.per_source.{source_name}.max_bindings"),
+                self.max_bindings,
+            )?,
+            max_resolver_rows: positive_optional(
+                &format!("engine.dependent_join.per_source.{source_name}.max_resolver_rows"),
+                self.max_resolver_rows,
+            )?,
+            max_rows_per_binding: positive_optional(
+                &format!("engine.dependent_join.per_source.{source_name}.max_rows_per_binding"),
+                self.max_rows_per_binding,
+            )?,
+            max_resolver_rows_per_binding: positive_optional(
+                &format!(
+                    "engine.dependent_join.per_source.{source_name}.max_resolver_rows_per_binding"
+                ),
+                self.max_resolver_rows_per_binding,
+            )?,
+            max_concurrency: positive_optional(
+                &format!("engine.dependent_join.per_source.{source_name}.max_concurrency"),
+                self.max_concurrency,
+            )?,
+        })
+    }
+}
+
+fn positive_or_default(
+    field: &str,
+    value: Option<usize>,
+    default: usize,
+) -> Result<usize, AppError> {
+    match value {
+        Some(0) => Err(AppError::InvalidInput(format!(
+            "{field} must be greater than 0"
+        ))),
+        Some(value) => Ok(value),
+        None => Ok(default),
+    }
+}
+
+fn positive_optional(field: &str, value: Option<usize>) -> Result<Option<usize>, AppError> {
+    match value {
+        Some(0) => Err(AppError::InvalidInput(format!(
+            "{field} must be greater than 0"
+        ))),
+        Some(value) => Ok(Some(value)),
+        None => Ok(None),
     }
 }
 
@@ -499,11 +683,13 @@ mod tests {
 
     use std::collections::BTreeMap;
 
+    use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig};
     use tempfile::TempDir;
 
     use super::{
-        AppConfig, PersistedAppConfig, RawFeatureContainerState, RawFeatureValue, SourceCatalog,
-        load_raw_feature_overrides, render_config, set_raw_feature_override,
+        AppConfig, PersistedAppConfig, PersistedEngineConfig, RawFeatureContainerState,
+        RawFeatureValue, SourceCatalog, load_raw_feature_overrides, render_config,
+        set_raw_feature_override,
     };
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
@@ -558,6 +744,10 @@ mod tests {
             .container()
     }
 
+    fn selected_sources(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
     #[test]
     fn default_config_uses_canonical_version() {
         assert_eq!(AppConfig::default().version, 1);
@@ -570,6 +760,7 @@ mod tests {
         catalog.upsert_source(&workspace_name, installed_source("github"));
         let config = AppConfig {
             version: 1,
+            engine: PersistedEngineConfig::default(),
             catalog,
         };
 
@@ -593,6 +784,7 @@ mod tests {
         catalog.upsert_source(&workspace_name, source);
         let config = AppConfig {
             version: 1,
+            engine: PersistedEngineConfig::default(),
             catalog,
         };
 
@@ -634,6 +826,146 @@ origin = "bundled"
     }
 
     #[test]
+    fn loads_dependent_join_engine_config() {
+        let raw = r"
+version = 1
+
+[engine.dependent_join]
+enabled = false
+max_bindings = 7
+max_resolver_rows = 11
+max_rows_per_binding = 13
+max_resolver_rows_per_binding = 17
+max_concurrency = 19
+
+[engine.dependent_join.per_source.github]
+enabled = true
+max_bindings = 21
+max_concurrency = 4
+";
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&selected_sources(&["github"]))
+            .expect("dependent join config should be valid");
+
+        assert_eq!(
+            config,
+            DependentJoinConfig {
+                enabled: false,
+                max_bindings: 7,
+                max_resolver_rows: 11,
+                max_rows_per_binding: 13,
+                max_resolver_rows_per_binding: 17,
+                max_concurrency: 19,
+                per_source: BTreeMap::from([(
+                    "github".to_string(),
+                    DependentJoinSourceConfig {
+                        enabled: Some(true),
+                        max_bindings: Some(21),
+                        max_concurrency: Some(4),
+                        ..DependentJoinSourceConfig::default()
+                    },
+                )]),
+            }
+        );
+    }
+
+    #[test]
+    fn matches_dependent_join_source_config_after_source_name_normalization() {
+        let raw = r#"
+version = 1
+
+[engine.dependent_join.per_source." github "]
+enabled = false
+"#;
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&selected_sources(&["github"]))
+            .expect("dependent join config should be valid");
+
+        assert_eq!(
+            config.per_source.get("github"),
+            Some(&DependentJoinSourceConfig {
+                enabled: Some(false),
+                ..DependentJoinSourceConfig::default()
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_zero_dependent_join_limits() {
+        let raw = r"
+version = 1
+
+[engine.dependent_join]
+max_concurrency = 0
+";
+
+        let error = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&[])
+            .expect_err("zero limit should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("engine.dependent_join.max_concurrency must be greater than 0")
+        );
+    }
+
+    #[test]
+    fn rejects_zero_dependent_join_source_limits() {
+        let raw = r"
+version = 1
+
+[engine.dependent_join.per_source.github]
+max_concurrency = 0
+";
+
+        let error = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&selected_sources(&["github"]))
+            .expect_err("zero source limit should fail");
+
+        assert!(error.to_string().contains(
+            "engine.dependent_join.per_source.github.max_concurrency must be greater than 0"
+        ));
+    }
+
+    #[test]
+    fn ignores_dependent_join_source_limits_for_unselected_sources() {
+        let raw = r"
+version = 1
+
+[engine.dependent_join.per_source.github]
+max_concurrency = 4
+
+[engine.dependent_join.per_source.linear]
+max_concurrency = 0
+";
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&selected_sources(&["github"]))
+            .expect("unselected source override should not be validated");
+
+        assert!(config.per_source.contains_key("github"));
+        assert!(!config.per_source.contains_key("linear"));
+    }
+
+    #[test]
     fn round_trips_source_credential_storage() {
         let workspace_name = default_workspace();
         let mut source = installed_source("github");
@@ -642,6 +974,7 @@ origin = "bundled"
         catalog.upsert_source(&workspace_name, source);
         let config = AppConfig {
             version: 1,
+            engine: PersistedEngineConfig::default(),
             catalog,
         };
 
@@ -730,6 +1063,10 @@ headers = "from=config"
 	feedback = true
 	future_feature = "not-yet-known"
 
+[engine.dependent_join]
+enabled = false
+max_bindings = 250
+
 	[workspaces.default.sources.github]
 version = "1.0.0"
 variables = {}
@@ -742,6 +1079,7 @@ origin = "bundled"
         catalog.upsert_source(&workspace_name, installed_source("slack"));
         let config = AppConfig {
             version: 1,
+            engine: PersistedEngineConfig::default(),
             catalog,
         };
 
@@ -780,6 +1118,14 @@ origin = "bundled"
         assert!(
             raw.contains("future_feature = \"not-yet-known\""),
             "future feature override should be preserved"
+        );
+        assert!(
+            raw.contains("[engine.dependent_join]"),
+            "dependent join config should be preserved"
+        );
+        assert!(
+            raw.contains("max_bindings = 250"),
+            "dependent join limit should be preserved"
         );
 
         // The newly added source must be present.
