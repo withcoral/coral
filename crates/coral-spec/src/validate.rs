@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::common::{
-    BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterSpec, FunctionArgBinding,
+    BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
     MAX_SEARCH_CALLS_PER_QUERY, MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, PaginationSpec,
     RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
     SourceTableFunctionSpec, ValueSourceSpec,
@@ -91,21 +91,32 @@ pub(crate) fn validate_declared_relation_namespace<'a>(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "HTTP table validation mirrors the source-spec fields it validates."
-)]
-pub(crate) fn validate_http_table(
-    schema: &str,
-    table_name: &str,
-    filters: &[FilterSpec],
-    columns: &[ColumnSpec],
-    request: &RequestSpec,
-    requests: &[RequestRouteSpec],
-    pagination: &PaginationSpec,
-    search_limits: Option<&SearchLimitsSpec>,
-    detail_hints: &[DetailHintSpec],
-) -> Result<()> {
+#[derive(Clone, Copy)]
+pub(crate) struct HttpTableValidation<'a> {
+    pub(crate) schema: &'a str,
+    pub(crate) table_name: &'a str,
+    pub(crate) filters: &'a [FilterSpec],
+    pub(crate) columns: &'a [ColumnSpec],
+    pub(crate) request: &'a RequestSpec,
+    pub(crate) requests: &'a [RequestRouteSpec],
+    pub(crate) pagination: &'a PaginationSpec,
+    pub(crate) search_limits: Option<&'a SearchLimitsSpec>,
+    pub(crate) detail_hints: &'a [DetailHintSpec],
+}
+
+pub(crate) fn validate_http_table(input: HttpTableValidation<'_>) -> Result<()> {
+    let HttpTableValidation {
+        schema,
+        table_name,
+        filters,
+        columns,
+        request,
+        requests,
+        pagination,
+        search_limits,
+        detail_hints,
+    } = input;
+
     if request.path.raw().trim().is_empty() {
         return Err(ManifestError::validation(format!(
             "{schema}.{table_name} has an empty request.path"
@@ -123,6 +134,12 @@ pub(crate) fn validate_http_table(
         search_limits,
         detail_hints,
         columns,
+    )?;
+    validate_lookup_key_filters_compatible_with_search_limits(
+        schema,
+        table_name,
+        filters,
+        search_limits,
     )?;
 
     validate_request_bindings(schema, table_name, request, &known_filters)?;
@@ -227,6 +244,7 @@ pub(crate) fn validate_filters_and_column_exprs(
 ) -> Result<HashSet<String>> {
     let mut known_filters = HashSet::new();
     for filter in filters {
+        validate_filter_capabilities(filter)?;
         if !known_filters.insert(filter.name.clone()) {
             return Err(ManifestError::validation(format!(
                 "{schema}.{table} has duplicate filter '{}'",
@@ -408,6 +426,26 @@ fn validate_search_limits(limits: &SearchLimitsSpec, context: &str) -> Result<()
     Ok(())
 }
 
+fn validate_lookup_key_filters_compatible_with_search_limits(
+    schema: &str,
+    table: &str,
+    filters: &[FilterSpec],
+    search_limits: Option<&SearchLimitsSpec>,
+) -> Result<()> {
+    if search_limits.is_none() {
+        return Ok(());
+    }
+
+    if let Some(filter) = filters.iter().find(|filter| filter.lookup_key) {
+        return Err(ManifestError::validation(format!(
+            "{schema}.{table} filter '{}': lookup_key filters require complete filtered result sets, but this table declares search_limits",
+            filter.name
+        )));
+    }
+
+    Ok(())
+}
+
 fn validate_detail_hints(
     detail_hints: &[DetailHintSpec],
     columns: &[ColumnSpec],
@@ -447,6 +485,16 @@ fn validate_detail_hints(
         }
     }
 
+    Ok(())
+}
+
+fn validate_filter_capabilities(filter: &FilterSpec) -> Result<()> {
+    if filter.lookup_key && filter.mode != FilterMode::Equality {
+        return Err(ManifestError::validation(format!(
+            "filter '{}': lookup_key=true requires mode=equality",
+            filter.name
+        )));
+    }
     Ok(())
 }
 
@@ -922,8 +970,9 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        DeclaredRelation, validate_columns, validate_declared_relation_namespace,
-        validate_filters_and_column_exprs, validate_http_function, validate_http_table,
+        DeclaredRelation, HttpTableValidation, validate_columns,
+        validate_declared_relation_namespace, validate_filters_and_column_exprs,
+        validate_http_function, validate_http_table,
     };
     use crate::common::{
         ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
@@ -953,7 +1002,19 @@ mod tests {
             required: false,
             mode: FilterMode::Equality,
             description: String::new(),
+            lookup_key: false,
         }]
+    }
+
+    fn lookup_key_filter(name: &str) -> FilterSpec {
+        FilterSpec {
+            name: name.to_string(),
+            data_type: "Utf8".to_string(),
+            required: false,
+            mode: FilterMode::Equality,
+            description: String::new(),
+            lookup_key: true,
+        }
     }
 
     fn column_with_expr(expr: ExprSpec) -> ColumnSpec {
@@ -1061,6 +1122,25 @@ mod tests {
                 },
                 "columns": [{ "name": "id", "type": "Utf8" }]
             }]
+        })
+    }
+
+    fn validate_test_http_table(
+        filters: &[FilterSpec],
+        request: &RequestSpec,
+        requests: &[RequestRouteSpec],
+    ) -> crate::Result<()> {
+        let columns = [test_column()];
+        validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "messages",
+            filters,
+            columns: &columns,
+            request,
+            requests,
+            pagination: &PaginationSpec::default(),
+            search_limits: None,
+            detail_hints: &[],
         })
     }
 
@@ -1319,18 +1399,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("default request should reject unknown filters");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("default request should reject unknown filters");
 
         assert!(
             error
@@ -1355,18 +1425,8 @@ mod tests {
             },
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &base_request(),
-            &[route],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("route request should reject unknown filters");
+        let error = validate_test_http_table(&test_filters(), &base_request(), &[route])
+            .expect_err("route request should reject unknown filters");
 
         assert!(
             error
@@ -1389,18 +1449,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("filter_split should reject unknown filters");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("filter_split should reject unknown filters");
 
         assert!(
             error
@@ -1423,18 +1473,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("filter_split_int should reject unknown filters");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("filter_split_int should reject unknown filters");
 
         assert!(
             error
@@ -1479,18 +1519,8 @@ mod tests {
                 ..base_request()
             };
 
-            let error = validate_http_table(
-                "demo",
-                "messages",
-                &test_filters(),
-                &[test_column()],
-                &request,
-                &[],
-                &PaginationSpec::default(),
-                None,
-                &[],
-            )
-            .expect_err("table requests should reject function arguments");
+            let error = validate_test_http_table(&test_filters(), &request, &[])
+                .expect_err("table requests should reject function arguments");
 
             assert!(
                 error.to_string().contains("uses function argument"),
@@ -1506,18 +1536,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("table request templates should reject function arguments");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("table request templates should reject function arguments");
 
         assert!(
             error
@@ -1546,18 +1566,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("table request one_of values should reject function arguments");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("table request one_of values should reject function arguments");
 
         assert!(
             error
@@ -1586,18 +1596,8 @@ mod tests {
             ..base_request()
         };
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &request,
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
-        .expect_err("table request one_of values should reject unknown filters");
+        let error = validate_test_http_table(&test_filters(), &request, &[])
+            .expect_err("table request one_of values should reject unknown filters");
 
         assert!(
             error
@@ -1722,19 +1722,22 @@ mod tests {
             required: false,
             mode: FilterMode::Contains,
             description: String::new(),
+            lookup_key: false,
         }];
 
-        validate_http_table(
-            "demo",
-            "search",
-            &filters,
-            &[test_column()],
-            &base_request(),
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &[],
-        )
+        let columns = [test_column()];
+        let request = base_request();
+        validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "search",
+            filters: &filters,
+            columns: &columns,
+            request: &request,
+            requests: &[],
+            pagination: &PaginationSpec::default(),
+            search_limits: None,
+            detail_hints: &[],
+        })
         .expect("contains filters should not force search metadata");
     }
 
@@ -1775,20 +1778,55 @@ mod tests {
             required: false,
             mode: FilterMode::Contains,
             description: String::new(),
+            lookup_key: false,
         }];
 
-        validate_http_table(
-            "demo",
-            "search",
-            &filters,
-            &[test_column()],
-            &base_request(),
-            &[],
-            &PaginationSpec::default(),
-            Some(&search_limits),
-            &detail_hints,
-        )
+        let columns = [test_column()];
+        let request = base_request();
+        validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "search",
+            filters: &filters,
+            columns: &columns,
+            request: &request,
+            requests: &[],
+            pagination: &PaginationSpec::default(),
+            search_limits: Some(&search_limits),
+            detail_hints: &detail_hints,
+        })
         .expect("search metadata should validate");
+    }
+
+    #[test]
+    fn validate_search_limited_http_table_rejects_lookup_key_filters() {
+        let search_limits = SearchLimitsSpec {
+            default_top_k: 10,
+            max_top_k: 100,
+            max_calls_per_query: 1,
+        };
+        let filters = vec![lookup_key_filter("id")];
+        let columns = [test_column()];
+        let request = base_request();
+
+        let error = validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "search",
+            filters: &filters,
+            columns: &columns,
+            request: &request,
+            requests: &[],
+            pagination: &PaginationSpec::default(),
+            search_limits: Some(&search_limits),
+            detail_hints: &[],
+        })
+        .expect_err("search-limited tables should not allow lookup_key filters");
+
+        assert!(
+            error.to_string().contains(
+                "demo.search filter 'id': lookup_key filters require complete filtered result sets, but this table declares search_limits"
+            ),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -1875,17 +1913,20 @@ mod tests {
             purpose: "Fetch full item details.".to_string(),
         }];
 
-        let error = validate_http_table(
-            "demo",
-            "messages",
-            &test_filters(),
-            &[test_column()],
-            &base_request(),
-            &[],
-            &PaginationSpec::default(),
-            None,
-            &detail_hints,
-        )
+        let filters = test_filters();
+        let columns = [test_column()];
+        let request = base_request();
+        let error = validate_http_table(HttpTableValidation {
+            schema: "demo",
+            table_name: "messages",
+            filters: &filters,
+            columns: &columns,
+            request: &request,
+            requests: &[],
+            pagination: &PaginationSpec::default(),
+            search_limits: None,
+            detail_hints: &detail_hints,
+        })
         .expect_err("unknown detail hint result column should fail");
 
         assert!(
@@ -1938,17 +1979,21 @@ mod tests {
         ];
 
         for (field_name, detail_hint) in cases {
-            let error = validate_http_table(
-                "demo",
-                "messages",
-                &test_filters(),
-                &[test_column()],
-                &base_request(),
-                &[],
-                &PaginationSpec::default(),
-                None,
-                &[detail_hint],
-            )
+            let filters = test_filters();
+            let columns = [test_column()];
+            let request = base_request();
+            let detail_hints = [detail_hint];
+            let error = validate_http_table(HttpTableValidation {
+                schema: "demo",
+                table_name: "messages",
+                filters: &filters,
+                columns: &columns,
+                request: &request,
+                requests: &[],
+                pagination: &PaginationSpec::default(),
+                search_limits: None,
+                detail_hints: &detail_hints,
+            })
             .expect_err("empty detail hint fields should fail");
 
             assert!(
@@ -2054,6 +2099,23 @@ mod tests {
             .expect_err("function columns should not reference table filters");
 
         assert!(error.to_string().contains("references unknown filter 'q'"));
+    }
+
+    #[test]
+    fn lookup_key_non_equality_modes_reject() {
+        for mode in [FilterMode::Search, FilterMode::Contains] {
+            let mut filter = lookup_key_filter("q");
+            filter.mode = mode;
+
+            let error = validate_test_http_table(&[filter], &base_request(), &[])
+                .expect_err("non-equality lookup_key mode should fail");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("filter 'q': lookup_key=true requires mode=equality")
+            );
+        }
     }
 
     #[test]

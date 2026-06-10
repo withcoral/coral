@@ -50,23 +50,17 @@ pub(crate) struct ResultGetArguments {
     pub(crate) columns: Option<Vec<String>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ToolTextFormat {
-    PrettyJson,
-    CompactJson,
-}
-
 pub(crate) fn sql_tool() -> Tool {
     Tool::new(
         "sql",
-        "Execute read-only SQL against the Coral database. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates to combine tables in one statement.",
+        "Execute read-only SQL against the Coral database across connected Coral sources/schemas. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates to combine tables in one statement.",
         json_object_schema(&json!({
             "type": "object",
             "required": ["sql"],
             "properties": {
                 "sql": {
                     "type": "string",
-                    "description": "One read-only SQL statement to execute against the Coral database."
+                    "description": "One read-only SQL statement to execute against the Coral database and its configured connected source schemas."
                 }
             }
         })),
@@ -127,13 +121,13 @@ pub(crate) fn result_get_tool() -> Tool {
 pub(crate) fn list_catalog_tool() -> Tool {
     Tool::new(
         "list_catalog",
-        "List database catalog items.",
+        "List database catalog items for Coral sources.",
         json_object_schema(&json!({
             "type": "object",
             "properties": {
                 "schema": {
                     "type": "string",
-                    "description": "Optional exact SQL schema name to list."
+                    "description": "Optional exact SQL schema/source name to list."
                 },
                 "kind": {
                     "description": "Optional item kind to list. Omit or pass null to list all catalog items.",
@@ -177,7 +171,7 @@ pub(crate) fn list_catalog_tool() -> Tool {
 pub(crate) fn search_catalog_tool() -> Tool {
     Tool::new(
         "search_catalog",
-        "Search database catalog metadata with a Rust regex.",
+        "Search database catalog metadata with a Rust regex across connected Coral sources/schemas.",
         json_object_schema(&json!({
             "type": "object",
             "required": ["pattern"],
@@ -188,7 +182,7 @@ pub(crate) fn search_catalog_tool() -> Tool {
                 },
                 "schema": {
                     "type": "string",
-                    "description": "Optional exact SQL schema name to search."
+                    "description": "Optional exact SQL schema/source name to search."
                 },
                 "kind": {
                     "description": "Optional item kind to search. Omit or pass null to search all catalog items.",
@@ -243,7 +237,7 @@ pub(crate) fn describe_table_tool() -> Tool {
             "properties": {
                 "schema": {
                     "type": "string",
-                    "description": "Exact SQL schema name."
+                    "description": "Exact SQL schema/source name."
                 },
                 "table": {
                     "type": "string",
@@ -271,7 +265,7 @@ pub(crate) fn list_columns_tool() -> Tool {
             "properties": {
                 "schema": {
                     "type": "string",
-                    "description": "Exact SQL schema name."
+                    "description": "Exact SQL schema/source name."
                 },
                 "table": {
                     "type": "string",
@@ -434,17 +428,11 @@ pub(crate) fn result_get_arguments(
     })
 }
 
-pub(crate) fn build_tool_result_with_format(
-    value: Value,
-    format: ToolTextFormat,
-) -> Result<CallToolResult, ErrorData> {
-    let text = match format {
-        ToolTextFormat::PrettyJson => serde_json::to_string_pretty(&value),
-        ToolTextFormat::CompactJson => serde_json::to_string(&value),
-    }
-    .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
+    let compact = serde_json::to_string(&value)
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
     let mut result = CallToolResult::structured(value);
-    result.content = vec![Content::text(text)];
+    result.content = vec![Content::text(compact)];
     Ok(result)
 }
 
@@ -963,9 +951,43 @@ fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{Map, Value};
+    use serde_json::{Map, Value, json};
 
-    use super::{list_catalog_arguments, result_get_arguments, search_catalog_arguments};
+    use super::{
+        build_tool_result, list_catalog_arguments, result_get_arguments, search_catalog_arguments,
+    };
+
+    #[test]
+    fn success_tool_result_text_uses_compact_json() {
+        let value = json!({
+            "rows": [
+                {
+                    "id": 1,
+                    "text": "hello"
+                },
+                {
+                    "id": 2,
+                    "text": "world"
+                }
+            ]
+        });
+
+        let result = build_tool_result(value.clone()).expect("tool result");
+
+        let text = result
+            .content
+            .first()
+            .and_then(|content| content.as_text())
+            .expect("text content");
+        assert_eq!(
+            text.text,
+            r#"{"rows":[{"id":1,"text":"hello"},{"id":2,"text":"world"}]}"#
+        );
+        assert_eq!(
+            result.structured_content.expect("structured content"),
+            value
+        );
+    }
 
     #[test]
     fn catalog_kind_argument_accepts_null_as_all_kinds() {
