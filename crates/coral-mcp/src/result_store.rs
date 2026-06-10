@@ -1,4 +1,13 @@
 //! In-memory MCP result-handle store.
+//!
+//! Handles are presentation state scoped to one MCP server process, which is
+//! why the store lives in this adapter crate rather than `coral-app`:
+//! app-level storage would need new protobuf contracts, server lifecycle
+//! semantics, and cross-client eviction fairness before the handle UX is
+//! proven. Revisit that split if handles ever need to survive restarts,
+//! exceed RAM, or serve multi-instance transports. Arrow decoding and
+//! slicing stay in `coral-client`; this module only owns lifecycle
+//! (TTL, LRU, size caps) around the decoded results.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
