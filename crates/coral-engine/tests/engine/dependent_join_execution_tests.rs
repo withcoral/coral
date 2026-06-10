@@ -37,6 +37,76 @@ async fn sql_join_fetches_http_dependent_rows_per_distinct_binding_tuple() {
 }
 
 #[tokio::test]
+async fn dependent_join_drops_fetched_rows_whose_key_values_do_not_match_binding() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[
+            issue_row("Matching", "withcoral", "coral", 123),
+            issue_row("Renamed", "withcoral", "coral", 777),
+        ],
+    );
+
+    let server = MockServer::start().await;
+    // Honest lookup: the payload's key columns echo what was requested.
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": "open"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Loose lookup (rename/transfer redirect): the API resolves the request
+    // but answers with a row whose key differs from the one asked for.
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/777"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 456,
+                "state": "open"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_manifest(&server.uri())),
+        ],
+        test_runtime(),
+        "
+        SELECT i.title AS issue_title, pr.number AS pr_number
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ORDER BY i.title
+        ",
+    )
+    .await
+    .expect("query should succeed");
+
+    // A plain hash join would never pair number=777 with number=456; the
+    // rewritten join must agree and drop the redirected row.
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({ "issue_title": "Matching", "pr_number": 123 })]
+    );
+}
+
+#[tokio::test]
 async fn sql_join_fetches_when_http_dependent_table_is_on_left() {
     assert_dependent_join_query(
         "
@@ -262,7 +332,7 @@ async fn sql_join_reads_all_resolver_partitions() {
             "data": [{
                 "owner": "withcoral",
                 "repo": "coral",
-                "number": 1,
+                "number": 123,
                 "state": "open"
             }]
         })))
@@ -460,7 +530,7 @@ async fn literal_filters_and_join_bindings_together_satisfy_required_dependent_f
             "data": [{
                 "owner": "withcoral",
                 "repo": "coral",
-                "number": 1,
+                "number": 123,
                 "state": "open"
             }]
         })))
