@@ -24,6 +24,7 @@ use crate::backends::shared::filter_expr::{
 };
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
 use crate::backends::shared::mapping::{convert_items, filter_items_by_column_values};
+use coral_spec::ExprSpec;
 use coral_spec::backends::http::HttpTableSpec;
 
 /// Table provider that exposes one manifest-defined HTTP table to `DataFusion`.
@@ -293,7 +294,7 @@ impl TableProvider for HttpSourceTableProvider {
         )
         .iter()
         .any(|pushdown| !matches!(pushdown, TableProviderFilterPushDown::Exact));
-        let local_filter_values =
+        let local_filter_values: HashMap<String, String> =
             match extract_exact_filter_values_checked(filters, self.table.filters()) {
                 FilterExtraction::Values(values) => values
                     .into_iter()
@@ -301,6 +302,43 @@ impl TableProvider for HttpSourceTableProvider {
                     .collect(),
                 FilterExtraction::Contradiction => HashMap::new(),
             };
+
+        // A filter the selected request does not consume can only be enforced
+        // locally through a column carrying response data. A `from_filter`
+        // echo column reflects the filter value itself, so every row would
+        // "match" and the result set would be silently mislabeled. Filters no
+        // route ever consumes are deliberate client-side annotations and stay
+        // allowed; filters some other route consumes have real request
+        // semantics, so failing to route there must error instead of echoing.
+        if !local_filter_values.is_empty() {
+            let mut routable_filters = self.backend.request_filter_names(&self.table.request);
+            for route in &self.table.requests {
+                routable_filters.extend(self.backend.request_filter_names(&route.request));
+                routable_filters.extend(route.when_filters.iter().cloned());
+            }
+            for filter_name in local_filter_values.keys() {
+                if !routable_filters.contains(filter_name) {
+                    continue;
+                }
+                let echoes_filter = self
+                    .table
+                    .columns()
+                    .iter()
+                    .find(|column| column.name == *filter_name)
+                    .is_some_and(|column| {
+                        matches!(column.resolved_expr(), ExprSpec::FromFilter { .. })
+                    });
+                if echoes_filter {
+                    return Err(DataFusionError::External(Box::new(
+                        ProviderQueryError::UnenforceableFilter {
+                            schema: self.source_schema.clone(),
+                            table: self.table.name().to_string(),
+                            column: filter_name.clone(),
+                        },
+                    )));
+                }
+            }
+        }
         let target = self.target.with_resolved_request(active_request);
 
         http_json_exec(HttpJsonExecRequest {

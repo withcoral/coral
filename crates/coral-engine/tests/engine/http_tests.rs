@@ -663,6 +663,78 @@ async fn local_route_filter_can_use_request_filter_values_in_template_column() {
 }
 
 #[tokio::test]
+async fn unconsumed_filter_backed_only_by_echo_column_fails_instead_of_mislabeling() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "title": "First" },
+                { "title": "Second" }
+            ]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_echo_filter",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "issues",
+            "description": "Issues",
+            "filters": [
+                { "name": "owner" },
+                { "name": "repo" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/issues"
+            },
+            "requests": [{
+                "when_filters": ["owner", "repo"],
+                "method": "GET",
+                "path": "/api/repos/{{filter.owner}}/{{filter.repo}}/issues"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "title", "type": "Utf8" },
+                {
+                    "name": "owner",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": { "kind": "from_filter", "key": "owner" }
+                },
+                {
+                    "name": "repo",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": { "kind": "from_filter", "key": "repo" }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT title, owner FROM http_echo_filter.issues WHERE owner = 'octocat'",
+    )
+    .await
+    .expect_err("filter the route does not consume and whose column merely echoes it must fail");
+
+    let rendered = error.to_string();
+    assert!(rendered.contains("owner"), "{rendered}");
+    assert!(rendered.contains("cannot be applied"), "{rendered}");
+}
+
+#[tokio::test]
 async fn exact_local_from_filter_column_survives_residual_recheck() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
