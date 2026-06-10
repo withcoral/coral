@@ -835,6 +835,99 @@ async fn unconsumed_filter_backed_by_filter_derived_expression_fails() {
 }
 
 #[tokio::test]
+async fn unconsumed_filter_backed_by_column_echoing_a_consumed_filter_is_enforced_locally() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/octocat/repos"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "name": "hello" },
+                { "name": "world" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_cross_filter_column",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "repos",
+            "description": "Repos",
+            "filters": [
+                { "name": "owner" },
+                { "name": "org" },
+                { "name": "full_name" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/repos"
+            },
+            "requests": [
+                {
+                    "when_filters": ["owner"],
+                    "method": "GET",
+                    "path": "/api/users/{{filter.owner}}/repos"
+                },
+                {
+                    "when_filters": ["org", "full_name"],
+                    "method": "GET",
+                    "path": "/api/orgs/{{filter.org}}/repos/{{filter.full_name}}"
+                }
+            ],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "name", "type": "Utf8" },
+                {
+                    "name": "owner",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": { "kind": "from_filter", "key": "owner" }
+                },
+                {
+                    "name": "full_name",
+                    "type": "Utf8",
+                    "virtual": true,
+                    "expr": {
+                        "kind": "template",
+                        "template": "{{filter.owner}}/{{expr.name}}",
+                        "values": {
+                            "name": { "kind": "path", "path": ["name"] }
+                        }
+                    }
+                }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    // `full_name` is routable (the org route consumes it) but unconsumed
+    // here, while its column embeds `owner` — a filter the selected request
+    // DID consume. The response is already owner-scoped upstream, so the
+    // rendered value is truthful and local enforcement genuinely
+    // discriminates on row data; only echoes of the enforced filter itself
+    // are circular.
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT name FROM http_cross_filter_column.repos \
+             WHERE owner = 'octocat' AND full_name = 'octocat/hello'",
+        )
+        .await
+        .expect("column echoing a different, consumed filter must stay enforceable"),
+    );
+
+    assert_eq!(rows, vec![json!({ "name": "hello" })]);
+}
+
+#[tokio::test]
 async fn exact_local_from_filter_column_survives_residual_recheck() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

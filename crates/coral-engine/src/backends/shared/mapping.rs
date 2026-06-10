@@ -239,24 +239,31 @@ fn eval_expr(
     }
 }
 
-/// Whether evaluating `expr` may fold active filter values into the produced
-/// column value. Enforcing a filter locally through such a column is circular:
-/// the value reflects the filter rather than response data, so rows match (or
-/// miss) regardless of what the backend returned. Keep the match exhaustive so
-/// every new `ExprSpec` variant decides this explicitly.
-pub(crate) fn expr_reflects_filter_values(expr: &ExprSpec) -> bool {
+/// Whether evaluating `expr` may fold the value of filter `filter` into the
+/// produced column value. Enforcing that filter locally through such a column
+/// is circular: the value reflects the filter rather than response data, so
+/// rows match (or miss) regardless of what the backend returned. References
+/// to *other* filters stay enforceable — a consumed filter is already applied
+/// upstream by the request, an unconsumed active one is enforced (or
+/// rejected) through its own column, and an inactive one renders the same
+/// null/default in both the comparison and the output rows. Keep the match
+/// exhaustive so every new `ExprSpec` variant decides this explicitly.
+pub(crate) fn expr_reflects_filter_value(expr: &ExprSpec, filter: &str) -> bool {
     match expr {
-        ExprSpec::FromFilter { .. } => true,
-        ExprSpec::Coalesce { exprs } => exprs.iter().any(expr_reflects_filter_values),
+        ExprSpec::FromFilter { key } => key == filter,
+        ExprSpec::Coalesce { exprs } => exprs
+            .iter()
+            .any(|nested| expr_reflects_filter_value(nested, filter)),
         ExprSpec::IfPresent { check: expr, .. }
         | ExprSpec::FormatTimestamp { expr, .. }
         | ExprSpec::Base64Decode { expr }
-        | ExprSpec::Replace { expr, .. } => expr_reflects_filter_values(expr),
+        | ExprSpec::Replace { expr, .. } => expr_reflects_filter_value(expr, filter),
         ExprSpec::Template { template, values } => {
-            template
-                .tokens()
-                .any(|token| matches!(token.namespace(), TemplateNamespace::Filter))
-                || values.values().any(expr_reflects_filter_values)
+            template.tokens().any(|token| {
+                matches!(token.namespace(), TemplateNamespace::Filter) && token.key() == filter
+            }) || values
+                .values()
+                .any(|nested| expr_reflects_filter_value(nested, filter))
         }
         // ObjectFilterPath only uses the filter to select which object key to
         // read; the value itself still comes from the response row.
@@ -508,7 +515,7 @@ fn to_bool(value: Option<Value>) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        convert_items, eval_template, expr_reflects_filter_values, filter_items_by_column_values,
+        convert_items, eval_template, expr_reflects_filter_value, filter_items_by_column_values,
         parse_iso8601_micros,
     };
     use crate::backends::schema_from_columns;
@@ -642,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn expr_reflects_filter_values_detects_filter_derived_expressions() {
+    fn expr_reflects_filter_value_detects_expressions_derived_from_that_filter() {
         let from_filter = ExprSpec::FromFilter {
             key: "owner".into(),
         };
@@ -650,46 +657,93 @@ mod tests {
             path: vec!["owner".into()],
         };
 
-        assert!(expr_reflects_filter_values(&from_filter));
-        assert!(expr_reflects_filter_values(&ExprSpec::Coalesce {
-            exprs: vec![path.clone(), from_filter.clone()],
-        }));
-        assert!(expr_reflects_filter_values(&ExprSpec::Replace {
-            expr: Box::new(from_filter.clone()),
-            from: "-".into(),
-            to: "_".into(),
-        }));
-        assert!(expr_reflects_filter_values(&ExprSpec::IfPresent {
-            check: Box::new(from_filter.clone()),
-            then_value: "yes".into(),
-        }));
-        assert!(expr_reflects_filter_values(&ExprSpec::Template {
-            template: ParsedTemplate::parse("{{filter.owner}}").expect("template"),
-            values: HashMap::new(),
-        }));
-        assert!(expr_reflects_filter_values(&ExprSpec::Template {
-            template: ParsedTemplate::parse("{{expr.owner}}").expect("template"),
-            values: HashMap::from([("owner".to_string(), from_filter)]),
-        }));
+        assert!(expr_reflects_filter_value(&from_filter, "owner"));
+        assert!(expr_reflects_filter_value(
+            &ExprSpec::Coalesce {
+                exprs: vec![path.clone(), from_filter.clone()],
+            },
+            "owner",
+        ));
+        assert!(expr_reflects_filter_value(
+            &ExprSpec::Replace {
+                expr: Box::new(from_filter.clone()),
+                from: "-".into(),
+                to: "_".into(),
+            },
+            "owner",
+        ));
+        assert!(expr_reflects_filter_value(
+            &ExprSpec::IfPresent {
+                check: Box::new(from_filter.clone()),
+                then_value: "yes".into(),
+            },
+            "owner",
+        ));
+        assert!(expr_reflects_filter_value(
+            &ExprSpec::Template {
+                template: ParsedTemplate::parse("{{filter.owner}}").expect("template"),
+                values: HashMap::new(),
+            },
+            "owner",
+        ));
+        assert!(expr_reflects_filter_value(
+            &ExprSpec::Template {
+                template: ParsedTemplate::parse("{{expr.owner}}").expect("template"),
+                values: HashMap::from([("owner".to_string(), from_filter.clone())]),
+            },
+            "owner",
+        ));
 
-        assert!(!expr_reflects_filter_values(&path));
-        assert!(!expr_reflects_filter_values(&ExprSpec::Coalesce {
-            exprs: vec![
-                path.clone(),
-                ExprSpec::Literal {
-                    value: json!("unknown"),
-                },
-            ],
-        }));
-        assert!(!expr_reflects_filter_values(&ExprSpec::Template {
-            template: ParsedTemplate::parse("{{expr.owner}}:{{arg.suffix}}").expect("template"),
-            values: HashMap::from([("owner".to_string(), path)]),
-        }));
-        assert!(!expr_reflects_filter_values(&ExprSpec::ObjectFilterPath {
-            path: vec!["metrics".into()],
-            filter_key: "metric".into(),
-            item_path: vec![],
-        }));
+        // References to a *different* filter do not make the column circular
+        // for the filter being enforced.
+        assert!(!expr_reflects_filter_value(&from_filter, "repo"));
+        assert!(!expr_reflects_filter_value(
+            &ExprSpec::Coalesce {
+                exprs: vec![path.clone(), from_filter.clone()],
+            },
+            "repo",
+        ));
+        assert!(!expr_reflects_filter_value(
+            &ExprSpec::Template {
+                template: ParsedTemplate::parse("{{filter.owner}}/{{expr.name}}")
+                    .expect("template"),
+                values: HashMap::from([(
+                    "name".to_string(),
+                    ExprSpec::Path {
+                        path: vec!["name".into()],
+                    },
+                )]),
+            },
+            "full_name",
+        ));
+
+        assert!(!expr_reflects_filter_value(&path, "owner"));
+        assert!(!expr_reflects_filter_value(
+            &ExprSpec::Coalesce {
+                exprs: vec![
+                    path.clone(),
+                    ExprSpec::Literal {
+                        value: json!("unknown"),
+                    },
+                ],
+            },
+            "owner",
+        ));
+        assert!(!expr_reflects_filter_value(
+            &ExprSpec::Template {
+                template: ParsedTemplate::parse("{{expr.owner}}:{{arg.suffix}}").expect("template"),
+                values: HashMap::from([("owner".to_string(), path)]),
+            },
+            "owner",
+        ));
+        assert!(!expr_reflects_filter_value(
+            &ExprSpec::ObjectFilterPath {
+                path: vec!["metrics".into()],
+                filter_key: "metric".into(),
+                item_path: vec![],
+            },
+            "metric",
+        ));
     }
 
     #[test]
