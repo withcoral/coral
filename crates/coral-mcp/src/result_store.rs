@@ -151,11 +151,13 @@ impl ResultStore {
         &self,
         result_id: &str,
     ) -> Result<Arc<CollectedQueryResult>, ResultStoreError> {
-        let now = self.clock.now();
         let mut guard = self
             .state
             .lock()
             .map_err(|_error| ResultStoreError::Unavailable)?;
+        // Sample time under the lock so the expiry check reflects the moment
+        // the decision is made, not when the caller started waiting.
+        let now = self.clock.now();
         let last_accessed_seq = guard.next_access_seq();
         let Some(entry) = guard.entries.get_mut(result_id) else {
             return Err(ResultStoreError::NotFound(result_id.to_string()));
