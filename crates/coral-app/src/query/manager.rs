@@ -18,6 +18,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::episode::EpisodeId;
+use crate::identity::UserPrincipal;
 use crate::query::QueryAttribution;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
@@ -102,6 +103,18 @@ impl QueryManager {
         .await
     }
 
+    pub(crate) async fn list_tables_with_context(
+        &self,
+        workspace_name: &WorkspaceName,
+        _request_principal: &UserPrincipal,
+        schema_filter: Option<&str>,
+        table_filter: Option<&str>,
+        attribution: &QueryAttribution,
+    ) -> Result<Vec<TableInfo>, QueryManagerError> {
+        self.list_tables(workspace_name, schema_filter, table_filter, attribution)
+            .await
+    }
+
     pub(crate) async fn list_catalog(
         &self,
         workspace_name: &WorkspaceName,
@@ -144,6 +157,17 @@ impl QueryManager {
         .await
     }
 
+    pub(crate) async fn list_catalog_with_context(
+        &self,
+        workspace_name: &WorkspaceName,
+        _request_principal: &UserPrincipal,
+        schema_filter: Option<&str>,
+        attribution: &QueryAttribution,
+    ) -> Result<CatalogInfo, QueryManagerError> {
+        self.list_catalog(workspace_name, schema_filter, attribution)
+            .await
+    }
+
     pub(crate) async fn describe_table(
         &self,
         workspace_name: &WorkspaceName,
@@ -177,6 +201,18 @@ impl QueryManager {
         .await
     }
 
+    pub(crate) async fn describe_table_with_context(
+        &self,
+        workspace_name: &WorkspaceName,
+        _request_principal: &UserPrincipal,
+        schema_name: &str,
+        table_name: &str,
+        attribution: &QueryAttribution,
+    ) -> Result<DescribeTableInfo, QueryManagerError> {
+        self.describe_table(workspace_name, schema_name, table_name, attribution)
+            .await
+    }
+
     pub(crate) async fn execute_sql(
         &self,
         workspace_name: &WorkspaceName,
@@ -208,6 +244,16 @@ impl QueryManager {
         .await
     }
 
+    pub(crate) async fn execute_sql_with_context(
+        &self,
+        workspace_name: &WorkspaceName,
+        _request_principal: &UserPrincipal,
+        sql: &str,
+        attribution: &QueryAttribution,
+    ) -> Result<QueryExecution, QueryManagerError> {
+        self.execute_sql(workspace_name, sql, attribution).await
+    }
+
     pub(crate) async fn explain_sql(
         &self,
         workspace_name: &WorkspaceName,
@@ -237,6 +283,16 @@ impl QueryManager {
             |_| None,
         )
         .await
+    }
+
+    pub(crate) async fn explain_sql_with_context(
+        &self,
+        workspace_name: &WorkspaceName,
+        _request_principal: &UserPrincipal,
+        sql: &str,
+        attribution: &QueryAttribution,
+    ) -> Result<QueryPlan, QueryManagerError> {
+        self.explain_sql(workspace_name, sql, attribution).await
     }
 
     pub(crate) async fn validate_source(
@@ -631,6 +687,7 @@ mod tests {
 
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
+    use crate::identity::SingleUserPrincipalProvider;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
 
@@ -682,7 +739,10 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
-        let service = QueryService::new(fixture.manager.clone());
+        let service = QueryService::new(
+            fixture.manager.clone(),
+            Arc::new(SingleUserPrincipalProvider),
+        );
 
         let mut request = Request::new(ExecuteSqlRequest {
             workspace: Some(Workspace {

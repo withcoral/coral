@@ -6,6 +6,7 @@ use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
+use crate::identity::UserPrincipal;
 use crate::query::QueryAttribution;
 use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::workspaces::WorkspaceName;
@@ -172,9 +173,10 @@ impl CatalogDiscovery {
         }
     }
 
-    pub(crate) async fn list_catalog(
+    pub(crate) async fn list_catalog_with_context(
         &self,
         workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
         pagination: Pagination,
@@ -182,7 +184,7 @@ impl CatalogDiscovery {
     ) -> Result<CatalogPage, QueryManagerError> {
         let catalog = self
             .queries
-            .list_catalog(workspace_name, schema_name, attribution)
+            .list_catalog_with_context(workspace_name, request_principal, schema_name, attribution)
             .await?;
         let counts = catalog_counts(&catalog);
         let items = catalog_items(catalog, kind);
@@ -192,30 +194,33 @@ impl CatalogDiscovery {
         })
     }
 
-    async fn catalog_items(
+    async fn catalog_items_with_context(
         &self,
         workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
         attribution: &QueryAttribution,
     ) -> Result<Vec<CatalogItem>, QueryManagerError> {
         let catalog = self
             .queries
-            .list_catalog(workspace_name, schema_name, attribution)
+            .list_catalog_with_context(workspace_name, request_principal, schema_name, attribution)
             .await?;
         Ok(catalog_items(catalog, kind))
     }
 
-    pub(crate) async fn describe_table(
+    pub(crate) async fn describe_table_with_context(
         &self,
         workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
         table_ref: CatalogTableRef<'_>,
         attribution: &QueryAttribution,
     ) -> Result<DescribeTableResult, QueryManagerError> {
         let table_lookup = self
             .queries
-            .describe_table(
+            .describe_table_with_context(
                 workspace_name,
+                request_principal,
                 table_ref.schema_name,
                 table_ref.table_name,
                 attribution,
@@ -275,16 +280,23 @@ fn catalog_counts(catalog: &CatalogInfo) -> CatalogCounts {
 }
 
 impl CatalogDiscovery {
-    pub(crate) async fn search_catalog(
+    pub(crate) async fn search_catalog_with_context(
         &self,
         workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
         query: SearchCatalogQuery<'_>,
         attribution: &QueryAttribution,
     ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
         let regex = compile_metadata_regex(query.pattern, query.ignore_case)
             .map_err(QueryManagerError::App)?;
         let matches = self
-            .catalog_items(workspace_name, query.schema_name, query.kind, attribution)
+            .catalog_items_with_context(
+                workspace_name,
+                request_principal,
+                query.schema_name,
+                query.kind,
+                attribution,
+            )
             .await?
             .into_iter()
             .filter_map(|item| {
@@ -298,16 +310,18 @@ impl CatalogDiscovery {
         Ok(page_items(matches, query.pagination))
     }
 
-    pub(crate) async fn list_columns(
+    pub(crate) async fn list_columns_with_context(
         &self,
         workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
         query: ListColumnsQuery<'_>,
         attribution: &QueryAttribution,
     ) -> Result<Option<Page<ColumnSearchResult>>, QueryManagerError> {
         let table = self
             .queries
-            .list_tables(
+            .list_tables_with_context(
                 workspace_name,
+                request_principal,
                 Some(query.table_ref.schema_name),
                 Some(query.table_ref.table_name),
                 attribution,
