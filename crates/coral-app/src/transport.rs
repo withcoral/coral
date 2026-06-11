@@ -1,6 +1,7 @@
 //! Shared gRPC transport helpers for app-owned services.
 
 use std::future::Future;
+use std::sync::Arc;
 
 use coral_api::{
     CORAL_ERROR_DOMAIN, grpc_response_status_code,
@@ -16,7 +17,7 @@ use coral_api::{
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::Status as OtelStatus;
 use tonic::codegen::{Service, http};
-use tonic::{Code, Request, Status};
+use tonic::{Code, Request, Response, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 use tracing::{Instrument as _, field};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
@@ -26,6 +27,7 @@ use crate::catalog::discovery::{
     CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
     ColumnSearchResult, DescribeTableResult,
 };
+use crate::identity::{UserPrincipal, UserPrincipalError, UserPrincipalProvider};
 use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
 
@@ -182,6 +184,43 @@ where
         Err(status) => record_grpc_status(&span, status.code(), Some(status)),
     }
     result
+}
+
+/// Creates the request span, authenticates the caller through the provider,
+/// and runs `handler` with the authenticated principal and decoded message,
+/// recording the gRPC status on the span.
+///
+/// Handlers that need the request span can read it with
+/// `tracing::Span::current()`.
+pub(crate) async fn instrument_authenticated_grpc<Req, Res, F, Fut>(
+    user_principal_provider: &Arc<dyn UserPrincipalProvider>,
+    request: Request<Req>,
+    handler: F,
+) -> Result<Response<Res>, Status>
+where
+    F: FnOnce(UserPrincipal, Req) -> Fut,
+    Fut: Future<Output = Result<Response<Res>, Status>>,
+{
+    let span = grpc_span(&request);
+    let user_principal_provider = Arc::clone(user_principal_provider);
+    instrument_grpc(span, async move {
+        let principal = user_principal_provider
+            .principal_for_metadata(request.metadata())
+            .await
+            .map_err(user_principal_status)?;
+        handler(principal, request.into_inner()).await
+    })
+    .await
+}
+
+fn user_principal_status(error: UserPrincipalError) -> Status {
+    match error {
+        UserPrincipalError::Unauthenticated(message) => Status::unauthenticated(message),
+        UserPrincipalError::InvalidInput(message) => {
+            Status::invalid_argument(format!("invalid user principal metadata: {message}"))
+        }
+        UserPrincipalError::Internal(message) => Status::internal(message),
+    }
 }
 
 fn record_grpc_status(span: &tracing::Span, code: Code, status: Option<&Status>) {

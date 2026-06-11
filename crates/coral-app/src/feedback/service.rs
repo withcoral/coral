@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use coral_api::v1::feedback_service_server::FeedbackService as FeedbackServiceApi;
 use coral_api::v1::{
     FeedbackReport as ProtoFeedbackReport, SubmitFeedbackRequest, SubmitFeedbackResponse,
@@ -6,16 +8,26 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::feedback::manager::{FeedbackManager, FeedbackReport};
-use crate::transport::{grpc_span, instrument_grpc, workspace_name_from_proto, workspace_to_proto};
+use crate::identity::UserPrincipalProvider;
+use crate::transport::{
+    instrument_authenticated_grpc, workspace_name_from_proto, workspace_to_proto,
+};
 
 #[derive(Clone)]
 pub(crate) struct FeedbackService {
     feedback: FeedbackManager,
+    user_principal_provider: Arc<dyn UserPrincipalProvider>,
 }
 
 impl FeedbackService {
-    pub(crate) fn new(feedback: FeedbackManager) -> Self {
-        Self { feedback }
+    pub(crate) fn new(
+        feedback: FeedbackManager,
+        user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    ) -> Self {
+        Self {
+            feedback,
+            user_principal_provider,
+        }
     }
 }
 
@@ -25,23 +37,25 @@ impl FeedbackServiceApi for FeedbackService {
         &self,
         request: Request<SubmitFeedbackRequest>,
     ) -> Result<Response<SubmitFeedbackResponse>, Status> {
-        let span = grpc_span(&request);
         let feedback = self.feedback.clone();
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let submission = feedback
-                .submit_feedback(
-                    &workspace_name,
-                    &request.trying_to_do,
-                    &request.tried,
-                    &request.stuck,
-                )
-                .map_err(app_status)?;
-            Ok(Response::new(SubmitFeedbackResponse {
-                report: Some(feedback_report_to_proto(submission.report)),
-            }))
-        })
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |_principal, request| async move {
+                let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let submission = feedback
+                    .submit_feedback(
+                        &workspace_name,
+                        &request.trying_to_do,
+                        &request.tried,
+                        &request.stuck,
+                    )
+                    .map_err(app_status)?;
+                Ok(Response::new(SubmitFeedbackResponse {
+                    report: Some(feedback_report_to_proto(submission.report)),
+                }))
+            },
+        )
         .await
     }
 }
