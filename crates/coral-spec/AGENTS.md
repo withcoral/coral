@@ -2,12 +2,13 @@
 
 ## Purpose
 
-`coral-spec` owns the declarative source-spec DSL: parsing, validation, input
-discovery, and normalized source-definition models.
+`coral-spec` owns declarative Coral spec DSLs: source-spec parsing, identity
+spec parsing, validation, input discovery, and normalized definition models.
 
 ## Owns
 
 - source-spec structs and enums shared across source kinds
+- identity-spec structs and enums shared by identity setup/runtime consumers
 - file and HTTP source-spec parsing
 - source-spec validation helpers
 - install/import-time input discovery

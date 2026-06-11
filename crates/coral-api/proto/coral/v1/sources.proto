@@ -3,6 +3,7 @@ syntax = "proto3";
 package coral.v1;
 
 import "coral/v1/catalog.proto";
+import "coral/v1/identity_specs.proto";
 import "coral/v1/resources.proto";
 
 // How one installed source entered Coral ownership.
@@ -24,6 +25,45 @@ enum SourceCredentialStorage {
   SOURCE_CREDENTIAL_STORAGE_FILE = 1;
   // Credential material is stored in the operating-system credential store.
   SOURCE_CREDENTIAL_STORAGE_KEYCHAIN = 2;
+}
+
+// Scope that owns provider-facing identity material for a source binding.
+enum SourceIdentityOwner {
+  // Source identity owner was not specified.
+  SOURCE_IDENTITY_OWNER_UNSPECIFIED = 0;
+  // Identity material is owned by the current Coral user principal.
+  SOURCE_IDENTITY_OWNER_USER = 1;
+  // Identity material is owned by the workspace and independent of a user principal.
+  SOURCE_IDENTITY_OWNER_WORKSPACE = 2;
+}
+
+// One workspace source-surface identity slot.
+message SourceIdentityBinding {
+  // DSL v4 surface id being configured.
+  string surface_id = 1;
+  // Stable identity name used by workspace-owned bindings.
+  //
+  // User-owned bindings leave this empty because the concrete identity is
+  // selected independently by each Coral user principal.
+  string identity = 2;
+  // Scope that owns the identity material.
+  SourceIdentityOwner owner = 3;
+  // Optional accepted identity id from the surface's identity_requirements for
+  // workspace-owned bindings.
+  //
+  // User-owned bindings leave this empty because the accepted branch is
+  // selected independently by each Coral user principal.
+  string accepted_identity = 4;
+}
+
+// One source-surface identity selection owned by the request user.
+message UserSourceIdentityBinding {
+  // DSL v4 surface id being configured.
+  string surface_id = 1;
+  // Stable user-owned identity name.
+  string identity = 2;
+  // Optional accepted identity id from the surface's identity_requirements.
+  string accepted_identity = 3;
 }
 
 // One configured non-secret source variable.
@@ -327,6 +367,34 @@ message ImportSourceRequest {
   repeated SourceSecret secrets = 4;
   // OAuth credential retrievals the app should run before validation and import.
   repeated OAuthCredentialRetrieval oauth_credential_retrievals = 5;
+  // Global identity specs authored in the same import bundle as this source.
+  // The app installs these specs for all workspaces before importing the
+  // source manifest. They do not create identity instances or source bindings.
+  repeated string identity_spec_manifest_yamls = 6;
+  // Workspace source-surface identity bindings to persist with the imported
+  // source. Omitted bindings preserve any existing bindings for the source.
+  repeated SourceIdentityBinding identity_bindings = 7;
+  // Source-surface identity selections to persist for the request user.
+  repeated UserSourceIdentityBinding user_identity_bindings = 8;
+  // When true, replace stored source identity bindings with identity_bindings
+  // exactly, including clearing them when identity_bindings is empty.
+  //
+  // When false, an empty identity_bindings list preserves existing bindings for
+  // compatibility with callers that cannot distinguish omitted and empty
+  // repeated fields.
+  bool replace_identity_bindings = 9;
+  // Setup input values for identity specs imported with this source. Values are
+  // grouped by identity spec name and stored as identity-spec-owned material,
+  // not as source or identity instance material.
+  repeated IdentitySpecImportInputs identity_spec_inputs = 10;
+}
+
+// Setup inputs for one identity spec imported with a source bundle.
+message IdentitySpecImportInputs {
+  // Identity spec name matching one identity_spec_manifest_yamls entry.
+  string identity_spec_name = 1;
+  // Setup input values owned by the installed identity spec.
+  repeated IdentitySpecInput inputs = 2;
 }
 
 // Streaming event emitted while importing a source.

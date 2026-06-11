@@ -129,6 +129,31 @@ Add a custom source spec from a YAML file. Input values come from environment va
 coral source add --file ./local-messages.yaml
 ```
 
+The file may also be a YAML stream with multiple documents separated by
+`---`: exactly one source spec document plus zero or more `kind: identity`
+identity spec documents. Coral installs identity specs globally for all
+workspaces before importing the source. If a bundled identity spec declares
+`inputs`, Coral collects those setup values while installing the spec: from
+matching environment variables by default, or from prompts with `--interactive`.
+Secret identity-spec inputs are stored as identity-spec material, not source
+secrets or identity-instance material.
+
+When the source is a DSL v4 source with `identity_requirements`,
+`coral source add --file` runs interactively: it prompts for required source
+inputs, lets you select an existing compatible user-owned identity when one is
+available, or creates a new user-owned identity from a compatible identity spec.
+If more than one compatible identity spec can create the identity, Coral prompts
+for which one to use. The source surface is configured with a user-owned
+identity slot in the workspace, and the created or selected identity is recorded
+as the current user's selection for that slot. OSS Coral has one local user,
+`local`; products built on Coral can resolve different selections for different
+users.
+
+To change the selected identity for an imported DSL v4 source, run
+`coral source add --file <PATH>` again with the same source manifest. Coral
+re-runs the same interactive identity selection flow and replaces the current
+local user's source-surface identity selection.
+
 ### `coral source lint <FILE>`
 
 Validate a source spec YAML file without installing it. Checks YAML syntax, JSON schema conformance, and semantic rules such as duplicate columns or references to unknown filters.

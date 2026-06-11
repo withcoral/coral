@@ -36,6 +36,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 
 - External authoring:
   - create a standalone source spec such as `./my-source.yaml`
+  - when the source depends on DSL v4 identity requirements, the same file may be a YAML stream containing exactly one source spec and one or more `kind: identity` documents separated by `---`
   - validate structure with `coral source lint ./my-source.yaml`
   - load it with `coral source add --file ./my-source.yaml` when you need to query it through Coral
 - Coral repo contribution:
@@ -55,6 +56,8 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
    - auth
    - variables and secrets
    - credential retrieval methods for secrets, including OAuth when the provider supports browser-based setup
+   - DSL v4 request identity requirements when the target runtime supplies request-scoped identities
+   - for bundled OAuth identity specs, identity setup inputs: client IDs use variable inputs or spec defaults, client secrets use secret inputs, OAuth endpoint URL templates reference only variable inputs, and input material belongs to the installed identity spec rather than identities created from it
    - tables
    - table functions for source-scoped parameterized endpoints
    - filters
@@ -87,14 +90,17 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - For OAuth-backed services, model setup with `inputs.<TOKEN>.credential.methods[]` using `type: oauth`; keep the runtime `auth` or request header pointing at the same secret input.
 - OAuth credential methods support device-code flow and authorization-code flow. For authorization-code flow, set `flow.type: authorization_code`, set `flow.pkce` explicitly to `required` or `disabled`, use a loopback `http://127.0.0.1` or `http://localhost` redirect URI, choose `redirect_uri_port_mode: random` for provider apps that allow variable localhost ports, and choose `fixed` only when users can register the exact non-zero redirect URI. The CLI also accepts the final loopback redirect URL pasted into the terminal when the browser cannot reach the machine running Coral, so do not reject authorization-code OAuth solely because users may run Coral over SSH, in a VM, or in another split-browser environment. For device-code flow, declare `flow.type: device_code`, `endpoints.device_authorization_url`, `endpoints.token_url`, and a public client ID; omit redirect URI fields and do not declare a client secret.
 - OAuth endpoint URLs may template declared `kind: variable` inputs with `{{input.KEY}}` for non-secret endpoint components such as tenant IDs or domains. Do not reference secret inputs, filters, function arguments, state, or inline defaults from OAuth endpoint URLs.
-- If a provider also supports manually pasted tokens, include a `type: source_config` fallback after the OAuth method. When the provider's token endpoint requires client authentication with a client secret, prompt for both OAuth client values: declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`).
-- Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
+- If a provider also supports manually pasted tokens, include a `type: source_config` fallback after the OAuth method. When the provider's token endpoint requires client authentication with a client secret, provide the client ID with `client.id.default`, `client.id.input`, or both, then declare `client.secret.input` and `client.secret.transport` (`basic_auth` or `request_body`).
+- For source OAuth credential methods, do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during source OAuth setup.
 - Each credential method accepts optional `label`, `description`, and `hint` fields, surfaced during interactive install and in the generated source docs. When an input offers more than one method, put the how-to-get-it guidance in each method's `hint` (rendered next to that method's fields) instead of in one long input-level `hint`, and scope each hint to the inputs that method collects.
 - For short-lived OAuth access tokens, make sure the OAuth method can obtain refresh tokens when the provider supports them, and document any scopes, consent prompts, or client settings required for refresh-token issuance. If the provider will not issue refresh tokens, call out that users must reconnect when access tokens expire unless the source has another supported long-lived credential path.
 - Keep table and table-function names stable, SQL-friendly, and unique within
   the source's case-insensitive relation namespace. Prefer plain `snake_case`
   table names. Table-function names must start with an ASCII letter or
   underscore and then use only ASCII letters, numbers, or underscores.
+- For DSL v4 OpenAPI surfaces, use `identity_requirements` only when installed source config will bind the surface to an existing user-owned or workspace-owned identity. `identity_requirements.accepts[]` may contain only `id`, `identity_specs`, and optional `audience`; it does not collect source credentials and does not replace `inputs`, `credential.methods`, or runtime `auth` for source-stored tokens.
+- Identity specs are global app state, managed with `coral identity-spec`; `coral source add --file` can install bundled `kind: identity` documents from the same YAML stream as the source. Installing an identity spec alone does not create stored identity records or source bindings. Declared identity `inputs` are collected when the spec is installed and are stored as identity-spec material, not concrete identity material. When a DSL v4 source declares `identity_requirements`, the interactive source-add flow can create or select a compatible user-owned identity and store that local user's source-surface selection.
+- When authoring `identity_requirements`, keep `accepts` non-empty, give each accepted entry a stable `id`, list accepted identity spec names in `identity_specs`, and include an `audience` object when host/tenant/org/account scoping matters. Put provider `issuer`, identity `type`, setup, and capabilities on the corresponding `kind: identity` specs. Built-in HTTP identity specs need a string `audience.host`; Coral injects Authorization headers only for that exact host or its subdomains.
 - Mark filters as required only when the API truly requires them.
 - Use default table functions for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.
 - Use `kind: search` table functions for provider endpoints that accept query text and return ranked candidates.
@@ -187,6 +193,7 @@ For HTTP-backed sources:
 - define `base_url`
 - define auth headers or other runtime auth fields
 - define `credential.methods` on secret inputs when setup should offer OAuth or another retrieval choice
+- for DSL v4 surfaces, define `identity_requirements` only when installed source config will bind the surface to an existing identity; otherwise use normal source inputs and auth
 - define request path, query, and body only where needed
 - define source-scoped table functions for provider-native operations that require invocation arguments
 - define response `rows_path`

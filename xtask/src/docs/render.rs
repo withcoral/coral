@@ -259,6 +259,8 @@ fn backend_label(manifest: &ValidatedSourceManifest) -> &'static str {
         "http"
     } else if manifest.as_file().is_some() {
         "file"
+    } else if manifest.as_v4().is_some() {
+        "dsl v4"
     } else {
         // ValidatedSourceManifest covers all current backends; unreachable in
         // practice but we avoid `unreachable!` to keep the generator robust.
@@ -568,6 +570,17 @@ tables:
           path: [id]
 ";
 
+    const V4_OPENAPI_MANIFEST: &str = r"
+name: github_v4_local
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/github-openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    base_url: https://api.github.com
+";
+
     #[test]
     fn escape_mdx_escapes_angle_and_brace_in_prose() {
         let input = "See https://<host>/api/v3 and the {workspace} placeholder.";
@@ -701,6 +714,12 @@ tables:
         let demo = parse_source_manifest_yaml(SAMPLE_MANIFEST).expect("parse demo");
         let minimal = parse_source_manifest_yaml(NO_INPUTS_MANIFEST).expect("parse minimal");
         insta::assert_snapshot!("index_page_renders_rows", index_page(&[demo, minimal]));
+    }
+
+    #[test]
+    fn backend_label_renders_v4_manifest_generation() {
+        let manifest = parse_source_manifest_yaml(V4_OPENAPI_MANIFEST).expect("parse v4");
+        assert_eq!(super::backend_label(&manifest), "dsl v4");
     }
 
     #[test]

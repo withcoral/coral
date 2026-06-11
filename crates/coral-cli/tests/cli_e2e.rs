@@ -9,18 +9,19 @@
 
 mod harness;
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-#[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
+use assert_cmd::assert::Assert;
 use coral_api::v1::{
     DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, Source,
     SourceCredentialStorage, SourceInfo, SourceOrigin,
 };
-use tempfile::tempdir;
+use tempfile::{TempDir, tempdir};
 use tonic::Code;
 
 use harness::{MockServer, MockServerConfig, encode_arrow_ipc_stream};
@@ -34,7 +35,7 @@ fn ui_help_does_not_require_app_bootstrap() {
         .assert()
         .success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert!(
         stdout.contains("embedded Coral UI"),
         "expected ui help text: {stdout}"
@@ -65,17 +66,44 @@ fn assert_default_workspace(workspace: Option<&coral_api::v1::Workspace>) {
     );
 }
 
+/// Runs `coral <args>` against the mock server and returns the assertion.
+fn run_cli(server: &MockServer, args: &[&str]) -> Assert {
+    server.cmd().args(args).assert()
+}
+
+fn stdout_text(assert: &Assert) -> String {
+    String::from_utf8_lossy(&assert.get_output().stdout).into_owned()
+}
+
+fn stderr_text(assert: &Assert) -> String {
+    String::from_utf8_lossy(&assert.get_output().stderr).into_owned()
+}
+
+fn write_yaml(dir: &TempDir, file_name: &str, yaml: &str) -> PathBuf {
+    let path = dir.path().join(file_name);
+    std::fs::write(&path, yaml).expect("write yaml fixture");
+    path
+}
+
+/// Prepares `coral <subcommand> add --file <file>` against the mock server.
+fn add_file_cmd(server: &MockServer, subcommand: &str, file: &Path) -> Command {
+    let mut cmd = server.cmd();
+    cmd.args([
+        subcommand,
+        "add",
+        "--file",
+        file.to_str().expect("fixture path utf8"),
+    ]);
+    cmd
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn sql_command_renders_table_output() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["sql", "select 1 as value"])
-        .assert()
-        .success();
+    let assert = run_cli(&server, &["sql", "select 1 as value"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert!(stdout.contains("value"), "expected column header: {stdout}");
     assert!(stdout.contains('1'), "expected row value: {stdout}");
 
@@ -91,9 +119,9 @@ async fn sql_command_renders_table_output() {
 async fn source_list_renders_configured_sources() {
     let server = MockServer::start().await;
 
-    let assert = server.cmd().args(["source", "list"]).assert().success();
+    let assert = run_cli(&server, &["source", "list"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert_eq!(
         nonempty_lines(&stdout),
         vec![
@@ -129,9 +157,9 @@ async fn source_list_renders_dash_for_missing_authored_version() {
     ))
     .await;
 
-    let assert = server.cmd().args(["source", "list"]).assert().success();
+    let assert = run_cli(&server, &["source", "list"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert_eq!(
         nonempty_lines(&stdout),
         vec![
@@ -149,13 +177,9 @@ async fn source_list_renders_dash_for_missing_authored_version() {
 async fn sql_command_renders_json_output() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["sql", "--format", "json", "select 1 as value"])
-        .assert()
-        .success();
+    let assert = run_cli(&server, &["sql", "--format", "json", "select 1 as value"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert_eq!(stdout.trim(), "[{\"value\":1}]", "expected JSON rows");
 
     let requests = server.execute_sql_requests();
@@ -170,9 +194,9 @@ async fn sql_command_renders_json_output() {
 async fn source_discover_renders_available_sources() {
     let server = MockServer::start().await;
 
-    let assert = server.cmd().args(["source", "discover"]).assert().success();
+    let assert = run_cli(&server, &["source", "discover"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert_eq!(
         nonempty_lines(&stdout),
         vec![
@@ -200,9 +224,9 @@ async fn source_discover_renders_empty_state() {
     ))
     .await;
 
-    let assert = server.cmd().args(["source", "discover"]).assert().success();
+    let assert = run_cli(&server, &["source", "discover"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert_eq!(
         stdout.trim(),
         "No bundled sources available.",
@@ -220,13 +244,9 @@ async fn source_discover_renders_empty_state() {
 async fn source_info_renders_metadata_for_installed_source() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "info", "github"])
-        .assert()
-        .success();
+    let assert = run_cli(&server, &["source", "info", "github"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert!(stdout.contains("github"), "expected source name: {stdout}");
     assert!(
         stdout.contains("installed"),
@@ -263,13 +283,9 @@ async fn source_info_renders_metadata_for_installed_source() {
 async fn source_info_verbose_includes_input_hints() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "info", "github", "--verbose"])
-        .assert()
-        .success();
+    let assert = run_cli(&server, &["source", "info", "github", "--verbose"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert!(
         stdout.contains("github.com/settings/tokens"),
         "expected hint with --verbose: {stdout}"
@@ -282,13 +298,9 @@ async fn source_info_verbose_includes_input_hints() {
 async fn source_info_renders_metadata_for_available_source() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "info", "slack"])
-        .assert()
-        .success();
+    let assert = run_cli(&server, &["source", "info", "slack"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert!(
         stdout.contains("not installed"),
         "expected not-installed status: {stdout}"
@@ -306,13 +318,9 @@ async fn source_info_renders_metadata_for_available_source() {
 async fn source_info_renders_installed_imported_source() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "info", "jira"])
-        .assert()
-        .success();
+    let assert = run_cli(&server, &["source", "info", "jira"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert!(stdout.contains("jira"), "expected source name: {stdout}");
     assert!(
         stdout.contains("installed"),
@@ -336,13 +344,9 @@ async fn source_info_renders_installed_imported_source() {
 async fn source_info_omits_missing_authored_version() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "info", "versionless"])
-        .assert()
-        .success();
+    let assert = run_cli(&server, &["source", "info", "versionless"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert!(
         stdout.contains("versionless"),
         "expected source name: {stdout}"
@@ -359,13 +363,9 @@ async fn source_info_omits_missing_authored_version() {
 async fn source_info_errors_for_unknown_source() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "info", "nope"])
-        .assert()
-        .failure();
+    let assert = run_cli(&server, &["source", "info", "nope"]).failure();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stderr = stderr_text(&assert);
     assert!(
         stderr.contains("unknown source 'nope'"),
         "expected unknown source error: {stderr}"
@@ -383,9 +383,9 @@ async fn source_list_renders_empty_state() {
     ))
     .await;
 
-    let assert = server.cmd().args(["source", "list"]).assert().success();
+    let assert = run_cli(&server, &["source", "list"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert_eq!(
         stdout.trim(),
         "No sources configured.",
@@ -403,13 +403,9 @@ async fn source_list_renders_empty_state() {
 async fn source_test_renders_validation_summary() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "test", "github"])
-        .assert()
-        .success();
+    let assert = run_cli(&server, &["source", "test", "github"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert!(
         stdout.contains("github connected successfully"),
         "expected success summary: {stdout}"
@@ -436,13 +432,9 @@ async fn source_test_renders_validation_summary() {
 async fn source_remove_reports_removed_source() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "remove", "github"])
-        .assert()
-        .success();
+    let assert = run_cli(&server, &["source", "remove", "github"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert_eq!(
         stdout.trim(),
         "Removed source github",
@@ -464,13 +456,9 @@ async fn sql_command_surfaces_server_errors() {
     )
     .await;
 
-    let assert = server
-        .cmd()
-        .args(["sql", "select 1 as value"])
-        .assert()
-        .failure();
+    let assert = run_cli(&server, &["sql", "select 1 as value"]).failure();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stderr = stderr_text(&assert);
     assert!(
         stderr.contains("mock SQL failure"),
         "expected server error in stderr: {stderr}"
@@ -491,13 +479,9 @@ async fn source_test_surfaces_validation_errors() {
     )
     .await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "test", "github"])
-        .assert()
-        .failure();
+    let assert = run_cli(&server, &["source", "test", "github"]).failure();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stderr = stderr_text(&assert);
     assert!(
         stderr.contains("mock validate failure"),
         "expected validation error in stderr: {stderr}"
@@ -541,13 +525,9 @@ async fn sql_table_output_renders_multiple_columns_and_rows() {
     )
     .await;
 
-    let assert = server
-        .cmd()
-        .args(["sql", "select id, name from users"])
-        .assert()
-        .success();
+    let assert = run_cli(&server, &["sql", "select id, name from users"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     let lines = nonempty_lines(&stdout);
 
     // Arrow pretty table: border, header, border, data rows, border.
@@ -600,13 +580,13 @@ async fn sql_json_output_renders_multiple_rows() {
     )
     .await;
 
-    let assert = server
-        .cmd()
-        .args(["sql", "--format", "json", "select id, name from users"])
-        .assert()
-        .success();
+    let assert = run_cli(
+        &server,
+        &["sql", "--format", "json", "select id, name from users"],
+    )
+    .success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     let rows: Vec<serde_json::Map<String, serde_json::Value>> =
         serde_json::from_str(stdout.trim()).expect("sql --format json should emit a JSON array");
 
@@ -642,13 +622,9 @@ async fn sql_table_output_renders_empty_result() {
     )
     .await;
 
-    let assert = server
-        .cmd()
-        .args(["sql", "select id, name from empty_table"])
-        .assert()
-        .success();
+    let assert = run_cli(&server, &["sql", "select id, name from empty_table"]).success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     let lines = nonempty_lines(&stdout);
 
     // Empty result: border, header, border, border (no data rows).
@@ -684,13 +660,13 @@ async fn sql_json_output_renders_empty_result() {
     )
     .await;
 
-    let assert = server
-        .cmd()
-        .args(["sql", "--format", "json", "select id from empty_table"])
-        .assert()
-        .success();
+    let assert = run_cli(
+        &server,
+        &["sql", "--format", "json", "select id from empty_table"],
+    )
+    .success();
 
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stdout = stdout_text(&assert);
     assert_eq!(stdout.trim(), "[]", "expected empty JSON array");
 
     let requests = server.execute_sql_requests();
@@ -709,9 +685,9 @@ async fn sql_json_output_renders_empty_result() {
 async fn source_add_requires_name_or_file() {
     let server = MockServer::start().await;
 
-    let assert = server.cmd().args(["source", "add"]).assert().failure();
+    let assert = run_cli(&server, &["source", "add"]).failure();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stderr = stderr_text(&assert);
     assert!(
         stderr.contains("required") || stderr.contains("must be provided"),
         "expected clap error about required arguments: {stderr}"
@@ -724,13 +700,13 @@ async fn source_add_requires_name_or_file() {
 async fn source_add_rejects_name_and_file_together() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "add", "github", "--file", "manifest.yaml"])
-        .assert()
-        .failure();
+    let assert = run_cli(
+        &server,
+        &["source", "add", "github", "--file", "manifest.yaml"],
+    )
+    .failure();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stderr = stderr_text(&assert);
     assert!(
         stderr.contains("cannot be used with"),
         "expected clap conflict error: {stderr}"
@@ -739,48 +715,62 @@ async fn source_add_rejects_name_and_file_together() {
     server.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn source_add_file_resolves_v4_relative_descriptor_from_manifest_dir() {
-    let server = MockServer::start().await;
-    let source_dir = tempdir().expect("source dir");
-    let openapi_file = source_dir.path().join("openapi.yaml");
-    std::fs::write(
-        &openapi_file,
-        r"
-openapi: 3.0.3
-paths: {}
-",
-    )
-    .expect("write descriptor");
-    let manifest_file = source_dir.path().join("manifest.yaml");
-    std::fs::write(
-        &manifest_file,
-        r"
+/// DSL v4 github manifest whose single surface references a relative
+/// `openapi.yaml` descriptor.
+const V4_GITHUB_MANIFEST: &str = r"
 name: github
 dsl_version: 4
 surfaces:
   - id: rest
     type: openapi
     file: openapi.yaml
-",
-    )
-    .expect("write manifest");
+    sha256: 0693619bd2b15b9257926af5d5738c75f504186daf51acb9ec247e24b493da89
+";
 
-    server
-        .cmd()
-        .args([
-            "source",
-            "add",
-            "--file",
-            manifest_file.to_str().expect("manifest path utf8"),
-        ])
+/// Writes the v4 github manifest plus its `openapi.yaml` descriptor into a
+/// fresh temp dir; `manifest_suffix` extends the single surface entry.
+fn v4_github_source_dir(manifest_suffix: &str) -> (TempDir, PathBuf) {
+    let source_dir = tempdir().expect("source dir");
+    write_yaml(&source_dir, "openapi.yaml", "\nopenapi: 3.0.3\npaths: {}\n");
+    let manifest_file = write_yaml(
+        &source_dir,
+        "manifest.yaml",
+        &format!("{V4_GITHUB_MANIFEST}{manifest_suffix}"),
+    );
+    (source_dir, manifest_file)
+}
+
+/// Minimal fixed-token identity spec manifest for the given spec name.
+fn fixed_token_spec_yaml(name: &str) -> String {
+    format!(
+        r"
+kind: identity
+spec_version: 1
+name: {name}
+version: 0.1.0
+issuer: github
+type: fixed_token
+"
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_resolves_v4_relative_descriptor_from_manifest_dir() {
+    let server = MockServer::start().await;
+    let (source_dir, manifest_file) = v4_github_source_dir("");
+
+    add_file_cmd(&server, "source", &manifest_file)
         .assert()
         .success();
 
     let requests = server.import_source_requests();
     assert_eq!(requests.len(), 1, "expected one import_source call");
     let manifest_yaml = &requests[0].manifest_yaml;
-    let canonical = openapi_file.canonicalize().expect("canonical descriptor");
+    let canonical = source_dir
+        .path()
+        .join("openapi.yaml")
+        .canonicalize()
+        .expect("canonical descriptor");
     let canonical = canonical.to_string_lossy();
     assert!(
         manifest_yaml.contains(canonical.as_ref()),
@@ -794,6 +784,93 @@ surfaces:
     server.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_with_v4_identity_requirements_requires_tty() {
+    let server = MockServer::start().await;
+    let (_source_dir, manifest_file) = v4_github_source_dir(
+        r"    identity_requirements:
+      accepts:
+        - id: github-rest-read
+          identity_specs:
+            - github_oauth
+          audience:
+            host: github.com
+",
+    );
+
+    let assert = add_file_cmd(&server, "source", &manifest_file)
+        .assert()
+        .failure();
+
+    let stderr = stderr_text(&assert);
+    assert!(
+        stderr.contains("source identity setup requires a TTY"),
+        "expected source identity TTY requirement error: {stderr}"
+    );
+    assert!(
+        server.import_source_requests().is_empty(),
+        "source import must not run before identity setup"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_forwards_identity_specs_from_manifest_bundle() {
+    let server = MockServer::start().await;
+    let source_dir = tempdir().expect("source dir");
+    let manifest_file = write_yaml(
+        &source_dir,
+        "bundle.yaml",
+        &format!(
+            r"
+---{spec}---
+name: github
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: users
+    description: Demo users
+    request:
+      method: GET
+      path: /users
+    columns:
+      - name: id
+        type: Utf8
+",
+            spec = fixed_token_spec_yaml("github_oauth")
+        ),
+    );
+
+    add_file_cmd(&server, "source", &manifest_file)
+        .assert()
+        .success();
+
+    let requests = server.import_source_requests();
+    assert_eq!(requests.len(), 1, "expected one import_source call");
+    assert!(
+        requests[0].replace_identity_bindings,
+        "source add should replace source identity bindings on import"
+    );
+    assert_eq!(
+        requests[0].identity_spec_manifest_yamls.len(),
+        1,
+        "expected bundled identity spec to be forwarded"
+    );
+    assert!(
+        requests[0].identity_spec_manifest_yamls[0].contains("name: github_oauth"),
+        "expected github_oauth identity spec in import request"
+    );
+    assert!(
+        !requests[0].manifest_yaml.contains("kind: identity"),
+        "source manifest sent to import should contain only the source document"
+    );
+
+    server.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // Name validation
 // ---------------------------------------------------------------------------
@@ -802,13 +879,9 @@ surfaces:
 async fn source_test_rejects_invalid_name() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "test", "a/b"])
-        .assert()
-        .failure();
+    let assert = run_cli(&server, &["source", "test", "a/b"]).failure();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stderr = stderr_text(&assert);
     assert!(
         stderr.contains("must not contain"),
         "expected name validation error: {stderr}"
@@ -821,13 +894,9 @@ async fn source_test_rejects_invalid_name() {
 async fn source_remove_rejects_invalid_name() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "remove", "a/b"])
-        .assert()
-        .failure();
+    let assert = run_cli(&server, &["source", "remove", "a/b"]).failure();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stderr = stderr_text(&assert);
     assert!(
         stderr.contains("must not contain"),
         "expected name validation error: {stderr}"
@@ -851,7 +920,7 @@ async fn source_add_reports_missing_env_vars_without_interactive() {
         .assert()
         .failure();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stderr = stderr_text(&assert);
     assert!(
         stderr.contains("missing required environment variable"),
         "expected missing env var error: {stderr}"
@@ -872,13 +941,9 @@ async fn source_add_reports_missing_env_vars_without_interactive() {
 async fn source_add_interactive_requires_tty() {
     let server = MockServer::start().await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "add", "--interactive", "github"])
-        .assert()
-        .failure();
+    let assert = run_cli(&server, &["source", "add", "--interactive", "github"]).failure();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stderr = stderr_text(&assert);
     assert!(
         stderr.contains("requires a TTY"),
         "expected TTY requirement error: {stderr}"
@@ -906,13 +971,9 @@ async fn source_test_suggests_add_for_uninstalled_bundled_source() {
     )
     .await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "test", "demo_bundled"])
-        .assert()
-        .failure();
+    let assert = run_cli(&server, &["source", "test", "demo_bundled"]).failure();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stderr = stderr_text(&assert);
     assert!(
         stderr.contains("source 'demo_bundled' is not installed"),
         "expected not-installed error in stderr: {stderr}"
@@ -940,13 +1001,9 @@ async fn source_test_normalizes_error_for_unknown_source() {
     )
     .await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "test", "totally_unknown"])
-        .assert()
-        .failure();
+    let assert = run_cli(&server, &["source", "test", "totally_unknown"]).failure();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stderr = stderr_text(&assert);
     assert!(
         stderr.contains("source 'totally_unknown' was not found"),
         "expected normalized not-found error in stderr: {stderr}"
@@ -970,13 +1027,9 @@ async fn source_remove_normalizes_error_for_unknown_source() {
     )
     .await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "remove", "unknown_source"])
-        .assert()
-        .failure();
+    let assert = run_cli(&server, &["source", "remove", "unknown_source"]).failure();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stderr = stderr_text(&assert);
     assert!(
         stderr.contains("source 'unknown_source' was not found"),
         "expected normalized not-found error in stderr: {stderr}"
@@ -1005,13 +1058,9 @@ async fn source_remove_preserves_unrelated_not_found_errors() {
     )
     .await;
 
-    let assert = server
-        .cmd()
-        .args(["source", "remove", "broken_source"])
-        .assert()
-        .failure();
+    let assert = run_cli(&server, &["source", "remove", "broken_source"]).failure();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stderr = stderr_text(&assert);
     assert!(
         stderr.contains(raw_message),
         "expected raw server error to surface unchanged: {stderr}"

@@ -960,9 +960,10 @@ pub(crate) fn parse_manifest_data_type(s: &str) -> Result<ManifestDataType> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
     use crate::backends::http::test_http_table_spec;
-    use std::collections::HashSet;
 
     #[test]
     fn resolve_request_returns_default_when_no_routes() {

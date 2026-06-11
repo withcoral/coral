@@ -4,26 +4,36 @@
     reason = "test code: assertion-style indexing is idiomatic in tests"
 )]
 
-use std::fs;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use coral_api::v1::{
-    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
-    ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
-    ListCatalogRequest, OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest,
-    QueryTestFailure, QueryTestSuccess, SourceCredentialStorage, SourceOrigin, SourceSecret,
-    SourceVariable, ValidateSourceRequest, Workspace, catalog_item, import_source_response,
-    query_test_result, source_credential_method::Method as ProtoCredentialMethod,
+    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExplainSqlRequest,
+    GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest, ListCatalogRequest,
+    ListCatalogResponse, OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest,
+    QueryTestFailure, QueryTestSuccess, Source, SourceCredentialStorage, SourceIdentityBinding,
+    SourceIdentityOwner, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
+    UserSourceIdentityBinding, Workspace, catalog_item, query_test_result,
+    source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::default_workspace;
+use serde_json::json;
+use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 use tonic::Request;
+use url::Url;
+use wiremock::matchers::{header, method, path as request_path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::harness::{
-    FailingHttpFixture, GrpcHarness, fixture_function_only_manifest_yaml,
+    FailingHttpFixture, GrpcHarness, OAuthFixture, create_github_oauth_identity,
+    fixed_token_identity_spec_yaml, fixture_function_only_manifest_yaml,
     fixture_manifest_with_inputs_yaml, fixture_manifest_with_multiple_tables_yaml,
     fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
-    fixture_manifest_yaml, invalid_manifest_yaml, source_dir,
+    fixture_manifest_yaml, import_request, invalid_manifest_yaml, secret, source_dir, variable,
 };
 
 #[tokio::test]
@@ -45,8 +55,7 @@ async fn import_source_persists_and_lists() {
     assert!(added.variables.is_empty());
     assert!(added.secrets.is_empty());
 
-    let config_raw =
-        fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
+    let config_raw = read_config(&harness);
     assert!(config_raw.contains("[workspaces.default.sources.local_messages]"));
     assert!(config_raw.contains("secrets = []"));
     assert!(!config_raw.contains("credential_storage"));
@@ -72,20 +81,542 @@ async fn import_source_persists_and_lists() {
 }
 
 #[tokio::test]
+async fn import_v4_source_persists_identity_bindings_from_grpc() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
+
+    let added = import_grpc_identity_source(&harness, manifest_yaml, "github_local").await;
+    assert_eq!(added.name, "github_v4_grpc");
+
+    let config_raw = read_config(&harness);
+    assert!(
+        config_raw.contains("identity_bindings = { rest = { owner = \"user\" } }"),
+        "expected source identity binding in config: {config_raw}"
+    );
+    let user_binding_raw = read_user_binding(&harness);
+    assert!(user_binding_raw.contains("identity: github_local"));
+    assert!(user_binding_raw.contains("accepted_identity: github-rest-read"));
+}
+
+#[tokio::test]
+async fn reimport_source_can_clear_identity_bindings_from_grpc() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
+    let (openapi_file, openapi_sha256) = write_v4_openapi(&harness, "http://127.0.0.1:1");
+    let manifest_yaml = grpc_identity_manifest_yaml_for_host(
+        "github_v4_grpc",
+        &openapi_file,
+        &openapi_sha256,
+        "github.com",
+    );
+
+    import_grpc_identity_source(&harness, manifest_yaml, "github_local").await;
+
+    let manifest_without_identity = format!(
+        r"
+name: github_v4_grpc
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    sha256: {}
+",
+        openapi_file.display(),
+        openapi_sha256
+    );
+    harness
+        .try_import_source(ImportSourceRequest {
+            replace_identity_bindings: true,
+            ..import_request(manifest_without_identity)
+        })
+        .await
+        .expect("reimport source");
+
+    let config_raw = read_config(&harness);
+    assert!(
+        !config_raw.contains("identity_bindings"),
+        "expected source identity bindings to be cleared: {config_raw}"
+    );
+}
+
+#[tokio::test]
+async fn reimport_v4_source_replaces_user_identity_binding_from_grpc() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
+    create_fixed_token_identity(&harness, "github_reauth", "github_oauth", "github.com").await;
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
+
+    import_grpc_identity_source(&harness, manifest_yaml.clone(), "github_local").await;
+    import_grpc_identity_source(&harness, manifest_yaml, "github_reauth").await;
+
+    let user_binding_raw = read_user_binding(&harness);
+    assert!(
+        user_binding_raw.contains("identity: github_reauth"),
+        "expected reimport to replace user identity binding: {user_binding_raw}"
+    );
+    assert!(
+        !user_binding_raw.contains("identity: github_local"),
+        "expected prior identity binding to be replaced: {user_binding_raw}"
+    );
+}
+
+#[tokio::test]
+async fn reimport_v4_source_can_reselect_user_identity_with_preserved_slot_from_grpc() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
+    create_fixed_token_identity(&harness, "github_reauth", "github_oauth", "github.com").await;
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
+
+    import_grpc_identity_source(&harness, manifest_yaml.clone(), "github_local").await;
+
+    harness
+        .try_import_source(ImportSourceRequest {
+            user_identity_bindings: rest_user_identity_bindings(
+                "github_reauth",
+                "github-rest-read",
+            ),
+            ..import_request(manifest_yaml)
+        })
+        .await
+        .expect("reimport should use preserved source identity slot");
+
+    let user_binding_raw = read_user_binding(&harness);
+    assert!(
+        user_binding_raw.contains("identity: github_reauth"),
+        "expected preserved slot reimport to replace user identity binding: {user_binding_raw}"
+    );
+}
+
+#[tokio::test]
+async fn reimport_v4_source_can_preserve_user_identity_selection_from_grpc() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
+
+    import_grpc_identity_source(&harness, manifest_yaml.clone(), "github_local").await;
+
+    harness
+        .try_import_source(import_request(manifest_yaml))
+        .await
+        .expect("reimport should preserve existing user identity selection");
+
+    let user_binding_raw = read_user_binding(&harness);
+    assert!(
+        user_binding_raw.contains("identity: github_local"),
+        "expected no-op reimport to preserve user identity binding: {user_binding_raw}"
+    );
+}
+
+#[tokio::test]
+async fn import_v4_source_rejects_invalid_user_accepted_identity() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
+
+    let error = harness
+        .try_import_source(ImportSourceRequest {
+            identity_bindings: rest_identity_bindings(),
+            user_identity_bindings: rest_user_identity_bindings("github_local", "missing"),
+            ..import_request(manifest_yaml)
+        })
+        .await
+        .expect_err("invalid accepted identity should fail import");
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(
+        error.message().contains(
+            "source 'github_v4_grpc' surface 'rest' user_identity_binding references unknown accepted_identity 'missing'"
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn import_v4_source_requires_user_accepted_identity_when_surface_accepts_multiple() {
+    let harness = GrpcHarness::new().await;
+    let (openapi_file, openapi_sha256) = write_v4_openapi(&harness, "http://127.0.0.1:1");
+    let manifest_yaml = format!(
+        r"
+name: github_v4_grpc
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    sha256: {}
+    identity_requirements:
+      accepts:
+        - id: github-device
+          identity_specs:
+            - github_oauth
+          audience:
+            host: github.com
+        - id: github-app
+          identity_specs:
+            - github_oauth_app
+          audience:
+            host: github.com
+",
+        openapi_file.display(),
+        openapi_sha256
+    );
+
+    let error = harness
+        .try_import_source(ImportSourceRequest {
+            identity_bindings: rest_identity_bindings(),
+            user_identity_bindings: rest_user_identity_bindings("github_local", ""),
+            ..import_request(manifest_yaml)
+        })
+        .await
+        .expect_err("ambiguous accepted identity should fail import");
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(
+        error.message().contains(
+            "source 'github_v4_grpc' surface 'rest' user_identity_binding must include accepted_identity because the surface accepts multiple identities"
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn v4_source_uses_user_owned_oauth_identity_end_to_end() {
+    let harness = GrpcHarness::new().await;
+    let oauth = OAuthFixture::start().await;
+    let api = MockServer::start().await;
+    let api_host = host_of(&api.uri());
+    harness
+        .add_identity_spec(oauth.identity_spec_yaml_with_audience_host("github_oauth", &api_host))
+        .await;
+    let identity = create_github_oauth_identity(&harness, &oauth).await;
+    assert_eq!(identity.name, "github_local");
+
+    mount_users_endpoint(&api, "Bearer identity-access-token").await;
+
+    let manifest_yaml = write_v4_manifest(&harness, &api.uri(), &api_host);
+    import_grpc_identity_source(&harness, manifest_yaml, &identity.name).await;
+
+    let rows = harness
+        .execute_sql_rows("SELECT id FROM github_v4_grpc.users")
+        .await;
+    assert_eq!(rows, vec![json!({"id": "u1"})]);
+}
+
+#[tokio::test]
+async fn v4_source_rejects_identity_header_injection_for_off_audience_request_host() {
+    let harness = GrpcHarness::new().await;
+    let oauth = OAuthFixture::start().await;
+    harness
+        .add_identity_spec(oauth.identity_spec_yaml("github_oauth"))
+        .await;
+    let identity = create_github_oauth_identity(&harness, &oauth).await;
+    assert_eq!(identity.name, "github_local");
+
+    let api = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(request_path("/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "u1"}
+        ])))
+        .expect(0)
+        .mount(&api)
+        .await;
+
+    let manifest_yaml = write_v4_manifest(&harness, &api.uri(), "github.com");
+    import_grpc_identity_source(&harness, manifest_yaml, &identity.name).await;
+
+    let error = harness
+        .try_execute_sql("SELECT id FROM github_v4_grpc.users")
+        .await
+        .expect_err("off-audience query should fail before HTTP request");
+
+    assert_eq!(error.code(), tonic::Code::Internal);
+    assert!(
+        error
+            .message()
+            .contains("audience host 'github.com' does not match request host"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn import_v4_source_rejects_incompatible_user_identity_binding() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "gitlab_oauth", "gitlab.com").await;
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
+
+    let error = harness
+        .try_import_source(identity_import_request(manifest_yaml, "github_local"))
+        .await
+        .expect_err("incompatible user identity should fail import");
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        error
+            .message()
+            .contains("does not satisfy selected identity requirements"),
+        "unexpected error: {error}"
+    );
+    let listed = harness.list_sources().await;
+    assert!(
+        listed.is_empty(),
+        "invalid user identity selection must not install the source"
+    );
+}
+
+#[tokio::test]
+async fn import_v4_source_rejects_identity_after_spec_force_remove_and_readd() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
+    harness.force_delete_identity_spec("github_oauth").await;
+    harness
+        .add_identity_spec(fixed_token_identity_spec_yaml(
+            "github_oauth",
+            "attacker.test",
+        ))
+        .await;
+
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "attacker.test");
+
+    let error = harness
+        .try_import_source(identity_import_request(manifest_yaml, "github_local"))
+        .await
+        .expect_err("changed identity spec should fail import");
+
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        error
+            .message()
+            .contains("has changed since the identity was created"),
+        "unexpected error: {error}"
+    );
+    let listed = harness.list_sources().await;
+    assert!(
+        listed.is_empty(),
+        "orphaned user identity selection must not install the source"
+    );
+}
+
+#[tokio::test]
+async fn import_v4_source_uses_identity_after_same_spec_force_remove_and_readd() {
+    let harness = GrpcHarness::new().await;
+    let api = MockServer::start().await;
+    let api_host = host_of(&api.uri());
+    let spec_yaml = fixed_token_identity_spec_yaml("github_oauth", &api_host);
+    harness.add_identity_spec(spec_yaml.clone()).await;
+    harness
+        .create_fixed_token_identity("github_local", "github_oauth", "identity-token")
+        .await;
+    harness.force_delete_identity_spec("github_oauth").await;
+    harness.add_identity_spec(spec_yaml).await;
+
+    mount_users_endpoint(&api, "Bearer identity-token").await;
+
+    let manifest_yaml = write_v4_manifest(&harness, &api.uri(), &api_host);
+    import_grpc_identity_source(&harness, manifest_yaml, "github_local").await;
+
+    let rows = harness
+        .execute_sql_rows("SELECT id FROM github_v4_grpc.users")
+        .await;
+    assert_eq!(rows, vec![json!({"id": "u1"})]);
+}
+
+#[tokio::test]
+async fn validate_v4_source_rejects_orphaned_user_identity_without_test_queries() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
+    import_grpc_identity_source(&harness, manifest_yaml, "github_local").await;
+
+    harness.force_delete_identity_spec("github_oauth").await;
+
+    let error = harness
+        .try_validate_source("github_v4_grpc")
+        .await
+        .expect_err("orphaned identity-backed source should fail validation");
+
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        error
+            .message()
+            .contains("identity 'github_local' is orphaned"),
+        "unexpected error: {error}"
+    );
+}
+
+/// Adds a fixed-token identity spec named `spec_name` for `audience_host` and
+/// creates a user-owned identity bound to it.
+async fn create_fixed_token_identity(
+    harness: &GrpcHarness,
+    identity_name: &str,
+    spec_name: &str,
+    audience_host: &str,
+) {
+    harness
+        .add_identity_spec(fixed_token_identity_spec_yaml(spec_name, audience_host))
+        .await;
+    harness
+        .create_fixed_token_identity(identity_name, spec_name, "identity-token")
+        .await;
+}
+
+/// Import request binding the `rest` surface to a user-owned identity accepted
+/// as `github-rest-read`.
+fn identity_import_request(manifest_yaml: String, identity: &str) -> ImportSourceRequest {
+    ImportSourceRequest {
+        identity_bindings: rest_identity_bindings(),
+        user_identity_bindings: rest_user_identity_bindings(identity, "github-rest-read"),
+        ..import_request(manifest_yaml)
+    }
+}
+
+fn rest_identity_bindings() -> Vec<SourceIdentityBinding> {
+    vec![SourceIdentityBinding {
+        surface_id: "rest".to_string(),
+        owner: SourceIdentityOwner::User as i32,
+        ..Default::default()
+    }]
+}
+
+fn rest_user_identity_bindings(
+    identity: &str,
+    accepted_identity: &str,
+) -> Vec<UserSourceIdentityBinding> {
+    vec![UserSourceIdentityBinding {
+        surface_id: "rest".to_string(),
+        identity: identity.to_string(),
+        accepted_identity: accepted_identity.to_string(),
+    }]
+}
+
+async fn import_grpc_identity_source(
+    harness: &GrpcHarness,
+    manifest_yaml: String,
+    identity: &str,
+) -> coral_api::v1::Source {
+    harness
+        .try_import_source(identity_import_request(manifest_yaml, identity))
+        .await
+        .expect("import source")
+}
+
+fn read_config(harness: &GrpcHarness) -> String {
+    fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config")
+}
+
+fn read_user_binding(harness: &GrpcHarness) -> String {
+    let binding = harness
+        .config_dir()
+        .join("identities/source-bindings/users/local/default/github_v4_grpc/rest/binding.yaml");
+    fs::read_to_string(binding).expect("read user binding")
+}
+
+fn host_of(uri: &str) -> String {
+    Url::parse(uri)
+        .expect("api uri")
+        .host_str()
+        .expect("api host")
+        .to_string()
+}
+
+/// Mounts a `GET /users` endpoint on `api` that requires the given
+/// authorization header value and returns one user row.
+async fn mount_users_endpoint(api: &MockServer, authorization: &str) {
+    Mock::given(method("GET"))
+        .and(request_path("/users"))
+        .and(header("authorization", authorization))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "u1"}
+        ])))
+        .mount(api)
+        .await;
+}
+
+/// Writes the shared `OpenAPI` fixture targeting `base_url`; returns its path
+/// and sha256.
+fn write_v4_openapi(harness: &GrpcHarness, base_url: &str) -> (PathBuf, String) {
+    let openapi_yaml = grpc_identity_openapi_yaml(base_url);
+    let openapi_file = harness.temp_path().join("openapi.yaml");
+    fs::write(&openapi_file, &openapi_yaml).expect("write openapi");
+    let openapi_sha256 = format!("{:x}", Sha256::digest(openapi_yaml.as_bytes()));
+    (openapi_file, openapi_sha256)
+}
+
+/// Writes the `OpenAPI` fixture and returns a `github_v4_grpc` manifest that
+/// accepts `github_oauth` identities for `audience_host`.
+fn write_v4_manifest(harness: &GrpcHarness, base_url: &str, audience_host: &str) -> String {
+    let (openapi_file, openapi_sha256) = write_v4_openapi(harness, base_url);
+    grpc_identity_manifest_yaml_for_host(
+        "github_v4_grpc",
+        &openapi_file,
+        &openapi_sha256,
+        audience_host,
+    )
+}
+
+fn grpc_identity_manifest_yaml_for_host(
+    name: &str,
+    openapi_file: &Path,
+    openapi_sha256: &str,
+    audience_host: &str,
+) -> String {
+    format!(
+        r"
+name: {name}
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    sha256: {}
+    identity_requirements:
+      accepts:
+        - id: github-rest-read
+          identity_specs:
+            - github_oauth
+          audience:
+            host: {audience_host}
+",
+        openapi_file.display(),
+        openapi_sha256
+    )
+}
+
+fn grpc_identity_openapi_yaml(base_url: &str) -> String {
+    format!(
+        r#"
+openapi: 3.0.0
+info:
+  title: Demo
+  version: 1.0.0
+servers:
+  - url: "{base_url}"
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+"#
+    )
+}
+
+#[tokio::test]
 async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     let harness = GrpcHarness::new().await;
 
     let imported = harness
         .import_source(
             fixture_manifest_with_inputs_yaml(),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: "https://example.com".to_string(),
-            }],
-            vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "secret-token".to_string(),
-            }],
+            vec![variable("API_BASE", "https://example.com")],
+            vec![secret("API_TOKEN", "secret-token")],
         )
         .await;
     assert_eq!(imported.variables.len(), 1);
@@ -95,17 +626,9 @@ async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     assert_eq!(imported.secrets[0].key, "API_TOKEN");
     assert!(imported.secrets[0].value.is_empty());
 
-    let fetched = harness
-        .source_client()
-        .get_source(Request::new(GetSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "secured_messages".to_string(),
-        }))
+    let fetched = try_get_source(&harness, "secured_messages")
         .await
-        .expect("get source")
-        .into_inner()
-        .source
-        .expect("get source response");
+        .expect("get source");
     assert_eq!(fetched.name, "secured_messages");
     assert_eq!(fetched.version, "0.1.0");
     assert_eq!(fetched.origin, SourceOrigin::Imported as i32);
@@ -125,40 +648,15 @@ async fn import_duplicate_source_overwrites_existing_source() {
         .import_source(manifest_yaml.clone(), Vec::new(), Vec::new())
         .await;
 
-    let mut import_stream = harness
-        .source_client()
-        .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
-            manifest_yaml: manifest_yaml.replace("0.1.0", "0.2.0"),
-            variables: Vec::new(),
-            secrets: Vec::new(),
-            oauth_credential_retrievals: Vec::new(),
-        }))
+    let reimported = harness
+        .try_import_source(import_request(manifest_yaml.replace("0.1.0", "0.2.0")))
         .await
-        .expect("duplicate import should overwrite")
-        .into_inner();
-    let reimported = import_stream
-        .message()
-        .await
-        .expect("duplicate import stream")
-        .and_then(|response| match response.event {
-            Some(import_source_response::Event::Source(source)) => Some(source),
-            _ => None,
-        })
-        .expect("import source response");
+        .expect("duplicate import should overwrite");
     assert_eq!(reimported.version, "0.2.0");
 
-    let fetched = harness
-        .source_client()
-        .get_source(Request::new(GetSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "local_messages".to_string(),
-        }))
+    let fetched = try_get_source(&harness, "local_messages")
         .await
-        .expect("get overwritten source")
-        .into_inner()
-        .source
-        .expect("get source response");
+        .expect("get overwritten source");
     assert_eq!(fetched.version, "0.2.0");
 }
 
@@ -167,14 +665,7 @@ async fn import_invalid_manifest_returns_invalid_argument() {
     let harness = GrpcHarness::new().await;
 
     let error = harness
-        .source_client()
-        .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
-            manifest_yaml: invalid_manifest_yaml(),
-            variables: Vec::new(),
-            secrets: Vec::new(),
-            oauth_credential_retrievals: Vec::new(),
-        }))
+        .try_import_source(import_request(invalid_manifest_yaml()))
         .await
         .expect_err("invalid manifest should fail");
     assert_eq!(error.code(), tonic::Code::InvalidArgument);
@@ -188,12 +679,7 @@ async fn delete_source_removes_from_list_and_disk() {
         .import_source(manifest_yaml, Vec::new(), Vec::new())
         .await;
 
-    harness
-        .source_client()
-        .delete_source(Request::new(DeleteSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "local_messages".to_string(),
-        }))
+    try_delete_source(&harness, "local_messages")
         .await
         .expect("delete source");
 
@@ -201,11 +687,7 @@ async fn delete_source_removes_from_list_and_disk() {
     assert!(!source_dir(harness.config_dir(), "local_messages").exists());
 
     let query_error = harness
-        .query_client()
-        .execute_sql(Request::new(ExecuteSqlRequest {
-            workspace: Some(default_workspace()),
-            sql: "SELECT * FROM local_messages.messages".to_string(),
-        }))
+        .try_execute_sql("SELECT * FROM local_messages.messages")
         .await
         .expect_err("query should fail after delete");
     assert!(!query_error.message().is_empty());
@@ -215,12 +697,7 @@ async fn delete_source_removes_from_list_and_disk() {
 async fn delete_nonexistent_source_returns_not_found() {
     let harness = GrpcHarness::new().await;
 
-    let error = harness
-        .source_client()
-        .delete_source(Request::new(DeleteSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "missing".to_string(),
-        }))
+    let error = try_delete_source(&harness, "missing")
         .await
         .expect_err("missing delete should fail");
     assert_eq!(error.code(), tonic::Code::NotFound);
@@ -284,20 +761,7 @@ async fn list_catalog_supports_table_kind_and_pagination() {
         )
         .await;
 
-    let page = harness
-        .catalog_client()
-        .list_catalog(Request::new(ListCatalogRequest {
-            workspace: Some(default_workspace()),
-            schema_name: "local_messages".to_string(),
-            kind: 1,
-            pagination: Some(PaginationRequest {
-                limit: 2,
-                offset: 0,
-            }),
-        }))
-        .await
-        .expect("paginated list catalog")
-        .into_inner();
+    let page = list_catalog_page(&harness, "local_messages", "paginated list catalog").await;
     let page_pagination = page.pagination.as_ref().expect("page pagination");
     assert_eq!(page_pagination.total_count, 3);
     assert_eq!(page_pagination.limit, 2);
@@ -318,20 +782,8 @@ async fn list_catalog_supports_table_kind_and_pagination() {
         vec!["events", "messages"]
     );
 
-    let unknown_schema = harness
-        .catalog_client()
-        .list_catalog(Request::new(ListCatalogRequest {
-            workspace: Some(default_workspace()),
-            schema_name: "missing".to_string(),
-            kind: 1,
-            pagination: Some(PaginationRequest {
-                limit: 2,
-                offset: 0,
-            }),
-        }))
-        .await
-        .expect("unknown schema list catalog")
-        .into_inner();
+    let unknown_schema =
+        list_catalog_page(&harness, "missing", "unknown schema list catalog").await;
     let unknown_schema_pagination = unknown_schema
         .pagination
         .as_ref()
@@ -415,36 +867,24 @@ async fn query_execution_rejects_non_read_only_sql() {
 
     let copy_target = harness.temp_path().join("copied.arrow");
     let copy_error = harness
-        .query_client()
-        .execute_sql(Request::new(ExecuteSqlRequest {
-            workspace: Some(default_workspace()),
-            sql: format!(
-                "COPY local_messages.messages TO '{}' STORED AS ARROW",
-                copy_target.display()
-            ),
-        }))
+        .try_execute_sql(&format!(
+            "COPY local_messages.messages TO '{}' STORED AS ARROW",
+            copy_target.display()
+        ))
         .await
         .expect_err("COPY TO should be rejected");
     assert_eq!(copy_error.code(), tonic::Code::InvalidArgument);
     assert!(copy_error.message().contains("DML not supported: COPY"));
 
     let create_error = harness
-        .query_client()
-        .execute_sql(Request::new(ExecuteSqlRequest {
-            workspace: Some(default_workspace()),
-            sql: "CREATE TABLE copied AS SELECT * FROM local_messages.messages".to_string(),
-        }))
+        .try_execute_sql("CREATE TABLE copied AS SELECT * FROM local_messages.messages")
         .await
         .expect_err("CREATE TABLE should be rejected");
     assert_eq!(create_error.code(), tonic::Code::InvalidArgument);
     assert!(create_error.message().contains("DDL not supported"));
 
     let set_error = harness
-        .query_client()
-        .execute_sql(Request::new(ExecuteSqlRequest {
-            workspace: Some(default_workspace()),
-            sql: "SET datafusion.execution.batch_size = 1".to_string(),
-        }))
+        .try_execute_sql("SET datafusion.execution.batch_size = 1")
         .await
         .expect_err("SET should be rejected");
     assert_eq!(set_error.code(), tonic::Code::InvalidArgument);
@@ -460,14 +900,9 @@ async fn validate_source_with_unreachable_api_returns_declared_tables() {
         .await;
 
     let validated = harness
-        .source_client()
-        .validate_source(Request::new(ValidateSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "unreachable_messages".to_string(),
-        }))
+        .try_validate_source("unreachable_messages")
         .await
-        .expect("unreachable source validation should still enumerate tables")
-        .into_inner();
+        .expect("unreachable source validation should still enumerate tables");
     assert_eq!(validated.tables.len(), 1);
     assert_eq!(validated.tables[0].schema_name, "unreachable_messages");
     assert_eq!(validated.tables[0].name, "messages");
@@ -545,11 +980,7 @@ async fn validate_source_skipped_registration_returns_unary_failed_precondition(
         .await;
 
     let error = harness
-        .source_client()
-        .validate_source(Request::new(ValidateSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "missing_messages".to_string(),
-        }))
+        .try_validate_source("missing_messages")
         .await
         .expect_err("validation should fail when the source never registers");
     assert_eq!(error.code(), tonic::Code::FailedPrecondition);
@@ -565,211 +996,105 @@ async fn execute_sql_with_unreachable_api_returns_unavailable_error() {
         .await;
 
     let error = harness
-        .query_client()
-        .execute_sql(Request::new(ExecuteSqlRequest {
-            workspace: Some(default_workspace()),
-            sql: "SELECT * FROM unreachable_messages.messages".to_string(),
-        }))
+        .try_execute_sql("SELECT * FROM unreachable_messages.messages")
         .await
         .expect_err("unreachable source query should fail");
     assert_eq!(error.code(), tonic::Code::Unavailable);
 }
 
+/// Merged input-validation cases for `ImportSource`; each case is the same
+/// scenario with one invalid inputs combination and asserts `InvalidArgument`
+/// with the case-specific message. Covers the former tests:
+/// `import_source_missing_required_secret_returns_invalid_argument`,
+/// `import_source_missing_required_variable_returns_invalid_argument`,
+/// `import_source_unknown_variable_returns_invalid_argument`,
+/// `import_source_unknown_secret_returns_invalid_argument`,
+/// `import_source_repeated_variable_returns_invalid_argument` and
+/// `import_source_repeated_secret_returns_invalid_argument`.
 #[tokio::test]
-async fn import_source_missing_required_secret_returns_invalid_argument() {
+async fn import_source_invalid_inputs_return_invalid_argument() {
     let harness = GrpcHarness::new().await;
+    let api_base = || variable("API_BASE", "https://example.com");
+    let api_token = || secret("API_TOKEN", "secret-token");
 
-    let error = harness
-        .source_client()
-        .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
-            manifest_yaml: fixture_manifest_with_inputs_yaml(),
-            variables: vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: "https://example.com".to_string(),
-            }],
-            secrets: Vec::new(),
-            oauth_credential_retrievals: Vec::new(),
-        }))
-        .await
-        .expect_err("missing required secret should fail");
-    assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    assert!(
-        error
-            .message()
-            .contains("missing required source secret 'API_TOKEN'")
-    );
-}
+    let cases = [
+        (
+            "missing required secret should fail",
+            ImportSourceRequest {
+                variables: vec![api_base()],
+                ..import_request(fixture_manifest_with_inputs_yaml())
+            },
+            "missing required source secret 'API_TOKEN'",
+        ),
+        (
+            "missing required variable should fail",
+            ImportSourceRequest {
+                secrets: vec![api_token()],
+                ..import_request(fixture_manifest_with_required_inputs_yaml())
+            },
+            "missing required source variable 'API_BASE'",
+        ),
+        (
+            "unknown variable should fail",
+            ImportSourceRequest {
+                variables: vec![variable("UNUSED", "value")],
+                secrets: vec![api_token()],
+                ..import_request(fixture_manifest_with_inputs_yaml())
+            },
+            "unknown source variable 'UNUSED'",
+        ),
+        (
+            "unknown secret should fail",
+            ImportSourceRequest {
+                variables: vec![api_base()],
+                secrets: vec![api_token(), secret("EXTRA_SECRET", "unused")],
+                ..import_request(fixture_manifest_with_inputs_yaml())
+            },
+            "unknown source secret 'EXTRA_SECRET'",
+        ),
+        (
+            "repeated variable should fail",
+            ImportSourceRequest {
+                variables: vec![
+                    api_base(),
+                    variable("API_BASE", "https://override.example.com"),
+                ],
+                secrets: vec![api_token()],
+                ..import_request(fixture_manifest_with_inputs_yaml())
+            },
+            "source variable 'API_BASE' is repeated",
+        ),
+        (
+            "repeated secret should fail",
+            ImportSourceRequest {
+                variables: vec![api_base()],
+                secrets: vec![api_token(), secret("API_TOKEN", "shadow-token")],
+                ..import_request(fixture_manifest_with_inputs_yaml())
+            },
+            "source secret 'API_TOKEN' is repeated",
+        ),
+    ];
 
-#[tokio::test]
-async fn import_source_missing_required_variable_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
-
-    let error = harness
-        .source_client()
-        .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
-            manifest_yaml: fixture_manifest_with_required_inputs_yaml(),
-            variables: Vec::new(),
-            secrets: vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "secret-token".to_string(),
-            }],
-            oauth_credential_retrievals: Vec::new(),
-        }))
-        .await
-        .expect_err("missing required variable should fail");
-    assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    assert!(
-        error
-            .message()
-            .contains("missing required source variable 'API_BASE'")
-    );
-}
-
-#[tokio::test]
-async fn import_source_unknown_variable_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
-
-    let error = harness
-        .source_client()
-        .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
-            manifest_yaml: fixture_manifest_with_inputs_yaml(),
-            variables: vec![SourceVariable {
-                key: "UNUSED".to_string(),
-                value: "value".to_string(),
-            }],
-            secrets: vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "secret-token".to_string(),
-            }],
-            oauth_credential_retrievals: Vec::new(),
-        }))
-        .await
-        .expect_err("unknown variable should fail");
-    assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    assert!(error.message().contains("unknown source variable 'UNUSED'"));
-}
-
-#[tokio::test]
-async fn import_source_unknown_secret_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
-
-    let error = harness
-        .source_client()
-        .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
-            manifest_yaml: fixture_manifest_with_inputs_yaml(),
-            variables: vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: "https://example.com".to_string(),
-            }],
-            secrets: vec![
-                SourceSecret {
-                    key: "API_TOKEN".to_string(),
-                    value: "secret-token".to_string(),
-                },
-                SourceSecret {
-                    key: "EXTRA_SECRET".to_string(),
-                    value: "unused".to_string(),
-                },
-            ],
-            oauth_credential_retrievals: Vec::new(),
-        }))
-        .await
-        .expect_err("unknown secret should fail");
-    assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    assert!(
-        error
-            .message()
-            .contains("unknown source secret 'EXTRA_SECRET'")
-    );
-}
-
-#[tokio::test]
-async fn import_source_repeated_variable_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
-
-    let error = harness
-        .source_client()
-        .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
-            manifest_yaml: fixture_manifest_with_inputs_yaml(),
-            variables: vec![
-                SourceVariable {
-                    key: "API_BASE".to_string(),
-                    value: "https://example.com".to_string(),
-                },
-                SourceVariable {
-                    key: "API_BASE".to_string(),
-                    value: "https://override.example.com".to_string(),
-                },
-            ],
-            secrets: vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "secret-token".to_string(),
-            }],
-            oauth_credential_retrievals: Vec::new(),
-        }))
-        .await
-        .expect_err("repeated variable should fail");
-    assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    assert!(
-        error
-            .message()
-            .contains("source variable 'API_BASE' is repeated")
-    );
-}
-
-#[tokio::test]
-async fn import_source_repeated_secret_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
-
-    let error = harness
-        .source_client()
-        .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
-            manifest_yaml: fixture_manifest_with_inputs_yaml(),
-            variables: vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: "https://example.com".to_string(),
-            }],
-            secrets: vec![
-                SourceSecret {
-                    key: "API_TOKEN".to_string(),
-                    value: "secret-token".to_string(),
-                },
-                SourceSecret {
-                    key: "API_TOKEN".to_string(),
-                    value: "shadow-token".to_string(),
-                },
-            ],
-            oauth_credential_retrievals: Vec::new(),
-        }))
-        .await
-        .expect_err("repeated secret should fail");
-    assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    assert!(
-        error
-            .message()
-            .contains("source secret 'API_TOKEN' is repeated")
-    );
+    for (label, request, expected_message) in cases {
+        let error = harness.try_import_source(request).await.expect_err(label);
+        assert_eq!(
+            error.code(),
+            tonic::Code::InvalidArgument,
+            "case {label}: unexpected code"
+        );
+        assert!(
+            error.message().contains(expected_message),
+            "case {label}: unexpected error: {}",
+            error.message()
+        );
+    }
 }
 
 #[tokio::test]
 async fn discover_bundled_sources_returns_catalog_and_marks_installed_sources() {
     let harness = GrpcHarness::new().await;
 
-    let discovered = harness
-        .source_client()
-        .discover_sources(Request::new(DiscoverSourcesRequest {
-            workspace: Some(default_workspace()),
-        }))
-        .await
-        .expect("discover sources")
-        .into_inner()
-        .sources;
+    let discovered = discover_sources(&harness, "discover sources").await;
     assert!(!discovered.is_empty());
     let github = discovered
         .iter()
@@ -777,32 +1102,9 @@ async fn discover_bundled_sources_returns_catalog_and_marks_installed_sources() 
         .expect("github bundled source");
     assert!(!github.installed);
 
-    harness
-        .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "github".to_string(),
-            variables: vec![SourceVariable {
-                key: "GITHUB_API_BASE".to_string(),
-                value: "https://api.github.com".to_string(),
-            }],
-            secrets: vec![SourceSecret {
-                key: "GITHUB_TOKEN".to_string(),
-                value: "fake-token".to_string(),
-            }],
-        }))
-        .await
-        .expect("create bundled github source");
+    create_bundled_github_source(&harness).await;
 
-    let rediscovered = harness
-        .source_client()
-        .discover_sources(Request::new(DiscoverSourcesRequest {
-            workspace: Some(default_workspace()),
-        }))
-        .await
-        .expect("rediscover sources")
-        .into_inner()
-        .sources;
+    let rediscovered = discover_sources(&harness, "rediscover sources").await;
     let github = rediscovered
         .iter()
         .find(|source| source.name == "github")
@@ -814,17 +1116,7 @@ async fn discover_bundled_sources_returns_catalog_and_marks_installed_sources() 
 async fn get_source_info_returns_available_bundled_metadata() {
     let harness = GrpcHarness::new().await;
 
-    let info = harness
-        .source_client()
-        .get_source_info(Request::new(GetSourceInfoRequest {
-            workspace: Some(default_workspace()),
-            name: "github".to_string(),
-        }))
-        .await
-        .expect("get source info")
-        .into_inner()
-        .source_info
-        .expect("get source info response");
+    let info = get_source_info(&harness, "github").await;
 
     assert_eq!(info.name, "github");
     assert_eq!(info.origin, SourceOrigin::Bundled as i32);
@@ -845,17 +1137,7 @@ async fn get_source_info_returns_available_bundled_metadata() {
 async fn get_source_info_returns_sentry_oauth_credential_metadata() {
     let harness = GrpcHarness::new().await;
 
-    let info = harness
-        .source_client()
-        .get_source_info(Request::new(GetSourceInfoRequest {
-            workspace: Some(default_workspace()),
-            name: "sentry".to_string(),
-        }))
-        .await
-        .expect("get source info")
-        .into_inner()
-        .source_info
-        .expect("get source info response");
+    let info = get_source_info(&harness, "sentry").await;
 
     let token = info
         .inputs
@@ -922,28 +1204,12 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
     harness
         .import_source(
             fixture_manifest_with_inputs_yaml(),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: "https://example.com".to_string(),
-            }],
-            vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "secret-token".to_string(),
-            }],
+            vec![variable("API_BASE", "https://example.com")],
+            vec![secret("API_TOKEN", "secret-token")],
         )
         .await;
 
-    let info = harness
-        .source_client()
-        .get_source_info(Request::new(GetSourceInfoRequest {
-            workspace: Some(default_workspace()),
-            name: "secured_messages".to_string(),
-        }))
-        .await
-        .expect("get source info")
-        .into_inner()
-        .source_info
-        .expect("get source info response");
+    let info = get_source_info(&harness, "secured_messages").await;
 
     assert_eq!(info.name, "secured_messages");
     assert_eq!(info.version, "0.1.0");
@@ -968,22 +1234,7 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
 async fn create_bundled_source_registers_tables() {
     let harness = GrpcHarness::new().await;
 
-    harness
-        .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "github".to_string(),
-            variables: vec![SourceVariable {
-                key: "GITHUB_API_BASE".to_string(),
-                value: "https://api.github.com".to_string(),
-            }],
-            secrets: vec![SourceSecret {
-                key: "GITHUB_TOKEN".to_string(),
-                value: "fake-token".to_string(),
-            }],
-        }))
-        .await
-        .expect("create bundled github source");
+    create_bundled_github_source(&harness).await;
 
     let tables = harness.list_tables().await;
     assert!(
@@ -992,143 +1243,68 @@ async fn create_bundled_source_registers_tables() {
     );
 }
 
+/// Merged input-validation cases for `CreateBundledSource`; each case creates
+/// the bundled `sentry` source with one invalid inputs combination and asserts
+/// `InvalidArgument` with the case-specific message. Covers the former tests:
+/// `create_bundled_source_missing_required_secret_returns_invalid_argument`,
+/// `create_bundled_source_missing_required_variable_returns_invalid_argument`,
+/// `create_bundled_source_unknown_input_returns_invalid_argument` and
+/// `create_bundled_source_repeated_secret_returns_invalid_argument`.
 #[tokio::test]
-async fn create_bundled_source_missing_required_secret_returns_invalid_argument() {
+async fn create_bundled_source_invalid_inputs_return_invalid_argument() {
     let harness = GrpcHarness::new().await;
+    let sentry_org = || variable("SENTRY_ORG", "phoebe");
+    let sentry_token = || secret("SENTRY_TOKEN", "secret-token");
 
-    let error = harness
-        .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "sentry".to_string(),
-            variables: vec![SourceVariable {
-                key: "SENTRY_ORG".to_string(),
-                value: "phoebe".to_string(),
-            }],
-            secrets: Vec::new(),
-        }))
-        .await
-        .expect_err("missing bundled secret should fail");
-    assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    assert!(
-        error
-            .message()
-            .contains("missing required source secret 'SENTRY_TOKEN'")
-    );
-}
+    let cases = [
+        (
+            "missing bundled secret should fail",
+            vec![sentry_org()],
+            Vec::new(),
+            "missing required source secret 'SENTRY_TOKEN'",
+        ),
+        (
+            "missing bundled variable should fail",
+            Vec::new(),
+            vec![sentry_token()],
+            "missing required source variable 'SENTRY_ORG'",
+        ),
+        (
+            "unknown bundled input should fail",
+            vec![sentry_org(), variable("EXTRA", "value")],
+            vec![sentry_token()],
+            "unknown source variable 'EXTRA'",
+        ),
+        (
+            "repeated bundled secret should fail",
+            vec![sentry_org()],
+            vec![sentry_token(), secret("SENTRY_TOKEN", "shadow-token")],
+            "source secret 'SENTRY_TOKEN' is repeated",
+        ),
+    ];
 
-#[tokio::test]
-async fn create_bundled_source_missing_required_variable_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
-
-    let error = harness
-        .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "sentry".to_string(),
-            variables: Vec::new(),
-            secrets: vec![SourceSecret {
-                key: "SENTRY_TOKEN".to_string(),
-                value: "secret-token".to_string(),
-            }],
-        }))
-        .await
-        .expect_err("missing bundled variable should fail");
-    assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    assert!(
-        error
-            .message()
-            .contains("missing required source variable 'SENTRY_ORG'")
-    );
-}
-
-#[tokio::test]
-async fn create_bundled_source_unknown_input_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
-
-    let error = harness
-        .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "sentry".to_string(),
-            variables: vec![
-                SourceVariable {
-                    key: "SENTRY_ORG".to_string(),
-                    value: "phoebe".to_string(),
-                },
-                SourceVariable {
-                    key: "EXTRA".to_string(),
-                    value: "value".to_string(),
-                },
-            ],
-            secrets: vec![SourceSecret {
-                key: "SENTRY_TOKEN".to_string(),
-                value: "secret-token".to_string(),
-            }],
-        }))
-        .await
-        .expect_err("unknown bundled input should fail");
-    assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    assert!(error.message().contains("unknown source variable 'EXTRA'"));
-}
-
-#[tokio::test]
-async fn create_bundled_source_repeated_secret_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
-
-    let error = harness
-        .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "sentry".to_string(),
-            variables: vec![SourceVariable {
-                key: "SENTRY_ORG".to_string(),
-                value: "phoebe".to_string(),
-            }],
-            secrets: vec![
-                SourceSecret {
-                    key: "SENTRY_TOKEN".to_string(),
-                    value: "secret-token".to_string(),
-                },
-                SourceSecret {
-                    key: "SENTRY_TOKEN".to_string(),
-                    value: "shadow-token".to_string(),
-                },
-            ],
-        }))
-        .await
-        .expect_err("repeated bundled secret should fail");
-    assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    assert!(
-        error
-            .message()
-            .contains("source secret 'SENTRY_TOKEN' is repeated")
-    );
+    for (label, variables, secrets, expected_message) in cases {
+        let error = try_create_bundled_source(&harness, "sentry", variables, secrets)
+            .await
+            .expect_err(label);
+        assert_eq!(
+            error.code(),
+            tonic::Code::InvalidArgument,
+            "case {label}: unexpected code"
+        );
+        assert!(
+            error.message().contains(expected_message),
+            "case {label}: unexpected error: {}",
+            error.message()
+        );
+    }
 }
 
 #[tokio::test]
 async fn create_bundled_source_does_not_persist_manifest_to_config_dir() {
     let harness = GrpcHarness::new().await;
 
-    let created = harness
-        .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "github".to_string(),
-            variables: vec![SourceVariable {
-                key: "GITHUB_API_BASE".to_string(),
-                value: "https://api.github.com".to_string(),
-            }],
-            secrets: vec![SourceSecret {
-                key: "GITHUB_TOKEN".to_string(),
-                value: "fake-token".to_string(),
-            }],
-        }))
-        .await
-        .expect("create bundled github source")
-        .into_inner()
-        .source
-        .expect("create bundled source response");
+    let created = create_bundled_github_source(&harness).await;
 
     assert_eq!(created.name, "github");
     assert_eq!(created.origin, SourceOrigin::Bundled as i32);
@@ -1152,26 +1328,26 @@ async fn create_bundled_source_does_not_persist_manifest_to_config_dir() {
         "bundled source should register tables resolved from the binary"
     );
 
-    let config_raw =
-        fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
+    let config_raw = read_config(&harness);
     assert!(
         !config_raw.contains("version = \""),
         "bundled source config should not persist a version field"
     );
 }
 
+/// Merged missing-input cases for validating a bundled source whose installed
+/// config lacks a required input; each case pre-writes a sentry config that
+/// models a binary update requiring an input the original installation never
+/// provided, then asserts `FailedPrecondition` with the case-specific message.
+/// Covers the former tests:
+/// `validate_bundled_source_missing_required_variable_returns_failed_precondition` and
+/// `validate_bundled_source_missing_required_secret_returns_failed_precondition`.
 #[tokio::test]
-async fn validate_bundled_source_missing_required_variable_returns_failed_precondition() {
-    let temp = TempDir::new().expect("temp dir");
-    let config_dir = temp.path().join("coral-config");
-    fs::create_dir_all(&config_dir).expect("create config dir");
-
-    // Simulate a bundled source installed without the required SENTRY_ORG variable.
-    // This models the case where the binary is updated to require a new variable
-    // that was not provided during the original installation.
-    fs::write(
-        config_dir.join("config.toml"),
-        r#"
+async fn validate_bundled_source_missing_required_inputs_return_failed_precondition() {
+    let cases = [
+        (
+            "validation should fail when a required variable is missing",
+            r#"
 version = 1
 
 [workspaces.default.sources.sentry]
@@ -1179,45 +1355,14 @@ variables = {}
 secrets = ["SENTRY_TOKEN"]
 origin = "bundled"
 "#,
-    )
-    .expect("write config");
-
-    // Write the source secret file so validation can reach variable checks.
-    let secret_dir = config_dir
-        .join("workspaces")
-        .join("default")
-        .join("sources")
-        .join("sentry");
-    fs::create_dir_all(&secret_dir).expect("create secret dir");
-    fs::write(secret_dir.join("secrets.env"), "SENTRY_TOKEN=fake-token\n").expect("write secrets");
-
-    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
-    let error = harness
-        .source_client()
-        .validate_source(Request::new(ValidateSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "sentry".to_string(),
-        }))
-        .await
-        .expect_err("validation should fail when a required variable is missing");
-    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
-    assert!(
-        error.message().contains("missing variable 'SENTRY_ORG'"),
-        "error should identify the missing variable, got: {}",
-        error.message()
-    );
-}
-
-#[tokio::test]
-async fn validate_bundled_source_missing_required_secret_returns_failed_precondition() {
-    let temp = TempDir::new().expect("temp dir");
-    let config_dir = temp.path().join("coral-config");
-    fs::create_dir_all(&config_dir).expect("create config dir");
-
-    // Simulate a bundled source installed without the required SENTRY_TOKEN secret.
-    fs::write(
-        config_dir.join("config.toml"),
-        r#"
+            // Write the source secret file so validation can reach variable checks.
+            Some("SENTRY_TOKEN=fake-token\n"),
+            "missing variable 'SENTRY_ORG'",
+            "error should identify the missing variable",
+        ),
+        (
+            "validation should fail when a required secret is missing",
+            r#"
 version = 1
 
 [workspaces.default.sources.sentry]
@@ -1225,36 +1370,43 @@ variables = { SENTRY_ORG = "test-org" }
 secrets = []
 origin = "bundled"
 "#,
-    )
-    .expect("write config");
+            None,
+            "missing secret 'SENTRY_TOKEN'",
+            "error should identify the missing secret",
+        ),
+    ];
 
-    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
-    let error = harness
-        .source_client()
-        .validate_source(Request::new(ValidateSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "sentry".to_string(),
-        }))
-        .await
-        .expect_err("validation should fail when a required secret is missing");
-    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
-    assert!(
-        error.message().contains("missing secret 'SENTRY_TOKEN'"),
-        "error should identify the missing secret, got: {}",
-        error.message()
-    );
+    for (label, config_toml, secrets_env, expected_message, assert_label) in cases {
+        let (_temp, config_dir) = config_dir_with(config_toml);
+        if let Some(secrets_env) = secrets_env {
+            let secret_dir = source_dir(&config_dir, "sentry");
+            fs::create_dir_all(&secret_dir).expect("create secret dir");
+            fs::write(secret_dir.join("secrets.env"), secrets_env).expect("write secrets");
+        }
+
+        let harness = GrpcHarness::start_with_config_dir(config_dir).await;
+        let error = harness
+            .try_validate_source("sentry")
+            .await
+            .expect_err(label);
+        assert_eq!(
+            error.code(),
+            tonic::Code::FailedPrecondition,
+            "case {label}: unexpected code"
+        );
+        assert!(
+            error.message().contains(expected_message),
+            "{assert_label}, got: {}",
+            error.message()
+        );
+    }
 }
 
 #[tokio::test]
 async fn get_nonexistent_source_returns_not_found() {
     let harness = GrpcHarness::new().await;
 
-    let error = harness
-        .source_client()
-        .get_source(Request::new(GetSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "missing".to_string(),
-        }))
+    let error = try_get_source(&harness, "missing")
         .await
         .expect_err("missing source should fail");
     assert_eq!(error.code(), tonic::Code::NotFound);
@@ -1262,11 +1414,7 @@ async fn get_nonexistent_source_returns_not_found() {
 
 #[tokio::test]
 async fn missing_source_manifest_file_returns_not_found() {
-    let temp = TempDir::new().expect("temp dir");
-    let config_dir = temp.path().join("coral-config");
-    fs::create_dir_all(&config_dir).expect("create config dir");
-    fs::write(
-        config_dir.join("config.toml"),
+    let (_temp, config_dir) = config_dir_with(
         r#"
 version = 1
 
@@ -1274,16 +1422,11 @@ version = 1
 version = "0.1.0"
 origin = "imported"
 "#,
-    )
-    .expect("write config");
+    );
 
     let harness = GrpcHarness::start_with_config_dir(config_dir).await;
     let error = harness
-        .source_client()
-        .validate_source(Request::new(ValidateSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "demo".to_string(),
-        }))
+        .try_validate_source("demo")
         .await
         .expect_err("missing manifest file should fail");
     assert_eq!(error.code(), tonic::Code::NotFound);
@@ -1291,20 +1434,15 @@ origin = "imported"
 
 #[tokio::test]
 async fn config_persists_across_rebuilds_without_trace_history_state() {
-    let temp = TempDir::new().expect("temp dir");
-    let manifest_yaml = fixture_manifest_yaml(temp.path());
-    let config_dir = temp.path().join("coral-config");
-    fs::create_dir_all(&config_dir).expect("create config dir");
-    fs::write(
-        config_dir.join("config.toml"),
+    let (temp, config_dir) = config_dir_with(
         r"
 version = 1
 
 [trace_history]
 enabled = false
 ",
-    )
-    .expect("write config");
+    );
+    let manifest_yaml = fixture_manifest_yaml(temp.path());
 
     {
         let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
@@ -1334,10 +1472,7 @@ enabled = false
 async fn corrupted_config_fails_at_startup() {
     use coral_client::local::ServerBuilder;
 
-    let temp = TempDir::new().expect("temp dir");
-    let config_dir = temp.path().join("coral-config");
-    fs::create_dir_all(&config_dir).expect("create config dir");
-    fs::write(config_dir.join("config.toml"), "[[sources]\n").expect("write invalid config");
+    let (_temp, config_dir) = config_dir_with("[[sources]\n");
 
     assert!(
         ServerBuilder::new()
@@ -1354,10 +1489,7 @@ async fn corrupted_config_fails_at_startup() {
 async fn import_rolls_back_on_config_write_failure() {
     use std::os::unix::fs::PermissionsExt;
 
-    let temp = TempDir::new().expect("temp dir");
-    let config_dir = temp.path().join("coral-config");
-    fs::create_dir_all(&config_dir).expect("create config dir");
-    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
+    let harness = GrpcHarness::new().await;
     let sources_root = harness
         .config_dir()
         .join("workspaces")
@@ -1368,20 +1500,11 @@ async fn import_rolls_back_on_config_write_failure() {
         .expect("make config dir read-only");
 
     let error = harness
-        .source_client()
-        .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
-            manifest_yaml: fixture_manifest_with_inputs_yaml(),
-            variables: vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: "https://example.com".to_string(),
-            }],
-            secrets: vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "secret-token".to_string(),
-            }],
-            oauth_credential_retrievals: Vec::new(),
-        }))
+        .try_import_source(ImportSourceRequest {
+            variables: vec![variable("API_BASE", "https://example.com")],
+            secrets: vec![secret("API_TOKEN", "secret-token")],
+            ..import_request(fixture_manifest_with_inputs_yaml())
+        })
         .await
         .expect_err("config write should fail");
 
@@ -1402,14 +1525,8 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
     harness
         .import_source(
             fixture_manifest_with_inputs_yaml(),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: "https://example.com".to_string(),
-            }],
-            vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "secret-token".to_string(),
-            }],
+            vec![variable("API_BASE", "https://example.com")],
+            vec![secret("API_TOKEN", "secret-token")],
         )
         .await;
 
@@ -1423,12 +1540,7 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
     fs::set_permissions(&sources_root, fs::Permissions::from_mode(0o500))
         .expect("make sources dir read-only");
 
-    let error = harness
-        .source_client()
-        .delete_source(Request::new(DeleteSourceRequest {
-            workspace: Some(default_workspace()),
-            name: "secured_messages".to_string(),
-        }))
+    let error = try_delete_source(&harness, "secured_messages")
         .await
         .expect_err("manifest cleanup should fail");
 
@@ -1463,11 +1575,7 @@ async fn rejects_invalid_workspace_and_source_names() {
     assert_eq!(invalid_workspace.code(), tonic::Code::InvalidArgument);
 
     let invalid_source_name = harness
-        .source_client()
-        .validate_source(Request::new(ValidateSourceRequest {
-            workspace: Some(default_workspace()),
-            name: r"bad\source".to_string(),
-        }))
+        .try_validate_source(r"bad\source")
         .await
         .expect_err("source name with backslash should fail");
     assert_eq!(invalid_source_name.code(), tonic::Code::InvalidArgument);
@@ -1475,13 +1583,8 @@ async fn rejects_invalid_workspace_and_source_names() {
 
 #[tokio::test]
 async fn adding_source_preserves_otel_config_and_existing_sources() {
-    let temp = TempDir::new().expect("temp dir");
-    let config_dir = temp.path().join("coral-config");
-    fs::create_dir_all(&config_dir).expect("create config dir");
-
     // Pre-populate the config with an [otel] section and an existing source.
-    fs::write(
-        config_dir.join("config.toml"),
+    let (temp, config_dir) = config_dir_with(
         r#"version = 1
 
 [otel]
@@ -1498,8 +1601,7 @@ variables = {}
 secrets = []
 origin = "imported"
 "#,
-    )
-    .expect("write initial config");
+    );
 
     let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
     let manifest_yaml = fixture_manifest_yaml(temp.path());
@@ -1548,4 +1650,115 @@ origin = "imported"
         config_raw.contains("[workspaces.default.sources.local_messages]"),
         "newly added source should be in config"
     );
+}
+
+/// Creates a config dir pre-populated with `config_toml`, returning it with
+/// the temp dir that keeps it alive.
+fn config_dir_with(config_toml: &str) -> (TempDir, PathBuf) {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::write(config_dir.join("config.toml"), config_toml).expect("write config");
+    (temp, config_dir)
+}
+
+async fn try_get_source(harness: &GrpcHarness, name: &str) -> Result<Source, tonic::Status> {
+    let response = harness
+        .source_client()
+        .get_source(Request::new(GetSourceRequest {
+            workspace: Some(default_workspace()),
+            name: name.to_string(),
+        }))
+        .await?
+        .into_inner();
+    Ok(response.source.expect("get source response"))
+}
+
+async fn try_delete_source(harness: &GrpcHarness, name: &str) -> Result<(), tonic::Status> {
+    harness
+        .source_client()
+        .delete_source(Request::new(DeleteSourceRequest {
+            workspace: Some(default_workspace()),
+            name: name.to_string(),
+        }))
+        .await
+        .map(|_| ())
+}
+
+async fn discover_sources(harness: &GrpcHarness, label: &str) -> Vec<SourceInfo> {
+    harness
+        .source_client()
+        .discover_sources(Request::new(DiscoverSourcesRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect(label)
+        .into_inner()
+        .sources
+}
+
+async fn try_create_bundled_source(
+    harness: &GrpcHarness,
+    name: &str,
+    variables: Vec<SourceVariable>,
+    secrets: Vec<SourceSecret>,
+) -> Result<Source, tonic::Status> {
+    Ok(harness
+        .source_client()
+        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+            workspace: Some(default_workspace()),
+            name: name.to_string(),
+            variables,
+            secrets,
+        }))
+        .await?
+        .into_inner()
+        .source
+        .expect("create bundled source response"))
+}
+
+async fn create_bundled_github_source(harness: &GrpcHarness) -> Source {
+    try_create_bundled_source(
+        harness,
+        "github",
+        vec![variable("GITHUB_API_BASE", "https://api.github.com")],
+        vec![secret("GITHUB_TOKEN", "fake-token")],
+    )
+    .await
+    .expect("create bundled github source")
+}
+
+async fn get_source_info(harness: &GrpcHarness, name: &str) -> SourceInfo {
+    harness
+        .source_client()
+        .get_source_info(Request::new(GetSourceInfoRequest {
+            workspace: Some(default_workspace()),
+            name: name.to_string(),
+        }))
+        .await
+        .expect("get source info")
+        .into_inner()
+        .source_info
+        .expect("get source info response")
+}
+
+async fn list_catalog_page(
+    harness: &GrpcHarness,
+    schema_name: &str,
+    label: &str,
+) -> ListCatalogResponse {
+    harness
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
+            workspace: Some(default_workspace()),
+            schema_name: schema_name.to_string(),
+            kind: 1,
+            pagination: Some(PaginationRequest {
+                limit: 2,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect(label)
+        .into_inner()
 }

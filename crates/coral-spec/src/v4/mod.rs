@@ -37,8 +37,8 @@ pub use ir::{
     SemanticIr,
 };
 pub use manifest::{
-    OpenApiRuntimeConfig, SurfaceDescriptor, SurfaceType, V4SourceCommon, V4SourceManifest,
-    V4Surface, validate_openapi_base_url_template,
+    AcceptedIdentityRequirement, IdentityRequirements, OpenApiRuntimeConfig, SurfaceDescriptor,
+    SurfaceType, V4SourceCommon, V4SourceManifest, V4Surface, validate_openapi_base_url_template,
 };
 pub use naming::normalize_identifier;
 pub use projections::{

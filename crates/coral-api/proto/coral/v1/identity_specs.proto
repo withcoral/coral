@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package coral.v1;
+
+// A global identity spec installed for all Coral workspaces.
+message IdentitySpec {
+  // Stable identity spec name.
+  string name = 1;
+  // Authored identity spec version string.
+  string version = 2;
+  // Human-readable description.
+  string description = 3;
+  // Provider or issuer name, such as `github`.
+  string issuer = 4;
+  // Identity type, such as `oauth`, `fixed_token`, or `username_password`.
+  string identity_type = 5;
+  // Canonical identity spec manifest YAML.
+  string manifest_yaml = 7;
+  reserved 6;
+}
+
+// Installs one global identity spec, or replaces an unused existing spec.
+// Existing specs referenced by stored identities may only be re-added with an
+// equivalent manifest.
+message AddIdentitySpecRequest {
+  // Raw identity spec manifest YAML to validate and install.
+  string manifest_yaml = 1;
+  // Setup input values owned by the installed identity spec. Secret values are
+  // persisted in Coral credential storage for later identity materialization.
+  repeated IdentitySpecInput inputs = 2;
+}
+
+// One setup input value for an installed identity spec.
+message IdentitySpecInput {
+  // Declared identity spec input key.
+  string key = 1;
+  // Input value. Secret values are only accepted on write requests and are not
+  // returned by identity spec read APIs.
+  string value = 2;
+}
+
+// Returns the installed identity spec.
+message AddIdentitySpecResponse {
+  // The installed identity spec.
+  IdentitySpec identity_spec = 1;
+  // Whether an existing spec with the same name was replaced.
+  bool replaced = 2;
+}
+
+// Lists all globally installed identity specs.
+message ListIdentitySpecsRequest {}
+
+// Returns global identity specs.
+message ListIdentitySpecsResponse {
+  // Installed identity specs sorted by name.
+  repeated IdentitySpec identity_specs = 1;
+}
+
+// Fetches one globally installed identity spec.
+message GetIdentitySpecRequest {
+  // Identity spec name.
+  string name = 1;
+}
+
+// Returns one globally installed identity spec.
+message GetIdentitySpecResponse {
+  // The installed identity spec.
+  IdentitySpec identity_spec = 1;
+}
+
+// Deletes one globally installed identity spec.
+message DeleteIdentitySpecRequest {
+  // Identity spec name.
+  string name = 1;
+  // Required when deleting the spec would orphan stored identity instances of
+  // any owner or identity type.
+  bool force = 2;
+}
+
+// Confirms identity spec deletion.
+message DeleteIdentitySpecResponse {
+  // Number of stored identities orphaned by deletion, across identity owners
+  // and identity types visible to the app.
+  uint32 orphaned_identities = 1;
+}
+
+// Global identity spec APIs.
+service IdentitySpecService {
+  // Installs one global identity spec, or replaces an unused existing spec.
+  rpc AddIdentitySpec(AddIdentitySpecRequest) returns (AddIdentitySpecResponse);
+  // Lists globally installed identity specs.
+  rpc ListIdentitySpecs(ListIdentitySpecsRequest) returns (ListIdentitySpecsResponse);
+  // Fetches one globally installed identity spec.
+  rpc GetIdentitySpec(GetIdentitySpecRequest) returns (GetIdentitySpecResponse);
+  // Deletes one globally installed identity spec.
+  rpc DeleteIdentitySpec(DeleteIdentitySpecRequest) returns (DeleteIdentitySpecResponse);
+}

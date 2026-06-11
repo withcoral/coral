@@ -16,22 +16,24 @@ pub enum AppError {
     /// A requested source was not found in config.
     #[error("source '{0}' not found")]
     SourceNotFound(String),
+    /// A requested identity spec was not found in global app state.
+    #[error("identity spec '{0}' not found")]
+    IdentitySpecNotFound(String),
+    /// A requested stored identity was not found in app state.
+    #[error("identity '{0}' not found")]
+    IdentityNotFound(String),
     /// Caller-supplied input was invalid.
     #[error("invalid input: {0}")]
     InvalidInput(String),
     /// The request requires additional setup before it can succeed.
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
-    /// A DSL v4 source has missing or stale generated runtime artifacts.
-    #[error(
-        "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source to regenerate them."
-    )]
-    MissingOrIncompatibleV4Materialization {
-        /// Source name whose installed artifacts failed validation.
-        source_name: String,
-        /// Specific materialization mismatch or missing-artifact detail.
-        detail: String,
-    },
+    /// A known, installed source cannot be served until the user takes an
+    /// explicit action (enabling the required runtime feature or re-adding the
+    /// source to regenerate materialized artifacts). Surfaced loudly during
+    /// best-effort query-source loading instead of being silently skipped.
+    #[error("failed precondition: {0}")]
+    SourceUnservable(String),
     /// Provider-managed credential refresh failed during active source use.
     #[error("credential refresh failed: {0}")]
     CredentialRefresh(String),
@@ -194,10 +196,12 @@ fn grpc_code(status: StatusCode) -> Code {
 
 fn app_code(error: &AppError) -> Code {
     match error {
-        AppError::SourceNotFound(_) => Code::NotFound,
+        AppError::SourceNotFound(_)
+        | AppError::IdentitySpecNotFound(_)
+        | AppError::IdentityNotFound(_) => Code::NotFound,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
-        | AppError::MissingOrIncompatibleV4Materialization { .. }
+        | AppError::SourceUnservable(_)
         | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
         | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {

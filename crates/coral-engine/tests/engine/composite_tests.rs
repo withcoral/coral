@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use coral_engine::{CoralQuery, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
+use coral_engine::{
+    CoralQuery, QuerySource, RuntimeHttpSourceComponent, RuntimeSourceComponent,
+    RuntimeSourcePackage,
+};
 use coral_spec::backends::http::HttpSourceManifest;
 use coral_spec::parse_source_manifest_yaml;
 use coral_spec::{FilterMode, FilterSpec};
@@ -38,8 +41,8 @@ async fn multi_component_source_executes_across_component_tables() {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             components: vec![
-                RuntimeSourceComponent::Http(issues),
-                RuntimeSourceComponent::Http(pulls),
+                RuntimeSourceComponent::Http(RuntimeHttpSourceComponent::new(issues)),
+                RuntimeSourceComponent::Http(RuntimeHttpSourceComponent::new(pulls)),
             ],
         },
         BTreeMap::new(),

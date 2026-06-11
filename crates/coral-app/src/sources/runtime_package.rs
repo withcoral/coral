@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use coral_engine::RuntimeSourceComponent;
+use coral_engine::{RuntimeHttpSourceComponent, RuntimeSourceComponent};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::v4::{
     ProjectionKind, ProjectionVisibility, V4MaterializedSource, V4SourceManifest,
@@ -22,11 +22,18 @@ pub(crate) fn runtime_components_for_v4_source(
         if !has_published_projection(materialized, &surface.id) {
             continue;
         }
-        components.push(RuntimeSourceComponent::Http(http_manifest_for_surface(
-            manifest,
-            materialized,
-            &surface.id,
-        )?));
+        let http_manifest = http_manifest_for_surface(manifest, materialized, &surface.id)?;
+        let http_component =
+            if let Some(identity_requirements) = surface.identity_requirements.clone() {
+                RuntimeHttpSourceComponent::with_identity_requirements(
+                    http_manifest,
+                    surface.id.clone(),
+                    identity_requirements,
+                )
+            } else {
+                RuntimeHttpSourceComponent::new(http_manifest)
+            };
+        components.push(RuntimeSourceComponent::Http(http_component));
     }
     Ok(components)
 }
@@ -145,7 +152,7 @@ fn http_manifest_for_surface(
         rate_limit: surface.openapi_runtime.rate_limit.clone(),
         tables,
         functions,
-        declared_inputs: manifest.declared_inputs.clone(),
+        declared_inputs: surface.inputs.clone(),
     })
 }
 
@@ -222,8 +229,10 @@ mod tests {
             surface_type: SurfaceType::OpenApi,
             descriptor: SurfaceDescriptor::File {
                 file: PathBuf::from("/tmp/openapi.yaml"),
+                sha256: "0".repeat(64),
             },
             inputs: Vec::new(),
+            identity_requirements: None,
             openapi_runtime: OpenApiRuntimeConfig {
                 base_url: coral_spec::ParsedTemplate::parse("").expect("empty template"),
                 auth: AuthSpec::default(),
@@ -238,6 +247,7 @@ mod tests {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "demo".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },

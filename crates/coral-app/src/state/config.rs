@@ -9,6 +9,11 @@ use tracing::{info_span, warn};
 
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialStorageKind;
+use crate::identity::SourceIdentityBinding;
+use crate::source_registry::{
+    SourceRegistry, SourceRegistryRecord, installed_source_from_record,
+    record_from_installed_source,
+};
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
@@ -33,18 +38,6 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    pub(crate) fn workspace_sources(&self, workspace_name: &WorkspaceName) -> Vec<InstalledSource> {
-        self.catalog.workspace_sources(workspace_name)
-    }
-
-    pub(crate) fn get_source(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Option<InstalledSource> {
-        self.catalog.get_source(workspace_name, source_name)
-    }
-
     pub(crate) fn dependent_join_config(
         &self,
         selected_source_names: &[String],
@@ -175,19 +168,23 @@ struct PersistedInstalledSource {
     secrets: Vec<String>,
     #[serde(default)]
     credential_storage: Option<CredentialStorageKind>,
+    #[serde(default)]
+    identity_bindings: BTreeMap<String, SourceIdentityBinding>,
     origin: SourceOrigin,
 }
 
 impl PersistedInstalledSource {
-    fn into_installed_source(self, source_name: SourceName) -> InstalledSource {
-        InstalledSource {
+    fn into_installed_source(self, source_name: SourceName) -> Result<InstalledSource, AppError> {
+        validate_identity_bindings(source_name.as_str(), &self.identity_bindings)?;
+        Ok(InstalledSource {
             name: source_name,
             version: self.version,
             variables: self.variables,
             secrets: self.secrets,
             credential_storage: self.credential_storage,
+            identity_bindings: self.identity_bindings,
             origin: self.origin,
-        }
+        })
     }
 }
 
@@ -198,6 +195,7 @@ impl From<&InstalledSource> for PersistedInstalledSource {
             variables: value.variables.clone(),
             secrets: value.secrets.clone(),
             credential_storage: value.credential_storage,
+            identity_bindings: value.identity_bindings.clone(),
             origin: value.origin,
         }
     }
@@ -223,16 +221,6 @@ impl SourceCatalog {
             .get(workspace_name)
             .and_then(|sources| sources.get(source_name))
             .cloned()
-    }
-
-    pub(crate) fn contains(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> bool {
-        self.0
-            .get(workspace_name)
-            .is_some_and(|sources| sources.contains_key(source_name))
     }
 
     pub(crate) fn upsert_source(
@@ -451,6 +439,47 @@ impl ConfigStore {
     }
 }
 
+impl SourceRegistry for ConfigStore {
+    fn list_workspace_sources(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SourceRegistryRecord>, AppError> {
+        let workspace_name = WorkspaceName::parse(workspace_id)?;
+        ConfigStore::list_workspace_sources(self, &workspace_name).map(|sources| {
+            sources
+                .into_iter()
+                .map(|source| record_from_installed_source(&workspace_name, source))
+                .collect()
+        })
+    }
+
+    fn get_source(
+        &self,
+        workspace_id: &str,
+        source_name: &str,
+    ) -> Result<Option<SourceRegistryRecord>, AppError> {
+        let workspace_name = WorkspaceName::parse(workspace_id)?;
+        let source_name = SourceName::parse(source_name)?;
+        match ConfigStore::get_source(self, &workspace_name, &source_name) {
+            Ok(source) => Ok(Some(record_from_installed_source(&workspace_name, source))),
+            Err(AppError::SourceNotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn upsert_source(&self, record: SourceRegistryRecord) -> Result<(), AppError> {
+        let workspace_name = WorkspaceName::parse(&record.workspace_id)?;
+        let source = installed_source_from_record(&workspace_name, record)?;
+        ConfigStore::upsert_source(self, &workspace_name, source)
+    }
+
+    fn remove_source(&self, workspace_id: &str, source_name: &str) -> Result<(), AppError> {
+        let workspace_name = WorkspaceName::parse(workspace_id)?;
+        let source_name = SourceName::parse(source_name)?;
+        ConfigStore::remove_source(self, &workspace_name, &source_name)
+    }
+}
+
 #[expect(
     clippy::indexing_slicing,
     reason = "toml_edit indexing creates or accesses document paths while rebuilding the config table"
@@ -494,6 +523,15 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
                     .expect("source config entry should be a table after initialization");
                 source_table.remove("credential_storage");
             }
+            if source.identity_bindings.is_empty() {
+                let source_table = source_item
+                    .as_table_mut()
+                    .expect("source config entry should be a table after initialization");
+                source_table.remove("identity_bindings");
+            } else {
+                source_item["identity_bindings"] =
+                    Item::Value(render_identity_bindings(&source.identity_bindings));
+            }
             source_item["origin"] = value(source.origin.as_config_value());
         }
     }
@@ -519,7 +557,8 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
             let workspace_name = WorkspaceName::parse(&workspace_name)?;
             for (source_name, source) in workspace_config.sources {
                 let source_name = SourceName::parse(&source_name)?;
-                catalog.upsert_source(&workspace_name, source.into_installed_source(source_name));
+                let installed_source = source.into_installed_source(source_name)?;
+                catalog.upsert_source(&workspace_name, installed_source);
             }
         }
         Ok(Self {
@@ -549,6 +588,37 @@ impl From<&AppConfig> for PersistedAppConfig {
             engine: value.engine.clone(),
             workspaces,
         }
+    }
+}
+
+fn validate_identity_bindings(
+    source_name: &str,
+    bindings: &BTreeMap<String, SourceIdentityBinding>,
+) -> Result<(), AppError> {
+    for (surface_id, binding) in bindings {
+        validate_identity_binding_surface_id(source_name, surface_id)?;
+        binding.validate().map_err(|error| {
+            AppError::InvalidInput(format!(
+                "source '{source_name}' identity binding for surface '{surface_id}' is invalid: {error}"
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn validate_identity_binding_surface_id(
+    source_name: &str,
+    surface_id: &str,
+) -> Result<(), AppError> {
+    let mut chars = surface_id.chars();
+    let valid = matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if valid {
+        Ok(())
+    } else {
+        Err(AppError::InvalidInput(format!(
+            "source '{source_name}' identity binding surface '{surface_id}' must match [a-z][a-z0-9_]*"
+        )))
     }
 }
 
@@ -670,6 +740,24 @@ fn render_inline_table(values: &BTreeMap<String, String>) -> Value {
     Value::InlineTable(table)
 }
 
+fn render_identity_bindings(values: &BTreeMap<String, SourceIdentityBinding>) -> Value {
+    let mut table = InlineTable::new();
+    for (surface_id, binding) in values {
+        let mut binding_table = InlineTable::new();
+        binding_table.insert("owner", Value::from(binding.owner.as_config_value()));
+        if let Some(identity) = &binding.identity {
+            binding_table.insert("identity", Value::from(identity.clone()));
+        }
+        if let Some(accepted_identity) = &binding.accepted_identity {
+            binding_table.insert("accepted_identity", Value::from(accepted_identity.clone()));
+        }
+        binding_table.fmt();
+        table.insert(surface_id, Value::InlineTable(binding_table));
+    }
+    table.fmt();
+    Value::InlineTable(table)
+}
+
 fn render_string_array(values: &[String]) -> Value {
     values.iter().cloned().collect()
 }
@@ -691,7 +779,9 @@ mod tests {
         RawFeatureValue, SourceCatalog, load_raw_feature_overrides, render_config,
         set_raw_feature_override,
     };
+    use crate::bootstrap::AppError;
     use crate::credentials::CredentialStorageKind;
+    use crate::identity::{SourceIdentityBinding, SourceIdentityOwner};
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::AppStateLayout;
@@ -701,9 +791,13 @@ mod tests {
         WorkspaceName::default()
     }
 
+    fn source_name(name: &str) -> SourceName {
+        SourceName::parse(name).expect("source")
+    }
+
     fn installed_source(name: &str) -> InstalledSource {
         InstalledSource {
-            name: SourceName::parse(name).expect("source"),
+            name: source_name(name),
             version: Some("1.1.4".to_string()),
             variables: BTreeMap::from([(
                 "GITHUB_API_BASE".to_string(),
@@ -711,6 +805,7 @@ mod tests {
             )]),
             secrets: vec!["GITHUB_TOKEN".to_string()],
             credential_storage: None,
+            identity_bindings: BTreeMap::new(),
             origin: SourceOrigin::Imported,
         }
     }
@@ -719,7 +814,10 @@ mod tests {
         AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout")
     }
 
-    fn write_config(layout: &AppStateLayout, raw: &str) {
+    /// A fresh temp layout whose config file already holds `raw`.
+    fn layout_with_config(raw: &str) -> (TempDir, AppStateLayout) {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
         std::fs::create_dir_all(
             layout
                 .config_file()
@@ -728,6 +826,7 @@ mod tests {
         )
         .expect("create config dir");
         std::fs::write(layout.config_file(), raw).expect("write config");
+        (temp, layout)
     }
 
     fn raw_feature_entries(layout: &AppStateLayout) -> BTreeMap<String, RawFeatureValue> {
@@ -738,14 +837,66 @@ mod tests {
             .collect()
     }
 
-    fn raw_feature_container(layout: &AppStateLayout) -> RawFeatureContainerState {
-        load_raw_feature_overrides(layout)
-            .expect("feature overrides")
-            .container()
+    /// An app config whose catalog holds `source` in the default workspace.
+    fn config_with_source(source: InstalledSource) -> AppConfig {
+        let mut catalog = SourceCatalog::default();
+        catalog.upsert_source(&default_workspace(), source);
+        AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            catalog,
+        }
     }
 
-    fn selected_sources(names: &[&str]) -> Vec<String> {
-        names.iter().map(|name| (*name).to_string()).collect()
+    /// Parses raw TOML into the app config model.
+    #[expect(
+        clippy::unwrap_in_result,
+        reason = "test helper: TOML fixtures must parse; only app-model conversion is under test"
+    )]
+    fn load_config(raw: &str) -> Result<AppConfig, AppError> {
+        AppConfig::try_from(toml::from_str::<PersistedAppConfig>(raw).expect("config should parse"))
+    }
+
+    /// Prefixes `body` with the `version = 1` header every config file
+    /// starts with.
+    fn config_toml(body: &str) -> String {
+        format!("version = 1\n\n{body}")
+    }
+
+    /// Parses a config whose `body` follows the `version = 1` header.
+    fn load_config_body(body: &str) -> Result<AppConfig, AppError> {
+        load_config(&config_toml(body))
+    }
+
+    /// A full config holding one `github_v4` source with the given inline
+    /// `identity_bindings` TOML.
+    fn github_v4_config(identity_bindings: &str) -> String {
+        config_toml(&format!(
+            r#"[workspaces.default.sources.github_v4]
+variables = {{}}
+secrets = []
+identity_bindings = {identity_bindings}
+origin = "imported"
+"#
+        ))
+    }
+
+    /// Parses a config body (`version = 1` header implied) and resolves the
+    /// dependent-join runtime config for the selected source names.
+    #[expect(
+        clippy::unwrap_in_result,
+        reason = "test helper: TOML fixtures must parse; only runtime conversion is under test"
+    )]
+    fn dependent_join_runtime_config(
+        body: &str,
+        selected: &[&str],
+    ) -> Result<DependentJoinConfig, AppError> {
+        let selected: Vec<String> = selected.iter().map(|name| (*name).to_string()).collect();
+        toml::from_str::<PersistedAppConfig>(&config_toml(body))
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&selected)
     }
 
     #[test]
@@ -755,14 +906,7 @@ mod tests {
 
     #[test]
     fn renders_sources_under_workspace_keyed_tables() {
-        let workspace_name = default_workspace();
-        let mut catalog = SourceCatalog::default();
-        catalog.upsert_source(&workspace_name, installed_source("github"));
-        let config = AppConfig {
-            version: 1,
-            engine: PersistedEngineConfig::default(),
-            catalog,
-        };
+        let config = config_with_source(installed_source("github"));
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
         assert!(raw.contains("[workspaces.default.sources.github]"));
@@ -776,17 +920,10 @@ mod tests {
 
     #[test]
     fn omits_empty_versions_from_rendered_source_entries() {
-        let workspace_name = default_workspace();
         let mut source = installed_source("github");
         source.version = None;
         source.origin = SourceOrigin::Bundled;
-        let mut catalog = SourceCatalog::default();
-        catalog.upsert_source(&workspace_name, source);
-        let config = AppConfig {
-            version: 1,
-            engine: PersistedEngineConfig::default(),
-            catalog,
-        };
+        let config = config_with_source(source);
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
         assert!(!raw.contains("version = \"\""));
@@ -796,8 +933,6 @@ mod tests {
     #[test]
     fn loads_sources_from_workspace_keyed_tables() {
         let raw = r#"
-version = 1
-
 [workspaces.default.sources.github]
 version = "1.1.4"
 variables = { GITHUB_API_BASE = "https://api.github.com" }
@@ -805,10 +940,7 @@ secrets = ["GITHUB_TOKEN"]
 origin = "bundled"
 "#;
 
-        let config = AppConfig::try_from(
-            toml::from_str::<PersistedAppConfig>(raw).expect("workspace-keyed config should parse"),
-        )
-        .expect("config");
+        let config = load_config_body(raw).expect("config");
         let sources = config.catalog.workspace_sources(&default_workspace());
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].name.as_str(), "github");
@@ -828,8 +960,6 @@ origin = "bundled"
     #[test]
     fn loads_dependent_join_engine_config() {
         let raw = r"
-version = 1
-
 [engine.dependent_join]
 enabled = false
 max_bindings = 7
@@ -844,11 +974,7 @@ max_bindings = 21
 max_concurrency = 4
 ";
 
-        let config = toml::from_str::<PersistedAppConfig>(raw)
-            .expect("dependent join config should parse")
-            .engine
-            .dependent_join
-            .try_into_runtime_config(&selected_sources(&["github"]))
+        let config = dependent_join_runtime_config(raw, &["github"])
             .expect("dependent join config should be valid");
 
         assert_eq!(
@@ -876,17 +1002,11 @@ max_concurrency = 4
     #[test]
     fn matches_dependent_join_source_config_after_source_name_normalization() {
         let raw = r#"
-version = 1
-
 [engine.dependent_join.per_source." github "]
 enabled = false
 "#;
 
-        let config = toml::from_str::<PersistedAppConfig>(raw)
-            .expect("dependent join config should parse")
-            .engine
-            .dependent_join
-            .try_into_runtime_config(&selected_sources(&["github"]))
+        let config = dependent_join_runtime_config(raw, &["github"])
             .expect("dependent join config should be valid");
 
         assert_eq!(
@@ -900,53 +1020,29 @@ enabled = false
 
     #[test]
     fn rejects_zero_dependent_join_limits() {
-        let raw = r"
-version = 1
+        for (label, body, selected, expected) in [
+            (
+                "zero limit should fail",
+                "[engine.dependent_join]\nmax_concurrency = 0\n",
+                &[][..],
+                "engine.dependent_join.max_concurrency must be greater than 0",
+            ),
+            (
+                "zero source limit should fail",
+                "[engine.dependent_join.per_source.github]\nmax_concurrency = 0\n",
+                &["github"][..],
+                "engine.dependent_join.per_source.github.max_concurrency must be greater than 0",
+            ),
+        ] {
+            let error = dependent_join_runtime_config(body, selected).expect_err(label);
 
-[engine.dependent_join]
-max_concurrency = 0
-";
-
-        let error = toml::from_str::<PersistedAppConfig>(raw)
-            .expect("dependent join config should parse")
-            .engine
-            .dependent_join
-            .try_into_runtime_config(&[])
-            .expect_err("zero limit should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("engine.dependent_join.max_concurrency must be greater than 0")
-        );
-    }
-
-    #[test]
-    fn rejects_zero_dependent_join_source_limits() {
-        let raw = r"
-version = 1
-
-[engine.dependent_join.per_source.github]
-max_concurrency = 0
-";
-
-        let error = toml::from_str::<PersistedAppConfig>(raw)
-            .expect("dependent join config should parse")
-            .engine
-            .dependent_join
-            .try_into_runtime_config(&selected_sources(&["github"]))
-            .expect_err("zero source limit should fail");
-
-        assert!(error.to_string().contains(
-            "engine.dependent_join.per_source.github.max_concurrency must be greater than 0"
-        ));
+            assert!(error.to_string().contains(expected), "{label}: {error}");
+        }
     }
 
     #[test]
     fn ignores_dependent_join_source_limits_for_unselected_sources() {
         let raw = r"
-version = 1
-
 [engine.dependent_join.per_source.github]
 max_concurrency = 4
 
@@ -954,11 +1050,7 @@ max_concurrency = 4
 max_concurrency = 0
 ";
 
-        let config = toml::from_str::<PersistedAppConfig>(raw)
-            .expect("dependent join config should parse")
-            .engine
-            .dependent_join
-            .try_into_runtime_config(&selected_sources(&["github"]))
+        let config = dependent_join_runtime_config(raw, &["github"])
             .expect("unselected source override should not be validated");
 
         assert!(config.per_source.contains_key("github"));
@@ -967,29 +1059,92 @@ max_concurrency = 0
 
     #[test]
     fn round_trips_source_credential_storage() {
-        let workspace_name = default_workspace();
         let mut source = installed_source("github");
         source.credential_storage = Some(CredentialStorageKind::Keychain);
-        let mut catalog = SourceCatalog::default();
-        catalog.upsert_source(&workspace_name, source);
-        let config = AppConfig {
-            version: 1,
-            engine: PersistedEngineConfig::default(),
-            catalog,
-        };
+        let config = config_with_source(source);
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
         assert!(raw.contains("credential_storage = \"keychain\""));
 
-        let loaded = AppConfig::try_from(
-            toml::from_str::<PersistedAppConfig>(&raw).expect("config should parse"),
-        )
-        .expect("config");
-        let sources = loaded.catalog.workspace_sources(&workspace_name);
+        let loaded = load_config(&raw).expect("config");
+        let sources = loaded.catalog.workspace_sources(&default_workspace());
         assert_eq!(
             sources[0].credential_storage,
             Some(CredentialStorageKind::Keychain)
         );
+    }
+
+    #[test]
+    fn round_trips_source_identity_bindings() {
+        let mut source = installed_source("github_v4");
+        source
+            .identity_bindings
+            .insert("rest".to_string(), SourceIdentityBinding::user_owned());
+        let config = config_with_source(source);
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+
+        assert!(raw.contains("identity_bindings"));
+        assert!(raw.contains("owner = \"user\""));
+        assert!(!raw.contains("github_local"));
+        assert!(!raw.contains("accepted_identity"));
+        let loaded = load_config(&raw).expect("config");
+        let sources = loaded.catalog.workspace_sources(&default_workspace());
+        let binding = sources[0]
+            .identity_bindings
+            .get("rest")
+            .expect("rest identity binding");
+        assert_eq!(binding.identity, None);
+        assert_eq!(binding.owner, SourceIdentityOwner::User);
+        assert_eq!(binding.accepted_identity, None);
+    }
+
+    #[test]
+    fn loads_workspace_owned_source_identity_binding_from_config() {
+        let raw = github_v4_config(
+            r#"{ rest = { identity = "github_workspace", owner = "workspace" } }"#,
+        );
+
+        let config = load_config(&raw).expect("config");
+        let sources = config.catalog.workspace_sources(&default_workspace());
+        let binding = sources[0]
+            .identity_bindings
+            .get("rest")
+            .expect("rest identity binding");
+
+        assert_eq!(binding.identity.as_deref(), Some("github_workspace"));
+        assert_eq!(binding.owner, SourceIdentityOwner::Workspace);
+        assert_eq!(binding.accepted_identity, None);
+    }
+
+    #[test]
+    fn rejects_invalid_source_identity_bindings_from_config() {
+        for (identity_bindings, expected) in [
+            (
+                r#"{ "bad/rest" = { identity = "github_workspace", owner = "workspace" } }"#,
+                "identity binding surface 'bad/rest' must match [a-z][a-z0-9_]*",
+            ),
+            (
+                r#"{ rest = { identity = "bad/path", owner = "workspace" } }"#,
+                "identity name must not contain",
+            ),
+            (
+                r#"{ rest = { identity = "github_workspace", owner = "workspace", accepted_identity = "bad/path" } }"#,
+                "accepted identity name must not contain",
+            ),
+            (
+                r#"{ rest = { identity = "github_local", owner = "user" } }"#,
+                "user-owned source identity bindings store only owner",
+            ),
+        ] {
+            let error = load_config(&github_v4_config(identity_bindings))
+                .expect_err("invalid identity binding should fail config load");
+
+            assert!(
+                error.to_string().contains(expected),
+                "expected '{expected}' in '{error}'"
+            );
+        }
     }
 
     #[test]
@@ -1004,10 +1159,7 @@ max_concurrency = 0
         catalog.upsert_source(&workspace_name, updated);
 
         let stored = catalog
-            .get_source(
-                &workspace_name,
-                &SourceName::parse("github").expect("source"),
-            )
+            .get_source(&workspace_name, &source_name("github"))
             .expect("source should be present");
         assert_eq!(stored.version.as_deref(), Some("2.0.0"));
         assert_eq!(stored.origin, SourceOrigin::Imported);
@@ -1022,36 +1174,25 @@ max_concurrency = 0
         catalog.upsert_source(&default_workspace, installed_source("github"));
         catalog.upsert_source(&other_workspace_name, installed_source("slack"));
 
-        catalog.remove_source(
-            &default_workspace,
-            &SourceName::parse("github").expect("source"),
-        );
+        catalog.remove_source(&default_workspace, &source_name("github"));
 
         assert!(
             catalog
-                .get_source(
-                    &default_workspace,
-                    &SourceName::parse("github").expect("source")
-                )
+                .get_source(&default_workspace, &source_name("github"))
                 .is_none()
         );
         assert!(catalog.workspace_sources(&default_workspace).is_empty());
         assert!(
             catalog
-                .get_source(
-                    &other_workspace_name,
-                    &SourceName::parse("slack").expect("source")
-                )
+                .get_source(&other_workspace_name, &source_name("slack"))
                 .is_some()
         );
     }
 
     #[test]
     fn preserves_unrelated_sections_when_rendering_with_existing_config() {
-        let existing = r#"
-version = 1
-
-[otel]
+        let existing = config_toml(
+            r#"[otel]
 endpoint = "http://localhost:4318"
 headers = "from=config"
 
@@ -1072,61 +1213,30 @@ version = "1.0.0"
 variables = {}
 secrets = []
 origin = "bundled"
-"#;
+"#,
+        );
 
-        let workspace_name = default_workspace();
-        let mut catalog = SourceCatalog::default();
-        catalog.upsert_source(&workspace_name, installed_source("slack"));
-        let config = AppConfig {
-            version: 1,
-            engine: PersistedEngineConfig::default(),
-            catalog,
-        };
+        let config = config_with_source(installed_source("slack"));
 
-        let raw = render_config(&PersistedAppConfig::from(&config), Some(existing));
+        let raw = render_config(&PersistedAppConfig::from(&config), Some(existing.as_str()));
 
-        // OTel section must survive the round-trip.
-        assert!(raw.contains("[otel]"), "otel section should be preserved");
-        assert!(
-            raw.contains("endpoint = \"http://localhost:4318\""),
-            "otel endpoint should be preserved"
-        );
-        assert!(
-            raw.contains("headers = \"from=config\""),
-            "otel headers should be preserved"
-        );
-        assert!(
-            raw.contains("[trace_history]"),
-            "trace history section should be preserved"
-        );
-        assert!(
-            raw.contains("enabled = false"),
-            "trace history enabled flag should be preserved"
-        );
-        assert!(
-            raw.contains("retention_days = 3"),
-            "trace history retention should be preserved"
-        );
-        assert!(
-            raw.contains("[features]"),
-            "features section should be preserved"
-        );
-        assert!(
-            raw.contains("feedback = true"),
-            "known feature override should be preserved"
-        );
-        assert!(
-            raw.contains("future_feature = \"not-yet-known\""),
-            "future feature override should be preserved"
-        );
-        assert!(
-            raw.contains("[engine.dependent_join]"),
-            "dependent join config should be preserved"
-        );
-        assert!(
-            raw.contains("max_bindings = 250"),
-            "dependent join limit should be preserved"
-        );
+        // Unrelated sections (otel, trace history, features, dependent join)
+        // must survive the round-trip.
+        for needle in [
+            "[otel]",
+            "endpoint = \"http://localhost:4318\"",
+            "headers = \"from=config\"",
+            "[trace_history]",
+            "enabled = false",
+            "retention_days = 3",
+            "[features]",
+            "feedback = true",
+            "future_feature = \"not-yet-known\"",
+            "[engine.dependent_join]",
+            "max_bindings = 250",
+        ] {
+            assert!(raw.contains(needle), "{needle} should be preserved");
+        }
 
         // The newly added source must be present.
         assert!(raw.contains("[workspaces.default.sources.slack]"));
@@ -1138,29 +1248,18 @@ origin = "bundled"
     #[test]
     fn rejects_invalid_workspace_or_source_keys_when_loading() {
         let invalid_workspace = r#"
-version = 1
-
 [workspaces."bad\\workspace".sources.github]
 origin = "bundled"
 "#;
-        let error = AppConfig::try_from(
-            toml::from_str::<PersistedAppConfig>(invalid_workspace)
-                .expect("quoted workspace key should parse"),
-        )
-        .expect_err("invalid workspace key should fail");
+        let error =
+            load_config_body(invalid_workspace).expect_err("invalid workspace key should fail");
         assert!(error.to_string().contains("workspace name"));
 
         let invalid_source = r#"
-version = 1
-
 [workspaces.default.sources."bad\\source"]
 origin = "bundled"
 "#;
-        let error = AppConfig::try_from(
-            toml::from_str::<PersistedAppConfig>(invalid_source)
-                .expect("quoted source key should parse"),
-        )
-        .expect_err("invalid source key should fail");
+        let error = load_config_body(invalid_source).expect_err("invalid source key should fail");
         assert!(error.to_string().contains("source name"));
     }
 
@@ -1181,14 +1280,8 @@ origin = "bundled"
 
     #[test]
     fn raw_feature_overrides_load_supported_table_entries() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = test_layout(&temp);
-        write_config(
-            &layout,
-            r#"
-version = 1
-
-[features]
+        let (_temp, layout) = layout_with_config(&config_toml(
+            r#"[features]
 feedback = true
 future_flag = false
 wrong_type = "yes"
@@ -1196,7 +1289,7 @@ wrong_type = "yes"
 [features.nested]
 enabled = true
 "#,
-        );
+        ));
 
         let entries = raw_feature_entries(&layout);
 
@@ -1217,9 +1310,7 @@ enabled = true
 
     #[test]
     fn raw_feature_overrides_accept_dotted_feature_table() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = test_layout(&temp);
-        write_config(&layout, "features.feedback = false\n");
+        let (_temp, layout) = layout_with_config("features.feedback = false\n");
 
         let entries = raw_feature_entries(&layout);
 
@@ -1228,24 +1319,17 @@ enabled = true
 
     #[test]
     fn raw_feature_overrides_ignore_inline_feature_table() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = test_layout(&temp);
-        write_config(&layout, "features = { feedback = true }\n");
+        let (_temp, layout) = layout_with_config("features = { feedback = true }\n");
 
-        let entries = raw_feature_entries(&layout);
+        let overrides = load_raw_feature_overrides(&layout).expect("feature overrides");
 
-        assert!(entries.is_empty());
-        assert_eq!(
-            raw_feature_container(&layout),
-            RawFeatureContainerState::Unsupported
-        );
+        assert!(overrides.iter().next().is_none());
+        assert_eq!(overrides.container(), RawFeatureContainerState::Unsupported);
     }
 
     #[test]
     fn raw_feature_overrides_fail_for_invalid_toml() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = test_layout(&temp);
-        write_config(&layout, "[features\nfeedback = true\n");
+        let (_temp, layout) = layout_with_config("[features\nfeedback = true\n");
 
         let error = load_raw_feature_overrides(&layout).expect_err("invalid TOML should fail");
 
@@ -1267,10 +1351,7 @@ enabled = true
 
     #[test]
     fn set_raw_feature_override_preserves_unrelated_feature_entries() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = test_layout(&temp);
-        write_config(
-            &layout,
+        let (_temp, layout) = layout_with_config(
             r#"
 [features]
 future_flag = "yes"
@@ -1278,23 +1359,19 @@ feedback = true
 "#,
         );
 
-        set_raw_feature_override(&layout, "feedback", false).expect("set feature");
-        let raw = std::fs::read_to_string(layout.config_file()).expect("config file");
-        assert!(raw.contains("feedback = false"));
-        assert!(raw.contains("future_flag = \"yes\""));
+        for (value, expected) in [(false, "feedback = false"), (true, "feedback = true")] {
+            set_raw_feature_override(&layout, "feedback", value).expect("set feature");
 
-        set_raw_feature_override(&layout, "feedback", true).expect("set feature");
-        let raw = std::fs::read_to_string(layout.config_file()).expect("config file");
-        assert!(raw.contains("feedback = true"));
-        assert!(raw.contains("future_flag = \"yes\""));
+            let raw = std::fs::read_to_string(layout.config_file()).expect("config file");
+            assert!(raw.contains(expected), "{expected}");
+            assert!(raw.contains("future_flag = \"yes\""), "set {value}");
+        }
     }
 
     #[test]
     fn feature_mutations_reject_inline_feature_container_without_rewriting_file() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = test_layout(&temp);
         let original = "features = { feedback = true }\n";
-        write_config(&layout, original);
+        let (_temp, layout) = layout_with_config(original);
 
         let error =
             set_raw_feature_override(&layout, "feedback", true).expect_err("inline features");
