@@ -77,14 +77,14 @@ For larger results, `sql` may return an in-memory result handle instead of every
   "row_count": 1200,
   "column_count": 8,
   "preview": {"offset": 0, "limit": 20, "has_more": true, "next_offset": 20, "rows": []},
-  "next_call": {"tool": "result_get", "arguments": {"result_id": "res_...", "offset": 20, "limit": 50}}
+  "next_call": {"tool": "result_get", "arguments": {"result_id": "res_...", "offset": 20, "limit": 500}}
 }
 ```
 
 Use `result_get` to page through the stored result or request only selected columns:
 
 ```json
-{"result_id":"res_...","offset":20,"limit":50,"columns":["title","state"]}
+{"result_id":"res_...","offset":20,"limit":500,"columns":["title","state"]}
 ```
 
 Result handles are process-local MCP session state. They expire and can be evicted under memory pressure; if `result_get` reports a missing or expired handle, rerun the SQL with tighter filters, a smaller projection, or `LIMIT`.

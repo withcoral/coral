@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use coral_client::CollectedQueryResult;
+use coral_client::{CollectedQueryResult, result_slice::result_estimated_bytes};
 
 const RESULT_ID_PREFIX: &str = "res_";
 const DEFAULT_RESULT_TTL: Duration = Duration::from_mins(30);
@@ -122,7 +122,7 @@ impl ResultStore {
         }
     }
 
-    pub(crate) fn insert(
+    fn insert(
         &self,
         result: Arc<CollectedQueryResult>,
         estimated_bytes: usize,
@@ -154,6 +154,14 @@ impl ResultStore {
         );
         guard.evict_until_within_limits(self.limits);
         Ok(result_id)
+    }
+
+    pub(crate) fn insert_result(
+        &self,
+        result: Arc<CollectedQueryResult>,
+    ) -> Result<String, ResultStoreError> {
+        let estimated_bytes = result_estimated_bytes(&result);
+        self.insert(result, estimated_bytes)
     }
 
     pub(crate) fn get(

@@ -17,8 +17,8 @@ pub(crate) use resources::{
     tables_resource_content,
 };
 pub(crate) use tools::{
-    CatalogToolKind, RESULT_GET_MAX_LIMIT, ToolDescriptionContext, build_tool_result,
-    describe_table_arguments, describe_table_tool, feedback_tool, list_catalog_arguments,
-    list_catalog_tool, list_columns_arguments, list_columns_tool, required_string_argument,
-    result_get_arguments, result_get_tool, search_catalog_arguments, search_catalog_tool, sql_tool,
+    CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
+    describe_table_tool, feedback_tool, list_catalog_arguments, list_catalog_tool,
+    list_columns_arguments, list_columns_tool, required_string_argument, result_get_arguments,
+    result_get_tool, search_catalog_arguments, search_catalog_tool, sql_tool,
 };

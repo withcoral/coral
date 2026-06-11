@@ -149,3 +149,33 @@ fn coercion_error(data_type: &DataType) -> DataFusionError {
         "dependent join binding value has unsupported Arrow type {data_type}"
     ))
 }
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::{
+        array::{BooleanArray, Int64Array, NullArray, RecordBatch, StringArray},
+        datatypes::{DataType, Field, Schema},
+    };
+
+    #[test]
+    fn build_record_batch() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("string_field", DataType::Utf8, false),
+            Field::new("int_field", DataType::Int64, false),
+            Field::new("bool_field", DataType::Boolean, false),
+            Field::new("null_field", DataType::Null, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["alpha"])),
+                Arc::new(Int64Array::from(vec![42])),
+                Arc::new(BooleanArray::from(vec![true])),
+                Arc::new(NullArray::new(1)),
+            ],
+        )
+        .expect("record batch");
+        assert_eq!(batch.num_rows(), 1);
+    }
+}

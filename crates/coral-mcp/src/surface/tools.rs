@@ -6,10 +6,9 @@ use rmcp::{
 };
 use serde_json::{Map, Value, json};
 
-use super::{Pagination, parse_pagination, parse_pagination_with_limits};
+use crate::result_handles::{RESULT_GET_DEFAULT_LIMIT, RESULT_GET_MAX_LIMIT};
 
-pub(crate) const RESULT_GET_DEFAULT_LIMIT: usize = 200;
-pub(crate) const RESULT_GET_MAX_LIMIT: usize = 500;
+use super::{Pagination, parse_pagination, parse_pagination_with_limits};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolDescriptionContext {

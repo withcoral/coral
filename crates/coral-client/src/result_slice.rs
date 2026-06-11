@@ -13,7 +13,9 @@ use crate::{CollectedQueryResult, QueryResultError, batches_to_json_rows_json_sa
 pub struct ColumnSummary {
     /// Column name as returned by the SQL query.
     pub name: String,
-    /// Arrow data type rendered with its display representation.
+    /// Arrow data type rendered with its display representation. This is
+    /// intentionally a string for the MCP contract because Arrow data types are
+    /// nested and parameterized rather than a compact stable enum.
     pub data_type: String,
     /// Whether the column allows null values.
     pub is_nullable: bool,

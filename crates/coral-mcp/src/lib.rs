@@ -23,6 +23,7 @@
 )]
 
 mod error;
+mod result_handles;
 mod result_store;
 mod server;
 mod surface;
