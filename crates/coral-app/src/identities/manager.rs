@@ -527,6 +527,29 @@ impl UserOwnedIdentityManager {
         self.list_identities(&owner).await
     }
 
+    async fn get_identity(
+        &self,
+        owner: &IdentityOwnerKey,
+        identity_name: &str,
+    ) -> Result<UserOwnedIdentityRecord, AppError> {
+        let identity_name = validate_identity_name(identity_name)?;
+        self.store
+            .load_identity(owner, &identity_name)
+            .await?
+            .ok_or_else(|| AppError::IdentityNotFound(identity_name))
+    }
+
+    pub(crate) async fn get_user_owned_identity(
+        &self,
+        principal: &UserPrincipal,
+        identity_name: &str,
+    ) -> Result<UserOwnedIdentityRecord, AppError> {
+        let span = info_span!("coral.app.identities.get_user_owned");
+        let _guard = span.enter();
+        let owner = IdentityOwnerKey::for_user_principal(principal)?;
+        self.get_identity(&owner, identity_name).await
+    }
+
     async fn delete_identity(
         &self,
         owner: &IdentityOwnerKey,
@@ -534,6 +557,22 @@ impl UserOwnedIdentityManager {
     ) -> Result<bool, AppError> {
         let identity_name = validate_identity_name(identity_name)?;
         self.store.delete_identity(owner, &identity_name).await
+    }
+
+    pub(crate) async fn delete_user_owned_identity(
+        &self,
+        principal: &UserPrincipal,
+        identity_name: &str,
+    ) -> Result<(), AppError> {
+        let span = info_span!("coral.app.identities.delete_user_owned");
+        let _guard = span.enter();
+        let owner = IdentityOwnerKey::for_user_principal(principal)?;
+        let identity_name = validate_identity_name(identity_name)?;
+        if self.delete_identity(&owner, &identity_name).await? {
+            Ok(())
+        } else {
+            Err(AppError::IdentityNotFound(identity_name))
+        }
     }
 
     pub(crate) async fn replace_user_owned_source_identity_binding(
@@ -1611,6 +1650,51 @@ oauth:
             .await
             .expect("list identities");
         assert_eq!(listed, vec![record]);
+    }
+
+    #[tokio::test]
+    async fn gets_user_owned_identity_record() {
+        let (_temp, manager, _identity_specs) = manager();
+        let principal = UserPrincipal::local();
+        let record = github_local_record("github_oauth", "oauth");
+
+        manager
+            .store
+            .replace_identity(
+                &local_owner(),
+                &record,
+                &material(OAUTH_ACCESS_TOKEN_MATERIAL_KEY, "gho_token"),
+            )
+            .await
+            .expect("write identity");
+
+        let loaded = manager
+            .get_user_owned_identity(&principal, "github_local")
+            .await
+            .expect("get identity");
+        assert_eq!(loaded, record);
+    }
+
+    #[tokio::test]
+    async fn deletes_user_owned_identity_record() {
+        let (_temp, manager, _identity_specs) = manager_with_github_pat_spec();
+        create_github_local(&manager, "token").await;
+
+        manager
+            .delete_user_owned_identity(&UserPrincipal::local(), "github_local")
+            .await
+            .expect("delete identity");
+
+        let listed = manager
+            .list_user_owned_identities(&UserPrincipal::local())
+            .await
+            .expect("list identities");
+        assert!(listed.is_empty(), "identity should be removed");
+        let error = manager
+            .delete_user_owned_identity(&UserPrincipal::local(), "github_local")
+            .await
+            .expect_err("second delete should report missing identity");
+        assert!(matches!(error, AppError::IdentityNotFound(name) if name == "github_local"));
     }
 
     #[tokio::test]

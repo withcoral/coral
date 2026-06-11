@@ -13,12 +13,14 @@ use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
     AddIdentitySpecRequest, CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
     CreateUserOwnedIdentityWithFixedTokenRequest, CreateUserOwnedIdentityWithOAuthRequest,
-    DeleteSourceRequest, DiscoverSourcesRequest, GetIdentitySpecRequest, GetSourceInfoRequest,
-    Identity, IdentitySpec, IdentitySpecImportInputs, IdentitySpecInput, ImportSourceRequest,
-    ListSourcesRequest, ListUserOwnedIdentitiesRequest, OAuthCredentialInput,
-    OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source, SourceCredentialStorage,
-    SourceIdentityBinding, SourceIdentityOwner, SourceInfo, SourceOrigin, SourceSecret,
-    SourceVariable, UserSourceIdentityBinding, ValidateSourceRequest, ValidateSourceResponse,
+    DeleteIdentitySpecRequest, DeleteSourceRequest, DeleteUserOwnedIdentityRequest,
+    DiscoverSourcesRequest, GetIdentitySpecRequest, GetSourceInfoRequest,
+    GetUserOwnedIdentityRequest, Identity, IdentityOwner, IdentitySpec, IdentitySpecImportInputs,
+    IdentitySpecInput, ImportSourceRequest, ListIdentitySpecsRequest, ListSourcesRequest,
+    ListUserOwnedIdentitiesRequest, OAuthCredentialInput, OAuthCredentialRetrieval,
+    QueryTestFailure, QueryTestSuccess, Source, SourceCredentialStorage, SourceIdentityBinding,
+    SourceIdentityOwner, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
+    UserSourceIdentityBinding, ValidateSourceRequest, ValidateSourceResponse,
     create_bundled_source_with_o_auth_response, create_user_owned_identity_with_o_auth_response,
     import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
@@ -117,6 +119,12 @@ macro_rules! rpc_fn {
 }
 
 rpc_fn! {
+    fn list_identity_specs() -> Vec<IdentitySpec>;
+    identity_spec_client.list_identity_specs(ListIdentitySpecsRequest {});
+    |response| response.identity_specs
+}
+
+rpc_fn! {
     fn get_identity_spec(name: &str) -> IdentitySpec;
     identity_spec_client.get_identity_spec(GetIdentitySpecRequest {
         name: name.to_string(),
@@ -144,9 +152,38 @@ rpc_fn! {
 }
 
 rpc_fn! {
+    fn remove_identity_spec(name: &str, force: bool) -> u32;
+    identity_spec_client.delete_identity_spec(DeleteIdentitySpecRequest {
+        name: name.to_string(),
+        force,
+    });
+    |response| response.orphaned_identities
+}
+
+rpc_fn! {
     fn list_user_owned_identities() -> Vec<Identity>;
     identity_client.list_user_owned_identities(ListUserOwnedIdentitiesRequest {});
     |response| response.identities
+}
+
+rpc_fn! {
+    fn get_user_owned_identity(name: &str) -> Identity;
+    identity_client.get_user_owned_identity(GetUserOwnedIdentityRequest {
+        name: name.to_string(),
+    });
+    |response| response
+        .identity
+        .ok_or_else(|| anyhow::anyhow!("get user-owned identity response missing identity"))?
+}
+
+rpc_fn! {
+    fn delete_user_owned_identity(name: &str) -> ();
+    identity_client.delete_user_owned_identity(DeleteUserOwnedIdentityRequest {
+        name: name.to_string(),
+    });
+    |response| {
+        let _ = response;
+    }
 }
 
 pub(crate) async fn create_user_owned_identity_with_oauth(
@@ -736,6 +773,18 @@ pub(crate) fn prompt_fixed_token_identity_token(
     Ok(token)
 }
 
+pub(crate) fn read_fixed_token_identity_token_from_stdin() -> Result<String, anyhow::Error> {
+    let mut token = String::new();
+    stdin().read_to_string(&mut token)?;
+    let token = token.trim_end_matches(['\r', '\n']).to_string();
+    if token.is_empty() {
+        return Err(anyhow::anyhow!(
+            "fixed token identity token must not be empty"
+        ));
+    }
+    Ok(token)
+}
+
 async fn identity_spec_manifest_cached(
     app: &AppClient,
     identity_specs: &mut BTreeMap<String, IdentityManifest>,
@@ -977,6 +1026,12 @@ pub(crate) fn load_validated_manifest_file(
 ) -> Result<(String, ValidatedSourceManifest), anyhow::Error> {
     let bundle = load_validated_manifest_bundle_file(file)?;
     Ok((bundle.source_manifest_yaml, bundle.source_manifest))
+}
+
+pub(crate) fn load_validated_identity_spec_file(file: &Path) -> Result<String, anyhow::Error> {
+    let raw = std::fs::read_to_string(file)?;
+    parse_identity_manifest_yaml(&raw)?;
+    Ok(raw)
 }
 
 pub(crate) struct ValidatedManifestBundleFile {
@@ -1492,6 +1547,13 @@ pub(crate) fn source_credential_storage_label(storage: i32) -> &'static str {
         Ok(SourceCredentialStorage::File) => "file (plaintext)",
         Ok(SourceCredentialStorage::Keychain) => "keychain",
         Err(_) => "unknown",
+    }
+}
+
+pub(crate) fn identity_owner_label(owner: i32) -> &'static str {
+    match IdentityOwner::try_from(owner) {
+        Ok(IdentityOwner::User) => "user",
+        Ok(IdentityOwner::Unspecified) | Err(_) => "unknown",
     }
 }
 

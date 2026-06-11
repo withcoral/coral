@@ -179,6 +179,99 @@ Remove an installed source.
 coral source remove github
 ```
 
+## `coral identity`
+
+Manage stored user-owned identities (see the
+[identity spec reference](/reference/identity-spec-reference) for what
+user-owned identities are and how DSL v4 sources resolve them).
+
+### `coral identity list`
+
+List stored user-owned identities.
+
+```shellscript
+coral identity list
+```
+
+### `coral identity info <NAME>`
+
+Show one stored user-owned identity without revealing credential material.
+
+```shellscript
+coral identity info github_local
+```
+
+### `coral identity add <NAME> --identity-spec <SPEC> [--token-stdin]`
+
+Create or replace a user-owned identity from an installed OAuth or fixed-token
+identity spec. For OAuth specs, Coral runs the spec's OAuth setup method. For
+fixed-token specs, Coral prompts for the bearer token by default, or reads it
+from stdin when `--token-stdin` is set. In both cases, Coral stores provider
+identity material for the local Coral user principal.
+
+```shellscript
+coral identity add github_local --identity-spec github_oauth
+printf '%s\n' "$GITHUB_TOKEN" | coral identity add github_pat --identity-spec github_pat --token-stdin
+```
+
+### `coral identity remove <NAME>`
+
+Remove one stored user-owned identity and its local credential material.
+
+```shellscript
+coral identity remove github_local
+```
+
+## `coral identity-spec`
+
+Manage global identity specs used by DSL v4 source `identity_requirements`.
+Identity specs are installed once for the local Coral app and are visible to all
+workspaces. Installing a spec does not instantiate an identity; use
+`coral identity add` for that.
+
+### `coral identity-spec list`
+
+List installed identity specs.
+
+```shellscript
+coral identity-spec list
+```
+
+### `coral identity-spec info <NAME>`
+
+Print one installed identity spec manifest.
+
+```shellscript
+coral identity-spec info github_oauth
+```
+
+### `coral identity-spec add --file <PATH>`
+
+Install one identity spec from a YAML file. If a spec with the same name already
+exists, Coral replaces it only when no stored identities reference it, or when
+the new manifest is equivalent to the installed manifest.
+
+If the identity spec declares `inputs`, `coral identity-spec add` collects those
+values when the spec is installed. In an interactive terminal Coral prompts for
+missing values; otherwise it reads environment variables matching the input
+keys. Secret inputs are stored as identity-spec material and are not stored on
+identities created from the spec.
+
+```shellscript
+coral identity-spec add --file ./github-oauth.identity.yaml
+```
+
+### `coral identity-spec remove <NAME>`
+
+Remove one installed identity spec. Stored identities that depend on the spec
+become orphaned (see
+[identity spec reference](/reference/identity-spec-reference)); when any exist,
+the command fails unless `--force` is passed.
+
+```shellscript
+coral identity-spec remove github_oauth --force
+```
+
 ## `coral onboard`
 
 Run the guided source setup flow.

@@ -25,17 +25,19 @@ use coral_api::v1::{
     CreateBundledSourceWithOAuthResponse, CreateUserOwnedIdentityWithFixedTokenRequest,
     CreateUserOwnedIdentityWithFixedTokenResponse, CreateUserOwnedIdentityWithOAuthRequest,
     CreateUserOwnedIdentityWithOAuthResponse, DeleteIdentitySpecRequest,
-    DeleteIdentitySpecResponse, DeleteSourceRequest, DeleteSourceResponse, DescribeTableRequest,
+    DeleteIdentitySpecResponse, DeleteSourceRequest, DeleteSourceResponse,
+    DeleteUserOwnedIdentityRequest, DeleteUserOwnedIdentityResponse, DescribeTableRequest,
     DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest,
     ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetIdentitySpecRequest,
     GetIdentitySpecResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
-    GetSourceResponse, Identity, IdentityOwner, IdentitySpec, ImportSourceRequest,
-    ImportSourceResponse, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListColumnsResponse, ListIdentitySpecsRequest, ListIdentitySpecsResponse, ListSourcesRequest,
-    ListSourcesResponse, ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse,
-    PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
-    Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
-    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    GetSourceResponse, GetUserOwnedIdentityRequest, GetUserOwnedIdentityResponse, Identity,
+    IdentityOwner, IdentitySpec, ImportSourceRequest, ImportSourceResponse, ListCatalogRequest,
+    ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, ListIdentitySpecsRequest,
+    ListIdentitySpecsResponse, ListSourcesRequest, ListSourcesResponse,
+    ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse, PaginationRequest,
+    PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse, Source,
+    SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table,
+    TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
     create_bundled_source_with_o_auth_response, create_user_owned_identity_with_o_auth_response,
     import_source_response, source_input_spec::Input as ProtoSourceInput,
 };
@@ -490,6 +492,8 @@ pub(crate) struct MockServerConfig {
     discover_sources: MockResult<DiscoverSourcesResponse>,
     list_sources: MockResult<ListSourcesResponse>,
     list_user_owned_identities: MockResult<ListUserOwnedIdentitiesResponse>,
+    get_user_owned_identity: MockResult<GetUserOwnedIdentityResponse>,
+    delete_user_owned_identity: MockResult<()>,
     list_identity_specs: MockResult<ListIdentitySpecsResponse>,
     get_identity_spec: MockResult<GetIdentitySpecResponse>,
     delete_identity_spec: MockResult<()>,
@@ -511,6 +515,10 @@ impl Default for MockServerConfig {
             list_user_owned_identities: MockResult::ok(ListUserOwnedIdentitiesResponse {
                 identities: vec![mock_identity()],
             }),
+            get_user_owned_identity: MockResult::ok(GetUserOwnedIdentityResponse {
+                identity: Some(mock_identity()),
+            }),
+            delete_user_owned_identity: MockResult::ok(()),
             delete_identity_spec: MockResult::ok(()),
             list_sources: MockResult::ok(ListSourcesResponse {
                 sources: vec![
@@ -685,6 +693,9 @@ captured_requests! {
         CreateUserOwnedIdentityWithFixedTokenRequest,
     list_user_owned_identities as list_user_owned_identities_requests:
         ListUserOwnedIdentitiesRequest,
+    get_user_owned_identity as get_user_owned_identity_requests: GetUserOwnedIdentityRequest,
+    delete_user_owned_identity as delete_user_owned_identity_requests:
+        DeleteUserOwnedIdentityRequest,
     delete_source as delete_source_requests: DeleteSourceRequest,
     validate_source as validate_source_requests: ValidateSourceRequest,
 }
@@ -986,6 +997,15 @@ mock_service! {
         fn list_user_owned_identities(list_user_owned_identities, ListUserOwnedIdentitiesRequest)
             -> ListUserOwnedIdentitiesResponse =
             |cfg, _request| cfg.list_user_owned_identities.clone().into_tonic_result()?;
+        fn get_user_owned_identity(get_user_owned_identity, GetUserOwnedIdentityRequest)
+            -> GetUserOwnedIdentityResponse =
+            |cfg, _request| cfg.get_user_owned_identity.clone().into_tonic_result()?;
+        fn delete_user_owned_identity(delete_user_owned_identity, DeleteUserOwnedIdentityRequest)
+            -> DeleteUserOwnedIdentityResponse =
+            |cfg, _request| {
+                cfg.delete_user_owned_identity.clone().into_tonic_result()?;
+                DeleteUserOwnedIdentityResponse {}
+            };
     }
 }
 
