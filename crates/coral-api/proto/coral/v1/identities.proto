@@ -6,12 +6,13 @@ import "coral/v1/sources.proto";
 
 // Scope that owns stored provider-facing identity material.
 enum IdentityOwner {
+  reserved 2;
+  reserved "IDENTITY_OWNER_WORKSPACE";
+
   // Identity owner was not specified.
   IDENTITY_OWNER_UNSPECIFIED = 0;
   // Identity material is owned by the current Coral user principal.
   IDENTITY_OWNER_USER = 1;
-  // Identity material is owned by the workspace and independent of a user principal.
-  IDENTITY_OWNER_WORKSPACE = 2;
 }
 
 // Stored provider-facing identity instance backed by an installed identity spec.

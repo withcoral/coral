@@ -49,7 +49,9 @@ use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
-use crate::identities::{IdentityService, UserOwnedIdentityManager, UserOwnedIdentityStore};
+use crate::identities::{
+    IdentityManagementHandle, IdentityService, UserOwnedIdentityManager, UserOwnedIdentityStore,
+};
 use crate::identity_specs::{IdentitySpecManager, IdentitySpecRegistry, IdentitySpecService};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
@@ -84,7 +86,29 @@ pub trait StaticAssetsProvider: Send + Sync + 'static {
     fn get(&self, path: &str) -> Option<StaticAsset>;
 }
 
-type GrpcRouteExtender = Arc<dyn Fn(Routes) -> Routes + Send + Sync>;
+type GrpcRouteExtender = Arc<dyn Fn(&ServerExtensionContext, Routes) -> Routes + Send + Sync>;
+type SourceIdentityProviderFactory =
+    Arc<dyn Fn(&ServerExtensionContext) -> Arc<dyn SourceIdentityProvider> + Send + Sync>;
+
+/// Runtime context supplied to product-specific server extensions.
+#[derive(Clone)]
+pub struct ServerExtensionContext {
+    identity_management: IdentityManagementHandle,
+}
+
+impl ServerExtensionContext {
+    fn new(identity_management: IdentityManagementHandle) -> Self {
+        Self {
+            identity_management,
+        }
+    }
+
+    /// Returns the shared identity management handle for this server.
+    #[must_use]
+    pub fn identity_management(&self) -> &IdentityManagementHandle {
+        &self.identity_management
+    }
+}
 
 /// Concrete local server mode.
 ///
@@ -123,6 +147,7 @@ pub struct ServerBuilder {
     native_grpc_bind_addr: Option<SocketAddr>,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     source_identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
+    source_identity_provider_factories: Vec<SourceIdentityProviderFactory>,
     identity_spec_usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
     source_registry: Option<Arc<dyn SourceRegistry>>,
     identity_spec_registry: Option<Arc<dyn IdentitySpecRegistry>>,
@@ -151,6 +176,7 @@ impl ServerBuilder {
             native_grpc_bind_addr: None,
             engine_extensions_providers: Vec::new(),
             source_identity_providers: Vec::new(),
+            source_identity_provider_factories: Vec::new(),
             identity_spec_usage_providers: Vec::new(),
             source_registry: None,
             identity_spec_registry: None,
@@ -262,6 +288,25 @@ impl ServerBuilder {
     }
 
     #[must_use]
+    /// Adds a provider factory that receives server runtime extension context.
+    ///
+    /// Use this when a product-specific provider needs access to shared
+    /// managers created during server startup, such as identity management.
+    pub fn add_source_identity_provider_factory(
+        mut self,
+        source_identity_provider_factory: impl Fn(
+            &ServerExtensionContext,
+        ) -> Arc<dyn SourceIdentityProvider>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.source_identity_provider_factories
+            .push(Arc::new(source_identity_provider_factory));
+        self
+    }
+
+    #[must_use]
     /// Adds a provider that reports stored identities using installed identity specs.
     ///
     /// OSS Coral stores only user-owned identities, but products built on Coral
@@ -336,9 +381,35 @@ impl ServerBuilder {
         S::Future: Send + 'static,
     {
         let service = Arc::new(service);
-        self.grpc_route_extenders.push(Arc::new(move |routes| {
-            routes.add_service((*service).clone())
-        }));
+        self.grpc_route_extenders
+            .push(Arc::new(move |_context, routes| {
+                routes.add_service((*service).clone())
+            }));
+        self
+    }
+
+    #[must_use]
+    /// Adds a product-specific gRPC service factory to the Coral listener.
+    ///
+    /// The factory runs after core server managers are initialized and receives
+    /// [`ServerExtensionContext`], allowing product services to reuse shared
+    /// Coral managers instead of rebuilding parallel logic.
+    pub fn add_grpc_service_factory<F, S>(mut self, factory: F) -> Self
+    where
+        F: Fn(&ServerExtensionContext) -> S + Send + Sync + 'static,
+        S: Service<Request<tonic::body::Body>, Error = Infallible>
+            + NamedService
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        S::Response: axum::response::IntoResponse,
+        S::Future: Send + 'static,
+    {
+        self.grpc_route_extenders
+            .push(Arc::new(move |context, routes| {
+                routes.add_service(factory(context))
+            }));
         self
     }
 
@@ -437,7 +508,11 @@ impl ServerBuilder {
         } else {
             UserOwnedIdentityManager::new(layout.clone(), identity_spec_manager.clone())
         };
+        let extension_context = ServerExtensionContext::new(user_owned_identity_manager.handle());
         let mut source_identity_providers = self.source_identity_providers;
+        for source_identity_provider_factory in self.source_identity_provider_factories {
+            source_identity_providers.push(source_identity_provider_factory(&extension_context));
+        }
         source_identity_providers.push(Arc::new(user_owned_identity_manager.clone()));
 
         let query_manager = QueryManager::new_with_features_and_source_registry(
@@ -467,6 +542,7 @@ impl ServerBuilder {
             mode: self.mode,
             native_grpc_bind_addr: self.native_grpc_bind_addr,
             grpc_route_extenders: self.grpc_route_extenders,
+            extension_context,
         })
         .await
     }
@@ -554,6 +630,7 @@ struct ServerServices {
     mode: ServerMode,
     native_grpc_bind_addr: Option<SocketAddr>,
     grpc_route_extenders: Vec<GrpcRouteExtender>,
+    extension_context: ServerExtensionContext,
 }
 
 async fn start_server(services: ServerServices) -> Result<RunningServer, AppError> {
@@ -569,6 +646,7 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
         mode,
         native_grpc_bind_addr,
         grpc_route_extenders,
+        extension_context,
     } = services;
     let source_service = SourceService::new(
         source_manager,
@@ -622,7 +700,7 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
         ));
     }
     for extend_routes in grpc_route_extenders {
-        routes = extend_routes(routes);
+        routes = extend_routes(&extension_context, routes);
     }
 
     let listener = TcpListener::bind(mode.bind_addr(native_grpc_bind_addr)).await?;
@@ -867,8 +945,9 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        RunningServer, ServerBuilder, ServerMode, ServerServices, StaticAsset,
-        StaticAssetsProvider, is_grpc_web_content_type, is_native_grpc_content_type, start_server,
+        RunningServer, ServerBuilder, ServerExtensionContext, ServerMode, ServerServices,
+        StaticAsset, StaticAssetsProvider, is_grpc_web_content_type, is_native_grpc_content_type,
+        start_server,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::feedback::manager::FeedbackManager;
@@ -929,6 +1008,9 @@ enabled = false
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
         let identity_spec_manager = IdentitySpecManager::new(layout.clone());
+        let user_owned_identity_manager =
+            UserOwnedIdentityManager::new(layout.clone(), identity_spec_manager.clone());
+        let extension_context = ServerExtensionContext::new(user_owned_identity_manager.handle());
         let server = start_server(ServerServices {
             source_manager: SourceManager::new(
                 config_store.clone(),
@@ -943,10 +1025,7 @@ enabled = false
                 vec![Arc::new(NoopEngineExtensionsProvider)],
             ),
             identity_spec_manager: identity_spec_manager.clone(),
-            user_owned_identity_manager: UserOwnedIdentityManager::new(
-                layout.clone(),
-                identity_spec_manager,
-            ),
+            user_owned_identity_manager,
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             management_authorizer: Arc::new(AllowAllManagementAuthorizer),
             feedback_manager: FeedbackManager::new(layout.clone()),
@@ -954,6 +1033,7 @@ enabled = false
             mode: ServerMode::NativeGrpc,
             native_grpc_bind_addr: None,
             grpc_route_extenders: Vec::new(),
+            extension_context,
         })
         .await
         .expect("start server");

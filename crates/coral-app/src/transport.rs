@@ -294,8 +294,10 @@ fn decode_grpc_error(status: &Status) -> GrpcErrorTelemetry {
 }
 
 /// One OAuth progress event mapped onto the shared credential proto pair.
-pub(crate) enum OAuthProgressProto {
+pub enum OAuthProgressProto {
+    /// Authorization URL or device-code details.
     Authorization(coral_api::v1::OAuthCredentialAuthorization),
+    /// OAuth credential retrieval completion metadata.
     Completed(coral_api::v1::OAuthCredentialCompleted),
 }
 
@@ -336,7 +338,7 @@ impl From<OAuthProgressEvent> for OAuthProgressProto {
 ///
 /// `closed_message` is the error reported to the operation when it emits an
 /// event after the stream consumer went away.
-pub(crate) fn oauth_operation_response_stream<T, R, F, Fut>(
+pub fn oauth_operation_response_stream<T, R, F, Fut>(
     closed_message: &'static str,
     operation: F,
     event_to_response: fn(OAuthProgressEvent) -> R,

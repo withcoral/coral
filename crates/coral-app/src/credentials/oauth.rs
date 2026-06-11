@@ -60,17 +60,27 @@ pub(crate) enum OAuthClientMaterialPersistence {
 
 /// Progress event emitted while an OAuth credential authorization runs.
 #[derive(Debug, Clone)]
-pub(crate) enum OAuthProgressEvent {
+pub enum OAuthProgressEvent {
+    /// OAuth authorization URL or device-code details are ready for the user.
     OAuthAuthorization {
+        /// Credential input key being authorized.
         input_key: String,
+        /// Authorization URL to open.
         authorization_url: String,
+        /// Seconds until the authorization request expires.
         expires_in_seconds: u64,
+        /// Optional device-flow user code.
         user_code: Option<String>,
+        /// Optional device-flow verification URI.
         verification_uri: Option<String>,
+        /// Optional complete device-flow verification URI.
         verification_uri_complete: Option<String>,
     },
+    /// OAuth credential retrieval completed.
     OAuthCompleted {
+        /// Credential input key that completed authorization.
         input_key: String,
+        /// Safe metadata about the authorized credential.
         metadata: BTreeMap<String, String>,
     },
 }
@@ -79,7 +89,7 @@ pub(crate) enum OAuthProgressEvent {
 /// operation to its gRPC response stream. `send` resolves only once the
 /// consumer dequeued the event, so progress cannot outrun the stream.
 #[derive(Clone)]
-pub(crate) struct OAuthProgressEventSender {
+pub struct OAuthProgressEventSender {
     tx: mpsc::Sender<PendingOAuthProgressEvent>,
     closed_message: &'static str,
 }

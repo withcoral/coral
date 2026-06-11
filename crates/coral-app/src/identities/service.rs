@@ -16,8 +16,8 @@ use tonic::{Request, Response, Status};
 use crate::bootstrap::app_status;
 use crate::credentials::oauth::OAuthProgressEvent;
 use crate::identities::{
-    CreateUserOwnedFixedTokenIdentityCommand, CreateUserOwnedOAuthIdentityCommand,
-    IdentityCredentialInput, UserOwnedIdentityManager, UserOwnedIdentityRecord,
+    CreateFixedTokenIdentityCommand, CreateOAuthIdentityCommand, IdentityCredentialInput,
+    UserOwnedIdentityManager, UserOwnedIdentityRecord,
 };
 use crate::identity::UserPrincipalProvider;
 use crate::transport::{
@@ -95,7 +95,7 @@ impl IdentityServiceApi for IdentityService {
                 let record = identities
                     .create_user_owned_fixed_token_identity(
                         &principal,
-                        CreateUserOwnedFixedTokenIdentityCommand {
+                        CreateFixedTokenIdentityCommand {
                             name: request.name,
                             identity_spec: request.identity_spec,
                             token: request.token,
@@ -140,8 +140,8 @@ type CreateUserOwnedIdentityResponseStreamBox =
 
 fn create_user_owned_oauth_command_from_proto(
     request: CreateUserOwnedIdentityWithOAuthRequest,
-) -> CreateUserOwnedOAuthIdentityCommand {
-    CreateUserOwnedOAuthIdentityCommand {
+) -> CreateOAuthIdentityCommand {
+    CreateOAuthIdentityCommand {
         name: request.name,
         identity_spec: request.identity_spec,
         credential_inputs: request
