@@ -1,6 +1,7 @@
 //! Typed query inputs and results.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -10,6 +11,7 @@ use coral_spec::backends::file::FileSourceManifest;
 use coral_spec::backends::http::HttpSourceManifest;
 use coral_spec::backends::mcp::McpSourceManifest;
 use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
+use opentelemetry::Context as OtelContext;
 
 use super::ColumnInfo;
 use crate::EngineExtensions;
@@ -314,15 +316,27 @@ impl SourceValidationReport {
 }
 
 /// App-owned non-secret runtime inputs needed while compiling sources.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct QueryRuntimeContext {
     /// Current user's home directory for local path resolution.
     pub home_dir: Option<PathBuf>,
+    /// Active query trace context, when the app layer is executing under one.
+    pub trace_context: Option<OtelContext>,
     /// Optional positive byte cap for pre-export trace body preview capture.
     /// Shared across backends — HTTP request/response bodies, MCP tool
     /// arguments, and MCP tool result payloads are all truncated to this
     /// limit before being recorded as child trace spans.
     pub body_capture_max_bytes: Option<usize>,
+}
+
+impl fmt::Debug for QueryRuntimeContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QueryRuntimeContext")
+            .field("home_dir", &self.home_dir)
+            .field("trace_context", &self.trace_context.is_some())
+            .field("body_capture_max_bytes", &self.body_capture_max_bytes)
+            .finish()
+    }
 }
 
 impl QueryRuntimeContext {
@@ -341,6 +355,8 @@ pub struct QueryRuntimeConfig {
     pub context: QueryRuntimeContext,
     /// Optional engine extensions for this runtime build.
     pub extensions: EngineExtensions,
+    /// Runtime policy for dependent predicate pushdown.
+    pub dependent_join: DependentJoinConfig,
 }
 
 impl QueryRuntimeConfig {
@@ -350,6 +366,124 @@ impl QueryRuntimeConfig {
         Self {
             context,
             extensions,
+            dependent_join: DependentJoinConfig::default(),
+        }
+    }
+}
+
+/// Runtime policy for dependent predicate pushdown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependentJoinConfig {
+    /// Default enablement for dependent join rewrites.
+    pub enabled: bool,
+    /// Maximum distinct join-key combinations to push into upstream APIs.
+    pub max_bindings: usize,
+    /// Maximum rows read from the key-supplying side before falling back.
+    pub max_resolver_rows: usize,
+    /// Maximum rows accepted for one join-key combination across the full upstream fetch.
+    pub max_rows_per_binding: usize,
+    /// Maximum key-supplying rows allowed for one join-key combination.
+    pub max_resolver_rows_per_binding: usize,
+    /// Maximum concurrent upstream requests issued by one dependent join.
+    pub max_concurrency: usize,
+    /// Source-specific overrides keyed by source name.
+    pub per_source: BTreeMap<String, DependentJoinSourceConfig>,
+}
+
+/// Source-specific dependent predicate pushdown policy overrides.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DependentJoinSourceConfig {
+    /// Overrides dependent join rewrite enablement for this source.
+    pub enabled: Option<bool>,
+    /// Overrides maximum distinct join-key combinations for this source.
+    pub max_bindings: Option<usize>,
+    /// Overrides maximum resolver-side rows for this source.
+    pub max_resolver_rows: Option<usize>,
+    /// Overrides maximum rows accepted from one upstream request.
+    pub max_rows_per_binding: Option<usize>,
+    /// Overrides maximum resolver rows allowed for one join-key combination.
+    pub max_resolver_rows_per_binding: Option<usize>,
+    /// Overrides concurrent upstream requests issued by one dependent join.
+    pub max_concurrency: Option<usize>,
+}
+
+/// Fully resolved dependent predicate pushdown policy for one source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveDependentJoinConfig {
+    /// Enables dependent join rewrites for this source.
+    pub enabled: bool,
+    /// Maximum distinct join-key combinations to push into upstream APIs.
+    pub max_bindings: usize,
+    /// Maximum rows read from the key-supplying side before falling back.
+    pub max_resolver_rows: usize,
+    /// Maximum rows accepted from one upstream request.
+    pub max_rows_per_binding: usize,
+    /// Maximum key-supplying rows allowed for one join-key combination.
+    pub max_resolver_rows_per_binding: usize,
+    /// Maximum concurrent upstream requests issued by one dependent join.
+    pub max_concurrency: usize,
+}
+
+impl Default for DependentJoinConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_bindings: 500,
+            max_resolver_rows: 10_000,
+            max_rows_per_binding: 1_000,
+            max_resolver_rows_per_binding: 1_000,
+            max_concurrency: 8,
+            per_source: BTreeMap::new(),
+        }
+    }
+}
+
+impl DependentJoinConfig {
+    /// Returns a copy with all dependent join rewrites disabled.
+    #[must_use]
+    pub fn without_rewrites(&self) -> Self {
+        Self {
+            enabled: false,
+            per_source: BTreeMap::new(),
+            ..self.clone()
+        }
+    }
+
+    /// Returns whether the optimizer rule should be registered.
+    #[must_use]
+    pub fn optimizer_enabled(&self) -> bool {
+        self.enabled
+            || self
+                .per_source
+                .values()
+                .any(|source| source.enabled == Some(true))
+    }
+
+    /// Resolves the effective dependent join policy for one source.
+    #[must_use]
+    pub fn for_source(&self, source_name: &str) -> EffectiveDependentJoinConfig {
+        let source = self.per_source.get(source_name);
+        let max_concurrency = source
+            .and_then(|override_config| override_config.max_concurrency)
+            .unwrap_or(self.max_concurrency)
+            .max(1);
+        EffectiveDependentJoinConfig {
+            enabled: source
+                .and_then(|override_config| override_config.enabled)
+                .unwrap_or(self.enabled),
+            max_bindings: source
+                .and_then(|override_config| override_config.max_bindings)
+                .unwrap_or(self.max_bindings),
+            max_resolver_rows: source
+                .and_then(|override_config| override_config.max_resolver_rows)
+                .unwrap_or(self.max_resolver_rows),
+            max_rows_per_binding: source
+                .and_then(|override_config| override_config.max_rows_per_binding)
+                .unwrap_or(self.max_rows_per_binding),
+            max_resolver_rows_per_binding: source
+                .and_then(|override_config| override_config.max_resolver_rows_per_binding)
+                .unwrap_or(self.max_resolver_rows_per_binding),
+            max_concurrency,
         }
     }
 }

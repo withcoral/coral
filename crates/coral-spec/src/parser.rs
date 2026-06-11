@@ -290,6 +290,90 @@ tables:
     }
 
     #[test]
+    fn lookup_key_on_file_jsonl_rejects_at_spec_layer() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    filters:
+      - name: id
+        lookup_key: true
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect_err("spec layer should reject lookup_key filters on file sources");
+
+        assert!(error.to_string().contains(
+            "demo.messages filter 'id': backend=file does not support lookup_key filters"
+        ));
+    }
+
+    #[test]
+    fn lookup_key_on_file_parquet_rejects_at_spec_layer() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: parquet
+    filters:
+      - name: id
+        lookup_key: true
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect_err("spec layer should reject lookup_key filters on file sources");
+
+        assert!(error.to_string().contains(
+            "demo.messages filter 'id': backend=file does not support lookup_key filters"
+        ));
+    }
+
+    #[test]
+    fn http_rate_limit_max_concurrency_is_not_manifest_metadata() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+rate_limit:
+  max_concurrency: 8
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect_err("manifest-owned concurrency should fail schema validation");
+
+        assert!(error.to_string().contains("max_concurrency"));
+    }
+
+    #[test]
     fn parse_source_manifest_rejects_duplicate_table_names() {
         let error = parse_source_manifest_yaml(
             r"
