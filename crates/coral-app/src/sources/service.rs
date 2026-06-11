@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
@@ -33,6 +34,7 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::{AppError, app_status};
 use crate::credentials::CredentialStorageKind;
+use crate::identity::UserPrincipalProvider;
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
 use crate::sources::manager::{
@@ -43,8 +45,8 @@ use crate::sources::manager::{
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::transport::{
-    grpc_span, instrument_grpc, query_status, validate_source_response_to_proto,
-    workspace_name_from_proto, workspace_to_proto,
+    instrument_authenticated_grpc, instrument_grpc, query_status,
+    validate_source_response_to_proto, workspace_name_from_proto, workspace_to_proto,
 };
 use crate::workspaces::WorkspaceName;
 use tokio::sync::mpsc;
@@ -56,13 +58,19 @@ use tokio_stream::StreamExt as _;
 pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
+    user_principal_provider: Arc<dyn UserPrincipalProvider>,
 }
 
 impl SourceService {
-    pub(crate) fn new(source_manager: SourceManager, query_manager: QueryManager) -> Self {
+    pub(crate) fn new(
+        source_manager: SourceManager,
+        query_manager: QueryManager,
+        user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    ) -> Self {
         Self {
             sources: source_manager,
             queries: query_manager,
+            user_principal_provider,
         }
     }
 }
@@ -76,19 +84,21 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<DiscoverSourcesRequest>,
     ) -> Result<Response<DiscoverSourcesResponse>, Status> {
-        let span = grpc_span(&request);
         let sources = self.sources.clone();
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let sources = sources
-                .discover_sources(&workspace_name)
-                .map_err(app_status)?
-                .into_iter()
-                .map(candidate_source_to_proto)
-                .collect();
-            Ok(Response::new(DiscoverSourcesResponse { sources }))
-        })
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |_principal, request| async move {
+                let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let sources = sources
+                    .discover_sources(&workspace_name)
+                    .map_err(app_status)?
+                    .into_iter()
+                    .map(candidate_source_to_proto)
+                    .collect();
+                Ok(Response::new(DiscoverSourcesResponse { sources }))
+            },
+        )
         .await
     }
 
@@ -96,19 +106,21 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<ListSourcesRequest>,
     ) -> Result<Response<ListSourcesResponse>, Status> {
-        let span = grpc_span(&request);
         let sources = self.sources.clone();
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let sources: Vec<_> = sources
-                .list_workspace_sources(&workspace_name)
-                .map_err(app_status)?
-                .into_iter()
-                .map(|source| installed_source_to_proto(&workspace_name, source))
-                .collect();
-            Ok(Response::new(ListSourcesResponse { sources }))
-        })
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |_principal, request| async move {
+                let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let sources: Vec<_> = sources
+                    .list_workspace_sources(&workspace_name)
+                    .map_err(app_status)?
+                    .into_iter()
+                    .map(|source| installed_source_to_proto(&workspace_name, source))
+                    .collect();
+                Ok(Response::new(ListSourcesResponse { sources }))
+            },
+        )
         .await
     }
 
@@ -116,19 +128,21 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<GetSourceRequest>,
     ) -> Result<Response<GetSourceResponse>, Status> {
-        let span = grpc_span(&request);
         let sources = self.sources.clone();
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-            let source = sources
-                .get_source(&workspace_name, &source_name)
-                .map_err(app_status)?;
-            Ok(Response::new(GetSourceResponse {
-                source: Some(installed_source_to_proto(&workspace_name, source)),
-            }))
-        })
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |_principal, request| async move {
+                let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let source_name = SourceName::parse(&request.name).map_err(app_status)?;
+                let source = sources
+                    .get_source(&workspace_name, &source_name)
+                    .map_err(app_status)?;
+                Ok(Response::new(GetSourceResponse {
+                    source: Some(installed_source_to_proto(&workspace_name, source)),
+                }))
+            },
+        )
         .await
     }
 
@@ -136,19 +150,21 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<GetSourceInfoRequest>,
     ) -> Result<Response<GetSourceInfoResponse>, Status> {
-        let span = grpc_span(&request);
         let sources = self.sources.clone();
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-            let source = sources
-                .get_source_info(&workspace_name, &source_name)
-                .map_err(app_status)?;
-            Ok(Response::new(GetSourceInfoResponse {
-                source_info: Some(candidate_source_to_proto(source)),
-            }))
-        })
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |_principal, request| async move {
+                let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let source_name = SourceName::parse(&request.name).map_err(app_status)?;
+                let source = sources
+                    .get_source_info(&workspace_name, &source_name)
+                    .map_err(app_status)?;
+                Ok(Response::new(GetSourceInfoResponse {
+                    source_info: Some(candidate_source_to_proto(source)),
+                }))
+            },
+        )
         .await
     }
 
@@ -156,28 +172,30 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<CreateBundledSourceRequest>,
     ) -> Result<Response<CreateBundledSourceResponse>, Status> {
-        let span = grpc_span(&request);
         let sources = self.sources.clone();
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
-            let command = CreateBundledSourceCommand {
-                name: bundled_name,
-                bindings: source_bindings_from_proto(request.variables, request.secrets),
-            };
-            let response_workspace_name = workspace_name.clone();
-            let installed = run_blocking_source_operation(move || {
-                sources.create_bundled_source(&workspace_name, &command)
-            })
-            .await?;
-            Ok(Response::new(CreateBundledSourceResponse {
-                source: Some(installed_source_to_proto(
-                    &response_workspace_name,
-                    installed,
-                )),
-            }))
-        })
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |_principal, request| async move {
+                let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
+                let command = CreateBundledSourceCommand {
+                    name: bundled_name,
+                    bindings: source_bindings_from_proto(request.variables, request.secrets),
+                };
+                let response_workspace_name = workspace_name.clone();
+                let installed = run_blocking_source_operation(move || {
+                    sources.create_bundled_source(&workspace_name, &command)
+                })
+                .await?;
+                Ok(Response::new(CreateBundledSourceResponse {
+                    source: Some(installed_source_to_proto(
+                        &response_workspace_name,
+                        installed,
+                    )),
+                }))
+            },
+        )
         .await
     }
 
@@ -185,40 +203,43 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<CreateBundledSourceWithOAuthRequest>,
     ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
-        let span = grpc_span(&request);
         let sources = self.sources.clone();
-        instrument_grpc(span.clone(), async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let response_workspace_name = workspace_name.clone();
-            let command = CreateBundledSourceWithOAuthCommand {
-                name: SourceName::parse(&request.name).map_err(app_status)?,
-                bindings: source_bindings_from_proto(request.variables, request.secrets),
-                oauth_credential_retrievals: request
-                    .oauth_credential_retrievals
-                    .into_iter()
-                    .map(oauth_credential_retrieval_from_proto)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(app_status)?,
-            };
-            let stream =
-                import_source_response_stream(response_workspace_name, move |event_sender| {
-                    instrument_grpc(span, async move {
-                        sources
-                            .create_bundled_source_with_oauth(
-                                &workspace_name,
-                                command,
-                                event_sender,
-                            )
-                            .await
-                            .map_err(app_status)
-                    })
-                });
-            Ok(Response::new(Box::pin(stream.map(|response| {
-                response.map(create_bundled_source_with_o_auth_response_from_import_response)
-            }))
-                as Self::CreateBundledSourceWithOAuthStream))
-        })
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |_principal, request| async move {
+                let span = tracing::Span::current();
+                let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let response_workspace_name = workspace_name.clone();
+                let command = CreateBundledSourceWithOAuthCommand {
+                    name: SourceName::parse(&request.name).map_err(app_status)?,
+                    bindings: source_bindings_from_proto(request.variables, request.secrets),
+                    oauth_credential_retrievals: request
+                        .oauth_credential_retrievals
+                        .into_iter()
+                        .map(oauth_credential_retrieval_from_proto)
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(app_status)?,
+                };
+                let stream =
+                    import_source_response_stream(response_workspace_name, move |event_sender| {
+                        instrument_grpc(span, async move {
+                            sources
+                                .create_bundled_source_with_oauth(
+                                    &workspace_name,
+                                    command,
+                                    event_sender,
+                                )
+                                .await
+                                .map_err(app_status)
+                        })
+                    });
+                Ok(Response::new(Box::pin(stream.map(|response| {
+                    response.map(create_bundled_source_with_o_auth_response_from_import_response)
+                }))
+                    as Self::CreateBundledSourceWithOAuthStream))
+            },
+        )
         .await
     }
 
@@ -226,51 +247,58 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<ImportSourceRequest>,
     ) -> Result<Response<Self::ImportSourceStream>, Status> {
-        let span = grpc_span(&request);
         let sources = self.sources.clone();
-        instrument_grpc(span.clone(), async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let response_workspace_name = workspace_name.clone();
-            if request.oauth_credential_retrievals.is_empty() {
-                let command = ImportSourceCommand {
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |_principal, request| async move {
+                let span = tracing::Span::current();
+                let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let response_workspace_name = workspace_name.clone();
+                if request.oauth_credential_retrievals.is_empty() {
+                    let command = ImportSourceCommand {
+                        manifest_yaml: request.manifest_yaml,
+                        bindings: source_bindings_from_proto(request.variables, request.secrets),
+                    };
+                    let installed = run_blocking_source_operation(move || {
+                        sources.import_source(&workspace_name, &command)
+                    })
+                    .await?;
+                    let response = ImportSourceResponse {
+                        event: Some(import_source_response::Event::Source(
+                            installed_source_to_proto(&response_workspace_name, installed),
+                        )),
+                    };
+                    return Ok(Response::new(
+                        Box::pin(tokio_stream::once(Ok(response))) as Self::ImportSourceStream
+                    ));
+                }
+                let command = ImportSourceWithCredentialsCommand {
                     manifest_yaml: request.manifest_yaml,
                     bindings: source_bindings_from_proto(request.variables, request.secrets),
+                    oauth_credential_retrievals: request
+                        .oauth_credential_retrievals
+                        .into_iter()
+                        .map(oauth_credential_retrieval_from_proto)
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(app_status)?,
                 };
-                let installed = run_blocking_source_operation(move || {
-                    sources.import_source(&workspace_name, &command)
-                })
-                .await?;
-                let response = ImportSourceResponse {
-                    event: Some(import_source_response::Event::Source(
-                        installed_source_to_proto(&response_workspace_name, installed),
-                    )),
-                };
-                return Ok(Response::new(
-                    Box::pin(tokio_stream::once(Ok(response))) as Self::ImportSourceStream
-                ));
-            }
-            let command = ImportSourceWithCredentialsCommand {
-                manifest_yaml: request.manifest_yaml,
-                bindings: source_bindings_from_proto(request.variables, request.secrets),
-                oauth_credential_retrievals: request
-                    .oauth_credential_retrievals
-                    .into_iter()
-                    .map(oauth_credential_retrieval_from_proto)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(app_status)?,
-            };
-            let stream =
-                import_source_response_stream(response_workspace_name, move |event_sender| {
-                    instrument_grpc(span, async move {
-                        sources
-                            .import_source_with_credentials(&workspace_name, command, event_sender)
-                            .await
-                            .map_err(app_status)
-                    })
-                });
-            Ok(Response::new(stream))
-        })
+                let stream =
+                    import_source_response_stream(response_workspace_name, move |event_sender| {
+                        instrument_grpc(span, async move {
+                            sources
+                                .import_source_with_credentials(
+                                    &workspace_name,
+                                    command,
+                                    event_sender,
+                                )
+                                .await
+                                .map_err(app_status)
+                        })
+                    });
+                Ok(Response::new(stream))
+            },
+        )
         .await
     }
 
@@ -278,18 +306,20 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<DeleteSourceRequest>,
     ) -> Result<Response<DeleteSourceResponse>, Status> {
-        let span = grpc_span(&request);
         let sources = self.sources.clone();
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-            run_blocking_source_operation(move || {
-                sources.delete_source(&workspace_name, &source_name)
-            })
-            .await?;
-            Ok(Response::new(DeleteSourceResponse {}))
-        })
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |_principal, request| async move {
+                let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let source_name = SourceName::parse(&request.name).map_err(app_status)?;
+                run_blocking_source_operation(move || {
+                    sources.delete_source(&workspace_name, &source_name)
+                })
+                .await?;
+                Ok(Response::new(DeleteSourceResponse {}))
+            },
+        )
         .await
     }
 
@@ -297,24 +327,26 @@ impl SourceServiceApi for SourceService {
         &self,
         request: Request<ValidateSourceRequest>,
     ) -> Result<Response<ValidateSourceResponse>, Status> {
-        let span = grpc_span(&request);
         let queries = self.queries.clone();
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-            let result = queries
-                .validate_source(&workspace_name, &source_name)
-                .await
-                .map_err(query_status)?;
-            let crate::query::manager::ValidatedSource { source, report } = result;
-            let source = installed_source_to_proto(&workspace_name, source);
-            Ok(Response::new(validate_source_response_to_proto(
-                source,
-                &workspace_name,
-                report,
-            )))
-        })
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |_principal, request| async move {
+                let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let source_name = SourceName::parse(&request.name).map_err(app_status)?;
+                let result = queries
+                    .validate_source(&workspace_name, &source_name)
+                    .await
+                    .map_err(query_status)?;
+                let crate::query::manager::ValidatedSource { source, report } = result;
+                let source = installed_source_to_proto(&workspace_name, source);
+                Ok(Response::new(validate_source_response_to_proto(
+                    source,
+                    &workspace_name,
+                    report,
+                )))
+            },
+        )
         .await
     }
 }

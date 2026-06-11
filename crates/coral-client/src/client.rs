@@ -13,7 +13,7 @@ use tonic::transport::{Channel, Endpoint};
 
 use crate::error::ClientError;
 use crate::grpc::{GrpcClientEndpoint, InstrumentedGrpcService};
-use crate::propagation::TraceContextInterceptor;
+use crate::propagation::{ClientMetadataInterceptor, StaticClientMetadata};
 
 /// Default workspace used by local Coral clients.
 pub use coral_api::DEFAULT_WORKSPACE_ID;
@@ -26,7 +26,7 @@ pub fn default_workspace() -> Workspace {
     }
 }
 
-type RawGrpcService = InterceptedService<Channel, TraceContextInterceptor>;
+type RawGrpcService = InterceptedService<Channel, ClientMetadataInterceptor>;
 type GrpcService = InstrumentedGrpcService<RawGrpcService>;
 
 /// Public source-management gRPC client.
@@ -62,17 +62,54 @@ impl AppClient {
     ///
     /// Returns [`ClientError`] if the gRPC clients cannot connect.
     pub async fn connect(endpoint_uri: &str) -> Result<Self, ClientError> {
+        Self::connect_with_metadata(endpoint_uri, std::iter::empty::<(&str, &str)>()).await
+    }
+
+    /// Connects to a Coral endpoint and attaches static metadata to every
+    /// outgoing request.
+    ///
+    /// The plain [`AppClient::connect`] path remains metadata-free. This hook is
+    /// for sibling products that authenticate or route requests outside the OSS
+    /// single-user local process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the gRPC clients cannot connect, or if the
+    /// supplied metadata is not valid gRPC metadata.
+    pub async fn connect_with_metadata<K, V, I>(
+        endpoint_uri: &str,
+        metadata: I,
+    ) -> Result<Self, ClientError>
+    where
+        K: AsRef<str>,
+        V: AsRef<str>,
+        I: IntoIterator<Item = (K, V)>,
+    {
         crate::propagation::ensure_global_propagator();
+        let static_metadata = StaticClientMetadata::try_from_pairs(metadata)?;
         let endpoint = Endpoint::from_shared(endpoint_uri.to_string())?
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
         let grpc_endpoint = GrpcClientEndpoint::from_endpoint_uri(endpoint_uri);
         let channel = endpoint.connect().await?;
-        let source_client = SourceClient::new(grpc_service(channel.clone(), &grpc_endpoint));
-        let catalog_client = CatalogClient::new(grpc_service(channel.clone(), &grpc_endpoint))
-            .max_decoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE);
-        let query_client = QueryClient::new(grpc_service(channel.clone(), &grpc_endpoint))
-            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
-        let feedback_client = FeedbackClient::new(grpc_service(channel, &grpc_endpoint));
+        let source_client = SourceClient::new(grpc_service(
+            channel.clone(),
+            &grpc_endpoint,
+            static_metadata.clone(),
+        ));
+        let catalog_client = CatalogClient::new(grpc_service(
+            channel.clone(),
+            &grpc_endpoint,
+            static_metadata.clone(),
+        ))
+        .max_decoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE);
+        let query_client = QueryClient::new(grpc_service(
+            channel.clone(),
+            &grpc_endpoint,
+            static_metadata.clone(),
+        ))
+        .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
+        let feedback_client =
+            FeedbackClient::new(grpc_service(channel, &grpc_endpoint, static_metadata));
         Ok(Self {
             source: source_client,
             catalog: catalog_client,
@@ -106,9 +143,13 @@ impl AppClient {
     }
 }
 
-fn grpc_service(channel: Channel, endpoint: &GrpcClientEndpoint) -> GrpcService {
+fn grpc_service(
+    channel: Channel,
+    endpoint: &GrpcClientEndpoint,
+    static_metadata: StaticClientMetadata,
+) -> GrpcService {
     InstrumentedGrpcService::new(
-        InterceptedService::new(channel, TraceContextInterceptor),
+        InterceptedService::new(channel, ClientMetadataInterceptor::new(static_metadata)),
         endpoint.clone(),
     )
 }

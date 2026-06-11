@@ -48,6 +48,7 @@ use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
+use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
@@ -82,6 +83,7 @@ pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerMode,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    user_principal_provider: Arc<dyn UserPrincipalProvider>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     enable_stderr_logs: bool,
 }
@@ -98,6 +100,7 @@ impl ServerConfig {
             config_dir: None,
             mode: ServerMode::NativeGrpc,
             engine_extensions_providers: Vec::new(),
+            user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             enable_stderr_logs: false,
         }
@@ -119,6 +122,14 @@ impl ServerConfig {
     ) -> Self {
         self.engine_extensions_providers
             .push(engine_extensions_provider);
+        self
+    }
+
+    pub(crate) fn with_user_principal_provider(
+        mut self,
+        user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    ) -> Self {
+        self.user_principal_provider = user_principal_provider;
         self
     }
 
@@ -218,6 +229,23 @@ impl ServerBuilder {
     }
 
     #[must_use]
+    /// Sets the server-side user principal provider.
+    ///
+    /// The default provider returns the local single-user principal for every
+    /// request. Product-specific siblings can install a provider that
+    /// authenticates inbound metadata and selects the querying user for
+    /// multi-user servers.
+    pub fn with_user_principal_provider(
+        mut self,
+        user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    ) -> Self {
+        self.config = self
+            .config
+            .with_user_principal_provider(user_principal_provider);
+        self
+    }
+
+    #[must_use]
     /// Enables or disables local stderr log rendering for this server.
     ///
     /// `MCP` stdio adapters can enable this for diagnostics while keeping
@@ -298,6 +326,7 @@ impl ServerBuilder {
             feedback_manager,
             episode_store,
             trace_service,
+            self.config.user_principal_provider,
             self.config.mode,
         )
         .await
@@ -380,12 +409,19 @@ async fn start_server(
     feedback_manager: FeedbackManager,
     episode_store: EpisodeStore,
     trace_service: Option<TraceService>,
+    user_principal_provider: Arc<dyn UserPrincipalProvider>,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
-    let source_service = SourceService::new(source_manager, query_manager.clone());
-    let catalog_service = CatalogService::new(query_manager.clone());
-    let query_service = QueryService::new(query_manager);
-    let feedback_service = FeedbackService::new(feedback_manager);
+    let source_service = SourceService::new(
+        source_manager,
+        query_manager.clone(),
+        Arc::clone(&user_principal_provider),
+    );
+    let catalog_service =
+        CatalogService::new(query_manager.clone(), Arc::clone(&user_principal_provider));
+    let query_service = QueryService::new(query_manager, Arc::clone(&user_principal_provider));
+    let feedback_service =
+        FeedbackService::new(feedback_manager, Arc::clone(&user_principal_provider));
     let episode_service = EpisodeService::new(episode_store);
     let mut routes = Routes::default()
         .add_service(GrpcMethodAnnotatedService::new(SourceServiceServer::new(
@@ -413,6 +449,8 @@ async fn start_server(
                 .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
         ));
     if let Some(trace_service) = trace_service {
+        let trace_service =
+            trace_service.with_user_principal_provider(Arc::clone(&user_principal_provider));
         routes = routes.add_service(GrpcMethodAnnotatedService::new(
             TraceServiceServer::new(trace_service)
                 .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
@@ -663,7 +701,10 @@ mod tests {
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
     use crate::workspaces::WorkspaceName;
-    use crate::{AwsEngineExtensionsProvider, NoopEngineExtensionsProvider};
+    use crate::{
+        AwsEngineExtensionsProvider, NoopEngineExtensionsProvider, SingleUserPrincipalProvider,
+        UserPrincipal, UserPrincipalError, UserPrincipalProvider,
+    };
 
     fn default_workspace() -> Workspace {
         workspace_to_proto(&WorkspaceName::default())
@@ -681,6 +722,59 @@ enabled = false
 ",
         )
         .expect("write telemetry config");
+    }
+
+    #[derive(Debug)]
+    struct RejectingUserPrincipalProvider;
+
+    #[tonic::async_trait]
+    impl UserPrincipalProvider for RejectingUserPrincipalProvider {
+        async fn principal_for_metadata(
+            &self,
+            _metadata: &tonic::metadata::MetadataMap,
+        ) -> Result<UserPrincipal, UserPrincipalError> {
+            Err(UserPrincipalError::unauthenticated(
+                "rejected user principal",
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn grpc_services_reject_unauthenticated_requests() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_user_principal_provider(Arc::new(RejectingUserPrincipalProvider))
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut source_client = SourceServiceClient::new(channel.clone());
+        let mut query_client = QueryServiceClient::new(channel);
+
+        let status = source_client
+            .list_sources(Request::new(ListSourcesRequest {
+                workspace: Some(default_workspace()),
+            }))
+            .await
+            .expect_err("source list should require a request principal");
+
+        assert_eq!(status.code(), Code::Unauthenticated);
+
+        let status = query_client
+            .execute_sql(Request::new(ExecuteSqlRequest {
+                workspace: Some(default_workspace()),
+                sql: "SELECT 1".to_string(),
+            }))
+            .await
+            .expect_err("query should require a request principal");
+
+        assert_eq!(status.code(), Code::Unauthenticated);
+        server.shutdown().await.expect("shutdown");
     }
 
     #[tokio::test]
@@ -789,6 +883,7 @@ enabled = false
             feedback_manager,
             episode_store,
             Some(trace_service),
+            Arc::new(SingleUserPrincipalProvider),
             ServerMode::NativeGrpc,
         )
         .await
@@ -1170,6 +1265,7 @@ tables:
             feedback_manager,
             episode_store,
             None,
+            Arc::new(SingleUserPrincipalProvider),
             ServerMode::NativeGrpc,
         )
         .await
@@ -1271,6 +1367,7 @@ tables:
             feedback_manager,
             episode_store,
             None,
+            Arc::new(SingleUserPrincipalProvider),
             ServerMode::NativeGrpc,
         )
         .await
@@ -1372,6 +1469,7 @@ tables:
             feedback_manager,
             episode_store,
             None,
+            Arc::new(SingleUserPrincipalProvider),
             ServerMode::NativeGrpc,
         )
         .await

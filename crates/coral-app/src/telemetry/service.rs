@@ -1,6 +1,7 @@
 //! Implements the gRPC `TraceService` for local trace inspection.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
@@ -10,11 +11,12 @@ use coral_api::v1::{
 };
 use tonic::{Code, Request, Response, Status};
 
+use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
 use crate::telemetry::local_store::{
     StoredTraceStatus, TraceDetailRecord, TraceSpanRecord, TraceStore, TraceStoreError,
     TraceSummaryRecord,
 };
-use crate::transport::{grpc_span, instrument_grpc};
+use crate::transport::instrument_authenticated_grpc;
 
 const DEFAULT_TRACE_PAGE_SIZE: usize = 50;
 const MAX_TRACE_PAGE_SIZE: usize = 200;
@@ -22,13 +24,23 @@ const MAX_TRACE_PAGE_SIZE: usize = 200;
 #[derive(Clone)]
 pub(crate) struct TraceService {
     traces: TraceStore,
+    user_principal_provider: Arc<dyn UserPrincipalProvider>,
 }
 
 impl TraceService {
     pub(crate) fn new(trace_store_file: PathBuf, retention: Duration) -> Self {
         Self {
             traces: TraceStore::with_retention(trace_store_file, retention),
+            user_principal_provider: Arc::new(SingleUserPrincipalProvider),
         }
+    }
+
+    pub(crate) fn with_user_principal_provider(
+        mut self,
+        user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    ) -> Self {
+        self.user_principal_provider = user_principal_provider;
+        self
     }
 }
 
@@ -38,27 +50,29 @@ impl TraceServiceApi for TraceService {
         &self,
         request: Request<ListTracesRequest>,
     ) -> Result<Response<ListTracesResponse>, Status> {
-        let span = grpc_span(&request);
         let traces = self.traces.clone();
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let page_size = normalize_page_size(request.page_size);
-            let offset = parse_page_token(&request.page_token)?;
-            let mut summaries = traces
-                .list_traces(page_size.saturating_add(1), offset)
-                .await
-                .map_err(trace_store_status)?;
-            let next_page_token = if summaries.len() > page_size {
-                summaries.truncate(page_size);
-                offset.saturating_add(page_size).to_string()
-            } else {
-                String::new()
-            };
-            Ok(Response::new(ListTracesResponse {
-                traces: summaries.into_iter().map(trace_summary_to_proto).collect(),
-                next_page_token,
-            }))
-        })
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |_principal, request| async move {
+                let page_size = normalize_page_size(request.page_size);
+                let offset = parse_page_token(&request.page_token)?;
+                let mut summaries = traces
+                    .list_traces(page_size.saturating_add(1), offset)
+                    .await
+                    .map_err(trace_store_status)?;
+                let next_page_token = if summaries.len() > page_size {
+                    summaries.truncate(page_size);
+                    offset.saturating_add(page_size).to_string()
+                } else {
+                    String::new()
+                };
+                Ok(Response::new(ListTracesResponse {
+                    traces: summaries.into_iter().map(trace_summary_to_proto).collect(),
+                    next_page_token,
+                }))
+            },
+        )
         .await
     }
 
@@ -66,22 +80,24 @@ impl TraceServiceApi for TraceService {
         &self,
         request: Request<GetTraceRequest>,
     ) -> Result<Response<GetTraceResponse>, Status> {
-        let span = grpc_span(&request);
         let traces = self.traces.clone();
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            if request.trace_id.trim().is_empty() {
-                return Err(Status::new(
-                    Code::InvalidArgument,
-                    "invalid input: missing trace_id",
-                ));
-            }
-            let trace = traces
-                .get_trace(request.trace_id)
-                .await
-                .map_err(trace_store_status)?;
-            Ok(Response::new(trace_detail_to_proto(trace)))
-        })
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |_principal, request| async move {
+                if request.trace_id.trim().is_empty() {
+                    return Err(Status::new(
+                        Code::InvalidArgument,
+                        "invalid input: missing trace_id",
+                    ));
+                }
+                let trace = traces
+                    .get_trace(request.trace_id)
+                    .await
+                    .map_err(trace_store_status)?;
+                Ok(Response::new(trace_detail_to_proto(trace)))
+            },
+        )
         .await
     }
 }
