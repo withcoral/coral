@@ -188,6 +188,8 @@ tables:
   columns:
   - name: url
     type: Utf8
+  - name: pgn
+    type: Utf8
   - name: time_class
     type: Utf8
   - name: time_control
