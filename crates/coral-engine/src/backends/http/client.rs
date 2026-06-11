@@ -1,14 +1,16 @@
 //! HTTP client orchestration for manifest-driven HTTP sources.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use datafusion::error::{DataFusionError, Result};
+use opentelemetry::Context as OtelContext;
 use serde_json::Value;
 
 use crate::backends::BackendRegistrationContext;
-use crate::backends::http::fetch::fetch_rows;
+use crate::backends::http::fetch::{FetchCompleteness, fetch_rows};
+use crate::backends::http::filter_usage::{HttpRequestFilterUsage, http_request_filter_names};
 use crate::backends::http::registration_checks::validate_source_scoped_http_config;
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::http::trace::HttpBodyCapture;
@@ -17,7 +19,7 @@ use crate::{
     SourceInputResolverError,
 };
 use coral_spec::backends::http::{HttpSourceManifest, RateLimitSpec};
-use coral_spec::{AuthSpec, HeaderSpec, ParsedTemplate};
+use coral_spec::{AuthSpec, HeaderSpec, ParsedTemplate, RequestSpec as ManifestRequestSpec};
 
 const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_HTTP_USER_AGENT: &str = concat!("coral/", env!("CARGO_PKG_VERSION"));
@@ -36,12 +38,14 @@ pub(crate) struct HttpSourceClient {
     pub(super) rate_limit: RateLimitSpec,
     pub(super) resolved_inputs: Arc<BTreeMap<String, String>>,
     pub(super) body_capture: HttpBodyCapture,
+    pub(super) trace_context: Option<OtelContext>,
 }
 
 pub(crate) struct HttpSourceClientRuntime {
     source_input_resolution_context: Option<SourceInputResolutionContext>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     body_capture_max_bytes: Option<usize>,
+    trace_context: Option<OtelContext>,
     http: reqwest::Client,
 }
 
@@ -50,12 +54,14 @@ impl HttpSourceClientRuntime {
         source_input_resolution_context: SourceInputResolutionContext,
         source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
         body_capture_max_bytes: Option<usize>,
+        trace_context: Option<OtelContext>,
         http: reqwest::Client,
     ) -> Self {
         Self {
             source_input_resolution_context: Some(source_input_resolution_context),
             source_input_resolver,
             body_capture_max_bytes,
+            trace_context,
             http,
         }
     }
@@ -66,6 +72,7 @@ impl HttpSourceClientRuntime {
             source_input_resolution_context: None,
             source_input_resolver: None,
             body_capture_max_bytes,
+            trace_context: None,
             http,
         }
     }
@@ -104,6 +111,14 @@ pub(super) fn default_http_client(
 }
 
 impl HttpSourceClient {
+    pub(crate) fn request_filter_names(&self, request: &ManifestRequestSpec) -> HashSet<String> {
+        http_request_filter_names(&self.base_url, &self.request_headers, request)
+    }
+
+    pub(crate) fn filter_usage(&self) -> HttpRequestFilterUsage {
+        HttpRequestFilterUsage::new(self.base_url.clone(), self.request_headers.clone())
+    }
+
     /// Build a backend client from a validated source spec.
     ///
     /// # Errors
@@ -170,6 +185,7 @@ impl HttpSourceClient {
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
             body_capture: HttpBodyCapture::new(runtime.body_capture_max_bytes),
+            trace_context: runtime.trace_context,
         })
     }
 
@@ -187,7 +203,36 @@ impl HttpSourceClient {
         arg_values: &HashMap<String, String>,
         sql_limit: Option<usize>,
     ) -> Result<Vec<Value>> {
-        fetch_rows(self, target, filter_values, arg_values, sql_limit).await
+        fetch_rows(
+            self,
+            target,
+            filter_values,
+            arg_values,
+            sql_limit.or(target.fetch_limit_default()),
+            sql_limit,
+            FetchCompleteness::Default,
+        )
+        .await
+    }
+
+    pub(crate) async fn fetch_complete(
+        &self,
+        target: &HttpFetchTarget,
+        filter_values: &HashMap<String, String>,
+        arg_values: &HashMap<String, String>,
+        row_limit: Option<usize>,
+        page_hint: Option<usize>,
+    ) -> Result<Vec<Value>> {
+        fetch_rows(
+            self,
+            target,
+            filter_values,
+            arg_values,
+            row_limit,
+            page_hint,
+            FetchCompleteness::Complete,
+        )
+        .await
     }
 
     pub(super) async fn resolved_inputs_for_request(
