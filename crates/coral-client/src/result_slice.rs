@@ -228,11 +228,11 @@ fn slice_batches(batches: &[RecordBatch], offset: usize, limit: usize) -> Vec<Re
 }
 
 fn next_offset(row_count: usize, offset: usize, limit: usize) -> Option<usize> {
-    if limit == 0 {
-        return None;
-    }
     if offset >= row_count {
         return None;
+    }
+    if limit == 0 {
+        return Some(offset);
     }
     let next = offset.saturating_add(limit);
     (next < row_count).then_some(next)
@@ -360,6 +360,23 @@ mod tests {
             &result,
             ResultSliceRequest {
                 offset: 0,
+                limit: 0,
+                columns: None,
+            },
+        )
+        .expect("slice");
+        assert!(page.rows.is_empty());
+        assert!(page.has_more);
+        assert_eq!(page.next_offset, Some(0));
+    }
+
+    #[test]
+    fn slice_result_limit_zero_at_end_has_no_next_page() {
+        let result = two_batch_result();
+        let page = slice_result(
+            &result,
+            ResultSliceRequest {
+                offset: 4,
                 limit: 0,
                 columns: None,
             },
