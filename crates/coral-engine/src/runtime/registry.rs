@@ -219,6 +219,7 @@ async fn register_source(
     source: &dyn CompiledBackendSource,
 ) -> DataFusionResult<BackendRegistration> {
     check_reserved_schema(source.schema_name())?;
+    source.validate_runtime_capabilities()?;
 
     if !seen_schemas.insert(source.schema_name().to_string()) {
         return Err(DataFusionError::Execution(format!(

@@ -591,7 +591,8 @@
             { "const": "contains" }
           ]
         },
-        "description": { "type": "string" }
+        "description": { "type": "string" },
+        "lookup_key": { "type": "boolean" }
       }
     },
     "search_limits": {

@@ -30,6 +30,12 @@ struct FetchLimits {
     max_search_calls: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FetchCompleteness {
+    Default,
+    Complete,
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "Paginated fetch logic is stateful and easier to audit in one sequential function"
@@ -39,10 +45,12 @@ pub(super) async fn fetch_rows(
     target: &HttpFetchTarget,
     filter_values: &HashMap<String, String>,
     arg_values: &HashMap<String, String>,
-    sql_limit: Option<usize>,
+    row_limit: Option<usize>,
+    page_hint: Option<usize>,
+    completeness: FetchCompleteness,
 ) -> Result<Vec<Value>> {
     let mut all_rows = Vec::new();
-    let limits = resolve_fetch_limits(target, sql_limit);
+    let limits = resolve_fetch_limits(target, row_limit, page_hint, completeness);
     let pagination = target
         .pagination()
         .validated(&client.source_schema, target.name())
@@ -152,6 +160,7 @@ pub(super) async fn fetch_rows(
                 auth: &client.auth,
                 request_headers: &client.request_headers,
                 request_authenticators: &client.request_authenticators,
+                trace_context: client.trace_context.as_ref(),
                 table_headers: &active_request.headers,
                 table_name: target.name(),
                 method: active_request.method,
@@ -266,22 +275,37 @@ pub(super) async fn fetch_rows(
     Ok(all_rows)
 }
 
-fn resolve_fetch_limits(target: &HttpFetchTarget, sql_limit: Option<usize>) -> FetchLimits {
+fn resolve_fetch_limits(
+    target: &HttpFetchTarget,
+    row_limit: Option<usize>,
+    page_hint: Option<usize>,
+    completeness: FetchCompleteness,
+) -> FetchLimits {
     let Some(search_limits) = target.search_limits() else {
         return FetchLimits {
-            effective_limit: sql_limit.or(target.fetch_limit_default()),
-            page_size_limit: sql_limit,
+            effective_limit: row_limit,
+            page_size_limit: page_hint,
             max_search_calls: None,
         };
     };
 
-    let requested_top_k = sql_limit.unwrap_or(search_limits.default_top_k);
+    let default_top_k = match completeness {
+        FetchCompleteness::Default => search_limits.default_top_k,
+        FetchCompleteness::Complete => search_limits.max_top_k,
+    };
+    let requested_top_k = page_hint.unwrap_or(default_top_k);
+    let requested_top_k = row_limit.map_or(requested_top_k, |limit| requested_top_k.min(limit));
     let max_candidates = search_limits
         .max_top_k
         .saturating_mul(search_limits.max_calls_per_query);
+    let effective_limit = match (row_limit, completeness) {
+        (Some(limit), _) => Some(limit),
+        (None, FetchCompleteness::Default) => Some(requested_top_k),
+        (None, FetchCompleteness::Complete) => Some(max_candidates),
+    };
 
     FetchLimits {
-        effective_limit: Some(requested_top_k.min(max_candidates)),
+        effective_limit: effective_limit.map(|limit| limit.min(max_candidates)),
         page_size_limit: Some(requested_top_k.min(search_limits.max_top_k)),
         max_search_calls: Some(search_limits.max_calls_per_query),
     }

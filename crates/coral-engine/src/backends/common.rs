@@ -8,7 +8,7 @@ use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputR
 use async_trait::async_trait;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SearchLimitsSpec, SourceTableFunctionSpec, TableCommon,
+    SearchLimitsSpec, SourceBackend, SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::catalog::TableFunctionImpl;
@@ -164,6 +164,8 @@ pub(crate) trait CompiledBackendSource: Send + Sync {
 
     fn source_name(&self) -> &str;
 
+    fn validate_runtime_capabilities(&self) -> datafusion::error::Result<()>;
+
     /// Register this compiled source into a `DataFusion` session.
     ///
     /// The registration context is batch-scoped and backend-agnostic. Backends
@@ -174,6 +176,29 @@ pub(crate) trait CompiledBackendSource: Send + Sync {
         ctx: &SessionContext,
         registration: &BackendRegistrationContext,
     ) -> datafusion::error::Result<BackendRegistration>;
+}
+
+pub(crate) fn validate_lookup_key_filter_backend_support(
+    source_name: &str,
+    backend_kind: SourceBackend,
+    has_lookup_key_filters: bool,
+) -> datafusion::error::Result<()> {
+    if !has_lookup_key_filters || matches!(backend_kind, SourceBackend::Http) {
+        return Ok(());
+    }
+
+    Err(DataFusionError::Execution(format!(
+        "source '{source_name}': lookup_key filters are not supported by the current engine for backend '{}'",
+        backend_kind_label(backend_kind)
+    )))
+}
+
+fn backend_kind_label(kind: SourceBackend) -> &'static str {
+    match kind {
+        SourceBackend::Http => "http",
+        SourceBackend::File => "file",
+        SourceBackend::Mcp => "mcp",
+    }
 }
 
 pub(crate) fn required_filter_names(filters: &[FilterSpec]) -> Vec<String> {

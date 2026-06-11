@@ -31,3 +31,4 @@ tasks/
 
 # Playwright CLI validation artifacts
 .playwright-cli/
+.verify/
