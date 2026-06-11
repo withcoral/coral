@@ -481,7 +481,7 @@ tables:
     description: User roles defined in the YouTrack instance.
     request:
       method: GET
-      path: /admin/roles
+      path: /roles
       query:
         - name: fields
           from: literal
