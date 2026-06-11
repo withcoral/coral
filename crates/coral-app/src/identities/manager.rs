@@ -399,10 +399,6 @@ impl UserOwnedIdentityManager {
         }
     }
 
-    #[expect(
-        dead_code,
-        reason = "The following product extension seam commit exposes this handle through server extensions."
-    )]
     pub(crate) fn handle(&self) -> IdentityManagementHandle {
         IdentityManagementHandle {
             manager: self.clone(),
