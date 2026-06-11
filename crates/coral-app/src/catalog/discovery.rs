@@ -6,6 +6,7 @@ use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
+use crate::identity::UserPrincipal;
 use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::workspaces::WorkspaceName;
 
@@ -151,6 +152,14 @@ pub(crate) struct ListColumnsQuery<'a> {
     pub(crate) pagination: Pagination,
 }
 
+pub(crate) struct SearchCatalogQuery<'a> {
+    pub(crate) pattern: &'a str,
+    pub(crate) schema_name: Option<&'a str>,
+    pub(crate) kind: Option<CatalogItemKind>,
+    pub(crate) ignore_case: bool,
+    pub(crate) pagination: Pagination,
+}
+
 #[derive(Clone)]
 pub(crate) struct CatalogDiscovery {
     queries: QueryManager,
@@ -163,16 +172,17 @@ impl CatalogDiscovery {
         }
     }
 
-    pub(crate) async fn list_catalog(
+    pub(crate) async fn list_catalog_with_context(
         &self,
         workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
         pagination: Pagination,
     ) -> Result<CatalogPage, QueryManagerError> {
         let catalog = self
             .queries
-            .list_catalog(workspace_name, schema_name)
+            .list_catalog_with_context(workspace_name, request_principal, schema_name)
             .await?;
         let counts = catalog_counts(&catalog);
         let items = catalog_items(catalog, kind);
@@ -182,27 +192,34 @@ impl CatalogDiscovery {
         })
     }
 
-    async fn catalog_items(
+    async fn catalog_items_with_context(
         &self,
         workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
     ) -> Result<Vec<CatalogItem>, QueryManagerError> {
         let catalog = self
             .queries
-            .list_catalog(workspace_name, schema_name)
+            .list_catalog_with_context(workspace_name, request_principal, schema_name)
             .await?;
         Ok(catalog_items(catalog, kind))
     }
 
-    pub(crate) async fn describe_table(
+    pub(crate) async fn describe_table_with_context(
         &self,
         workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
         table_ref: CatalogTableRef<'_>,
     ) -> Result<DescribeTableResult, QueryManagerError> {
         let table_lookup = self
             .queries
-            .describe_table(workspace_name, table_ref.schema_name, table_ref.table_name)
+            .describe_table_with_context(
+                workspace_name,
+                request_principal,
+                table_ref.schema_name,
+                table_ref.table_name,
+            )
             .await?;
         if let Some(table) = table_lookup.table {
             return Ok(DescribeTableResult::Found(table));
@@ -258,18 +275,21 @@ fn catalog_counts(catalog: &CatalogInfo) -> CatalogCounts {
 }
 
 impl CatalogDiscovery {
-    pub(crate) async fn search_catalog(
+    pub(crate) async fn search_catalog_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        pattern: &str,
-        schema_name: Option<&str>,
-        kind: Option<CatalogItemKind>,
-        ignore_case: bool,
-        pagination: Pagination,
+        request_principal: &UserPrincipal,
+        query: SearchCatalogQuery<'_>,
     ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
-        let regex = compile_metadata_regex(pattern, ignore_case).map_err(QueryManagerError::App)?;
+        let regex = compile_metadata_regex(query.pattern, query.ignore_case)
+            .map_err(QueryManagerError::App)?;
         let matches = self
-            .catalog_items(workspace_name, schema_name, kind)
+            .catalog_items_with_context(
+                workspace_name,
+                request_principal,
+                query.schema_name,
+                query.kind,
+            )
             .await?
             .into_iter()
             .filter_map(|item| {
@@ -280,18 +300,20 @@ impl CatalogDiscovery {
                 })
             })
             .collect();
-        Ok(page_items(matches, pagination))
+        Ok(page_items(matches, query.pagination))
     }
 
-    pub(crate) async fn list_columns(
+    pub(crate) async fn list_columns_with_context(
         &self,
         workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
         query: ListColumnsQuery<'_>,
     ) -> Result<Option<Page<ColumnSearchResult>>, QueryManagerError> {
         let table = self
             .queries
-            .list_tables(
+            .list_tables_with_context(
                 workspace_name,
+                request_principal,
                 Some(query.table_ref.schema_name),
                 Some(query.table_ref.table_name),
             )

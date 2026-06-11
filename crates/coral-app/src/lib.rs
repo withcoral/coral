@@ -61,6 +61,9 @@ pub use bootstrap::{
     AppError, RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
 };
 pub use coral_engine::{EngineExtensions, QuerySource};
+pub use identity::{
+    SingleUserPrincipalProvider, UserPrincipal, UserPrincipalError, UserPrincipalProvider,
+};
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };

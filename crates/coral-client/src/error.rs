@@ -6,6 +6,9 @@ pub enum ClientError {
     /// Connecting the generated gRPC client failed.
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
+    /// Caller-supplied static gRPC metadata was invalid.
+    #[error("invalid client metadata: {0}")]
+    InvalidMetadata(String),
 }
 
 /// Errors surfaced while decoding or rendering query results.
