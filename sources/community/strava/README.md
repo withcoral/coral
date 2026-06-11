@@ -11,7 +11,7 @@ Adds a community source for the [Strava API](https://developers.strava.com/docs/
 | `athlete_stats` | Aggregate running, riding, and swimming totals (recent, YTD, all time) | `/athletes/{id}/stats` |
 
 ## Authentication Setup
-Strava requires OAuth 2.0. You must register an API application to get a Client ID and Client Secret.
+Strava requires OAuth 2.0. You must register an API application to get a Client ID and Client Secret. Coral will request `activity:read_all` and `profile:read_all` scopes during authorization.
 
 1. Go to your [Strava API Settings](https://www.strava.com/settings/api).
 2. Create an API Application.

@@ -1,7 +1,7 @@
 dsl_version: 3
 version: "1.0.0"
 name: strava
-description: "Strava API. Query athlete activities, stats, and segments. Requires OAuth access token."
+description: "Strava API. Query athlete activities and stats. Requires OAuth access token."
 backend: "http"
 base_url: "https://www.strava.com/api/v3"
 
@@ -34,6 +34,7 @@ inputs:
                 delimiter: comma
                 values:
                   - activity:read_all
+                  - profile:read_all
         - type: source_config
           label: Paste access token
 
@@ -148,7 +149,7 @@ tables:
         type: Utf8
 
   - name: athlete_stats
-    description: "Aggregate running, riding, and swimming totals for the athlete — all time, recent, and year-to-date."
+    description: "Aggregate running and riding totals for the athlete — all time, recent, and year-to-date."
     request:
       path: "/athletes/{{input.STRAVA_ATHLETE_ID}}/stats"
       method: GET
