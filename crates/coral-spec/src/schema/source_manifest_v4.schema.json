@@ -13,6 +13,12 @@
       "type": "string",
       "minLength": 1
     },
+    "version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "description": {
       "type": "string"
     },
@@ -61,6 +67,9 @@
               "type": "string",
               "minLength": 1
             },
+            "sha256": {
+              "type": "string"
+            },
             "inputs": {
               "type": "object",
               "additionalProperties": {
@@ -74,12 +83,15 @@
               "type": "string",
               "minLength": 1
             },
-            "auth": {
-              "$ref": "#/$defs/AuthSpec",
-              "default": {
-                "type": "HeaderAuth",
-                "headers": []
-              }
+            "identity_requirements": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/IdentityRequirementsSchema"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "request_headers": {
               "type": "array",
@@ -104,7 +116,8 @@
           "additionalProperties": false,
           "required": [
             "type",
-            "id"
+            "id",
+            "sha256"
           ],
           "oneOf": [
             {
@@ -190,99 +203,46 @@
           "required": [
             "kind"
           ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "required": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
-            "hint": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "credential": true,
-            "kind": {
-              "type": "string",
-              "const": "secret"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ]
         }
       ]
     },
-    "AuthSpec": {
-      "description": "Source-level authentication requirements for HTTP-backed source specs.",
-      "oneOf": [
-        {
-          "description": "HTTP Basic authentication; runtime base64-encodes `username:password`.",
-          "type": "object",
-          "properties": {
-            "username": {
-              "$ref": "#/$defs/ParsedTemplate"
-            },
-            "password": {
-              "$ref": "#/$defs/ParsedTemplate"
-            },
-            "type": {
-              "type": "string",
-              "const": "BasicAuth"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "type",
-            "username",
-            "password"
-          ]
-        },
-        {
-          "description": "Declarative list of auth headers to attach to the request.",
-          "type": "object",
-          "properties": {
-            "headers": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/HeaderSpec"
-              },
-              "default": []
-            },
-            "type": {
-              "type": "string",
-              "const": "HeaderAuth"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "type"
-          ]
-        },
-        {
-          "description": "Dispatches auth header resolution to a runtime-registered authenticator.",
-          "type": "object",
-          "properties": {
-            "type": {
-              "type": "string",
-              "const": "CustomAuth"
-            }
-          },
-          "$ref": "#/$defs/CustomAuthSpec",
-          "required": [
-            "type"
-          ]
+    "IdentityRequirementsSchema": {
+      "type": "object",
+      "properties": {
+        "accepts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AcceptedIdentityRequirementSchema"
+          }
         }
+      },
+      "additionalProperties": false,
+      "required": [
+        "accepts"
       ]
     },
-    "ParsedTemplate": {
-      "type": "string"
+    "AcceptedIdentityRequirementSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "identity_specs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "audience": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "identity_specs"
+      ]
     },
     "HeaderSpec": {
       "description": "One request or auth header declared in the source spec.",
@@ -648,6 +608,9 @@
         }
       ]
     },
+    "ParsedTemplate": {
+      "type": "string"
+    },
     "ValueSourceSpec": {
       "description": "How a source-spec request value is populated at runtime.",
       "oneOf": [
@@ -1002,19 +965,6 @@
           ]
         }
       ]
-    },
-    "CustomAuthSpec": {
-      "description": "Dispatches to a runtime-registered request authenticator by name.",
-      "type": "object",
-      "properties": {
-        "authenticator": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "authenticator"
-      ],
-      "additionalProperties": true
     },
     "RateLimitSpec": {
       "description": "Provider-specific response hints for classifying and delaying rate-limit retries.",

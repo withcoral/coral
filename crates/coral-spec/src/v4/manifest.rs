@@ -11,8 +11,9 @@ use crate::inputs::{
     validate_oauth_endpoint_templates_with_scope,
 };
 use crate::{
-    HeaderSpec, ManifestError, ManifestInputSpec, ParsedTemplate, Result, TemplateNamespace,
-    validate_reserved_source_schema_name, validate_test_queries,
+    HeaderSpec, ManifestError, ManifestInputKind, ManifestInputSpec, ParsedTemplate, Result,
+    TemplateNamespace, validate_identifier, validate_reserved_source_schema_name,
+    validate_test_queries,
 };
 
 #[derive(Debug, Clone)]
@@ -26,6 +27,7 @@ pub struct V4SourceManifest {
 pub struct V4SourceCommon {
     pub dsl_version: u32,
     pub name: String,
+    pub version: Option<String>,
     pub description: String,
     pub test_queries: Vec<String>,
 }
@@ -38,6 +40,7 @@ pub struct V4Surface {
     pub surface_type: SurfaceType,
     pub descriptor: SurfaceDescriptor,
     pub inputs: Vec<ManifestInputSpec>,
+    pub identity_requirements: Option<IdentityRequirements>,
     pub runtime: SurfaceRuntimeConfig,
 }
 
@@ -50,8 +53,8 @@ pub enum SurfaceType {
 
 #[derive(Debug, Clone)]
 pub enum SurfaceDescriptor {
-    Url { url: String },
-    File { file: PathBuf },
+    Url { url: String, sha256: String },
+    File { file: PathBuf, sha256: String },
     McpServer { location: String },
 }
 
@@ -69,6 +72,13 @@ impl SurfaceDescriptor {
             Self::Url { url, .. } => url.clone(),
             Self::File { file, .. } => file.display().to_string(),
             Self::McpServer { location } => location.clone(),
+        }
+    }
+
+    pub fn sha256(&self) -> Option<&str> {
+        match self {
+            Self::Url { sha256, .. } | Self::File { sha256, .. } => Some(sha256),
+            Self::McpServer { .. } => None,
         }
     }
 }
@@ -108,11 +118,35 @@ impl V4Surface {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityRequirements {
+    pub accepts: Vec<AcceptedIdentityRequirement>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptedIdentityRequirement {
+    pub id: String,
+    pub identity_specs: Vec<String>,
+    /// Required audience claims for this accepted shape.
+    ///
+    /// At match time the declared audience must be a *subset* of the candidate
+    /// identity's audience: every key/value here must be present in the
+    /// candidate, but the candidate may carry extra entries. An empty map
+    /// imposes no audience constraint. Values are matched by exact JSON
+    /// equality including type (`443` does not match `443.0` or `"443"`).
+    #[serde(default)]
+    pub audience: BTreeMap<String, Value>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawV4SourceManifest {
     dsl_version: u32,
     name: String,
+    #[serde(default)]
+    version: Option<String>,
     #[serde(default)]
     description: String,
     #[serde(default)]
@@ -132,12 +166,14 @@ struct RawV4Surface {
     url: Option<String>,
     #[serde(default)]
     file: Option<PathBuf>,
+    #[serde(default)]
+    sha256: Option<String>,
     #[serde(default, rename = "inputs")]
     _inputs: Option<Value>,
     #[serde(default)]
     base_url: Option<ParsedTemplate>,
     #[serde(default)]
-    auth: AuthSpec,
+    identity_requirements: Option<IdentityRequirements>,
     #[serde(default)]
     request_headers: Vec<HeaderSpec>,
     #[serde(default)]
@@ -162,24 +198,16 @@ impl V4SourceManifest {
         let RawV4SourceManifest {
             dsl_version,
             name,
+            version,
             description,
             test_queries,
             surfaces,
         } = raw;
-        if dsl_version != 4 {
-            return Err(ManifestError::validation(format!(
-                "source '{name}' declares dsl_version {dsl_version}; expected 4"
-            )));
-        }
-        if surfaces.is_empty() {
-            return Err(ManifestError::validation(format!(
-                "source '{name}' must declare at least one surface"
-            )));
-        }
-        validate_test_queries(&name, &test_queries)?;
+        validate_manifest_header(&name, dsl_version, &surfaces, &test_queries)?;
         let common = V4SourceCommon {
             dsl_version,
             name: name.clone(),
+            version,
             description,
             test_queries,
         };
@@ -195,7 +223,7 @@ impl V4SourceManifest {
         let mut declared_inputs = Vec::new();
         let mut input_by_key: BTreeMap<String, (String, ManifestInputSpec)> = BTreeMap::new();
 
-        for (index, raw_surface) in surfaces.into_iter().enumerate() {
+        for (index, mut raw_surface) in surfaces.into_iter().enumerate() {
             let surface_value = surface_values.get(index).ok_or_else(|| {
                 ManifestError::validation(format!("source '{name}' surface[{index}] is missing"))
             })?;
@@ -231,6 +259,7 @@ impl V4SourceManifest {
                 )));
             }
             let inputs = collect_declared_inputs(surface_value)?;
+            validate_v4_surface_inputs(&name, &raw_surface.id, &inputs)?;
             validate_input_references(surface_value, &inputs)?;
             validate_oauth_endpoint_templates_with_scope(&inputs, "surface inputs")?;
             merge_surface_inputs(
@@ -240,6 +269,10 @@ impl V4SourceManifest {
                 &mut input_by_key,
                 &mut declared_inputs,
             )?;
+            if let Some(identity_requirements) = raw_surface.identity_requirements.as_mut() {
+                normalize_identity_requirements(identity_requirements);
+                validate_identity_requirements(&name, &raw_surface.id, identity_requirements)?;
+            }
             validated_surfaces.push(parse_surface(
                 &name,
                 raw_surface,
@@ -261,6 +294,26 @@ impl V4SourceManifest {
             .iter()
             .find(|surface| surface.id == surface_id)
     }
+}
+
+fn validate_manifest_header(
+    name: &str,
+    dsl_version: u32,
+    surfaces: &[RawV4Surface],
+    test_queries: &[String],
+) -> Result<()> {
+    if dsl_version != 4 {
+        return Err(ManifestError::validation(format!(
+            "source '{name}' declares dsl_version {dsl_version}; expected 4"
+        )));
+    }
+    validate_reserved_source_schema_name(name, "source name")?;
+    if surfaces.is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{name}' must declare at least one surface"
+        )));
+    }
+    validate_test_queries(name, test_queries)
 }
 
 fn parse_surface(
@@ -312,11 +365,12 @@ fn parse_openapi_surface(
         surface_type: SurfaceType::OpenApi,
         descriptor,
         inputs,
+        identity_requirements: raw_surface.identity_requirements,
         runtime: SurfaceRuntimeConfig::OpenApi(OpenApiRuntimeConfig {
             base_url: raw_surface
                 .base_url
                 .unwrap_or_else(|| ParsedTemplate::parse("").expect("empty template")),
-            auth: raw_surface.auth,
+            auth: AuthSpec::default(),
             request_headers: raw_surface.request_headers,
             rate_limit: raw_surface.rate_limit,
         }),
@@ -359,6 +413,7 @@ fn parse_mcp_surface(
             location: mcp_server_location(&server),
         },
         inputs,
+        identity_requirements: raw_surface.identity_requirements,
         runtime: SurfaceRuntimeConfig::Mcp(McpRuntimeConfig { server }),
     })
 }
@@ -368,6 +423,102 @@ fn mcp_server_location(server: &McpServerSpec) -> String {
         McpServerSpec::Stdio { command, .. } => command.clone(),
         McpServerSpec::StreamableHttp { url, .. } => url.clone(),
     }
+}
+
+fn validate_v4_surface_inputs(
+    source_name: &str,
+    surface_id: &str,
+    inputs: &[ManifestInputSpec],
+) -> Result<()> {
+    for input in inputs {
+        if input.kind == ManifestInputKind::Secret {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' surface '{surface_id}' input '{}' must not use kind: secret in DSL v4; use identity_requirements and identity specs for credentials",
+                input.key
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Trims surrounding whitespace from every identifier-like field so that
+/// duplicate detection, diagnostics, and runtime matching all operate on the
+/// canonical value. Audience keys/values are left untouched.
+fn normalize_identity_requirements(requirements: &mut IdentityRequirements) {
+    for accepted in &mut requirements.accepts {
+        trim_in_place(&mut accepted.id);
+        for identity_spec in &mut accepted.identity_specs {
+            trim_in_place(identity_spec);
+        }
+    }
+}
+
+fn trim_in_place(value: &mut String) {
+    if value.trim().len() != value.len() {
+        *value = value.trim().to_string();
+    }
+}
+
+fn validate_identity_requirements(
+    source_name: &str,
+    surface_id: &str,
+    requirements: &IdentityRequirements,
+) -> Result<()> {
+    if requirements.accepts.is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' surface '{surface_id}' identity_requirements.accepts must contain at least one accepted identity"
+        )));
+    }
+
+    let mut seen_accept_ids = HashSet::new();
+    for accepted in &requirements.accepts {
+        if accepted.id.trim().is_empty() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' surface '{surface_id}' identity requirement id must be non-empty"
+            )));
+        }
+        if !seen_accept_ids.insert(accepted.id.clone()) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' surface '{surface_id}' has duplicate identity requirement id '{}'",
+                accepted.id
+            )));
+        }
+        validate_accepted_identity_specs(source_name, surface_id, accepted)?;
+    }
+
+    Ok(())
+}
+
+fn validate_accepted_identity_specs(
+    source_name: &str,
+    surface_id: &str,
+    accepted: &AcceptedIdentityRequirement,
+) -> Result<()> {
+    if accepted.identity_specs.is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' surface '{surface_id}' identity requirement '{}' identity_specs must contain at least one identity spec id",
+            accepted.id
+        )));
+    }
+
+    let mut seen_identity_specs = HashSet::new();
+    for identity_spec_id in &accepted.identity_specs {
+        validate_identifier(
+            identity_spec_id,
+            &format!(
+                "source '{source_name}' surface '{surface_id}' identity requirement '{}' identity spec id",
+                accepted.id
+            ),
+        )?;
+        if !seen_identity_specs.insert(identity_spec_id) {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' surface '{surface_id}' identity requirement '{}' has duplicate identity spec id '{}'",
+                accepted.id, identity_spec_id
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_surface_id(source_name: &str, id: &str) -> Result<()> {
@@ -436,6 +587,13 @@ fn parse_openapi_descriptor(
     source_name: &str,
     surface: &RawV4Surface,
 ) -> Result<SurfaceDescriptor> {
+    let sha256 = surface.sha256.as_deref().ok_or_else(|| {
+        ManifestError::validation(format!(
+            "source '{source_name}' surface '{}' must declare sha256",
+            surface.id
+        ))
+    })?;
+    validate_descriptor_sha256(source_name, &surface.id, sha256)?;
     match (&surface.url, &surface.file) {
         (Some(url), None) => {
             if !url.starts_with("https://") {
@@ -444,13 +602,33 @@ fn parse_openapi_descriptor(
                     surface.id
                 )));
             }
-            Ok(SurfaceDescriptor::Url { url: url.clone() })
+            Ok(SurfaceDescriptor::Url {
+                url: url.clone(),
+                sha256: sha256.to_string(),
+            })
         }
-        (None, Some(file)) => Ok(SurfaceDescriptor::File { file: file.clone() }),
+        (None, Some(file)) => Ok(SurfaceDescriptor::File {
+            file: file.clone(),
+            sha256: sha256.to_string(),
+        }),
         (Some(_), Some(_)) | (None, None) => Err(ManifestError::validation(format!(
             "source '{source_name}' surface '{}' must declare exactly one of url or file",
             surface.id
         ))),
+    }
+}
+
+fn validate_descriptor_sha256(source_name: &str, surface_id: &str, sha256: &str) -> Result<()> {
+    let valid = sha256.len() == 64
+        && sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if valid {
+        Ok(())
+    } else {
+        Err(ManifestError::validation(format!(
+            "source '{source_name}' surface '{surface_id}' sha256 must be 64 lowercase hex characters"
+        )))
     }
 }
 

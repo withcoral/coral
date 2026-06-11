@@ -71,7 +71,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    CoreError, QuerySource, RequestAuthenticator, RuntimeSourceComponent, SourceInputResolver,
+    CoreError, QuerySource, RequestAuthenticator, RequestIdentityResolver, RuntimeSourceComponent,
+    SourceInputResolutionContext, SourceInputResolver,
 };
 #[cfg(test)]
 use coral_spec::ValidatedSourceManifest;
@@ -97,6 +98,7 @@ pub(crate) fn compile_query_source(
     runtime_context: &crate::QueryRuntimeContext,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     if source.components().is_empty() {
         return Err(CoreError::FailedPrecondition(format!(
@@ -111,6 +113,7 @@ pub(crate) fn compile_query_source(
         source_variables: source.variables().clone(),
         request_authenticators,
         source_input_resolver,
+        request_identity_resolver,
     };
     let compiled_components = source
         .components()
@@ -128,7 +131,25 @@ fn compile_component(
     request: &BackendCompileRequest<'_>,
 ) -> Box<dyn CompiledBackendSource> {
     match component {
-        RuntimeSourceComponent::Http(manifest) => http::compile_manifest(manifest, request),
+        RuntimeSourceComponent::Http(component) => {
+            let identity_context =
+                component.identity_resolution_context(request.source.source_name());
+            http::compile_source(
+                component.manifest.clone(),
+                SourceInputResolutionContext::from_query_source_with_declared_inputs(
+                    request.source,
+                    &component.manifest.declared_inputs,
+                ),
+                request.request_authenticators.clone(),
+                http::HttpCompileRuntime {
+                    body_capture_max_bytes: request.runtime_context.body_capture_max_bytes,
+                    trace_context: request.runtime_context.trace_context.clone(),
+                    source_input_resolver: request.source_input_resolver.clone(),
+                    identity_context,
+                    request_identity_resolver: request.request_identity_resolver.clone(),
+                },
+            )
+        }
         RuntimeSourceComponent::File(manifest) => file::compile_manifest(manifest, request),
         RuntimeSourceComponent::Mcp(manifest) => mcp::compile_manifest(manifest, request),
     }
@@ -156,6 +177,7 @@ pub(crate) fn compile_source_manifest(
             source_variables,
             request_authenticators: &request_authenticators,
             source_input_resolver: None,
+            request_identity_resolver: None,
         },
     )
 }

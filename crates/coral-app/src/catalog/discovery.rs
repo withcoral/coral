@@ -151,6 +151,14 @@ pub(crate) struct ListColumnsQuery<'a> {
     pub(crate) pagination: Pagination,
 }
 
+pub(crate) struct CatalogSearchQuery<'a> {
+    pub(crate) pattern: &'a str,
+    pub(crate) schema_name: Option<&'a str>,
+    pub(crate) kind: Option<CatalogItemKind>,
+    pub(crate) ignore_case: bool,
+    pub(crate) pagination: Pagination,
+}
+
 #[derive(Clone)]
 pub(crate) struct CatalogDiscovery {
     queries: QueryManager,
@@ -187,6 +195,28 @@ impl CatalogDiscovery {
     ) -> Result<Vec<CatalogItem>, QueryManagerError> {
         let catalog = self.queries.list_catalog(context, schema_name).await?;
         Ok(catalog_items(catalog, kind))
+    }
+
+    pub(crate) async fn search_catalog(
+        &self,
+        context: &QueryContext,
+        query: CatalogSearchQuery<'_>,
+    ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
+        let regex = compile_metadata_regex(query.pattern, query.ignore_case)
+            .map_err(QueryManagerError::App)?;
+        let matches = self
+            .load_catalog_items(context, query.schema_name, query.kind)
+            .await?
+            .into_iter()
+            .filter_map(|item| {
+                let matched_fields = catalog_item_matched_fields(&item, &regex);
+                (!matched_fields.is_empty()).then_some(CatalogSearchResult {
+                    item,
+                    matched_fields,
+                })
+            })
+            .collect();
+        Ok(page_items(matches, query.pagination))
     }
 
     pub(crate) async fn describe_table(
@@ -252,31 +282,6 @@ fn catalog_counts(catalog: &CatalogInfo) -> CatalogCounts {
 }
 
 impl CatalogDiscovery {
-    pub(crate) async fn search_catalog(
-        &self,
-        context: &QueryContext,
-        pattern: &str,
-        schema_name: Option<&str>,
-        kind: Option<CatalogItemKind>,
-        ignore_case: bool,
-        pagination: Pagination,
-    ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
-        let regex = compile_metadata_regex(pattern, ignore_case).map_err(QueryManagerError::App)?;
-        let matches = self
-            .load_catalog_items(context, schema_name, kind)
-            .await?
-            .into_iter()
-            .filter_map(|item| {
-                let matched_fields = catalog_item_matched_fields(&item, &regex);
-                (!matched_fields.is_empty()).then_some(CatalogSearchResult {
-                    item,
-                    matched_fields,
-                })
-            })
-            .collect();
-        Ok(page_items(matches, pagination))
-    }
-
     pub(crate) async fn list_columns(
         &self,
         context: &QueryContext,

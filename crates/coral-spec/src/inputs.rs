@@ -18,7 +18,7 @@ use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 const RESERVED_INPUT_KEY_PREFIXES: &[&str] = &["__coral"];
 
 /// The kind of interactive input required by one validated source spec.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ManifestInputKind {
     /// A non-secret input persisted in source variables.
     Variable,
@@ -30,7 +30,7 @@ pub enum ManifestInputKind {
 ///
 /// The app and CLI can map this into prompts, persisted variables, or secret
 /// collection flows without depending on protobuf-specific types.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ManifestInputSpec {
     /// The source-spec-declared input key.
     pub key: String,
@@ -47,14 +47,14 @@ pub struct ManifestInputSpec {
 }
 
 /// Credential retrieval choices declared for one secret input.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ManifestCredentialSpec {
     /// Authored retrieval methods in display order.
     pub methods: Vec<ManifestCredentialMethod>,
 }
 
 /// Supported credential retrieval method kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ManifestCredentialMethodKind {
     /// Collect the secret value through the source configuration path.
     SourceConfig,
@@ -63,7 +63,7 @@ pub enum ManifestCredentialMethodKind {
 }
 
 /// One credential retrieval method declared on a secret input.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ManifestCredentialMethod {
     /// Method kind.
     pub kind: ManifestCredentialMethodKind,
@@ -78,7 +78,7 @@ pub struct ManifestCredentialMethod {
 }
 
 /// OAuth credential retrieval configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ManifestOAuthCredentialSpec {
     /// OAuth flow settings.
     pub flow: ManifestOAuthFlowSpec,
@@ -173,7 +173,7 @@ fn render_oauth_endpoint_url(
                 }
                 let value = source_inputs.get(token.key()).ok_or_else(|| {
                     ManifestError::validation(format!(
-                        "missing source input '{}' for OAuth endpoint template",
+                        "missing input '{}' for OAuth endpoint template",
                         token.key()
                     ))
                 })?;
@@ -188,7 +188,7 @@ fn render_oauth_endpoint_url(
 }
 
 /// Supported loopback redirect URI port binding modes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ManifestOAuthRedirectUriPortMode {
     /// Bind the exact port authored in `redirect_uri`.
     Fixed,
@@ -206,7 +206,7 @@ pub enum ManifestOAuthRedirectBindPort {
 }
 
 /// Supported OAuth credential retrieval flow settings.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ManifestOAuthFlowSpec {
     /// OAuth flow kind.
     pub kind: ManifestOAuthFlowKind,
@@ -215,7 +215,7 @@ pub struct ManifestOAuthFlowSpec {
 }
 
 /// Supported OAuth flow kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ManifestOAuthFlowKind {
     /// OAuth 2.0 authorization-code grant.
     AuthorizationCode,
@@ -224,7 +224,7 @@ pub enum ManifestOAuthFlowKind {
 }
 
 /// Supported PKCE modes for OAuth credential retrieval.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ManifestOAuthPkceMode {
     /// Require a generated code verifier and S256 challenge.
     Required,
@@ -233,7 +233,7 @@ pub enum ManifestOAuthPkceMode {
 }
 
 /// OAuth client configuration for credential retrieval.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ManifestOAuthClientSpec {
     /// Client ID resolution configuration.
     pub id: ManifestOAuthClientIdSpec,
@@ -242,7 +242,7 @@ pub struct ManifestOAuthClientSpec {
 }
 
 /// OAuth client ID resolution configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ManifestOAuthClientIdSpec {
     /// Optional manifest-authored default client ID.
     pub default: Option<String>,
@@ -251,7 +251,7 @@ pub struct ManifestOAuthClientIdSpec {
 }
 
 /// OAuth client secret retrieval configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ManifestOAuthClientSecretSpec {
     /// Credential-retrieval input key for the client secret.
     pub input: String,
@@ -260,7 +260,7 @@ pub struct ManifestOAuthClientSecretSpec {
 }
 
 /// Supported confidential-client secret transport modes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ManifestOAuthClientSecretTransport {
     /// Send `Authorization: Basic base64(client_id:client_secret)`.
     BasicAuth,
@@ -288,14 +288,14 @@ impl ManifestOAuthClientSecretTransport {
 }
 
 /// OAuth scope parameter configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ManifestOAuthScopesSpec {
     /// The `scope` parameter value definition.
     pub scope: ManifestOAuthScopeSpec,
 }
 
 /// OAuth scope parameter values and delimiter.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ManifestOAuthScopeSpec {
     /// Delimiter used to join scope values.
     pub delimiter: ManifestOAuthScopeDelimiter,
@@ -304,7 +304,7 @@ pub struct ManifestOAuthScopeSpec {
 }
 
 /// Supported OAuth scope delimiters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ManifestOAuthScopeDelimiter {
     /// Join scope values with a single space.
     Space,
@@ -508,7 +508,7 @@ pub(crate) fn validate_oauth_endpoint_templates_with_scope(
     Ok(())
 }
 
-fn validate_oauth_endpoint_templates_for_method(
+pub(crate) fn validate_oauth_endpoint_templates_for_method(
     input_key: &str,
     oauth: &ManifestOAuthCredentialSpec,
     declared: &BTreeMap<&str, &ManifestInputSpec>,
@@ -696,6 +696,18 @@ fn parse_credential_method(
     }
 }
 
+pub(crate) fn parse_identity_oauth_method(
+    identity_name: &str,
+    method_index: usize,
+    value: &Value,
+) -> Result<ManifestOAuthCredentialSpec> {
+    parse_oauth(
+        &format!("identity '{identity_name}' oauth method"),
+        method_index,
+        value,
+    )
+}
+
 fn parse_oauth(
     input_key: &str,
     method_index: usize,
@@ -866,11 +878,6 @@ fn parse_oauth_client(input_key: &str, value: &Value) -> Result<ManifestOAuthCli
         .get("secret")
         .map(|secret| parse_oauth_client_secret(input_key, secret))
         .transpose()?;
-    if secret.is_some() && id.input.is_none() {
-        return Err(ManifestError::validation(format!(
-            "manifest input '{input_key}' confidential oauth client must declare client.id.input"
-        )));
-    }
     Ok(ManifestOAuthClientSpec { id, secret })
 }
 

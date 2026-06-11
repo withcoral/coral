@@ -13,8 +13,9 @@ pub use error::{CoreError, StatusCode, StructuredQueryError};
 pub use query::{
     DependentJoinConfig, DependentJoinSourceConfig, EffectiveDependentJoinConfig, MemorySize,
     QueryExecution, QueryMemoryConfig, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
-    QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeSourceComponent,
-    RuntimeSourcePackage, SourceValidationReport,
+    QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeHttpSourceComponent,
+    RuntimeIdentityRequirements, RuntimeSourceComponent, RuntimeSourcePackage,
+    SourceValidationReport,
 };
 pub(crate) use query_error::{ColumnParts, TableRefParts};
 

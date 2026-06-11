@@ -1,15 +1,18 @@
 //! Query-time loading, validation, and execution over installed sources.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
-    SourceValidationReport, StatusCode, TableInfo,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RequestIdentityResolutionContext,
+    RequestIdentityResolver, RequestIdentityResolverError, RuntimeIdentityRequirements,
+    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode, TableInfo,
 };
+use coral_spec::v4::IdentityRequirements;
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
 use tracing::Instrument as _;
@@ -18,12 +21,19 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::episode::EpisodeId;
+use crate::features::Features;
+use crate::identity::{
+    IdentityManager, SourceIdentityBinding, SourceIdentityProvider,
+    SourceIdentityResolutionRequest, SourceIdentitySelection, SourceIdentitySelectionRequest,
+    SourceIdentitySubject, UserPrincipal,
+};
 use crate::query::QueryContext;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
+use crate::source_registry::{SourceRegistry, installed_source_from_record};
 use crate::sources::SourceName;
-use crate::sources::catalog::resolve_installed_manifest;
+use crate::sources::catalog::resolve_installed_manifest_with_imported_yaml;
 use crate::sources::materialization::{
     incompatible_materialization_error, load_v4_materialization,
 };
@@ -43,16 +53,35 @@ pub(crate) struct ValidatedSource {
     pub(crate) report: SourceValidationReport,
 }
 
+type SourceIdentityBindingsSnapshot = BTreeMap<String, BTreeMap<String, SourceIdentityBinding>>;
+
+#[derive(Debug)]
+struct LoadedQuerySource {
+    query_source: QuerySource,
+    version: Option<String>,
+    identity_bindings: BTreeMap<String, SourceIdentityBinding>,
+}
+
+#[derive(Debug)]
+struct RegistryQuerySource {
+    source: InstalledSource,
+    imported_manifest_yaml: Option<String>,
+}
+
 #[derive(Clone)]
 pub(crate) struct QueryManager {
     config_store: ConfigStore,
+    source_registry: Arc<dyn SourceRegistry>,
     credential_manager: CredentialManager,
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    identity_manager: IdentityManager,
+    features: Features,
 }
 
 impl QueryManager {
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
@@ -60,13 +89,130 @@ impl QueryManager {
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
-        Self {
+        Self::new_with_features(
             config_store,
             credential_manager,
             runtime_context,
             layout,
             engine_extensions_providers,
+            Vec::new(),
+            Features::default(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_features(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
+        features: Features,
+    ) -> Self {
+        Self::new_with_features_and_source_registry(
+            config_store.clone(),
+            Arc::new(config_store),
+            credential_manager,
+            runtime_context,
+            layout,
+            engine_extensions_providers,
+            identity_providers,
+            features,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one-time wiring constructor; every argument is a distinct runtime dependency"
+    )]
+    pub(crate) fn new_with_features_and_source_registry(
+        config_store: ConfigStore,
+        source_registry: Arc<dyn SourceRegistry>,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
+        features: Features,
+    ) -> Self {
+        Self {
+            config_store,
+            source_registry,
+            credential_manager,
+            runtime_context,
+            layout,
+            engine_extensions_providers,
+            identity_manager: IdentityManager::new(identity_providers),
+            features,
         }
+    }
+
+    fn list_registry_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<RegistryQuerySource>, AppError> {
+        self.source_registry
+            .list_workspace_sources(workspace_name.as_str())?
+            .into_iter()
+            .map(|record| {
+                let imported_manifest_yaml = record.manifest_yaml.clone();
+                installed_source_from_record(workspace_name, record).map(|source| {
+                    RegistryQuerySource {
+                        source,
+                        imported_manifest_yaml,
+                    }
+                })
+            })
+            .collect()
+    }
+
+    fn require_registry_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<RegistryQuerySource, AppError> {
+        self.source_registry
+            .get_source(workspace_name.as_str(), source_name.as_str())?
+            .map(|record| {
+                let imported_manifest_yaml = record.manifest_yaml.clone();
+                installed_source_from_record(workspace_name, record).map(|source| {
+                    RegistryQuerySource {
+                        source,
+                        imported_manifest_yaml,
+                    }
+                })
+            })
+            .transpose()?
+            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
+    }
+
+    /// Loads the workspace's query sources and the runtime config used to
+    /// execute one query-time operation against them.
+    fn load_query_runtime(
+        &self,
+        context: &QueryContext,
+    ) -> Result<(Vec<QuerySource>, QueryRuntimeConfig), QueryManagerError> {
+        let workspace_name = context.workspace_name();
+        let config = self
+            .config_store
+            .load_config()
+            .map_err(QueryManagerError::App)?;
+        let sources = self
+            .load_query_sources(workspace_name)
+            .map_err(QueryManagerError::App)?;
+        let identity_bindings = identity_binding_snapshot_for_sources(&sources);
+        let sources = query_sources_from_loaded(sources);
+        let runtime = self
+            .runtime_config(
+                workspace_name,
+                context.principal(),
+                &sources,
+                identity_bindings,
+                &config,
+            )
+            .map_err(QueryManagerError::App)?;
+        Ok((sources, runtime))
     }
 
     pub(crate) async fn list_tables(
@@ -75,17 +221,7 @@ impl QueryManager {
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
-        let workspace_name = context.workspace_name();
-        let config = self
-            .config_store
-            .load_config()
-            .map_err(QueryManagerError::App)?;
-        let sources = self
-            .load_query_sources(workspace_name, &config)
-            .map_err(QueryManagerError::App)?;
-        let runtime = self
-            .runtime_config(workspace_name, &sources, &config)
-            .map_err(QueryManagerError::App)?;
+        let (sources, runtime) = self.load_query_runtime(context)?;
         CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
             .await
             .map_err(QueryManagerError::Core)
@@ -96,17 +232,7 @@ impl QueryManager {
         context: &QueryContext,
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, QueryManagerError> {
-        let workspace_name = context.workspace_name();
-        let config = self
-            .config_store
-            .load_config()
-            .map_err(QueryManagerError::App)?;
-        let sources = self
-            .load_query_sources(workspace_name, &config)
-            .map_err(QueryManagerError::App)?;
-        let runtime = self
-            .runtime_config(workspace_name, &sources, &config)
-            .map_err(QueryManagerError::App)?;
+        let (sources, runtime) = self.load_query_runtime(context)?;
         CoralQuery::list_catalog(&sources, runtime, schema_filter)
             .await
             .map_err(QueryManagerError::Core)
@@ -118,17 +244,7 @@ impl QueryManager {
         schema_name: &str,
         table_name: &str,
     ) -> Result<DescribeTableInfo, QueryManagerError> {
-        let workspace_name = context.workspace_name();
-        let config = self
-            .config_store
-            .load_config()
-            .map_err(QueryManagerError::App)?;
-        let sources = self
-            .load_query_sources(workspace_name, &config)
-            .map_err(QueryManagerError::App)?;
-        let runtime = self
-            .runtime_config(workspace_name, &sources, &config)
-            .map_err(QueryManagerError::App)?;
+        let (sources, runtime) = self.load_query_runtime(context)?;
         CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
             .await
             .map_err(QueryManagerError::Core)
@@ -146,16 +262,7 @@ impl QueryManager {
             sql,
             context.episode_id(),
             async {
-                let config = self
-                    .config_store
-                    .load_config()
-                    .map_err(QueryManagerError::App)?;
-                let sources = self
-                    .load_query_sources(workspace_name, &config)
-                    .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .runtime_config(workspace_name, &sources, &config)
-                    .map_err(QueryManagerError::App)?;
+                let (sources, runtime) = self.load_query_runtime(context)?;
                 CoralQuery::execute_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -177,16 +284,7 @@ impl QueryManager {
             sql,
             context.episode_id(),
             async {
-                let config = self
-                    .config_store
-                    .load_config()
-                    .map_err(QueryManagerError::App)?;
-                let sources = self
-                    .load_query_sources(workspace_name, &config)
-                    .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .runtime_config(workspace_name, &sources, &config)
-                    .map_err(QueryManagerError::App)?;
+                let (sources, runtime) = self.load_query_runtime(context)?;
                 CoralQuery::explain_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -198,29 +296,43 @@ impl QueryManager {
 
     pub(crate) async fn validate_source(
         &self,
-        workspace_name: &WorkspaceName,
+        context: &QueryContext,
         source_name: &SourceName,
     ) -> Result<ValidatedSource, QueryManagerError> {
+        let workspace_name = context.workspace_name();
         let config = self
             .config_store
             .load_config()
             .map_err(QueryManagerError::App)?;
-        let source = config
-            .get_source(workspace_name, source_name)
-            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
+        let registry_source = self
+            .require_registry_source(workspace_name, source_name)
             .map_err(QueryManagerError::App)?;
-        let (query_source, version) = self
-            .load_query_source(workspace_name, &source)
+        let loaded_source = self
+            .load_registry_query_source(workspace_name, &registry_source)
             .map_err(QueryManagerError::App)?;
+        self.validate_source_identity_bindings(workspace_name, context.principal(), &loaded_source)
+            .await
+            .map_err(QueryManagerError::App)?;
+        let identity_bindings =
+            identity_binding_snapshot_for_sources(std::slice::from_ref(&loaded_source));
         let runtime = self
-            .runtime_config(workspace_name, std::slice::from_ref(&query_source), &config)
+            .runtime_config(
+                workspace_name,
+                context.principal(),
+                std::slice::from_ref(&loaded_source.query_source),
+                identity_bindings,
+                &config,
+            )
             .map_err(QueryManagerError::App)?;
-        let report =
-            CoralQuery::validate_source(&query_source, runtime, query_source.test_queries())
-                .await
-                .map_err(QueryManagerError::Core)?;
-        let mut source = source;
-        source.version = version;
+        let report = CoralQuery::validate_source(
+            &loaded_source.query_source,
+            runtime,
+            loaded_source.query_source.test_queries(),
+        )
+        .await
+        .map_err(QueryManagerError::Core)?;
+        let mut source = registry_source.source;
+        source.version = loaded_source.version;
 
         Ok(ValidatedSource { source, report })
     }
@@ -228,8 +340,7 @@ impl QueryManager {
     fn load_query_sources(
         &self,
         workspace_name: &WorkspaceName,
-        config: &AppConfig,
-    ) -> Result<Vec<QuerySource>, AppError> {
+    ) -> Result<Vec<LoadedQuerySource>, AppError> {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
             workspace = %workspace_name,
@@ -237,18 +348,22 @@ impl QueryManager {
         );
         let _guard = span.enter();
         let mut query_sources = Vec::new();
-        for source in config.workspace_sources(workspace_name) {
-            match self.load_query_source(workspace_name, &source) {
-                Ok((query_source, _version)) => query_sources.push(query_source),
+        for source in self.list_registry_sources(workspace_name)? {
+            match self.load_registry_query_source(workspace_name, &source) {
+                Ok(query_source) => query_sources.push(query_source),
+                // A known source that cannot be served right now (unavailable
+                // credentials, disabled feature, incompatible materialization)
+                // must surface loudly rather than be silently dropped from the
+                // catalog.
                 Err(
                     error @ (AppError::Credentials(CredentialsError::Unavailable(_))
-                    | AppError::MissingOrIncompatibleV4Materialization { .. }),
+                    | AppError::SourceUnservable(_)),
                 ) => {
                     return Err(error);
                 }
                 Err(error) => {
                     tracing::warn!(
-                        source = %source.name,
+                        source = %source.source.name,
                         detail = %error,
                         "skipping source during query-source load"
                     );
@@ -259,14 +374,42 @@ impl QueryManager {
         Ok(query_sources)
     }
 
+    #[cfg(test)]
     fn load_query_source(
         &self,
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
-    ) -> Result<(QuerySource, Option<String>), AppError> {
-        let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
+    ) -> Result<LoadedQuerySource, AppError> {
+        self.load_query_source_with_imported_manifest(workspace_name, source, None)
+    }
+
+    fn load_registry_query_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &RegistryQuerySource,
+    ) -> Result<LoadedQuerySource, AppError> {
+        self.load_query_source_with_imported_manifest(
+            workspace_name,
+            &source.source,
+            source.imported_manifest_yaml.as_deref(),
+        )
+    }
+
+    fn load_query_source_with_imported_manifest(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+        imported_manifest_yaml: Option<&str>,
+    ) -> Result<LoadedQuerySource, AppError> {
+        let installed = resolve_installed_manifest_with_imported_yaml(
+            workspace_name,
+            source,
+            imported_manifest_yaml,
+            &self.layout,
+        )?;
         let source_spec = installed.source_spec;
         let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
+            self.features.ensure_dsl_v4_enabled()?;
             let materialized = load_v4_materialization(
                 &self.layout,
                 workspace_name,
@@ -336,13 +479,41 @@ impl QueryManager {
         } else {
             QuerySource::from_manifest(&source_spec, source.variables.clone(), resolved_secrets)
         };
-        Ok((query_source, installed.candidate.version))
+        Ok(LoadedQuerySource {
+            query_source,
+            version: installed.candidate.version,
+            identity_bindings: source.identity_bindings.clone(),
+        })
+    }
+
+    fn request_identity_resolver(
+        &self,
+        workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
+        selected_sources: &[QuerySource],
+        identity_bindings: SourceIdentityBindingsSnapshot,
+    ) -> Option<Arc<dyn RequestIdentityResolver>> {
+        if selected_sources
+            .iter()
+            .any(|source| identity_requirements_for_source(source).next().is_some())
+        {
+            Some(Arc::new(LazyRuntimeIdentityResolver {
+                workspace_name: workspace_name.clone(),
+                request_principal: request_principal.clone(),
+                source_identity_bindings: Arc::new(identity_bindings),
+                identity_manager: self.identity_manager.clone(),
+            }))
+        } else {
+            None
+        }
     }
 
     fn runtime_config(
         &self,
         workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
         selected_sources: &[QuerySource],
+        identity_bindings: SourceIdentityBindingsSnapshot,
         config: &AppConfig,
     ) -> Result<QueryRuntimeConfig, AppError> {
         let mut extensions =
@@ -354,9 +525,16 @@ impl QueryManager {
             self.credential_manager.clone(),
             provider_input_resolver,
         )));
+        let request_identity_resolver = self.request_identity_resolver(
+            workspace_name,
+            request_principal,
+            selected_sources,
+            identity_bindings,
+        );
         let mut runtime_context = self.runtime_context.clone();
         runtime_context.trace_context = Some(tracing::Span::current().context());
-        let mut runtime = QueryRuntimeConfig::new(runtime_context, extensions);
+        let mut runtime = QueryRuntimeConfig::new(runtime_context, extensions)
+            .with_request_identity_resolver(request_identity_resolver);
         let selected_source_names = selected_sources
             .iter()
             .map(|source| source.source_name().to_string())
@@ -364,6 +542,222 @@ impl QueryManager {
         runtime.memory = config.memory_config()?;
         runtime.dependent_join = config.dependent_join_config(&selected_source_names)?;
         Ok(runtime)
+    }
+
+    async fn validate_source_identity_bindings(
+        &self,
+        workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
+        loaded_source: &LoadedQuerySource,
+    ) -> Result<(), AppError> {
+        let mut source_identity_bindings = BTreeMap::new();
+        source_identity_bindings.insert(
+            loaded_source.query_source.source_name().to_string(),
+            loaded_source.identity_bindings.clone(),
+        );
+        let resolver = LazyRuntimeIdentityResolver {
+            workspace_name: workspace_name.clone(),
+            request_principal: request_principal.clone(),
+            source_identity_bindings: Arc::new(source_identity_bindings),
+            identity_manager: self.identity_manager.clone(),
+        };
+        for requirements in identity_requirements_for_source(&loaded_source.query_source) {
+            let context = RequestIdentityResolutionContext::new(
+                loaded_source.query_source.source_name().to_string(),
+                requirements.surface_id,
+                requirements.requirements,
+            );
+            resolver.resolve_runtime_identity(&context).await?;
+        }
+        Ok(())
+    }
+}
+
+fn query_sources_from_loaded(loaded_sources: Vec<LoadedQuerySource>) -> Vec<QuerySource> {
+    loaded_sources
+        .into_iter()
+        .map(|loaded| loaded.query_source)
+        .collect()
+}
+
+fn identity_binding_snapshot_for_sources(
+    loaded_sources: &[LoadedQuerySource],
+) -> SourceIdentityBindingsSnapshot {
+    loaded_sources
+        .iter()
+        .map(|loaded| {
+            (
+                loaded.query_source.source_name().to_string(),
+                loaded.identity_bindings.clone(),
+            )
+        })
+        .collect()
+}
+
+#[derive(Clone)]
+struct LazyRuntimeIdentityResolver {
+    workspace_name: WorkspaceName,
+    request_principal: UserPrincipal,
+    source_identity_bindings: Arc<SourceIdentityBindingsSnapshot>,
+    identity_manager: IdentityManager,
+}
+
+impl fmt::Debug for LazyRuntimeIdentityResolver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LazyRuntimeIdentityResolver")
+            .field("workspace_name", &self.workspace_name)
+            .field("source_identity_bindings", &self.source_identity_bindings)
+            .field("identity_manager", &self.identity_manager)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LazyRuntimeIdentityResolver {
+    async fn resolve_runtime_identity(
+        &self,
+        identity: &RequestIdentityResolutionContext,
+    ) -> Result<Arc<dyn crate::identity::RuntimeSourceIdentity>, AppError> {
+        SourceName::parse(identity.source_name())
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        let binding = identity_binding_for_surface(
+            &self.source_identity_bindings,
+            identity.source_name(),
+            identity.surface_id(),
+        )?;
+        let subject =
+            SourceIdentitySubject::for_binding_owner(binding.owner, &self.request_principal);
+        let selection = self
+            .identity_manager
+            .resolve_source_identity_selection(SourceIdentitySelectionRequest {
+                workspace_name: self.workspace_name.as_str().to_string(),
+                subject: subject.clone(),
+                source_name: identity.source_name().to_string(),
+                surface_id: identity.surface_id().to_string(),
+                binding: binding.clone(),
+            })
+            .await?;
+        let selected_requirements = select_identity_requirements_for_selection(
+            identity.source_name(),
+            identity.surface_id(),
+            identity.identity_requirements(),
+            &selection,
+        )?;
+        let runtime_identity = self
+            .identity_manager
+            .resolve_source_identity(SourceIdentityResolutionRequest {
+                workspace_name: self.workspace_name.as_str().to_string(),
+                subject,
+                source_name: identity.source_name().to_string(),
+                surface_id: identity.surface_id().to_string(),
+                binding,
+                selection,
+                identity_requirements: selected_requirements.clone(),
+            })
+            .await?;
+        let selected_context = RequestIdentityResolutionContext::new(
+            identity.source_name().to_string(),
+            identity.surface_id().to_string(),
+            selected_requirements,
+        );
+        if !selected_context.accepts_identity(
+            runtime_identity.identity_spec_id(),
+            runtime_identity.audience(),
+        ) {
+            return Err(AppError::FailedPrecondition(format!(
+                "resolved identity does not satisfy selected identity requirements for source '{}' surface '{}'",
+                identity.source_name(),
+                identity.surface_id()
+            )));
+        }
+        Ok(runtime_identity)
+    }
+}
+
+#[tonic::async_trait]
+impl RequestIdentityResolver for LazyRuntimeIdentityResolver {
+    async fn resolve_identity_headers(
+        &self,
+        identity: &RequestIdentityResolutionContext,
+        request: &reqwest::Request,
+        resolved_inputs: &BTreeMap<String, String>,
+    ) -> Result<
+        Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
+        RequestIdentityResolverError,
+    > {
+        let runtime_identity = self
+            .resolve_runtime_identity(identity)
+            .await
+            .map_err(|error| app_error_to_identity_resolver_error(&error))?;
+        runtime_identity
+            .resolve_headers(identity, request, resolved_inputs)
+            .await
+    }
+}
+
+fn identity_requirements_for_source(
+    source: &QuerySource,
+) -> impl Iterator<Item = RuntimeIdentityRequirements> + '_ {
+    source
+        .components()
+        .iter()
+        .filter_map(|component| match component {
+            RuntimeSourceComponent::Http(component) => component.identity_requirements.clone(),
+            RuntimeSourceComponent::File(_) | RuntimeSourceComponent::Mcp(_) => None,
+        })
+}
+
+fn identity_binding_for_surface(
+    source_identity_bindings: &SourceIdentityBindingsSnapshot,
+    source_name: &str,
+    surface_id: &str,
+) -> Result<SourceIdentityBinding, AppError> {
+    source_identity_bindings
+        .get(source_name)
+        .and_then(|bindings| bindings.get(surface_id))
+        .cloned()
+        .ok_or_else(|| {
+            AppError::FailedPrecondition(format!(
+                "source '{source_name}' surface '{surface_id}' declares identity_requirements but has no workspace identity binding"
+            ))
+        })
+}
+
+fn select_identity_requirements_for_selection(
+    source_name: &str,
+    surface_id: &str,
+    requirements: &IdentityRequirements,
+    selection: &SourceIdentitySelection,
+) -> Result<coral_spec::v4::IdentityRequirements, AppError> {
+    if let Some(accepted_identity) = selection.accepted_identity.as_deref() {
+        if let Some(accepted) = requirements
+            .accepts
+            .iter()
+            .find(|accepted| accepted.id == accepted_identity)
+        {
+            return Ok(coral_spec::v4::IdentityRequirements {
+                accepts: vec![accepted.clone()],
+            });
+        }
+        return Err(AppError::FailedPrecondition(format!(
+            "source '{source_name}' surface '{}' binds identity '{}' to unknown accepted_identity '{}'",
+            surface_id, selection.identity, accepted_identity
+        )));
+    }
+
+    if requirements.accepts.len() == 1 {
+        return Ok(requirements.clone());
+    }
+    Err(AppError::FailedPrecondition(format!(
+        "source '{source_name}' surface '{}' has multiple accepted identities; configure accepted_identity for binding '{}'",
+        surface_id, selection.identity
+    )))
+}
+
+fn app_error_to_identity_resolver_error(error: &AppError) -> RequestIdentityResolverError {
+    let detail = error.to_string();
+    match error {
+        AppError::InvalidInput(_) => RequestIdentityResolverError::invalid_input(detail),
+        _ => RequestIdentityResolverError::failed_precondition(detail),
     }
 }
 
@@ -481,11 +875,10 @@ fn app_error_type(error: &AppError) -> &'static str {
     match error {
         AppError::Unauthenticated(_) => "UNAUTHENTICATED",
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
+        AppError::IdentitySpecNotFound(_) => "IDENTITY_SPEC_NOT_FOUND",
+        AppError::IdentityNotFound(_) => "IDENTITY_NOT_FOUND",
         AppError::InvalidInput(_) => "INVALID_INPUT",
-        AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
-        AppError::MissingOrIncompatibleV4Materialization { .. } => {
-            "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
-        }
+        AppError::FailedPrecondition(_) | AppError::SourceUnservable(_) => "FAILED_PRECONDITION",
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Unavailable(_) => "UNAVAILABLE",
         AppError::Io(_) => "IO",
@@ -552,21 +945,29 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use coral_engine::{
-        EngineExtensions, QueryExecution, SourceInputResolutionContext, SourceInputResolver,
+        EngineExtensions, QueryExecution, RequestIdentityResolutionContext,
+        RequestIdentityResolverError, SourceInputResolutionContext, SourceInputResolver,
         SourceInputResolverError,
     };
     use coral_spec::parse_source_manifest_yaml;
+    use reqwest::header::{HeaderName, HeaderValue};
     use serde_json::{Value, json};
     use tempfile::TempDir;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
-    use crate::identity::UserPrincipal;
+    use crate::features::{Features, dsl_v4_features};
+    use crate::identity::{
+        RuntimeSourceIdentity, SourceIdentityBinding, SourceIdentityOwner, SourceIdentityProvider,
+        SourceIdentityResolutionRequest, SourceIdentitySelection, SourceIdentitySelectionRequest,
+        SourceIdentitySubject, UserPrincipal,
+    };
     use crate::query::QueryAttribution;
     use crate::request_context::RequestContext;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
+    use crate::sources::materialization::sha256_hex;
     use crate::sources::model::SourceOrigin;
 
     struct QueryManagerFixture {
@@ -578,15 +979,34 @@ mod tests {
         runtime_context: QueryRuntimeContext,
         providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> QueryManagerFixture {
+        query_manager_with_features(runtime_context, providers, Features::default())
+    }
+
+    fn query_manager_with_features(
+        runtime_context: QueryRuntimeContext,
+        providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        features: Features,
+    ) -> QueryManagerFixture {
+        query_manager_with_features_and_identities(runtime_context, providers, Vec::new(), features)
+    }
+
+    fn query_manager_with_features_and_identities(
+        runtime_context: QueryRuntimeContext,
+        providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
+        features: Features,
+    ) -> QueryManagerFixture {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        let manager = QueryManager::new(
+        let manager = QueryManager::new_with_features(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             runtime_context,
             layout,
             providers,
+            identity_providers,
+            features,
         );
         QueryManagerFixture {
             _temp: temp,
@@ -651,6 +1071,60 @@ mod tests {
         assert_eq!(episode_attr.value.as_str(), "ep_trace_1");
     }
 
+    /// Builds a v4-enabled query manager backed by a [`TestIdentityProvider`]
+    /// that selects `selection_identity` for user-owned bindings.
+    fn identity_fixture(
+        selection_identity: &str,
+    ) -> (QueryManagerFixture, ObservedIdentityRequestCell) {
+        let observed = Arc::new(Mutex::new(None));
+        let fixture = query_manager_with_features_and_identities(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            vec![Arc::new(TestIdentityProvider::selecting(
+                &observed,
+                selection_identity,
+            ))],
+            dsl_v4_features(),
+        );
+        (fixture, observed)
+    }
+
+    fn local_request_principal() -> UserPrincipal {
+        UserPrincipal::local()
+    }
+
+    fn user_request_principal(user_id: &str) -> UserPrincipal {
+        UserPrincipal::for_user(user_id).expect("user")
+    }
+
+    async fn run_sql(
+        fixture: &QueryManagerFixture,
+        request_principal: &UserPrincipal,
+        sql: &str,
+    ) -> Result<QueryExecution, QueryManagerError> {
+        let context = QueryContext::new(
+            WorkspaceName::default(),
+            RequestContext::with_attribution(
+                request_principal.clone(),
+                QueryAttribution::default(),
+            ),
+        );
+        fixture.manager.execute_sql(&context, sql).await
+    }
+
+    /// Runs the canonical `github_v4_identity` query as request user `saul`.
+    async fn query_identity_issues(
+        fixture: &QueryManagerFixture,
+    ) -> Result<QueryExecution, QueryManagerError> {
+        let principal = user_request_principal("saul");
+        run_sql(
+            fixture,
+            &principal,
+            "SELECT id, title FROM github_v4_identity.issues",
+        )
+        .await
+    }
+
     fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {
         let mut bytes = Vec::new();
         {
@@ -663,8 +1137,396 @@ mod tests {
         serde_json::from_slice(&bytes).expect("json rows should decode")
     }
 
-    #[test]
-    fn runtime_config_preserves_app_owned_body_capture_max_bytes() {
+    type ObservedIdentityRequestCell = Arc<Mutex<Option<ObservedIdentityRequest>>>;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ObservedIdentityRequest {
+        workspace_name: String,
+        subject: SourceIdentitySubject,
+        source_name: String,
+        surface_id: String,
+        identity: String,
+        owner: SourceIdentityOwner,
+    }
+
+    /// Asserts the provider observed one identity resolution request for the
+    /// `github_v4_identity` source's `rest` surface in the default workspace.
+    #[track_caller]
+    fn assert_observed_identity(
+        observed: &ObservedIdentityRequestCell,
+        subject: SourceIdentitySubject,
+        identity: &str,
+        owner: SourceIdentityOwner,
+    ) {
+        assert_eq!(
+            *observed.lock().expect("observed identity request"),
+            Some(ObservedIdentityRequest {
+                workspace_name: "default".to_string(),
+                subject,
+                source_name: "github_v4_identity".to_string(),
+                surface_id: "rest".to_string(),
+                identity: identity.to_string(),
+                owner,
+            })
+        );
+    }
+
+    #[derive(Debug)]
+    struct TestIdentityProvider {
+        observed: ObservedIdentityRequestCell,
+        selection: SourceIdentitySelection,
+    }
+
+    impl TestIdentityProvider {
+        fn selecting(observed: &ObservedIdentityRequestCell, identity: &str) -> Self {
+            Self {
+                observed: Arc::clone(observed),
+                selection: SourceIdentitySelection::new(
+                    identity,
+                    Some("github-rest-read".to_string()),
+                )
+                .expect("selection"),
+            }
+        }
+    }
+
+    #[tonic::async_trait]
+    impl SourceIdentityProvider for TestIdentityProvider {
+        async fn resolve_source_identity_selection(
+            &self,
+            request: &SourceIdentitySelectionRequest,
+        ) -> Result<Option<SourceIdentitySelection>, AppError> {
+            if request.subject.user_id().is_some() {
+                Ok(Some(self.selection.clone()))
+            } else {
+                Ok(None)
+            }
+        }
+
+        async fn resolve_source_identity(
+            &self,
+            request: &SourceIdentityResolutionRequest,
+        ) -> Result<Option<Arc<dyn RuntimeSourceIdentity>>, AppError> {
+            *self.observed.lock().expect("observed identity request") =
+                Some(ObservedIdentityRequest {
+                    workspace_name: request.workspace_name.clone(),
+                    subject: request.subject.clone(),
+                    source_name: request.source_name.clone(),
+                    surface_id: request.surface_id.clone(),
+                    identity: request.selection.identity.clone(),
+                    owner: request.binding.owner,
+                });
+            let identity: Arc<dyn RuntimeSourceIdentity> = match request.selection.identity.as_str()
+            {
+                "github_local" | "github_workspace" => {
+                    Arc::new(TestRuntimeIdentity::new("github_oauth", "github.com"))
+                }
+                "gitlab_wrong" => Arc::new(TestRuntimeIdentity::new("gitlab_oauth", "gitlab.com")),
+                _ => return Ok(None),
+            };
+            Ok(Some(identity))
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestRuntimeIdentity {
+        identity_spec_id: &'static str,
+        audience: BTreeMap<String, Value>,
+    }
+
+    impl TestRuntimeIdentity {
+        fn new(identity_spec_id: &'static str, host: &str) -> Self {
+            Self {
+                identity_spec_id,
+                audience: BTreeMap::from([("host".to_string(), json!(host))]),
+            }
+        }
+    }
+
+    #[tonic::async_trait]
+    impl RuntimeSourceIdentity for TestRuntimeIdentity {
+        fn identity_spec_id(&self) -> &str {
+            self.identity_spec_id
+        }
+
+        fn audience(&self) -> &BTreeMap<String, Value> {
+            &self.audience
+        }
+
+        async fn resolve_headers(
+            &self,
+            _identity: &RequestIdentityResolutionContext,
+            _request: &reqwest::Request,
+            _resolved_inputs: &BTreeMap<String, String>,
+        ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestIdentityResolverError> {
+            Ok(vec![(
+                HeaderName::from_static("x-coral-identity"),
+                HeaderValue::from_static("member-token"),
+            )])
+        }
+    }
+
+    /// Ensures the fixture layout exists and returns a v4-enabled source
+    /// manager that shares the fixture's stores.
+    fn v4_source_manager(fixture: &QueryManagerFixture) -> SourceManager {
+        fixture.manager.layout.ensure().expect("ensure layout");
+        SourceManager::new_with_features(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+            dsl_v4_features(),
+        )
+    }
+
+    async fn mount_issues_endpoint(server: &MockServer, require_member_token: bool, body: Value) {
+        let mut mock = Mock::given(method("GET")).and(path("/issues"));
+        if require_member_token {
+            mock = mock.and(header("x-coral-identity", "member-token"));
+        }
+        mock.respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    fn issues_openapi_yaml(server: &MockServer) -> String {
+        format!(
+            r"
+openapi: 3.0.3
+info:
+  title: GitHub
+servers:
+  - url: {}
+paths:
+  /issues:
+    get:
+      operationId: issues/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {{type: integer}}
+                    title: {{type: string}}
+",
+            server.uri()
+        )
+    }
+
+    const GITHUB_REST_ACCEPTS_YAML: &str = r"        - id: github-rest-read
+          identity_specs:
+            - github_oauth
+            - github_pat
+          audience:
+            host: github.com
+";
+
+    /// Imports a DSL v4 source whose `rest` surface targets the mock server,
+    /// optionally declaring identity requirements, then removes the authored
+    /// descriptor so queries must run from materialized artifacts.
+    fn import_v4_source(
+        source_manager: &SourceManager,
+        workspace_name: &WorkspaceName,
+        source_name: &str,
+        server: &MockServer,
+        identity_accepts_yaml: Option<&str>,
+        identity_bindings: BTreeMap<String, SourceIdentityBinding>,
+    ) {
+        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+        let openapi_yaml = issues_openapi_yaml(server);
+        let openapi_sha256 = sha256_hex(openapi_yaml.as_bytes());
+        std::fs::write(&openapi_file, openapi_yaml).expect("write OpenAPI fixture");
+        let identity_requirements_yaml = identity_accepts_yaml
+            .map(|accepts| format!("    identity_requirements:\n      accepts:\n{accepts}"))
+            .unwrap_or_default();
+        source_manager
+            .import_source(
+                workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: format!(
+                        r"
+name: {source_name}
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    sha256: {}
+{identity_requirements_yaml}",
+                        openapi_file.display(),
+                        openapi_sha256
+                    ),
+                    bindings: SourceBindings::default(),
+                    identity_bindings,
+                    replace_identity_bindings: false,
+                },
+            )
+            .expect("import v4 source");
+        std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
+    }
+
+    /// Imports the `github_v4_identity` source with the standard GitHub accept
+    /// branch and the given identity binding into the default workspace.
+    fn import_identity_v4_source(
+        fixture: &QueryManagerFixture,
+        server: &MockServer,
+        identity: &str,
+        owner: SourceIdentityOwner,
+    ) {
+        import_v4_source(
+            &v4_source_manager(fixture),
+            &WorkspaceName::default(),
+            "github_v4_identity",
+            server,
+            Some(GITHUB_REST_ACCEPTS_YAML),
+            source_identity_bindings(identity, owner, "github-rest-read"),
+        );
+    }
+
+    fn source_identity_bindings(
+        identity: &str,
+        owner: SourceIdentityOwner,
+        accepted_identity: &str,
+    ) -> BTreeMap<String, SourceIdentityBinding> {
+        let binding = match owner {
+            SourceIdentityOwner::User => SourceIdentityBinding::user_owned(),
+            SourceIdentityOwner::Workspace => SourceIdentityBinding::workspace_owned(
+                identity,
+                Some(accepted_identity.to_string()),
+            )
+            .expect("workspace identity binding"),
+        };
+        BTreeMap::from([("rest".to_string(), binding)])
+    }
+
+    fn clear_identity_bindings(fixture: &QueryManagerFixture, source_name: &SourceName) {
+        let workspace_name = WorkspaceName::default();
+        let mut installed = fixture
+            .manager
+            .config_store
+            .get_source(&workspace_name, source_name)
+            .expect("installed source");
+        installed.identity_bindings.clear();
+        fixture
+            .manager
+            .config_store
+            .upsert_source(&workspace_name, installed)
+            .expect("clear identity binding");
+    }
+
+    fn imported_source(source_name: &SourceName) -> InstalledSource {
+        InstalledSource {
+            name: source_name.clone(),
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: Vec::new(),
+            credential_storage: None,
+            identity_bindings: BTreeMap::new(),
+            origin: SourceOrigin::Imported,
+        }
+    }
+
+    /// Ensures the fixture layout, writes `manifest_yaml` as the installed
+    /// manifest for `source_name` in the default workspace, and returns the
+    /// parsed source name.
+    fn write_manifest(
+        fixture: &QueryManagerFixture,
+        source_name: &str,
+        manifest_yaml: &str,
+    ) -> SourceName {
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let source_name = SourceName::parse(source_name).expect("source name");
+        let manifest_path = fixture
+            .manager
+            .layout
+            .manifest_file(&WorkspaceName::default(), &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(&manifest_path, manifest_yaml).expect("write manifest");
+        source_name
+    }
+
+    fn persist_source(fixture: &QueryManagerFixture, source: InstalledSource) {
+        fixture
+            .manager
+            .config_store
+            .upsert_source(&WorkspaceName::default(), source)
+            .expect("persist source");
+    }
+
+    /// Stores `material` as the source's file-backed credential set in the
+    /// default workspace.
+    fn persist_file_secrets(
+        fixture: &QueryManagerFixture,
+        source_name: &SourceName,
+        material: &[(&str, &str)],
+    ) {
+        let material = material
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect();
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &WorkspaceName::default(),
+                &CredentialSetId::for_source(source_name),
+                CredentialStorageKind::File,
+                &material,
+            )
+            .expect("persist secret material");
+    }
+
+    #[tokio::test]
+    async fn lazy_identity_resolver_uses_loaded_source_binding_snapshot() {
+        let observed = Arc::new(Mutex::new(None));
+        let resolver = LazyRuntimeIdentityResolver {
+            workspace_name: WorkspaceName::default(),
+            request_principal: user_request_principal("saul"),
+            source_identity_bindings: Arc::new(BTreeMap::from([(
+                "github_v4_identity".to_string(),
+                source_identity_bindings(
+                    "github_workspace",
+                    SourceIdentityOwner::Workspace,
+                    "github-rest-read",
+                ),
+            )])),
+            identity_manager: IdentityManager::new(vec![Arc::new(
+                TestIdentityProvider::selecting(&observed, "github_local"),
+            )]),
+        };
+        let context = RequestIdentityResolutionContext::new(
+            "github_v4_identity",
+            "rest",
+            coral_spec::v4::IdentityRequirements {
+                accepts: vec![coral_spec::v4::AcceptedIdentityRequirement {
+                    id: "github-rest-read".to_string(),
+                    identity_specs: vec!["github_oauth".to_string()],
+                    audience: BTreeMap::from([("host".to_string(), json!("github.com"))]),
+                }],
+            },
+        );
+
+        let identity = resolver
+            .resolve_runtime_identity(&context)
+            .await
+            .expect("resolve identity from snapshot");
+
+        assert_eq!(identity.identity_spec_id(), "github_oauth");
+        assert_observed_identity(
+            &observed,
+            SourceIdentitySubject::Workspace,
+            "github_workspace",
+            SourceIdentityOwner::Workspace,
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_config_preserves_app_owned_body_capture_max_bytes() {
         let fixture = query_manager_with(
             QueryRuntimeContext::default().with_body_capture_max_bytes(Some(42)),
             Vec::new(),
@@ -672,7 +1534,13 @@ mod tests {
 
         let runtime = fixture
             .manager
-            .runtime_config(&WorkspaceName::default(), &[], &AppConfig::default())
+            .runtime_config(
+                &WorkspaceName::default(),
+                &local_request_principal(),
+                &[],
+                BTreeMap::new(),
+                &AppConfig::default(),
+            )
             .expect("runtime config");
 
         let config = runtime
@@ -685,17 +1553,10 @@ mod tests {
     #[test]
     fn load_query_source_passes_present_optional_secrets_to_runtime() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
-        fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = WorkspaceName::default();
-        let source_name = SourceName::parse("optional_auth").expect("source name");
-        let manifest_path = fixture
-            .manager
-            .layout
-            .manifest_file(&workspace_name, &source_name);
-        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
-            .expect("create source dir");
-        std::fs::write(
-            &manifest_path,
+        let source_name = write_manifest(
+            &fixture,
+            "optional_auth",
             r"
 name: optional_auth
 version: 0.1.0
@@ -728,39 +1589,21 @@ tables:
       - name: id
         type: Utf8
 ",
-        )
-        .expect("write manifest");
-        let source = InstalledSource {
-            name: source_name.clone(),
-            version: Some("0.1.0".to_string()),
-            variables: BTreeMap::new(),
-            secrets: vec!["API_KEY".to_string(), "OAUTH_TOKEN".to_string()],
-            credential_storage: Some(CredentialStorageKind::File),
-            origin: SourceOrigin::Imported,
-        };
-        fixture
-            .manager
-            .config_store
-            .upsert_source(&workspace_name, source.clone())
-            .expect("persist source");
-        fixture
-            .manager
-            .credential_manager
-            .replace_material(
-                &workspace_name,
-                &CredentialSetId::for_source(&source_name),
-                CredentialStorageKind::File,
-                &BTreeMap::from([("OAUTH_TOKEN".to_string(), "oauth-token".to_string())]),
-            )
-            .expect("persist secret material");
+        );
+        let mut source = imported_source(&source_name);
+        source.version = Some("0.1.0".to_string());
+        source.secrets = vec!["API_KEY".to_string(), "OAUTH_TOKEN".to_string()];
+        source.credential_storage = Some(CredentialStorageKind::File);
+        persist_source(&fixture, source.clone());
+        persist_file_secrets(&fixture, &source_name, &[("OAUTH_TOKEN", "oauth-token")]);
 
-        let (query_source, _) = fixture
+        let loaded = fixture
             .manager
             .load_query_source(&workspace_name, &source)
             .expect("optional secret should load when present");
 
         assert_eq!(
-            query_source.secrets(),
+            loaded.query_source.secrets(),
             &BTreeMap::from([("OAUTH_TOKEN".to_string(), "oauth-token".to_string())])
         );
     }
@@ -768,86 +1611,34 @@ tables:
     #[tokio::test]
     async fn installed_v4_source_queries_through_app_assembled_runtime_component() {
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/issues"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-                {"id": 1, "title": "Generated runtime package"}
-            ])))
-            .mount(&server)
-            .await;
-
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
-        fixture.manager.layout.ensure().expect("ensure layout");
-        let source_manager = SourceManager::new(
-            fixture.manager.config_store.clone(),
-            fixture.manager.credential_manager.clone(),
-            fixture.manager.layout.clone(),
-        );
-        let workspace_name = WorkspaceName::default();
-        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
-        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
-        std::fs::write(
-            &openapi_file,
-            format!(
-                r"
-openapi: 3.0.3
-info:
-  title: GitHub
-servers:
-  - url: {}
-paths:
-  /issues:
-    get:
-      operationId: issues/list
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    id: {{type: integer}}
-                    title: {{type: string}}
-",
-                server.uri()
-            ),
+        mount_issues_endpoint(
+            &server,
+            false,
+            json!([{"id": 1, "title": "Generated runtime package"}]),
         )
-        .expect("write OpenAPI fixture");
-        source_manager
-            .import_source(
-                &workspace_name,
-                &ImportSourceCommand {
-                    manifest_yaml: format!(
-                        r"
-name: github_v4_query
-dsl_version: 4
-surfaces:
-  - id: rest
-    type: openapi
-    file: {}
-",
-                        openapi_file.display()
-                    ),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect("import v4 source");
-        std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
-        let query_context = QueryContext::new(
-            workspace_name.clone(),
-            RequestContext::with_attribution(UserPrincipal::local(), QueryAttribution::default()),
+        .await;
+
+        let fixture = query_manager_with_features(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            dsl_v4_features(),
+        );
+        import_v4_source(
+            &v4_source_manager(&fixture),
+            &WorkspaceName::default(),
+            "github_v4_query",
+            &server,
+            None,
+            BTreeMap::new(),
         );
 
-        let execution = fixture
-            .manager
-            .execute_sql(
-                &query_context,
-                "SELECT id, title FROM github_v4_query.issues",
-            )
-            .await
-            .expect("query executes");
+        let execution = run_sql(
+            &fixture,
+            &local_request_principal(),
+            "SELECT id, title FROM github_v4_query.issues",
+        )
+        .await
+        .expect("query executes");
 
         assert_eq!(
             execution_to_rows(&execution),
@@ -855,20 +1646,202 @@ surfaces:
         );
     }
 
+    #[tokio::test]
+    async fn identity_backed_v4_source_uses_workspace_binding_for_request_user() {
+        let server = MockServer::start().await;
+        mount_issues_endpoint(&server, true, json!([{"id": 9, "title": "Bound identity"}])).await;
+
+        let (fixture, observed) = identity_fixture("github_local");
+        import_identity_v4_source(&fixture, &server, "github_local", SourceIdentityOwner::User);
+
+        let execution = query_identity_issues(&fixture)
+            .await
+            .expect("query executes");
+
+        assert_eq!(
+            execution_to_rows(&execution),
+            vec![json!({"id": 9, "title": "Bound identity"})]
+        );
+        assert_observed_identity(
+            &observed,
+            SourceIdentitySubject::User("saul".to_string()),
+            "github_local",
+            SourceIdentityOwner::User,
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_backed_v4_source_uses_workspace_owned_binding_without_request_user() {
+        let server = MockServer::start().await;
+        mount_issues_endpoint(
+            &server,
+            true,
+            json!([{"id": 10, "title": "Workspace identity"}]),
+        )
+        .await;
+
+        let (fixture, observed) = identity_fixture("github_local");
+        import_identity_v4_source(
+            &fixture,
+            &server,
+            "github_workspace",
+            SourceIdentityOwner::Workspace,
+        );
+
+        let execution = query_identity_issues(&fixture)
+            .await
+            .expect("query executes");
+
+        assert_eq!(
+            execution_to_rows(&execution),
+            vec![json!({"id": 10, "title": "Workspace identity"})]
+        );
+        assert_observed_identity(
+            &observed,
+            SourceIdentitySubject::Workspace,
+            "github_workspace",
+            SourceIdentityOwner::Workspace,
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_backed_v4_source_rejects_identity_matching_unselected_accept_branch() {
+        let server = MockServer::start().await;
+        mount_issues_endpoint(
+            &server,
+            true,
+            json!([{"id": 11, "title": "Wrong identity branch"}]),
+        )
+        .await;
+
+        let (fixture, observed) = identity_fixture("gitlab_wrong");
+        import_v4_source(
+            &v4_source_manager(&fixture),
+            &WorkspaceName::default(),
+            "github_v4_identity",
+            &server,
+            Some(
+                r"        - id: github-rest-read
+          identity_specs:
+            - github_oauth
+            - github_pat
+          audience:
+            host: github.com
+        - id: gitlab-project-read
+          identity_specs:
+            - gitlab_oauth
+          audience:
+            host: gitlab.com
+",
+            ),
+            source_identity_bindings(
+                "gitlab_wrong",
+                SourceIdentityOwner::User,
+                "github-rest-read",
+            ),
+        );
+
+        let error = query_identity_issues(&fixture)
+            .await
+            .expect_err("identity matching only the unselected accepted branch should fail");
+
+        let message = query_error_message(&error);
+        assert!(
+            message.contains("selected identity requirements"),
+            "unexpected error: {message}"
+        );
+        assert_observed_identity(
+            &observed,
+            SourceIdentitySubject::User("saul".to_string()),
+            "gitlab_wrong",
+            SourceIdentityOwner::User,
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_backed_v4_source_fails_without_workspace_binding() {
+        let server = MockServer::start().await;
+        let (fixture, _observed) = identity_fixture("github_local");
+        import_identity_v4_source(&fixture, &server, "github_local", SourceIdentityOwner::User);
+        let source_name = SourceName::parse("github_v4_identity").expect("source name");
+        clear_identity_bindings(&fixture, &source_name);
+
+        let error = query_identity_issues(&fixture)
+            .await
+            .expect_err("missing identity binding should fail when the source is used");
+
+        let message = query_error_message(&error);
+        assert!(
+            message.contains("has no workspace identity binding"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unrelated_query_ignores_broken_identity_backed_source() {
+        let server = MockServer::start().await;
+        let (fixture, observed) = identity_fixture("github_local");
+        import_identity_v4_source(&fixture, &server, "github_local", SourceIdentityOwner::User);
+        let source_name = SourceName::parse("github_v4_identity").expect("source name");
+        clear_identity_bindings(&fixture, &source_name);
+
+        let execution = run_sql(
+            &fixture,
+            &user_request_principal("saul"),
+            "SELECT 1 AS value",
+        )
+        .await
+        .expect("unrelated query should not resolve broken source identity");
+
+        assert_eq!(execution_to_rows(&execution), vec![json!({"value": 1})]);
+        assert_eq!(
+            *observed.lock().expect("observed identity request"),
+            None,
+            "unrelated query should not resolve source identities"
+        );
+    }
+
+    #[test]
+    fn load_query_source_rejects_v4_when_dsl_v4_feature_is_disabled() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let workspace_name = WorkspaceName::default();
+        let source_name = write_manifest(
+            &fixture,
+            "github_v4_disabled",
+            r"
+name: github_v4_disabled
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+",
+        );
+        let source = imported_source(&source_name);
+
+        let error = fixture
+            .manager
+            .load_query_source(&workspace_name, &source)
+            .expect_err("disabled v4 feature should reject query loading");
+
+        assert!(
+            error.to_string().contains("dsl_v4"),
+            "unexpected error: {error}"
+        );
+    }
+
     #[test]
     fn load_query_sources_fails_closed_for_missing_v4_materialization() {
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
-        fixture.manager.layout.ensure().expect("ensure layout");
+        let fixture = query_manager_with_features(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            dsl_v4_features(),
+        );
         let workspace_name = WorkspaceName::default();
-        let source_name = SourceName::parse("github_v4_missing_artifacts").expect("source name");
-        let manifest_path = fixture
-            .manager
-            .layout
-            .manifest_file(&workspace_name, &source_name);
-        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
-            .expect("create source dir");
-        std::fs::write(
-            &manifest_path,
+        let source_name = write_manifest(
+            &fixture,
+            "github_v4_missing_artifacts",
             r"
 name: github_v4_missing_artifacts
 dsl_version: 4
@@ -876,40 +1849,18 @@ surfaces:
   - id: rest
     type: openapi
     url: https://example.com/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
 ",
-        )
-        .expect("write manifest");
-        fixture
-            .manager
-            .config_store
-            .upsert_source(
-                &workspace_name,
-                InstalledSource {
-                    name: source_name.clone(),
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: Vec::new(),
-                    credential_storage: None,
-                    origin: SourceOrigin::Imported,
-                },
-            )
-            .expect("persist source");
+        );
+        persist_source(&fixture, imported_source(&source_name));
 
-        let config = fixture
-            .manager
-            .config_store
-            .load_config()
-            .expect("load config");
         let error = fixture
             .manager
-            .load_query_sources(&workspace_name, &config)
+            .load_query_sources(&workspace_name)
             .expect_err("missing materialization should fail closed");
 
         assert!(
-            matches!(
-                error,
-                AppError::MissingOrIncompatibleV4Materialization { .. }
-            ),
+            matches!(error, AppError::SourceUnservable(_)),
             "unexpected error: {error:#}"
         );
     }
@@ -922,19 +1873,12 @@ surfaces:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let workspace_name = WorkspaceName::default();
-        let source_name = SourceName::parse("github").expect("source name");
+        let mut source = imported_source(&SourceName::parse("github").expect("source name"));
+        source.secrets = vec!["GITHUB_TOKEN".to_string()];
+        source.credential_storage = Some(CredentialStorageKind::Keychain);
+        source.origin = SourceOrigin::Bundled;
         config_store
-            .upsert_source(
-                &workspace_name,
-                InstalledSource {
-                    name: source_name,
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: vec!["GITHUB_TOKEN".to_string()],
-                    credential_storage: Some(CredentialStorageKind::Keychain),
-                    origin: SourceOrigin::Bundled,
-                },
-            )
+            .upsert_source(&workspace_name, source)
             .expect("persist source");
         let credential_store = CredentialStore::with_unavailable_keychain_for_test(
             layout.clone(),
@@ -947,10 +1891,8 @@ surfaces:
             layout,
             Vec::new(),
         );
-        let config = manager.config_store.load_config().expect("load config");
-
         let error = manager
-            .load_query_sources(&workspace_name, &config)
+            .load_query_sources(&workspace_name)
             .expect_err("unavailable keychain should fail closed");
 
         assert!(
@@ -1007,45 +1949,7 @@ surfaces:
         }
     }
 
-    #[tokio::test]
-    async fn runtime_config_composes_provider_input_resolver_with_refreshed_inputs() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let observed_token = Arc::new(Mutex::new(None));
-        let fixture = query_manager_with(
-            QueryRuntimeContext::default(),
-            vec![Arc::new(DelegatingInputResolverProvider {
-                calls: Arc::clone(&calls),
-                observed_token: Arc::clone(&observed_token),
-            })],
-        );
-        let source_name = SourceName::parse("secured_messages").expect("source name");
-        let workspace_name = WorkspaceName::default();
-        let credential_set_id = CredentialSetId::for_source(&source_name);
-        fixture
-            .manager
-            .config_store
-            .upsert_source(
-                &workspace_name,
-                InstalledSource {
-                    name: source_name.clone(),
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: vec!["API_TOKEN".to_string()],
-                    credential_storage: Some(CredentialStorageKind::File),
-                    origin: SourceOrigin::Bundled,
-                },
-            )
-            .expect("persist source");
-        fixture
-            .manager
-            .credential_manager
-            .replace_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-                &BTreeMap::from([("API_TOKEN".to_string(), "stored-token".to_string())]),
-            )
-            .expect("write credential material");
+    fn secured_messages_query_source() -> QuerySource {
         let source_spec = parse_source_manifest_yaml(
             r#"
 name: secured_messages
@@ -1072,12 +1976,36 @@ tables:
 "#,
         )
         .expect("parse source manifest");
-        let source = QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new());
+        QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new())
+    }
+
+    #[tokio::test]
+    async fn runtime_config_composes_provider_input_resolver_with_refreshed_inputs() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_token = Arc::new(Mutex::new(None));
+        let fixture = query_manager_with(
+            QueryRuntimeContext::default(),
+            vec![Arc::new(DelegatingInputResolverProvider {
+                calls: Arc::clone(&calls),
+                observed_token: Arc::clone(&observed_token),
+            })],
+        );
+        let source_name = SourceName::parse("secured_messages").expect("source name");
+        let workspace_name = WorkspaceName::default();
+        let mut installed = imported_source(&source_name);
+        installed.secrets = vec!["API_TOKEN".to_string()];
+        installed.credential_storage = Some(CredentialStorageKind::File);
+        installed.origin = SourceOrigin::Bundled;
+        persist_source(&fixture, installed);
+        persist_file_secrets(&fixture, &source_name, &[("API_TOKEN", "stored-token")]);
+        let source = secured_messages_query_source();
         let runtime = fixture
             .manager
             .runtime_config(
                 &workspace_name,
+                &local_request_principal(),
                 std::slice::from_ref(&source),
+                BTreeMap::new(),
                 &AppConfig::default(),
             )
             .expect("runtime config");

@@ -20,11 +20,11 @@ pub(crate) struct Args {
 }
 
 pub(crate) fn run(args: &Args) -> Result<bool> {
-    let body = generated_v4_schema_body()?;
+    let v4_body = generated_v4_schema_body()?;
     if args.check {
-        Ok(check_file(&args.v4_schema, &body))
+        Ok(check_file(&args.v4_schema, &v4_body))
     } else {
-        write_if_changed(&args.v4_schema, &body)?;
+        write_if_changed(&args.v4_schema, &v4_body)?;
         Ok(true)
     }
 }

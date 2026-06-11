@@ -133,18 +133,18 @@ mod tests {
 
     #[test]
     fn interceptor_injects_static_metadata() {
-        let metadata =
-            StaticClientMetadata::try_from_pairs([("x-coral-user-id", "saul")]).expect("metadata");
+        let metadata = StaticClientMetadata::try_from_pairs([("x-coral-cloud-member-id", "saul")])
+            .expect("metadata");
         let mut interceptor = ClientMetadataInterceptor::new(metadata);
 
         let request = interceptor
             .call(tonic::Request::new(()))
-            .expect("interceptor");
+            .expect("intercept request");
 
         assert_eq!(
             request
                 .metadata()
-                .get("x-coral-user-id")
+                .get("x-coral-cloud-member-id")
                 .and_then(|value| value.to_str().ok()),
             Some("saul")
         );

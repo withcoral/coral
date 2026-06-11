@@ -65,11 +65,21 @@ pub(crate) fn resolve_installed_manifest(
     source: &InstalledSource,
     layout: &AppStateLayout,
 ) -> Result<InstalledSourceManifest, AppError> {
+    resolve_installed_manifest_with_imported_yaml(workspace_name, source, None, layout)
+}
+
+pub(crate) fn resolve_installed_manifest_with_imported_yaml(
+    workspace_name: &WorkspaceName,
+    source: &InstalledSource,
+    imported_manifest_yaml: Option<&str>,
+    layout: &AppStateLayout,
+) -> Result<InstalledSourceManifest, AppError> {
     let manifest_yaml = match source.origin {
         SourceOrigin::Bundled => load_bundled_source(&source.name)?.manifest_yaml,
-        SourceOrigin::Imported => {
-            std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name))?
-        }
+        SourceOrigin::Imported => imported_manifest_yaml.map_or_else(
+            || std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name)),
+            |manifest_yaml| Ok(manifest_yaml.to_string()),
+        )?,
     };
     let source_spec = parse_source_manifest_yaml(&manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;

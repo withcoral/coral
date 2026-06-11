@@ -2,18 +2,24 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::{
-    ExecuteSqlRequest, ImportSourceRequest, ListCatalogRequest, ListSourcesRequest,
-    PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, catalog_item, import_source_response,
+    AddIdentitySpecRequest, AddIdentitySpecResponse, CreateUserOwnedIdentityWithFixedTokenRequest,
+    CreateUserOwnedIdentityWithOAuthRequest, DeleteIdentitySpecRequest, DeleteIdentitySpecResponse,
+    ExecuteSqlRequest, ExecuteSqlResponse, Identity, IdentitySpec, IdentitySpecInput,
+    ImportSourceRequest, ListCatalogRequest, ListIdentitySpecsRequest, ListSourcesRequest,
+    OAuthCredentialInput, PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary,
+    ValidateSourceRequest, ValidateSourceResponse, catalog_item,
+    create_user_owned_identity_with_o_auth_response, import_source_response,
 };
 use coral_client::{
-    AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
-    decode_execute_sql_response, default_workspace,
+    AppClient, CatalogClient, IdentityClient, IdentitySpecClient, QueryClient, SourceClient,
+    batches_to_json_rows, decode_execute_sql_response, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tonic::Request;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 pub(crate) struct GrpcHarness {
     temp_dir: TempDir,
@@ -25,6 +31,10 @@ pub(crate) struct GrpcHarness {
 pub(crate) struct FailingHttpFixture {
     base_url: String,
     task: tokio::task::JoinHandle<()>,
+}
+
+pub(crate) struct OAuthFixture {
+    server: MockServer,
 }
 
 impl GrpcHarness {
@@ -39,8 +49,25 @@ impl GrpcHarness {
         Self::start_with_parts(temp_dir, config_dir).await
     }
 
+    /// Starts a server with the `dsl_v4` feature explicitly disabled.
+    ///
+    /// Pre-writing the config (with the credentials block present) makes
+    /// `ensure_default_test_config` leave it untouched, so the default
+    /// `dsl_v4 = true` is not applied.
+    pub(crate) async fn new_without_dsl_v4() -> Self {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[features]\ndsl_v4 = false\n\n[credentials]\nstorage = \"file\"\n",
+        )
+        .expect("write config without dsl_v4");
+        Self::start_with_parts(temp_dir, config_dir).await
+    }
+
     async fn start_with_parts(temp_dir: TempDir, config_dir: PathBuf) -> Self {
-        ensure_file_credentials_config(&config_dir);
+        ensure_default_test_config(&config_dir);
         let server = ServerBuilder::new()
             .with_config_dir(&config_dir)
             .start()
@@ -69,6 +96,14 @@ impl GrpcHarness {
         self.app.source_client()
     }
 
+    pub(crate) fn identity_spec_client(&self) -> IdentitySpecClient {
+        self.app.identity_spec_client()
+    }
+
+    pub(crate) fn identity_client(&self) -> IdentityClient {
+        self.app.identity_client()
+    }
+
     pub(crate) fn catalog_client(&self) -> CatalogClient {
         self.app.catalog_client()
     }
@@ -83,19 +118,27 @@ impl GrpcHarness {
         variables: Vec<SourceVariable>,
         secrets: Vec<SourceSecret>,
     ) -> Source {
+        self.try_import_source(ImportSourceRequest {
+            variables,
+            secrets,
+            ..import_request(manifest_yaml)
+        })
+        .await
+        .expect("import source")
+    }
+
+    /// Sends `request` and returns the first `Source` event, or the status when
+    /// opening the import stream fails.
+    pub(crate) async fn try_import_source(
+        &self,
+        request: ImportSourceRequest,
+    ) -> Result<Source, tonic::Status> {
         let mut stream = self
             .source_client()
-            .import_source(Request::new(ImportSourceRequest {
-                workspace: Some(default_workspace()),
-                manifest_yaml,
-                variables,
-                secrets,
-                oauth_credential_retrievals: Vec::new(),
-            }))
-            .await
-            .expect("import source")
+            .import_source(Request::new(request))
+            .await?
             .into_inner();
-        stream
+        Ok(stream
             .message()
             .await
             .expect("import source stream")
@@ -103,7 +146,7 @@ impl GrpcHarness {
                 Some(import_source_response::Event::Source(source)) => Some(source),
                 _ => None,
             })
-            .expect("import source response")
+            .expect("import source response"))
     }
 
     pub(crate) async fn list_sources(&self) -> Vec<Source> {
@@ -141,26 +184,27 @@ impl GrpcHarness {
     }
 
     pub(crate) async fn validate_source(&self, source_name: &str) -> ValidateSourceResponse {
-        self.source_client()
+        self.try_validate_source(source_name)
+            .await
+            .expect("validate source")
+    }
+
+    pub(crate) async fn try_validate_source(
+        &self,
+        source_name: &str,
+    ) -> Result<ValidateSourceResponse, tonic::Status> {
+        Ok(self
+            .source_client()
             .validate_source(Request::new(ValidateSourceRequest {
                 workspace: Some(default_workspace()),
                 name: source_name.to_string(),
             }))
-            .await
-            .expect("validate source")
-            .into_inner()
+            .await?
+            .into_inner())
     }
 
     pub(crate) async fn execute_sql_rows(&self, sql: &str) -> Vec<Value> {
-        let response = self
-            .query_client()
-            .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(default_workspace()),
-                sql: sql.to_string(),
-            }))
-            .await
-            .expect("execute sql")
-            .into_inner();
+        let response = self.try_execute_sql(sql).await.expect("execute sql");
         batches_to_json_rows(
             decode_execute_sql_response(&response)
                 .expect("decode query response")
@@ -168,9 +212,128 @@ impl GrpcHarness {
         )
         .expect("query rows")
     }
+
+    pub(crate) async fn try_execute_sql(
+        &self,
+        sql: &str,
+    ) -> Result<ExecuteSqlResponse, tonic::Status> {
+        Ok(self
+            .query_client()
+            .execute_sql(Request::new(ExecuteSqlRequest {
+                workspace: Some(default_workspace()),
+                sql: sql.to_string(),
+            }))
+            .await?
+            .into_inner())
+    }
+
+    pub(crate) async fn add_identity_spec(&self, manifest_yaml: String) {
+        self.try_add_identity_spec(manifest_yaml, Vec::new())
+            .await
+            .expect("add identity spec");
+    }
+
+    pub(crate) async fn try_add_identity_spec(
+        &self,
+        manifest_yaml: String,
+        inputs: Vec<IdentitySpecInput>,
+    ) -> Result<AddIdentitySpecResponse, tonic::Status> {
+        Ok(self
+            .identity_spec_client()
+            .add_identity_spec(Request::new(AddIdentitySpecRequest {
+                manifest_yaml,
+                inputs,
+            }))
+            .await?
+            .into_inner())
+    }
+
+    pub(crate) async fn list_identity_specs(&self) -> Vec<IdentitySpec> {
+        self.identity_spec_client()
+            .list_identity_specs(Request::new(ListIdentitySpecsRequest {}))
+            .await
+            .expect("list identity specs")
+            .into_inner()
+            .identity_specs
+    }
+
+    pub(crate) async fn force_delete_identity_spec(
+        &self,
+        name: &str,
+    ) -> DeleteIdentitySpecResponse {
+        self.identity_spec_client()
+            .delete_identity_spec(Request::new(DeleteIdentitySpecRequest {
+                name: name.to_string(),
+                force: true,
+            }))
+            .await
+            .expect("force remove identity spec")
+            .into_inner()
+    }
+
+    pub(crate) async fn create_fixed_token_identity(
+        &self,
+        name: &str,
+        identity_spec: &str,
+        token: &str,
+    ) -> Identity {
+        self.identity_client()
+            .create_user_owned_identity_with_fixed_token(Request::new(
+                CreateUserOwnedIdentityWithFixedTokenRequest {
+                    name: name.to_string(),
+                    identity_spec: identity_spec.to_string(),
+                    token: token.to_string(),
+                },
+            ))
+            .await
+            .expect("create fixed token identity")
+            .into_inner()
+            .identity
+            .expect("identity")
+    }
 }
 
-fn ensure_file_credentials_config(config_dir: &Path) {
+/// Builds an `ImportSourceRequest` for the default workspace with every other
+/// field left at its default; tests override fields with struct-update syntax.
+pub(crate) fn import_request(manifest_yaml: String) -> ImportSourceRequest {
+    ImportSourceRequest {
+        workspace: Some(default_workspace()),
+        manifest_yaml,
+        ..Default::default()
+    }
+}
+
+pub(crate) fn variable(key: &str, value: &str) -> SourceVariable {
+    SourceVariable {
+        key: key.to_string(),
+        value: value.to_string(),
+    }
+}
+
+pub(crate) fn secret(key: &str, value: &str) -> SourceSecret {
+    SourceSecret {
+        key: key.to_string(),
+        value: value.to_string(),
+    }
+}
+
+pub(crate) fn fixed_token_identity_spec_yaml(spec_name: &str, audience_host: &str) -> String {
+    format!(
+        r"
+kind: identity
+spec_version: 1
+name: {spec_name}
+version: 0.1.0
+description: Test token identity.
+issuer: github
+type: fixed_token
+audience:
+  host: {audience_host}
+"
+    )
+}
+
+fn ensure_default_test_config(config_dir: &Path) {
     std::fs::create_dir_all(config_dir).expect("create config dir");
     let config_file = config_dir.join("config.toml");
     let raw = std::fs::read_to_string(&config_file).unwrap_or_default();
@@ -182,8 +345,142 @@ fn ensure_file_credentials_config(config_dir: &Path) {
     } else {
         "\n"
     };
-    let updated = format!("{raw}{separator}\n[credentials]\nstorage = \"file\"\n");
-    std::fs::write(config_file, updated).expect("write test credential config");
+    // DSL v4 (and its identity specs) are gated behind the `dsl_v4` feature, so
+    // enable it in the baseline test config; tests that need it off install
+    // their own config via `start_with_config_dir`.
+    let updated = format!(
+        "{raw}{separator}\n[features]\ndsl_v4 = true\n\n[credentials]\nstorage = \"file\"\n"
+    );
+    std::fs::write(config_file, updated).expect("write default test config");
+}
+
+impl OAuthFixture {
+    pub(crate) async fn start() -> Self {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "device_code": "device-code",
+                "user_code": "ABCD-EFGH",
+                "verification_uri": format!("{}/verify", server.uri()),
+                "expires_in": 600,
+                "interval": 1
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "identity-access-token",
+                "refresh_token": "identity-refresh-token",
+                "token_type": "Bearer",
+                "scope": "repo",
+                "expires_in": 3600
+            })))
+            .mount(&server)
+            .await;
+        Self { server }
+    }
+
+    pub(crate) fn verify_url(&self) -> String {
+        format!("{}/verify", self.server.uri())
+    }
+
+    pub(crate) fn identity_spec_yaml(&self, name: &str) -> String {
+        self.identity_spec_yaml_with_audience_host(name, "github.com")
+    }
+
+    pub(crate) fn identity_spec_yaml_with_audience_host(
+        &self,
+        name: &str,
+        audience_host: &str,
+    ) -> String {
+        format!(
+            r"
+kind: identity
+spec_version: 1
+name: {name}
+version: 0.1.0
+description: GitHub OAuth test identity.
+issuer: github
+type: oauth
+audience:
+  host: {audience_host}
+oauth:
+  method:
+    label: Test device flow
+    flow:
+      type: device_code
+    endpoints:
+      device_authorization_url: {}/device
+      token_url: {}/token
+    client:
+      id:
+        input: GITHUB_OAUTH_CLIENT_ID
+    scopes:
+      scope:
+        delimiter: space
+        values:
+          - repo
+",
+            self.server.uri(),
+            self.server.uri()
+        )
+    }
+}
+
+pub(crate) async fn create_github_oauth_identity(
+    harness: &GrpcHarness,
+    oauth: &OAuthFixture,
+) -> Identity {
+    let mut stream = harness
+        .identity_client()
+        .create_user_owned_identity_with_o_auth(Request::new(
+            CreateUserOwnedIdentityWithOAuthRequest {
+                name: "github_local".to_string(),
+                identity_spec: "github_oauth".to_string(),
+                credential_inputs: vec![OAuthCredentialInput {
+                    key: "GITHUB_OAUTH_CLIENT_ID".to_string(),
+                    value: "test-client".to_string(),
+                }],
+            },
+        ))
+        .await
+        .expect("create identity")
+        .into_inner();
+    let authorization = stream
+        .message()
+        .await
+        .expect("authorization response")
+        .expect("authorization event");
+    match authorization.event.expect("authorization event body") {
+        create_user_owned_identity_with_o_auth_response::Event::OauthAuthorization(
+            authorization,
+        ) => {
+            assert_eq!(authorization.input_key, "github_local");
+            assert_eq!(authorization.user_code, "ABCD-EFGH");
+            assert_eq!(authorization.authorization_url, oauth.verify_url());
+        }
+        other => panic!("unexpected first event: {other:?}"),
+    }
+    let completed = stream
+        .message()
+        .await
+        .expect("completed response")
+        .expect("completed event");
+    assert!(matches!(
+        completed.event,
+        Some(create_user_owned_identity_with_o_auth_response::Event::OauthCompleted(_))
+    ));
+    let created = stream
+        .message()
+        .await
+        .expect("created response")
+        .expect("created event");
+    match created.event.expect("created event body") {
+        create_user_owned_identity_with_o_auth_response::Event::Identity(identity) => identity,
+        other => panic!("unexpected created event: {other:?}"),
+    }
 }
 
 impl FailingHttpFixture {
@@ -244,6 +541,23 @@ pub(crate) fn fixture_manifest_yaml(root: &Path) -> String {
 }
 
 pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String {
+    let data_dir = fixture_data_dir(root);
+    manifest_yaml(&json!({
+        "name": "local_messages",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [
+            jsonl_table("events", "Fixture events", &data_dir),
+            jsonl_table("messages", "Fixture messages", &data_dir),
+            jsonl_table("sessions", "Fixture sessions", &data_dir),
+        ],
+    }))
+}
+
+/// Writes the shared `messages.jsonl` fixture under `root` and returns its
+/// data directory.
+fn fixture_data_dir(root: &Path) -> PathBuf {
     let data_dir = root.join("fixture-data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     fs::write(
@@ -253,44 +567,24 @@ pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String 
 "#,
     )
     .expect("write jsonl");
-    let table_source = json!({
-        "location": format!("file://{}/", data_dir.display()),
-        "glob": "**/*.jsonl",
-    });
-    let table_columns = json!([
-        {"name": "type", "type": "Utf8"},
-        {"name": "sessionId", "type": "Utf8"},
-        {"name": "text", "type": "Utf8"},
-    ]);
-    manifest_yaml(&json!({
-        "name": "local_messages",
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "file",
-        "tables": [
-            {
-                "name": "events",
-                "description": "Fixture events",
-                "format": "jsonl",
-                "source": table_source.clone(),
-                "columns": table_columns.clone(),
-            },
-            {
-                "name": "messages",
-                "description": "Fixture messages",
-                "format": "jsonl",
-                "source": table_source.clone(),
-                "columns": table_columns.clone(),
-            },
-            {
-                "name": "sessions",
-                "description": "Fixture sessions",
-                "format": "jsonl",
-                "source": table_source,
-                "columns": table_columns,
-            },
+    data_dir
+}
+
+fn jsonl_table(name: &str, description: &str, data_dir: &Path) -> Value {
+    json!({
+        "name": name,
+        "description": description,
+        "format": "jsonl",
+        "source": {
+            "location": format!("file://{}/", data_dir.display()),
+            "glob": "**/*.jsonl",
+        },
+        "columns": [
+            {"name": "type", "type": "Utf8"},
+            {"name": "sessionId", "type": "Utf8"},
+            {"name": "text", "type": "Utf8"},
         ],
-    }))
+    })
 }
 
 pub(crate) fn fixture_manifest_with_required_filter_yaml() -> String {
@@ -431,80 +725,43 @@ pub(crate) fn fixture_manifest_with_test_queries_yaml(
     root: &Path,
     test_queries: &[&str],
 ) -> String {
-    let data_dir = root.join("fixture-data");
-    fs::create_dir_all(&data_dir).expect("create data dir");
-    fs::write(
-        data_dir.join("messages.jsonl"),
-        r#"{"type":"user","sessionId":"s1","text":"hello"}
-{"type":"assistant","sessionId":"s1","text":"world"}
-"#,
-    )
-    .expect("write jsonl");
+    let data_dir = fixture_data_dir(root);
     manifest_yaml(&json!({
         "name": "local_messages",
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "file",
         "test_queries": test_queries,
-        "tables": [{
-            "name": "messages",
-            "description": "Fixture messages",
-            "format": "jsonl",
-            "source": {
-                "location": format!("file://{}/", data_dir.display()),
-                "glob": "**/*.jsonl",
-            },
-            "columns": [
-                {"name": "type", "type": "Utf8"},
-                {"name": "sessionId", "type": "Utf8"},
-                {"name": "text", "type": "Utf8"},
-            ],
-        }],
+        "tables": [jsonl_table("messages", "Fixture messages", &data_dir)],
     }))
 }
 
 pub(crate) fn fixture_manifest_with_inputs_yaml() -> String {
-    manifest_yaml(&json!({
-        "name": "secured_messages",
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "http",
-        "inputs": {
-            "API_BASE": { "kind": "variable", "default": "https://example.com" },
-            "API_TOKEN": { "kind": "secret" },
-        },
-        "base_url": "{{input.API_BASE}}",
-        "auth": {
-            "type": "HeaderAuth",
-            "headers": [{
-                "name": "Authorization",
-                "from": "template",
-                "template": "Bearer {{input.API_TOKEN}}",
-            }],
-        },
-        "tables": [{
-            "name": "messages",
-            "description": "Secured messages",
-            "request": {
-                "method": "GET",
-                "path": "/messages",
-            },
-            "response": {},
-            "columns": [
-                {"name": "id", "type": "Utf8"},
-            ],
-        }],
-    }))
+    inputs_manifest_yaml(
+        "secured_messages",
+        &json!({ "kind": "variable", "default": "https://example.com" }),
+        "Secured messages",
+    )
 }
 
 pub(crate) fn fixture_manifest_with_required_inputs_yaml() -> String {
+    inputs_manifest_yaml(
+        "required_messages",
+        &json!({ "kind": "variable" }),
+        "Required-input messages",
+    )
+}
+
+/// Single-table HTTP manifest with an `API_BASE` variable (declared as
+/// `api_base_input`) and a required `API_TOKEN` secret used for auth.
+fn inputs_manifest_yaml(name: &str, api_base_input: &Value, table_description: &str) -> String {
     manifest_yaml(&json!({
-        "name": "required_messages",
+        "name": name,
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "http",
         "inputs": {
-            "API_BASE": { "kind": "variable" },
+            "API_BASE": api_base_input,
             "API_TOKEN": { "kind": "secret" },
         },
         "base_url": "{{input.API_BASE}}",
@@ -518,7 +775,7 @@ pub(crate) fn fixture_manifest_with_required_inputs_yaml() -> String {
         },
         "tables": [{
             "name": "messages",
-            "description": "Required-input messages",
+            "description": table_description,
             "request": {
                 "method": "GET",
                 "path": "/messages",

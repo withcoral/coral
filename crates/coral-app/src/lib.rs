@@ -41,6 +41,7 @@
     )
 )]
 
+mod authorization;
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
 mod catalog;
@@ -50,8 +51,10 @@ pub mod features;
 mod feedback;
 mod identities;
 mod identity;
+mod identity_specs;
 mod query;
 mod request_context;
+mod source_registry;
 mod sources;
 mod state;
 mod storage;
@@ -59,17 +62,45 @@ pub mod telemetry;
 mod transport;
 mod workspaces;
 
+pub use authorization::{
+    AllowAllManagementAuthorizer, AuthorizationError, ManagementAuthorizer, SourceMutationKind,
+};
 pub use bootstrap::{
-    AppError, RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
+    AppError, RunningServer, ServerBuilder, ServerExtensionContext, ServerMode, StaticAsset,
+    StaticAssetsProvider,
 };
-pub use coral_engine::{EngineExtensions, QuerySource};
+pub use coral_engine::{
+    EngineExtensions, QuerySource, RequestIdentityResolutionContext, RequestIdentityResolver,
+    RequestIdentityResolverError,
+};
+pub use credentials::oauth::{OAuthProgressEvent, OAuthProgressEventSender};
 pub use identities::{
-    IdentityOwnerKey, UserOwnedIdentityMaterialGuard, UserOwnedIdentityName,
-    UserOwnedIdentityRecord, UserOwnedIdentityStore,
+    CreateFixedTokenIdentityCommand, CreateOAuthIdentityCommand, IdentityCredentialInput,
+    IdentityManagementHandle, IdentityOwnerKey, UserOwnedIdentityMaterialGuard,
+    UserOwnedIdentityName, UserOwnedIdentityRecord, UserOwnedIdentityStore,
 };
-pub use identity::{SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider};
+pub use identity::SingleUserPrincipalProvider;
+pub use identity::{
+    RuntimeSourceIdentity, SourceIdentityBinding, SourceIdentityOwner, SourceIdentityProvider,
+    SourceIdentityResolutionRequest, SourceIdentitySelection, SourceIdentitySelectionRequest,
+    SourceIdentitySubject, UserPrincipal, UserPrincipalProvider,
+};
+pub use identity_specs::IdentitySpecUsageProvider;
+pub use identity_specs::{
+    IdentitySpecManifestMetadata, IdentitySpecRegistry, IdentitySpecRegistryRecord,
+    identity_spec_input_material_from_manifest,
+    identity_spec_input_material_from_manifest_with_existing, identity_spec_manifest_metadata,
+};
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
+pub use source_registry::{
+    BundleIdentityInputDiscoveryError, BundleIdentityInputKind, BundleIdentityInputSpec,
+    SourceRegistry, SourceRegistryCredentialStorage, SourceRegistryOrigin, SourceRegistryRecord,
+    SourceSpecManifestMetadata, SpecBundleIdentitySpec, SpecBundleManifest, SpecBundleSourceSpec,
+    bundle_identity_inputs_from_yaml, parse_spec_bundle_manifest_yaml,
+    source_spec_manifest_metadata,
+};
 pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
+pub use transport::{OAuthProgressProto, oauth_operation_response_stream};
 pub use workspaces::DEFAULT_WORKSPACE_ID;

@@ -20,7 +20,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use url::{Url, form_urlencoded};
 use uuid::Uuid;
 
@@ -35,7 +35,7 @@ const MAX_CALLBACK_BYTES: usize = 8 * 1024;
 const REFRESH_EXPIRY_SKEW_SECONDS: i64 = 60;
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct OAuthCredentialService {
     http: reqwest::Client,
 }
@@ -45,23 +45,153 @@ pub(crate) struct StartOAuthCredentialRequest<'a> {
     pub(crate) oauth: &'a ManifestOAuthCredentialSpec,
     pub(crate) source_inputs: &'a BTreeMap<String, String>,
     pub(crate) credential_inputs: Vec<(String, String)>,
+    pub(crate) client_material_persistence: OAuthClientMaterialPersistence,
 }
 
-pub(super) struct RefreshOAuthCredentialRequest<'a> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OAuthClientMaterialPersistence {
+    None,
+    ClientCredentials {
+        client_id: bool,
+        client_secret: bool,
+    },
+    All,
+}
+
+/// Progress event emitted while an OAuth credential authorization runs.
+#[derive(Debug, Clone)]
+pub enum OAuthProgressEvent {
+    /// Authorization details that should be shown to the user while OAuth is pending.
+    OAuthAuthorization {
+        /// Source or identity input key whose credential is being authorized.
+        input_key: String,
+        /// URL that starts the authorization flow.
+        authorization_url: String,
+        /// Number of seconds before the authorization request expires.
+        expires_in_seconds: u64,
+        /// Device-code user code, when the provider returned one.
+        user_code: Option<String>,
+        /// Device-code verification URI, when the provider returned one.
+        verification_uri: Option<String>,
+        /// Device-code verification URI with the user code embedded, when available.
+        verification_uri_complete: Option<String>,
+    },
+    /// Notification that OAuth completed and returned provider metadata.
+    OAuthCompleted {
+        /// Source or identity input key whose credential completed authorization.
+        input_key: String,
+        /// Non-secret provider metadata associated with the completed credential.
+        metadata: BTreeMap<String, String>,
+    },
+}
+
+/// Acknowledged progress-event sink bridging an OAuth-driven manager
+/// operation to its gRPC response stream. `send` resolves only once the
+/// consumer dequeued the event, so progress cannot outrun the stream.
+#[derive(Clone)]
+pub struct OAuthProgressEventSender {
+    tx: mpsc::Sender<PendingOAuthProgressEvent>,
+    closed_message: &'static str,
+}
+
+pub(crate) struct PendingOAuthProgressEvent {
+    event: OAuthProgressEvent,
+    delivered: oneshot::Sender<()>,
+}
+
+impl OAuthProgressEventSender {
+    pub(crate) fn new(
+        tx: mpsc::Sender<PendingOAuthProgressEvent>,
+        closed_message: &'static str,
+    ) -> Self {
+        Self { tx, closed_message }
+    }
+
+    /// Sends an OAuth progress event and waits until the stream consumer dequeues it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] if the response stream closed before accepting the event.
+    pub async fn send(&self, event: OAuthProgressEvent) -> Result<(), AppError> {
+        let (delivered, delivered_rx) = oneshot::channel();
+        self.tx
+            .send(PendingOAuthProgressEvent { event, delivered })
+            .await
+            .map_err(|_closed| AppError::FailedPrecondition(self.closed_message.to_string()))?;
+        delivered_rx
+            .await
+            .map_err(|_closed| AppError::FailedPrecondition(self.closed_message.to_string()))
+    }
+}
+
+impl PendingOAuthProgressEvent {
+    pub(crate) fn into_event(self) -> OAuthProgressEvent {
+        let _delivery = self.delivered.send(());
+        self.event
+    }
+}
+
+impl OAuthClientMaterialPersistence {
+    fn stores_client_id(self) -> bool {
+        matches!(
+            self,
+            Self::All
+                | Self::ClientCredentials {
+                    client_id: true,
+                    ..
+                }
+        )
+    }
+
+    fn stores_client_secret(self) -> bool {
+        matches!(
+            self,
+            Self::All
+                | Self::ClientCredentials {
+                    client_secret: true,
+                    ..
+                }
+        )
+    }
+}
+
+pub(crate) struct RefreshOAuthCredentialRequest<'a> {
     access_token_material_key: &'a str,
+    material_label: String,
+    reconnect_label: &'static str,
     metadata_prefix: String,
     oauth: &'a ManifestOAuthCredentialSpec,
+    resolved_inputs: Option<&'a BTreeMap<String, String>>,
 }
 
 impl<'a> RefreshOAuthCredentialRequest<'a> {
-    pub(super) fn for_source_input(
+    pub(crate) fn for_source_input(
         input_key: &'a str,
         oauth: &'a ManifestOAuthCredentialSpec,
     ) -> Self {
         Self {
             access_token_material_key: input_key,
+            material_label: format!("source secret '{input_key}'"),
+            reconnect_label: "reconnect the source",
             metadata_prefix: oauth_metadata_prefix(input_key),
             oauth,
+            resolved_inputs: None,
+        }
+    }
+
+    pub(crate) fn for_identity(
+        identity_name: &str,
+        access_token_material_key: &'a str,
+        oauth: &'a ManifestOAuthCredentialSpec,
+        resolved_inputs: &'a BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            access_token_material_key,
+            material_label: format!("identity '{identity_name}'"),
+            reconnect_label: "reconnect the identity",
+            metadata_prefix: oauth_metadata_prefix(access_token_material_key),
+            oauth,
+            resolved_inputs: Some(resolved_inputs),
         }
     }
 }
@@ -88,6 +218,7 @@ struct OAuthSessionCommon {
     endpoints: ManifestOAuthEndpointUrls,
     client_id: String,
     client_secret: Option<String>,
+    client_material_persistence: OAuthClientMaterialPersistence,
 }
 
 struct AuthorizationCodeSessionConfig {
@@ -165,6 +296,39 @@ impl OAuthCredentialService {
         }
     }
 
+    /// Runs [`Self::authorize`] while reporting progress on `events`, keying
+    /// the emitted events by `event_key`.
+    pub(crate) async fn authorize_with_progress(
+        &self,
+        request: StartOAuthCredentialRequest<'_>,
+        event_key: String,
+        events: &OAuthProgressEventSender,
+    ) -> Result<OAuthCredentialMaterial, AppError> {
+        let authorization_events = events.clone();
+        let authorization_key = event_key.clone();
+        let material = self
+            .authorize(request, move |authorization| async move {
+                authorization_events
+                    .send(OAuthProgressEvent::OAuthAuthorization {
+                        input_key: authorization_key,
+                        authorization_url: authorization.authorization_url,
+                        expires_in_seconds: authorization.expires_in_seconds,
+                        user_code: authorization.user_code,
+                        verification_uri: authorization.verification_uri,
+                        verification_uri_complete: authorization.verification_uri_complete,
+                    })
+                    .await
+            })
+            .await?;
+        events
+            .send(OAuthProgressEvent::OAuthCompleted {
+                input_key: event_key,
+                metadata: material.safe_metadata.clone(),
+            })
+            .await?;
+        Ok(material)
+    }
+
     pub(crate) async fn authorize<F, Fut>(
         &self,
         request: StartOAuthCredentialRequest<'_>,
@@ -180,39 +344,29 @@ impl OAuthCredentialService {
         reject_unknown_credential_inputs(&oauth, &credential_inputs)?;
         let client_id = resolve_client_id(&oauth, &credential_inputs)?;
         let client_secret = resolve_client_secret(&oauth, &credential_inputs)?;
-        match oauth.flow.kind {
+        let flow_kind = oauth.flow.kind;
+        let common = OAuthSessionCommon {
+            input_key: request.input_key.to_string(),
+            oauth,
+            endpoints,
+            client_id,
+            client_secret,
+            client_material_persistence: request.client_material_persistence,
+        };
+        match flow_kind {
             ManifestOAuthFlowKind::AuthorizationCode => {
-                self.authorize_authorization_code(
-                    request.input_key.to_string(),
-                    oauth,
-                    endpoints,
-                    client_id,
-                    client_secret,
-                    on_authorization,
-                )
-                .await
+                self.authorize_authorization_code(common, on_authorization)
+                    .await
             }
             ManifestOAuthFlowKind::DeviceCode => {
-                self.authorize_device_code(
-                    request.input_key.to_string(),
-                    oauth,
-                    endpoints,
-                    client_id,
-                    client_secret,
-                    on_authorization,
-                )
-                .await
+                self.authorize_device_code(common, on_authorization).await
             }
         }
     }
 
     async fn authorize_authorization_code<F, Fut>(
         &self,
-        input_key: String,
-        oauth: ManifestOAuthCredentialSpec,
-        endpoints: ManifestOAuthEndpointUrls,
-        client_id: String,
-        client_secret: Option<String>,
+        common: OAuthSessionCommon,
         on_authorization: F,
     ) -> Result<OAuthCredentialMaterial, AppError>
     where
@@ -220,25 +374,18 @@ impl OAuthCredentialService {
         Fut: Future<Output = Result<(), AppError>>,
     {
         let (listener, callback_path, provider_redirect_uri) =
-            bind_redirect_listener(&oauth).await?;
+            bind_redirect_listener(&common.oauth).await?;
         let state = random_token();
-        let code_verifier = pkce_code_verifier(&oauth);
+        let code_verifier = pkce_code_verifier(&common.oauth);
         let authorization_url = build_authorization_url(
-            &oauth,
-            &endpoints,
+            &common.oauth,
+            &common.endpoints,
             &provider_redirect_uri,
-            &client_id,
+            &common.client_id,
             &state,
             code_verifier.as_deref(),
         )?;
         let expires_at = Instant::now() + SESSION_TTL;
-        let common = OAuthSessionCommon {
-            input_key,
-            oauth,
-            endpoints,
-            client_id,
-            client_secret,
-        };
         let session = AuthorizationCodeSessionConfig {
             common,
             state,
@@ -298,15 +445,17 @@ impl OAuthCredentialService {
 
     /// Uses persisted credential material as both the refresh input
     /// (expiry, refresh token, client metadata) and output (new token values).
-    pub(super) async fn refresh_if_needed(
+    pub(crate) async fn refresh_if_needed(
         &self,
         request: RefreshOAuthCredentialRequest<'_>,
         credential_material: &mut BTreeMap<String, String>,
     ) -> Result<bool, AppError> {
         let Some(refresh) = oauth_refresh_config(
-            request.access_token_material_key,
+            request.material_label.as_str(),
+            request.reconnect_label,
             request.metadata_prefix.as_str(),
             request.oauth,
+            request.resolved_inputs,
             credential_material,
         )?
         else {
@@ -324,27 +473,23 @@ impl OAuthCredentialService {
 
     async fn authorize_device_code<F, Fut>(
         &self,
-        input_key: String,
-        oauth: ManifestOAuthCredentialSpec,
-        endpoints: ManifestOAuthEndpointUrls,
-        client_id: String,
-        client_secret: Option<String>,
+        mut common: OAuthSessionCommon,
         on_authorization: F,
     ) -> Result<OAuthCredentialMaterial, AppError>
     where
         F: FnOnce(OAuthAuthorization) -> Fut,
         Fut: Future<Output = Result<(), AppError>>,
     {
-        if client_secret.is_some() {
+        if common.client_secret.is_some() {
             return Err(AppError::InvalidInput(
                 "device_code OAuth methods must not declare a client secret".to_string(),
             ));
         }
         let device = request_device_code(
             &self.http,
-            &oauth,
-            &endpoints,
-            &client_id,
+            &common.oauth,
+            &common.endpoints,
+            &common.client_id,
             DEVICE_CODE_REQUEST_TIMEOUT,
         )
         .await?;
@@ -356,13 +501,7 @@ impl OAuthCredentialService {
         let verification_uri = device.verification_uri.clone();
         let verification_uri_complete = device.verification_uri_complete.clone();
         let expires_in = device.expires_in;
-        let common = OAuthSessionCommon {
-            input_key,
-            oauth,
-            endpoints,
-            client_id,
-            client_secret: None,
-        };
+        common.client_secret = None;
         let session = DeviceCodeSessionConfig {
             common,
             device_code: device.device_code,
@@ -998,7 +1137,8 @@ async fn poll_device_token(
                 }
                 "expired_token" => {
                     return Err(AppError::FailedPrecondition(
-                        "OAuth device code expired; rerun `coral source add`".to_string(),
+                        "OAuth device code expired; start a new OAuth credential retrieval"
+                            .to_string(),
                     ));
                 }
                 "access_denied" => {
@@ -1026,7 +1166,7 @@ async fn poll_device_token(
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(AppError::FailedPrecondition(
-                "OAuth device code expired; rerun `coral source add`".to_string(),
+                "OAuth device code expired; start a new OAuth credential retrieval".to_string(),
             ));
         }
         tokio::time::sleep(interval.min(remaining)).await;
@@ -1248,19 +1388,25 @@ fn oauth_credential_material(
     if let Some(scope) = token.scope.as_deref() {
         internal_metadata.insert(format!("{prefix}scope"), scope.to_string());
     }
-    internal_metadata.insert(format!("{prefix}client_id"), session.client_id.clone());
-    internal_metadata.insert(
-        format!("{prefix}token_url"),
-        session.endpoints.token_url.clone(),
-    );
-    if let Some(secret) = session.oauth.client.secret.as_ref() {
+    if session.client_material_persistence.stores_client_id() {
+        internal_metadata.insert(format!("{prefix}client_id"), session.client_id.clone());
+    }
+    if session.client_material_persistence == OAuthClientMaterialPersistence::All {
         internal_metadata.insert(
-            format!("{prefix}client_secret_transport"),
-            secret.transport.label().to_string(),
+            format!("{prefix}token_url"),
+            session.endpoints.token_url.clone(),
         );
     }
-    if let Some(client_secret) = session.client_secret.as_deref() {
-        internal_metadata.insert(format!("{prefix}client_secret"), client_secret.to_string());
+    if session.client_material_persistence.stores_client_secret() {
+        if let Some(secret) = session.oauth.client.secret.as_ref() {
+            internal_metadata.insert(
+                format!("{prefix}client_secret_transport"),
+                secret.transport.label().to_string(),
+            );
+        }
+        if let Some(client_secret) = session.client_secret.as_deref() {
+            internal_metadata.insert(format!("{prefix}client_secret"), client_secret.to_string());
+        }
     }
     OAuthCredentialMaterial {
         input_key: session.input_key.clone(),
@@ -1282,11 +1428,15 @@ fn oauth_metadata_prefix(input_key: &str) -> String {
 }
 
 fn oauth_refresh_config(
-    access_token_material_key: &str,
+    material_label: &str,
+    reconnect_label: &str,
     metadata_prefix: &str,
     oauth: &ManifestOAuthCredentialSpec,
+    resolved_inputs: Option<&BTreeMap<String, String>>,
     material: &BTreeMap<String, String>,
 ) -> Result<Option<OAuthRefreshConfig>, AppError> {
+    let empty_resolved_inputs = BTreeMap::new();
+    let resolved_inputs = resolved_inputs.unwrap_or(&empty_resolved_inputs);
     if material
         .get(&format!("{metadata_prefix}method"))
         .map(String::as_str)
@@ -1301,7 +1451,7 @@ fn oauth_refresh_config(
     let expires_at = DateTime::parse_from_rfc3339(expires_at)
         .map_err(|error| {
             AppError::FailedPrecondition(format!(
-                "stored OAuth access token expiry for source secret '{access_token_material_key}' is invalid: {error}"
+                "stored OAuth access token expiry for {material_label} is invalid: {error}"
             ))
         })?
         .with_timezone(&Utc);
@@ -1318,43 +1468,33 @@ fn oauth_refresh_config(
             return Ok(None);
         }
         return Err(AppError::FailedPrecondition(format!(
-            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because no refresh token is stored; reconnect the source"
+            "OAuth access token for {material_label} expired and cannot be refreshed because no refresh token is stored; {reconnect_label}"
         )));
     };
-    let client_id = material
-        .get(&format!("{metadata_prefix}client_id"))
-        .filter(|value| !value.is_empty())
-        .cloned()
-        .or_else(|| oauth.client.id.default.clone())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            AppError::FailedPrecondition(format!(
-                "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because client ID metadata is missing"
-            ))
-        })?;
-    let token_url = material
-        .get(&format!("{metadata_prefix}token_url"))
-        .filter(|value| !value.is_empty())
-        .cloned()
-        .unwrap_or_else(|| oauth.token_url.clone());
+    let client_id = oauth_refresh_client_id(
+        material_label,
+        metadata_prefix,
+        oauth,
+        resolved_inputs,
+        material,
+    )?;
+    let token_url = oauth_refresh_token_url(metadata_prefix, oauth, resolved_inputs, material)?;
     let client_secret_transport = material
         .get(&format!("{metadata_prefix}client_secret_transport"))
         .map(|value| {
             ManifestOAuthClientSecretTransport::from_label(value).ok_or_else(|| {
                 AppError::FailedPrecondition(format!(
-                    "stored OAuth client secret transport for source secret '{access_token_material_key}' is invalid: {value}"
+                    "stored OAuth client secret transport for {material_label} is invalid: {value}"
                 ))
             })
         })
         .transpose()?
         .or_else(|| oauth.client.secret.as_ref().map(|secret| secret.transport));
-    let client_secret = material
-        .get(&format!("{metadata_prefix}client_secret"))
-        .filter(|value| !value.is_empty())
-        .cloned();
+    let client_secret =
+        oauth_refresh_client_secret(metadata_prefix, oauth, resolved_inputs, material);
     if client_secret_transport.is_some() && client_secret.is_none() {
         return Err(AppError::FailedPrecondition(format!(
-            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because client secret metadata is missing"
+            "OAuth access token for {material_label} expired and cannot be refreshed because client secret metadata is missing"
         )));
     }
     Ok(Some(OAuthRefreshConfig {
@@ -1364,6 +1504,77 @@ fn oauth_refresh_config(
         client_secret_transport,
         refresh_token,
     }))
+}
+
+fn oauth_refresh_client_id(
+    material_label: &str,
+    metadata_prefix: &str,
+    oauth: &ManifestOAuthCredentialSpec,
+    resolved_inputs: &BTreeMap<String, String>,
+    material: &BTreeMap<String, String>,
+) -> Result<String, AppError> {
+    material
+        .get(&format!("{metadata_prefix}client_id"))
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .or_else(|| {
+            oauth.client
+                .id
+                .input
+                .as_deref()
+                .and_then(|input| resolved_inputs.get(input))
+                .filter(|value| !value.is_empty())
+                .cloned()
+        })
+        .or_else(|| oauth.client.id.default.clone())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::FailedPrecondition(format!(
+                "OAuth access token for {material_label} expired and cannot be refreshed because client ID metadata is missing"
+            ))
+        })
+}
+
+fn oauth_refresh_token_url(
+    metadata_prefix: &str,
+    oauth: &ManifestOAuthCredentialSpec,
+    resolved_inputs: &BTreeMap<String, String>,
+    material: &BTreeMap<String, String>,
+) -> Result<String, AppError> {
+    material
+        .get(&format!("{metadata_prefix}token_url"))
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .map_or_else(
+            || {
+                oauth
+                    .endpoint_urls(resolved_inputs)
+                    .map(|endpoints| endpoints.token_url)
+                    .map_err(|error| AppError::FailedPrecondition(error.to_string()))
+            },
+            Ok,
+        )
+}
+
+fn oauth_refresh_client_secret(
+    metadata_prefix: &str,
+    oauth: &ManifestOAuthCredentialSpec,
+    resolved_inputs: &BTreeMap<String, String>,
+    material: &BTreeMap<String, String>,
+) -> Option<String> {
+    material
+        .get(&format!("{metadata_prefix}client_secret"))
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .or_else(|| {
+            oauth
+                .client
+                .secret
+                .as_ref()
+                .and_then(|secret| resolved_inputs.get(&secret.input))
+                .filter(|value| !value.is_empty())
+                .cloned()
+        })
 }
 
 fn apply_refreshed_token(
@@ -1449,11 +1660,14 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        AuthorizationCodeSessionConfig, OAuthCredentialService, OAuthSessionCommon,
-        RefreshOAuthCredentialRequest, StartOAuthCredentialRequest, basic_client_authorization,
-        join_scope_values, material_key_belongs_to_input, oauth_metadata_prefix,
-        parse_token_response, pkce_challenge, receive_callback, request_device_code,
+        AuthorizationCodeSessionConfig, OAuthAuthorization, OAuthClientMaterialPersistence,
+        OAuthCredentialMaterial, OAuthCredentialService, OAuthSessionCommon,
+        RefreshOAuthCredentialRequest, StartOAuthCredentialRequest, TokenResponse,
+        basic_client_authorization, join_scope_values, material_key_belongs_to_input,
+        oauth_credential_material, oauth_metadata_prefix, parse_token_response, pkce_challenge,
+        receive_callback, request_device_code,
     };
+    use crate::bootstrap::AppError;
     use coral_spec::{
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
         ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
@@ -1467,6 +1681,9 @@ mod tests {
     use url::Url;
 
     static EMPTY_SOURCE_INPUTS: LazyLock<BTreeMap<String, String>> = LazyLock::new(BTreeMap::new);
+
+    const REFRESHED_TOKEN_RESPONSE: &str =
+        r#"{"access_token":"refreshed-token","token_type":"Bearer","expires_in":3600}"#;
 
     #[test]
     fn joins_scope_values_with_configured_delimiter() {
@@ -1516,157 +1733,151 @@ mod tests {
         assert!(token.expires_at.is_none());
     }
 
-    #[tokio::test]
-    async fn expired_oauth_material_refreshes_access_token() {
-        let fixture = OAuthFixture::new(Some(
-            r#"{"access_token":"refreshed-token","refresh_token":"rotated-refresh-token","token_type":"Bearer","scope":"repo read:org","expires_in":3600}"#,
-        ));
+    #[test]
+    fn legacy_identity_client_credentials_persistence_omits_token_url() {
         let oauth = oauth_spec(
-            &fixture.token_url,
-            free_loopback_port(),
+            "https://auth.example.test/token",
+            53682,
             ManifestOAuthPkceMode::Disabled,
-            ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
+            confidential_client(ManifestOAuthClientSecretTransport::RequestBody),
         );
-        let prefix = oauth_metadata_prefix("API_TOKEN");
-        let mut material = BTreeMap::from([
-            ("API_TOKEN".to_string(), "expired-token".to_string()),
-            (format!("{prefix}method"), "oauth".to_string()),
-            (
-                format!("{prefix}access_token_expires_at"),
-                (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
-            ),
-            (
-                format!("{prefix}refresh_token"),
-                "stored-refresh-token".to_string(),
-            ),
-            (format!("{prefix}client_id"), "stored-client".to_string()),
-            (format!("{prefix}token_url"), fixture.token_url.clone()),
-        ]);
-        let service = OAuthCredentialService::new();
+        let material = legacy_identity_material(
+            &oauth,
+            &EMPTY_SOURCE_INPUTS,
+            "legacy-secret",
+            true,
+            "access-token",
+            "refresh-token",
+            chrono::Utc::now(),
+        );
 
-        let refreshed = service
-            .refresh_if_needed(
-                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", &oauth),
-                &mut material,
-            )
+        assert_oauth_meta(
+            &material.internal_metadata,
+            "ACCESS_TOKEN",
+            &[
+                ("client_id", Some("legacy-client")),
+                ("client_secret", Some("legacy-secret")),
+                ("token_url", None),
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn mixed_identity_client_persistence_omits_spec_owned_secret_and_refreshes() {
+        let fixture = OAuthFixture::new(Some(REFRESHED_TOKEN_RESPONSE));
+        let oauth = confidential_basic_spec("{{input.TOKEN_URL}}", free_loopback_port());
+        let resolved_inputs = BTreeMap::from([
+            ("TOKEN_URL".to_string(), fixture.token_url.clone()),
+            (
+                "OAUTH_CLIENT_SECRET".to_string(),
+                "resolved-secret".to_string(),
+            ),
+        ]);
+        let material = legacy_identity_material(
+            &oauth,
+            &resolved_inputs,
+            "spec-owned-secret",
+            false,
+            "expired-token",
+            "stored-refresh-token",
+            chrono::Utc::now() - chrono::Duration::minutes(5),
+        );
+
+        assert_oauth_meta(
+            &material.internal_metadata,
+            "ACCESS_TOKEN",
+            &[
+                ("client_id", Some("legacy-client")),
+                ("client_secret", None),
+                ("client_secret_transport", None),
+            ],
+        );
+
+        let mut stored = material.internal_metadata;
+        stored.insert("ACCESS_TOKEN".to_string(), material.access_token);
+        let refreshed = refresh_identity(&oauth, &resolved_inputs, &mut stored)
             .await
             .expect("refresh oauth material");
         let captured = fixture.token_server.await.expect("token server");
 
         assert!(refreshed);
-        assert_eq!(
-            captured.form.get("grant_type").map(String::as_str),
-            Some("refresh_token")
+        assert_basic_auth(&captured, "legacy-client", "resolved-secret");
+        assert_entry(&stored, "ACCESS_TOKEN", Some("refreshed-token"));
+    }
+
+    #[tokio::test]
+    async fn expired_oauth_material_refreshes_access_token() {
+        let fixture = OAuthFixture::new(Some(
+            r#"{"access_token":"refreshed-token","refresh_token":"rotated-refresh-token","token_type":"Bearer","scope":"repo read:org","expires_in":3600}"#,
+        ));
+        let oauth = public_spec(&fixture.token_url, free_loopback_port());
+        let mut material = stored_oauth_material(
+            "API_TOKEN",
+            "expired-token",
+            chrono::Duration::minutes(-5),
+            &[
+                ("refresh_token", "stored-refresh-token"),
+                ("client_id", "stored-client"),
+                ("token_url", &fixture.token_url),
+            ],
         );
-        assert_eq!(
-            captured.form.get("refresh_token").map(String::as_str),
-            Some("stored-refresh-token")
+
+        let refreshed = refresh_source_input("API_TOKEN", &oauth, &mut material)
+            .await
+            .expect("refresh oauth material");
+        let captured = fixture.token_server.await.expect("token server");
+
+        assert!(refreshed);
+        assert_entry(&captured.form, "grant_type", Some("refresh_token"));
+        assert_entry(
+            &captured.form,
+            "refresh_token",
+            Some("stored-refresh-token"),
         );
-        assert_eq!(
-            captured.form.get("client_id").map(String::as_str),
-            Some("stored-client")
-        );
-        assert_eq!(
-            material.get("API_TOKEN").map(String::as_str),
-            Some("refreshed-token")
-        );
-        assert_eq!(
-            material
-                .get(&format!("{prefix}refresh_token"))
-                .map(String::as_str),
-            Some("rotated-refresh-token")
+        assert_entry(&captured.form, "client_id", Some("stored-client"));
+        assert_entry(&material, "API_TOKEN", Some("refreshed-token"));
+        assert_oauth_meta(
+            &material,
+            "API_TOKEN",
+            &[("refresh_token", Some("rotated-refresh-token"))],
         );
         assert!(captured.authorization.is_none());
     }
 
     #[tokio::test]
     async fn unexpired_oauth_material_does_not_refresh_access_token() {
-        let oauth = oauth_spec(
-            "http://127.0.0.1:9/token",
-            53682,
-            ManifestOAuthPkceMode::Disabled,
-            ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
+        let oauth = public_spec("http://127.0.0.1:9/token", 53682);
+        let mut material = stored_oauth_material(
+            "API_TOKEN",
+            "fresh-token",
+            chrono::Duration::minutes(5),
+            &[("refresh_token", "stored-refresh-token")],
         );
-        let prefix = oauth_metadata_prefix("API_TOKEN");
-        let mut material = BTreeMap::from([
-            ("API_TOKEN".to_string(), "fresh-token".to_string()),
-            (format!("{prefix}method"), "oauth".to_string()),
-            (
-                format!("{prefix}access_token_expires_at"),
-                (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
-            ),
-            (
-                format!("{prefix}refresh_token"),
-                "stored-refresh-token".to_string(),
-            ),
-        ]);
-        let service = OAuthCredentialService::new();
 
-        let refreshed = service
-            .refresh_if_needed(
-                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", &oauth),
-                &mut material,
-            )
+        let refreshed = refresh_source_input("API_TOKEN", &oauth, &mut material)
             .await
             .expect("refresh oauth material");
 
         assert!(!refreshed);
-        assert_eq!(
-            material.get("API_TOKEN").map(String::as_str),
-            Some("fresh-token")
-        );
+        assert_entry(&material, "API_TOKEN", Some("fresh-token"));
     }
 
     #[tokio::test]
     async fn near_expiry_oauth_material_without_refresh_token_remains_usable() {
-        let oauth = oauth_spec(
-            "http://127.0.0.1:9/token",
-            53682,
-            ManifestOAuthPkceMode::Disabled,
-            ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
+        let oauth = public_spec("http://127.0.0.1:9/token", 53682);
+        let mut material = stored_oauth_material(
+            "API_TOKEN",
+            "near-expiry-token",
+            chrono::Duration::seconds(30),
+            &[],
         );
-        let prefix = oauth_metadata_prefix("API_TOKEN");
-        let mut material = BTreeMap::from([
-            ("API_TOKEN".to_string(), "near-expiry-token".to_string()),
-            (format!("{prefix}method"), "oauth".to_string()),
-            (
-                format!("{prefix}access_token_expires_at"),
-                (chrono::Utc::now() + chrono::Duration::seconds(30)).to_rfc3339(),
-            ),
-        ]);
-        let service = OAuthCredentialService::new();
 
-        let refreshed = service
-            .refresh_if_needed(
-                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", &oauth),
-                &mut material,
-            )
+        let refreshed = refresh_source_input("API_TOKEN", &oauth, &mut material)
             .await
             .expect("near-expiry token without refresh token should still be usable");
 
         assert!(!refreshed);
-        assert_eq!(
-            material.get("API_TOKEN").map(String::as_str),
-            Some("near-expiry-token")
-        );
+        assert_entry(&material, "API_TOKEN", Some("near-expiry-token"));
     }
 
     #[tokio::test]
@@ -1687,33 +1898,17 @@ mod tests {
                 .expect("read stalled token request");
             tokio::time::sleep(Duration::from_mins(1)).await;
         });
-        let oauth = oauth_spec(
-            &token_url,
-            53682,
-            ManifestOAuthPkceMode::Disabled,
-            ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
+        let oauth = public_spec(&token_url, 53682);
+        let mut material = stored_oauth_material(
+            "API_TOKEN",
+            "expired-token",
+            chrono::Duration::minutes(-5),
+            &[
+                ("refresh_token", "stored-refresh-token"),
+                ("client_id", "stored-client"),
+                ("token_url", &token_url),
+            ],
         );
-        let prefix = oauth_metadata_prefix("API_TOKEN");
-        let mut material = BTreeMap::from([
-            ("API_TOKEN".to_string(), "expired-token".to_string()),
-            (format!("{prefix}method"), "oauth".to_string()),
-            (
-                format!("{prefix}access_token_expires_at"),
-                (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
-            ),
-            (
-                format!("{prefix}refresh_token"),
-                "stored-refresh-token".to_string(),
-            ),
-            (format!("{prefix}client_id"), "stored-client".to_string()),
-            (format!("{prefix}token_url"), token_url),
-        ]);
         let service = OAuthCredentialService::with_token_request_timeout(Duration::from_millis(50));
 
         let error = service
@@ -1730,202 +1925,163 @@ mod tests {
                 .contains("OAuth token refresh request failed"),
             "unexpected error: {error:#}"
         );
-        assert_eq!(
-            material.get("API_TOKEN").map(String::as_str),
-            Some("expired-token")
-        );
+        assert_entry(&material, "API_TOKEN", Some("expired-token"));
         server.abort();
     }
 
     #[tokio::test]
     async fn confidential_oauth_refresh_uses_stored_basic_auth_client_secret() {
-        let fixture = OAuthFixture::new(Some(
-            r#"{"access_token":"refreshed-token","token_type":"Bearer","expires_in":3600}"#,
-        ));
-        let oauth = oauth_spec(
-            &fixture.token_url,
-            free_loopback_port(),
-            ManifestOAuthPkceMode::Disabled,
-            confidential_client(ManifestOAuthClientSecretTransport::BasicAuth),
+        let fixture = OAuthFixture::new(Some(REFRESHED_TOKEN_RESPONSE));
+        let oauth = confidential_basic_spec(&fixture.token_url, free_loopback_port());
+        let mut material = stored_oauth_material(
+            "API_TOKEN",
+            "expired-token",
+            chrono::Duration::minutes(-5),
+            &[
+                ("refresh_token", "stored-refresh-token"),
+                ("client_id", "stored-client"),
+                ("client_secret", "stored-secret"),
+                ("client_secret_transport", "basic_auth"),
+                ("token_url", &fixture.token_url),
+            ],
         );
-        let prefix = oauth_metadata_prefix("API_TOKEN");
-        let mut material = BTreeMap::from([
-            ("API_TOKEN".to_string(), "expired-token".to_string()),
-            (format!("{prefix}method"), "oauth".to_string()),
-            (
-                format!("{prefix}access_token_expires_at"),
-                (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
-            ),
-            (
-                format!("{prefix}refresh_token"),
-                "stored-refresh-token".to_string(),
-            ),
-            (format!("{prefix}client_id"), "stored-client".to_string()),
-            (
-                format!("{prefix}client_secret"),
-                "stored-secret".to_string(),
-            ),
-            (
-                format!("{prefix}client_secret_transport"),
-                "basic_auth".to_string(),
-            ),
-            (format!("{prefix}token_url"), fixture.token_url.clone()),
-        ]);
-        let service = OAuthCredentialService::new();
 
-        let refreshed = service
-            .refresh_if_needed(
-                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", &oauth),
-                &mut material,
-            )
+        let refreshed = refresh_source_input("API_TOKEN", &oauth, &mut material)
             .await
             .expect("refresh oauth material");
         let captured = fixture.token_server.await.expect("token server");
 
         assert!(refreshed);
-        let expected_authorization = basic_client_authorization("stored-client", "stored-secret");
-        assert_eq!(
-            captured.authorization.as_deref(),
-            Some(expected_authorization.as_str())
-        );
+        assert_basic_auth(&captured, "stored-client", "stored-secret");
         assert!(!captured.form.contains_key("client_secret"));
-        assert_eq!(
-            material.get("API_TOKEN").map(String::as_str),
-            Some("refreshed-token")
+        assert_entry(&material, "API_TOKEN", Some("refreshed-token"));
+    }
+
+    #[tokio::test]
+    async fn confidential_identity_oauth_refresh_uses_resolved_inputs() {
+        let fixture = OAuthFixture::new(Some(REFRESHED_TOKEN_RESPONSE));
+        let oauth = oauth_spec(
+            "{{input.TOKEN_URL}}",
+            free_loopback_port(),
+            ManifestOAuthPkceMode::Disabled,
+            ManifestOAuthClientSpec {
+                id: client_id_spec(Some("default-client"), None),
+                secret: Some(ManifestOAuthClientSecretSpec {
+                    input: "OAUTH_CLIENT_SECRET".to_string(),
+                    transport: ManifestOAuthClientSecretTransport::BasicAuth,
+                }),
+            },
         );
+        let mut material = stored_oauth_material(
+            "ACCESS_TOKEN",
+            "expired-token",
+            chrono::Duration::minutes(-5),
+            &[("refresh_token", "stored-refresh-token")],
+        );
+        let resolved_inputs = BTreeMap::from([
+            ("TOKEN_URL".to_string(), fixture.token_url.clone()),
+            (
+                "OAUTH_CLIENT_SECRET".to_string(),
+                "resolved-secret".to_string(),
+            ),
+        ]);
+
+        let refreshed = refresh_identity(&oauth, &resolved_inputs, &mut material)
+            .await
+            .expect("refresh oauth material");
+        let captured = fixture.token_server.await.expect("token server");
+
+        assert!(refreshed);
+        assert_basic_auth(&captured, "default-client", "resolved-secret");
+        assert_entry(
+            &captured.form,
+            "refresh_token",
+            Some("stored-refresh-token"),
+        );
+        assert_entry(&material, "ACCESS_TOKEN", Some("refreshed-token"));
+    }
+
+    #[tokio::test]
+    async fn confidential_legacy_identity_oauth_refresh_uses_stored_client_credentials() {
+        let fixture = OAuthFixture::new(Some(REFRESHED_TOKEN_RESPONSE));
+        let oauth = confidential_basic_spec("{{input.TOKEN_URL}}", free_loopback_port());
+        let mut material = stored_oauth_material(
+            "ACCESS_TOKEN",
+            "expired-token",
+            chrono::Duration::minutes(-5),
+            &[
+                ("refresh_token", "stored-refresh-token"),
+                ("client_id", "legacy-client"),
+                ("client_secret", "legacy-secret"),
+                ("client_secret_transport", "basic_auth"),
+            ],
+        );
+        let resolved_inputs =
+            BTreeMap::from([("TOKEN_URL".to_string(), fixture.token_url.clone())]);
+
+        let refreshed = refresh_identity(&oauth, &resolved_inputs, &mut material)
+            .await
+            .expect("refresh oauth material");
+        let captured = fixture.token_server.await.expect("token server");
+
+        assert!(refreshed);
+        assert_basic_auth(&captured, "legacy-client", "legacy-secret");
+        assert_entry(&material, "ACCESS_TOKEN", Some("refreshed-token"));
     }
 
     #[tokio::test]
     async fn public_pkce_oauth_session_exchanges_and_returns_token_material() {
         let fixture = OAuthFixture::new(None);
-        let redirect_port = free_loopback_port();
         let oauth = oauth_spec(
             &fixture.token_url,
-            redirect_port,
+            free_loopback_port(),
             ManifestOAuthPkceMode::Required,
             ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: Some("OAUTH_CLIENT_ID".to_string()),
-                },
+                id: client_id_spec(Some("default-client"), Some("OAUTH_CLIENT_ID")),
                 secret: None,
             },
         );
-        let service = OAuthCredentialService::new();
 
-        let (authorization_tx, authorization_rx) = oneshot::channel();
-        let authorize = service.authorize(
-            StartOAuthCredentialRequest {
-                input_key: "API_TOKEN",
-                oauth: &oauth,
-                source_inputs: &EMPTY_SOURCE_INPUTS,
-                credential_inputs: vec![(
-                    "OAUTH_CLIENT_ID".to_string(),
-                    "override-client".to_string(),
-                )],
+        let (completed, captured) = run_authorization_code_session(
+            fixture,
+            &oauth,
+            &[("OAUTH_CLIENT_ID", "override-client")],
+            |authorization_url| {
+                let query = query_pairs(authorization_url);
+                assert_entry(&query, "client_id", Some("override-client"));
+                assert_entry(&query, "scope", Some("repo read:org"));
+                assert_entry(&query, "code_challenge_method", Some("S256"));
+                assert!(!query.contains_key("client_secret"));
             },
-            move |authorization| async move {
-                authorization_tx
-                    .send(authorization.authorization_url)
-                    .map_err(|_authorization_url| {
-                        crate::bootstrap::AppError::FailedPrecondition(
-                            "authorization receiver closed".to_string(),
-                        )
-                    })
-            },
-        );
-        let callback = async {
-            let authorization_url = authorization_rx.await.expect("authorization url");
-            let authorization_url = Url::parse(&authorization_url).expect("authorization url");
-            let query = query_pairs(&authorization_url);
-            assert_eq!(
-                query.get("client_id").map(String::as_str),
-                Some("override-client")
-            );
-            assert_eq!(
-                query.get("scope").map(String::as_str),
-                Some("repo read:org")
-            );
-            assert_eq!(
-                query.get("code_challenge_method").map(String::as_str),
-                Some("S256")
-            );
-            assert!(!query.contains_key("client_secret"));
-            let callback_url = format!(
-                "http://127.0.0.1:{redirect_port}/oauth/callback?state={}&code=test-code",
-                query.get("state").expect("state")
-            );
-            reqwest::get(callback_url)
-                .await
-                .expect("callback response")
-                .error_for_status()
-                .expect("callback success");
-        };
+        )
+        .await;
 
-        let (completed, ()) = tokio::join!(authorize, callback);
-        let completed = completed.expect("authorize oauth");
-        let captured = fixture.token_server.await.expect("token server");
-
-        assert_eq!(completed.input_key, "API_TOKEN");
         assert_eq!(completed.access_token, "access-token");
-        assert_eq!(
-            captured.form.get("client_id").map(String::as_str),
-            Some("override-client")
-        );
-        assert_eq!(
-            captured.form.get("code").map(String::as_str),
-            Some("test-code")
-        );
+        assert_entry(&captured.form, "client_id", Some("override-client"));
+        assert_entry(&captured.form, "code", Some("test-code"));
         assert!(captured.form.contains_key("code_verifier"));
         assert!(!captured.form.contains_key("client_secret"));
         assert!(captured.authorization.is_none());
-        assert_eq!(
-            completed
-                .internal_metadata
-                .get(&format!(
-                    "{}refresh_token",
-                    oauth_metadata_prefix("API_TOKEN")
-                ))
-                .map(String::as_str),
-            Some("refresh-token")
+        assert_oauth_meta(
+            &completed.internal_metadata,
+            "API_TOKEN",
+            &[
+                ("refresh_token", Some("refresh-token")),
+                ("client_id", Some("override-client")),
+            ],
         );
-        assert_eq!(
-            completed
-                .internal_metadata
-                .get(&format!("{}client_id", oauth_metadata_prefix("API_TOKEN")))
-                .map(String::as_str),
-            Some("override-client")
-        );
-        assert_eq!(
-            completed.safe_metadata.get("scope").map(String::as_str),
-            Some("repo read:org")
-        );
+        assert_entry(&completed.safe_metadata, "scope", Some("repo read:org"));
     }
 
     #[tokio::test]
     async fn device_code_oauth_session_polls_and_stores_token_material() {
         let fixture = DeviceOAuthFixture::new();
         let oauth = device_oauth_spec(&fixture.device_url, &fixture.token_url);
-        let service = OAuthCredentialService::new();
 
-        let (authorization_tx, authorization_rx) = oneshot::channel();
-        let authorize = service.authorize(
-            StartOAuthCredentialRequest {
-                input_key: "API_TOKEN",
-                oauth: &oauth,
-                source_inputs: &EMPTY_SOURCE_INPUTS,
-                credential_inputs: vec![(
-                    "OAUTH_CLIENT_ID".to_string(),
-                    "device-client".to_string(),
-                )],
-            },
-            move |authorization| async move {
-                authorization_tx.send(authorization).map_err(|_error| {
-                    crate::bootstrap::AppError::FailedPrecondition(
-                        "authorization receiver closed".to_string(),
-                    )
-                })
-            },
+        let (authorize, authorization_rx) = start_authorize(
+            &oauth,
+            &EMPTY_SOURCE_INPUTS,
+            &[("OAUTH_CLIENT_ID", "device-client")],
         );
         let authorization = async {
             let authorization = authorization_rx.await.expect("authorization");
@@ -1946,29 +2102,19 @@ mod tests {
 
         assert_eq!(completed.input_key, "API_TOKEN");
         assert_eq!(completed.access_token, "access-token");
-        assert_eq!(
-            captured.device.form.get("client_id").map(String::as_str),
-            Some("device-client")
+        assert_entry(&captured.device.form, "client_id", Some("device-client"));
+        assert_entry(&captured.device.form, "scope", Some("repo read:org"));
+        assert_entry(
+            &captured.token.form,
+            "grant_type",
+            Some("urn:ietf:params:oauth:grant-type:device_code"),
         );
-        assert_eq!(
-            captured.device.form.get("scope").map(String::as_str),
-            Some("repo read:org")
-        );
-        assert_eq!(
-            captured.token.form.get("grant_type").map(String::as_str),
-            Some("urn:ietf:params:oauth:grant-type:device_code")
-        );
-        assert_eq!(
-            captured.token.form.get("device_code").map(String::as_str),
-            Some("device-code")
-        );
+        assert_entry(&captured.token.form, "device_code", Some("device-code"));
         assert!(!captured.token.form.contains_key("client_secret"));
-        assert_eq!(
-            completed
-                .internal_metadata
-                .get(&format!("{}client_id", oauth_metadata_prefix("API_TOKEN")))
-                .map(String::as_str),
-            Some("device-client")
+        assert_oauth_meta(
+            &completed.internal_metadata,
+            "API_TOKEN",
+            &[("client_id", Some("device-client"))],
         );
     }
 
@@ -1987,30 +2133,20 @@ mod tests {
         let rendered_token_url = fixture
             .token_url
             .replace("/access_token", "/organizations/access_token");
-        let service = OAuthCredentialService::new();
 
-        let authorize = service.authorize(
-            StartOAuthCredentialRequest {
-                input_key: "API_TOKEN",
-                oauth: &oauth,
-                source_inputs: &source_inputs,
-                credential_inputs: vec![(
-                    "OAUTH_CLIENT_ID".to_string(),
-                    "device-client".to_string(),
-                )],
-            },
-            |_authorization| async { Ok(()) },
+        let (authorize, _authorization_rx) = start_authorize(
+            &oauth,
+            &source_inputs,
+            &[("OAUTH_CLIENT_ID", "device-client")],
         );
 
         let completed = authorize.await.expect("authorize oauth");
         let _captured = fixture.server.await.expect("device server");
         assert_eq!(completed.access_token, "access-token");
-        assert_eq!(
-            completed
-                .internal_metadata
-                .get(&format!("{}token_url", oauth_metadata_prefix("API_TOKEN")))
-                .map(String::as_str),
-            Some(rendered_token_url.as_str())
+        assert_oauth_meta(
+            &completed.internal_metadata,
+            "API_TOKEN",
+            &[("token_url", Some(rendered_token_url.as_str()))],
         );
     }
 
@@ -2055,69 +2191,36 @@ mod tests {
                 .contains("OAuth device code request timed out"),
             "unexpected error: {error}"
         );
-        assert_eq!(
-            captured.form.get("client_id").map(String::as_str),
-            Some("device-client")
-        );
+        assert_entry(&captured.form, "client_id", Some("device-client"));
     }
 
     #[tokio::test]
     async fn confidential_oauth_session_uses_basic_auth_secret_transport() {
         let fixture = OAuthFixture::new(None);
-        let redirect_port = free_loopback_port();
-        let oauth = oauth_spec(
-            &fixture.token_url,
-            redirect_port,
-            ManifestOAuthPkceMode::Disabled,
-            confidential_client(ManifestOAuthClientSecretTransport::BasicAuth),
-        );
-        let service = OAuthCredentialService::new();
+        let oauth = confidential_basic_spec(&fixture.token_url, free_loopback_port());
 
-        let (authorization_tx, authorization_rx) = oneshot::channel();
-        let authorize = service.authorize(
-            StartOAuthCredentialRequest {
-                input_key: "API_TOKEN",
-                oauth: &oauth,
-                source_inputs: &EMPTY_SOURCE_INPUTS,
-                credential_inputs: vec![
-                    ("OAUTH_CLIENT_ID".to_string(), "client".to_string()),
-                    ("OAUTH_CLIENT_SECRET".to_string(), "secret".to_string()),
-                ],
+        let (completed, captured) = run_authorization_code_session(
+            fixture,
+            &oauth,
+            &[
+                ("OAUTH_CLIENT_ID", "client"),
+                ("OAUTH_CLIENT_SECRET", "secret"),
+            ],
+            |authorization_url| {
+                assert!(!query_pairs(authorization_url).contains_key("client_secret"));
             },
-            move |authorization| async move {
-                authorization_tx
-                    .send(authorization.authorization_url)
-                    .map_err(|_authorization_url| {
-                        crate::bootstrap::AppError::FailedPrecondition(
-                            "authorization receiver closed".to_string(),
-                        )
-                    })
-            },
-        );
-        let callback = async {
-            let authorization_url = authorization_rx.await.expect("authorization url");
-            let parsed = Url::parse(&authorization_url).expect("authorization url");
-            assert!(!query_pairs(&parsed).contains_key("client_secret"));
-            callback(&authorization_url).await;
-        };
+        )
+        .await;
 
-        let (completed, ()) = tokio::join!(authorize, callback);
-        let completed = completed.expect("authorize oauth");
-        let captured = fixture.token_server.await.expect("token server");
         assert_eq!(
             captured.authorization.as_deref(),
             Some("Basic Y2xpZW50OnNlY3JldA==")
         );
         assert!(!captured.form.contains_key("client_secret"));
-        assert_eq!(
-            completed
-                .internal_metadata
-                .get(&format!(
-                    "{}client_secret",
-                    oauth_metadata_prefix("API_TOKEN")
-                ))
-                .map(String::as_str),
-            Some("secret")
+        assert_oauth_meta(
+            &completed.internal_metadata,
+            "API_TOKEN",
+            &[("client_secret", Some("secret"))],
         );
         assert!(!completed.safe_metadata.contains_key("client_secret"));
     }
@@ -2125,39 +2228,7 @@ mod tests {
     #[tokio::test]
     async fn oauth_callback_accepts_request_split_across_reads() {
         let redirect_port = free_loopback_port();
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", redirect_port))
-            .await
-            .expect("bind callback listener");
-        let oauth = oauth_spec(
-            "https://provider.example.com/oauth/token",
-            redirect_port,
-            ManifestOAuthPkceMode::Disabled,
-            ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
-        );
-        let endpoints = oauth
-            .endpoint_urls(&EMPTY_SOURCE_INPUTS)
-            .expect("render endpoints");
-        let session = AuthorizationCodeSessionConfig {
-            common: OAuthSessionCommon {
-                input_key: "API_TOKEN".to_string(),
-                oauth,
-                endpoints,
-                client_id: "client".to_string(),
-                client_secret: None,
-            },
-            state: "expected-state".to_string(),
-            code_verifier: None,
-            callback_path: "/oauth/callback".to_string(),
-            provider_redirect_uri: format!("http://127.0.0.1:{redirect_port}/oauth/callback"),
-            listener,
-            expires_at: std::time::Instant::now() + std::time::Duration::from_mins(1),
-        };
+        let session = callback_session(redirect_port).await;
 
         let receive = receive_callback(&session);
         let send = async move {
@@ -2173,16 +2244,7 @@ mod tests {
                 .write_all(b"te=expected-state&code=test-code HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n")
                 .await
                 .expect("write rest of callback");
-            let mut response = Vec::new();
-            stream
-                .read_to_end(&mut response)
-                .await
-                .expect("read callback response");
-            assert!(
-                String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200 OK"),
-                "unexpected callback response: {}",
-                String::from_utf8_lossy(&response)
-            );
+            assert_callback_response_ok(&mut stream).await;
         };
 
         let (callback, ()) = tokio::join!(receive, send);
@@ -2192,39 +2254,7 @@ mod tests {
     #[tokio::test]
     async fn oauth_callback_accepts_real_callback_after_idle_preconnection() {
         let redirect_port = free_loopback_port();
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", redirect_port))
-            .await
-            .expect("bind callback listener");
-        let oauth = oauth_spec(
-            "https://provider.example.com/oauth/token",
-            redirect_port,
-            ManifestOAuthPkceMode::Disabled,
-            ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
-        );
-        let endpoints = oauth
-            .endpoint_urls(&EMPTY_SOURCE_INPUTS)
-            .expect("render endpoints");
-        let session = AuthorizationCodeSessionConfig {
-            common: OAuthSessionCommon {
-                input_key: "API_TOKEN".to_string(),
-                oauth,
-                endpoints,
-                client_id: "client".to_string(),
-                client_secret: None,
-            },
-            state: "expected-state".to_string(),
-            code_verifier: None,
-            callback_path: "/oauth/callback".to_string(),
-            provider_redirect_uri: format!("http://127.0.0.1:{redirect_port}/oauth/callback"),
-            listener,
-            expires_at: std::time::Instant::now() + std::time::Duration::from_mins(1),
-        };
+        let session = callback_session(redirect_port).await;
 
         let receive = receive_callback(&session);
         let send = async move {
@@ -2240,16 +2270,7 @@ mod tests {
                 )
                 .await
                 .expect("write callback");
-            let mut response = Vec::new();
-            stream
-                .read_to_end(&mut response)
-                .await
-                .expect("read callback response");
-            assert!(
-                String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200 OK"),
-                "unexpected callback response: {}",
-                String::from_utf8_lossy(&response)
-            );
+            assert_callback_response_ok(&mut stream).await;
         };
 
         let (callback, ()) = tokio::join!(receive, send);
@@ -2259,49 +2280,26 @@ mod tests {
     #[tokio::test]
     async fn confidential_oauth_session_uses_request_body_secret_transport() {
         let fixture = OAuthFixture::new(None);
-        let redirect_port = free_loopback_port();
         let oauth = oauth_spec(
             &fixture.token_url,
-            redirect_port,
+            free_loopback_port(),
             ManifestOAuthPkceMode::Disabled,
             confidential_client(ManifestOAuthClientSecretTransport::RequestBody),
         );
-        let service = OAuthCredentialService::new();
 
-        let (authorization_tx, authorization_rx) = oneshot::channel();
-        let authorize = service.authorize(
-            StartOAuthCredentialRequest {
-                input_key: "API_TOKEN",
-                oauth: &oauth,
-                source_inputs: &EMPTY_SOURCE_INPUTS,
-                credential_inputs: vec![
-                    ("OAUTH_CLIENT_ID".to_string(), "client".to_string()),
-                    ("OAUTH_CLIENT_SECRET".to_string(), "secret".to_string()),
-                ],
-            },
-            move |authorization| async move {
-                authorization_tx
-                    .send(authorization.authorization_url)
-                    .map_err(|_authorization_url| {
-                        crate::bootstrap::AppError::FailedPrecondition(
-                            "authorization receiver closed".to_string(),
-                        )
-                    })
-            },
-        );
-        let callback = async {
-            let authorization_url = authorization_rx.await.expect("authorization url");
-            callback(&authorization_url).await;
-        };
+        let (_completed, captured) = run_authorization_code_session(
+            fixture,
+            &oauth,
+            &[
+                ("OAUTH_CLIENT_ID", "client"),
+                ("OAUTH_CLIENT_SECRET", "secret"),
+            ],
+            |_authorization_url| {},
+        )
+        .await;
 
-        let (completed, ()) = tokio::join!(authorize, callback);
-        completed.expect("authorize oauth");
-        let captured = fixture.token_server.await.expect("token server");
         assert!(captured.authorization.is_none());
-        assert_eq!(
-            captured.form.get("client_secret").map(String::as_str),
-            Some("secret")
-        );
+        assert_entry(&captured.form, "client_secret", Some("secret"));
     }
 
     #[tokio::test]
@@ -2312,54 +2310,23 @@ mod tests {
             "http://127.0.0.1/oauth/callback",
             ManifestOAuthRedirectUriPortMode::Random,
             ManifestOAuthPkceMode::Required,
-            ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
+            default_public_client("default-client"),
         );
-        let service = OAuthCredentialService::new();
 
-        let (authorization_tx, authorization_rx) = oneshot::channel();
-        let authorize = service.authorize(
-            StartOAuthCredentialRequest {
-                input_key: "API_TOKEN",
-                oauth: &oauth,
-                source_inputs: &EMPTY_SOURCE_INPUTS,
-                credential_inputs: Vec::new(),
-            },
-            move |authorization| async move {
-                authorization_tx
-                    .send(authorization.authorization_url)
-                    .map_err(|_authorization_url| {
-                        crate::bootstrap::AppError::FailedPrecondition(
-                            "authorization receiver closed".to_string(),
-                        )
-                    })
-            },
-        );
-        let callback = async {
-            let authorization_url = authorization_rx.await.expect("authorization url");
-            let authorization_url = Url::parse(&authorization_url).expect("authorization url");
-            let query = query_pairs(&authorization_url);
-            let redirect_uri =
-                Url::parse(query.get("redirect_uri").expect("redirect uri")).expect("redirect uri");
-            let redirect_port = redirect_uri.port().expect("assigned redirect port");
-            assert_ne!(redirect_port, 0);
+        let mut redirect_uri = None;
+        let (_completed, captured) =
+            run_authorization_code_session(fixture, &oauth, &[], |authorization_url| {
+                let query = query_pairs(authorization_url);
+                let assigned = Url::parse(query.get("redirect_uri").expect("redirect uri"))
+                    .expect("redirect uri");
+                let redirect_port = assigned.port().expect("assigned redirect port");
+                assert_ne!(redirect_port, 0);
+                redirect_uri = Some(assigned);
+            })
+            .await;
 
-            callback(authorization_url.as_str()).await;
-            redirect_uri
-        };
-        let (completed, redirect_uri) = tokio::join!(authorize, callback);
-        completed.expect("authorize oauth");
-
-        let captured = fixture.token_server.await.expect("token server");
-        assert_eq!(
-            captured.form.get("redirect_uri").map(String::as_str),
-            Some(redirect_uri.as_str())
-        );
+        let redirect_uri = redirect_uri.expect("redirect uri");
+        assert_entry(&captured.form, "redirect_uri", Some(redirect_uri.as_str()));
     }
 
     #[tokio::test]
@@ -2372,53 +2339,17 @@ mod tests {
             &redirect_uri,
             ManifestOAuthRedirectUriPortMode::Fixed,
             ManifestOAuthPkceMode::Required,
-            ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: Some("default-client".to_string()),
-                    input: None,
-                },
-                secret: None,
-            },
+            default_public_client("default-client"),
         );
-        let service = OAuthCredentialService::new();
 
-        let (authorization_tx, authorization_rx) = oneshot::channel();
-        let authorize = service.authorize(
-            StartOAuthCredentialRequest {
-                input_key: "API_TOKEN",
-                oauth: &oauth,
-                source_inputs: &EMPTY_SOURCE_INPUTS,
-                credential_inputs: Vec::new(),
-            },
-            move |authorization| async move {
-                authorization_tx
-                    .send(authorization.authorization_url)
-                    .map_err(|_authorization_url| {
-                        crate::bootstrap::AppError::FailedPrecondition(
-                            "authorization receiver closed".to_string(),
-                        )
-                    })
-            },
-        );
-        let callback = async {
-            let authorization_url = authorization_rx.await.expect("authorization url");
-            let authorization_url = Url::parse(&authorization_url).expect("authorization url");
-            let query = query_pairs(&authorization_url);
-            assert_eq!(
-                query.get("redirect_uri").map(String::as_str),
-                Some(redirect_uri.as_str())
-            );
+        let (_completed, captured) =
+            run_authorization_code_session(fixture, &oauth, &[], |authorization_url| {
+                let query = query_pairs(authorization_url);
+                assert_entry(&query, "redirect_uri", Some(redirect_uri.as_str()));
+            })
+            .await;
 
-            callback(authorization_url.as_str()).await;
-        };
-        let (completed, ()) = tokio::join!(authorize, callback);
-        completed.expect("authorize oauth");
-
-        let captured = fixture.token_server.await.expect("token server");
-        assert_eq!(
-            captured.form.get("redirect_uri").map(String::as_str),
-            Some(redirect_uri.as_str())
-        );
+        assert_entry(&captured.form, "redirect_uri", Some(redirect_uri.as_str()));
     }
 
     async fn callback(authorization_url: &str) {
@@ -2436,6 +2367,270 @@ mod tests {
             .expect("callback response")
             .error_for_status()
             .expect("callback success");
+    }
+
+    /// Starts an authorize flow for input key "`API_TOKEN`" on a fresh service,
+    /// with a callback that forwards the authorization through the returned
+    /// receiver. Keep the receiver alive until the authorize future resolves.
+    fn start_authorize<'a>(
+        oauth: &'a ManifestOAuthCredentialSpec,
+        source_inputs: &'a BTreeMap<String, String>,
+        credential_inputs: &[(&str, &str)],
+    ) -> (
+        impl Future<Output = Result<OAuthCredentialMaterial, AppError>> + 'a,
+        oneshot::Receiver<OAuthAuthorization>,
+    ) {
+        let credential_inputs = credential_inputs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect();
+        let (authorization_tx, authorization_rx) = oneshot::channel();
+        let authorize = async move {
+            OAuthCredentialService::new()
+                .authorize(
+                    StartOAuthCredentialRequest {
+                        input_key: "API_TOKEN",
+                        oauth,
+                        source_inputs,
+                        credential_inputs,
+                        client_material_persistence: OAuthClientMaterialPersistence::All,
+                    },
+                    move |authorization| async move {
+                        authorization_tx
+                            .send(authorization)
+                            .map_err(|_authorization| {
+                                AppError::FailedPrecondition(
+                                    "authorization receiver closed".to_string(),
+                                )
+                            })
+                    },
+                )
+                .await
+        };
+        (authorize, authorization_rx)
+    }
+
+    /// Drives an authorization-code session end to end: starts authorize for
+    /// "`API_TOKEN`", lets `inspect` assert on the authorization URL, completes
+    /// the loopback callback with code "test-code", and returns the completed
+    /// material plus the captured token request.
+    async fn run_authorization_code_session(
+        fixture: OAuthFixture,
+        oauth: &ManifestOAuthCredentialSpec,
+        credential_inputs: &[(&str, &str)],
+        inspect: impl FnOnce(&Url),
+    ) -> (OAuthCredentialMaterial, CapturedTokenRequest) {
+        let (authorize, authorization_rx) =
+            start_authorize(oauth, &EMPTY_SOURCE_INPUTS, credential_inputs);
+        let callback_flow = async {
+            let authorization_url = authorization_rx
+                .await
+                .expect("authorization url")
+                .authorization_url;
+            inspect(&Url::parse(&authorization_url).expect("authorization url"));
+            callback(&authorization_url).await;
+        };
+        let (completed, ()) = tokio::join!(authorize, callback_flow);
+        let completed = completed.expect("authorize oauth");
+        let captured = fixture.token_server.await.expect("token server");
+        (completed, captured)
+    }
+
+    /// Runs a source-input refresh of `input_key` on a default-configured
+    /// service.
+    async fn refresh_source_input(
+        input_key: &str,
+        oauth: &ManifestOAuthCredentialSpec,
+        material: &mut BTreeMap<String, String>,
+    ) -> Result<bool, AppError> {
+        OAuthCredentialService::new()
+            .refresh_if_needed(
+                RefreshOAuthCredentialRequest::for_source_input(input_key, oauth),
+                material,
+            )
+            .await
+    }
+
+    /// Runs an identity refresh for identity "`demo_identity`" with access token
+    /// key "`ACCESS_TOKEN`" on a default-configured service.
+    async fn refresh_identity(
+        oauth: &ManifestOAuthCredentialSpec,
+        resolved_inputs: &BTreeMap<String, String>,
+        material: &mut BTreeMap<String, String>,
+    ) -> Result<bool, AppError> {
+        OAuthCredentialService::new()
+            .refresh_if_needed(
+                RefreshOAuthCredentialRequest::for_identity(
+                    "demo_identity",
+                    "ACCESS_TOKEN",
+                    oauth,
+                    resolved_inputs,
+                ),
+                material,
+            )
+            .await
+    }
+
+    /// Persisted OAuth material for `input_key`: access token, `method=oauth`
+    /// marker, and an expiry offset from now, plus `extra` metadata entries
+    /// (stored under the input's OAuth metadata prefix).
+    fn stored_oauth_material(
+        input_key: &str,
+        access_token: &str,
+        expires_in: chrono::Duration,
+        extra: &[(&str, &str)],
+    ) -> BTreeMap<String, String> {
+        let prefix = oauth_metadata_prefix(input_key);
+        let mut material = BTreeMap::from([
+            (input_key.to_string(), access_token.to_string()),
+            (format!("{prefix}method"), "oauth".to_string()),
+            (
+                format!("{prefix}access_token_expires_at"),
+                (chrono::Utc::now() + expires_in).to_rfc3339(),
+            ),
+        ]);
+        for (key, value) in extra {
+            material.insert(format!("{prefix}{key}"), (*value).to_string());
+        }
+        material
+    }
+
+    /// Builds credential material the way legacy identity flows persisted it:
+    /// input key "`ACCESS_TOKEN`" with spec-resolved client id "legacy-client",
+    /// persisting the client id and (per `store_client_secret`) the secret.
+    fn legacy_identity_material(
+        oauth: &ManifestOAuthCredentialSpec,
+        inputs: &BTreeMap<String, String>,
+        client_secret: &str,
+        store_client_secret: bool,
+        access_token: &str,
+        refresh_token: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> OAuthCredentialMaterial {
+        let endpoints = oauth.endpoint_urls(inputs).expect("oauth endpoints");
+        oauth_credential_material(
+            &OAuthSessionCommon {
+                input_key: "ACCESS_TOKEN".to_string(),
+                oauth: oauth.clone(),
+                endpoints,
+                client_id: "legacy-client".to_string(),
+                client_secret: Some(client_secret.to_string()),
+                client_material_persistence: OAuthClientMaterialPersistence::ClientCredentials {
+                    client_id: true,
+                    client_secret: store_client_secret,
+                },
+            },
+            &TokenResponse {
+                access_token: access_token.to_string(),
+                refresh_token: Some(refresh_token.to_string()),
+                token_type: None,
+                scope: None,
+                expires_at: Some(expires_at),
+            },
+        )
+    }
+
+    /// Authorization-code callback session listening on `redirect_port` for
+    /// state "expected-state" at path /oauth/callback.
+    async fn callback_session(redirect_port: u16) -> AuthorizationCodeSessionConfig {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", redirect_port))
+            .await
+            .expect("bind callback listener");
+        let oauth = oauth_spec(
+            "https://provider.example.com/oauth/token",
+            redirect_port,
+            ManifestOAuthPkceMode::Disabled,
+            default_public_client("client"),
+        );
+        let endpoints = oauth
+            .endpoint_urls(&EMPTY_SOURCE_INPUTS)
+            .expect("render endpoints");
+        AuthorizationCodeSessionConfig {
+            common: OAuthSessionCommon {
+                input_key: "API_TOKEN".to_string(),
+                oauth,
+                endpoints,
+                client_id: "client".to_string(),
+                client_secret: None,
+                client_material_persistence: OAuthClientMaterialPersistence::All,
+            },
+            state: "expected-state".to_string(),
+            code_verifier: None,
+            callback_path: "/oauth/callback".to_string(),
+            provider_redirect_uri: format!("http://127.0.0.1:{redirect_port}/oauth/callback"),
+            listener,
+            expires_at: std::time::Instant::now() + std::time::Duration::from_mins(1),
+        }
+    }
+
+    async fn assert_callback_response_ok(stream: &mut tokio::net::TcpStream) {
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .await
+            .expect("read callback response");
+        assert!(
+            String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200 OK"),
+            "unexpected callback response: {}",
+            String::from_utf8_lossy(&response)
+        );
+    }
+
+    #[track_caller]
+    fn assert_entry(map: &BTreeMap<String, String>, key: &str, expected: Option<&str>) {
+        assert_eq!(
+            map.get(key).map(String::as_str),
+            expected,
+            "unexpected value for key {key:?}"
+        );
+    }
+
+    /// Asserts the value (or absence, for `None`) of each `(suffix, value)`
+    /// entry under the input's OAuth metadata prefix.
+    #[track_caller]
+    fn assert_oauth_meta(
+        map: &BTreeMap<String, String>,
+        input_key: &str,
+        expected: &[(&str, Option<&str>)],
+    ) {
+        for (suffix, value) in expected {
+            assert_entry(
+                map,
+                &format!("{}{suffix}", oauth_metadata_prefix(input_key)),
+                *value,
+            );
+        }
+    }
+
+    #[track_caller]
+    fn assert_basic_auth(captured: &CapturedTokenRequest, client_id: &str, client_secret: &str) {
+        let expected_authorization = basic_client_authorization(client_id, client_secret);
+        assert_eq!(
+            captured.authorization.as_deref(),
+            Some(expected_authorization.as_str())
+        );
+    }
+
+    /// Authorization-code spec (PKCE disabled) for a public client with
+    /// spec-default id "default-client".
+    fn public_spec(token_url: &str, redirect_port: u16) -> ManifestOAuthCredentialSpec {
+        oauth_spec(
+            token_url,
+            redirect_port,
+            ManifestOAuthPkceMode::Disabled,
+            default_public_client("default-client"),
+        )
+    }
+
+    /// Authorization-code spec (PKCE disabled) for a confidential client with
+    /// basic-auth secret transport.
+    fn confidential_basic_spec(token_url: &str, redirect_port: u16) -> ManifestOAuthCredentialSpec {
+        oauth_spec(
+            token_url,
+            redirect_port,
+            ManifestOAuthPkceMode::Disabled,
+            confidential_client(ManifestOAuthClientSecretTransport::BasicAuth),
+        )
     }
 
     fn oauth_spec(
@@ -2471,12 +2666,7 @@ mod tests {
             device_authorization_url: None,
             token_url: token_url.to_string(),
             client,
-            scopes: Some(ManifestOAuthScopesSpec {
-                scope: ManifestOAuthScopeSpec {
-                    delimiter: ManifestOAuthScopeDelimiter::Space,
-                    values: vec!["repo".to_string(), "read:org".to_string()],
-                },
-            }),
+            scopes: default_scopes(),
         }
     }
 
@@ -2492,29 +2682,47 @@ mod tests {
             device_authorization_url: Some(device_url.to_string()),
             token_url: token_url.to_string(),
             client: ManifestOAuthClientSpec {
-                id: ManifestOAuthClientIdSpec {
-                    default: None,
-                    input: Some("OAUTH_CLIENT_ID".to_string()),
-                },
+                id: client_id_spec(None, Some("OAUTH_CLIENT_ID")),
                 secret: None,
             },
-            scopes: Some(ManifestOAuthScopesSpec {
-                scope: ManifestOAuthScopeSpec {
-                    delimiter: ManifestOAuthScopeDelimiter::Space,
-                    values: vec!["repo".to_string(), "read:org".to_string()],
-                },
-            }),
+            scopes: default_scopes(),
         }
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "test fixture: returns Option to slot directly into the spec field"
+    )]
+    fn default_scopes() -> Option<ManifestOAuthScopesSpec> {
+        Some(ManifestOAuthScopesSpec {
+            scope: ManifestOAuthScopeSpec {
+                delimiter: ManifestOAuthScopeDelimiter::Space,
+                values: vec!["repo".to_string(), "read:org".to_string()],
+            },
+        })
+    }
+
+    fn client_id_spec(default: Option<&str>, input: Option<&str>) -> ManifestOAuthClientIdSpec {
+        ManifestOAuthClientIdSpec {
+            default: default.map(str::to_string),
+            input: input.map(str::to_string),
+        }
+    }
+
+    /// Public client with only a spec-default client id.
+    fn default_public_client(client_id: &str) -> ManifestOAuthClientSpec {
+        ManifestOAuthClientSpec {
+            id: client_id_spec(Some(client_id), None),
+            secret: None,
+        }
+    }
+
+    /// Confidential client whose id and secret both come from credential inputs.
     fn confidential_client(
         transport: ManifestOAuthClientSecretTransport,
     ) -> ManifestOAuthClientSpec {
         ManifestOAuthClientSpec {
-            id: ManifestOAuthClientIdSpec {
-                default: None,
-                input: Some("OAUTH_CLIENT_ID".to_string()),
-            },
+            id: client_id_spec(None, Some("OAUTH_CLIENT_ID")),
             secret: Some(ManifestOAuthClientSecretSpec {
                 input: "OAUTH_CLIENT_SECRET".to_string(),
                 transport,
@@ -2552,13 +2760,7 @@ mod tests {
                 let response_body = response_body.unwrap_or(
                     r#"{"access_token":"access-token","refresh_token":"refresh-token","token_type":"Bearer","scope":"repo read:org","expires_in":3600}"#,
                 );
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{response_body}",
-                    response_body.len()
-                );
-                stream
-                    .write_all(response.as_bytes())
-                    .expect("write token response");
+                write_json_response(&mut stream, response_body);
                 request
             });
             Self {
@@ -2620,20 +2822,14 @@ mod tests {
                 break;
             }
             buffer.extend_from_slice(&temp[..read]);
-            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
-                let header_end = buffer
-                    .windows(4)
-                    .position(|window| window == b"\r\n\r\n")
-                    .expect("header end")
-                    + 4;
+            if let Some(header_break) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                let header_end = header_break + 4;
                 let headers = String::from_utf8_lossy(&buffer[..header_end]);
                 let content_length = headers
                     .lines()
-                    .find_map(|line| line.strip_prefix("content-length: "))
-                    .or_else(|| {
-                        headers
-                            .lines()
-                            .find_map(|line| line.strip_prefix("Content-Length: "))
+                    .find_map(|line| {
+                        line.strip_prefix("content-length: ")
+                            .or_else(|| line.strip_prefix("Content-Length: "))
                     })
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(0);

@@ -11,8 +11,8 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::catalog::discovery::{
-    CatalogDiscovery, CatalogItemKind, CatalogTableRef, ListColumnsQuery, Pagination,
-    column_pagination, search_pagination,
+    CatalogDiscovery, CatalogItemKind, CatalogSearchQuery, CatalogTableRef, ListColumnsQuery,
+    Pagination, column_pagination, search_pagination,
 };
 use crate::query::QueryContext;
 use crate::query::manager::QueryManager;
@@ -95,11 +95,13 @@ impl CatalogServiceApi for CatalogService {
             let page = catalog
                 .search_catalog(
                     &context,
-                    &request.pattern,
-                    schema_name,
-                    kind,
-                    request.ignore_case,
-                    pagination,
+                    CatalogSearchQuery {
+                        pattern: &request.pattern,
+                        schema_name,
+                        kind,
+                        ignore_case: request.ignore_case,
+                        pagination,
+                    },
                 )
                 .await
                 .map_err(query_status)?;

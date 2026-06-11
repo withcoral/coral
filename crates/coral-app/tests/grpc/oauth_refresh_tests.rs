@@ -409,6 +409,11 @@ async fn manual_credential_replacement_waits_for_in_flight_refresh() {
                     value: "manual-token".to_string(),
                 }],
                 oauth_credential_retrievals: Vec::new(),
+                identity_spec_manifest_yamls: Vec::new(),
+                identity_spec_inputs: Vec::new(),
+                identity_bindings: Vec::new(),
+                user_identity_bindings: Vec::new(),
+                replace_identity_bindings: false,
             }))
             .await
             .expect("import source")
