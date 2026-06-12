@@ -817,8 +817,8 @@ fn validate_materialized_surface_base_url(
 
 fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppError> {
     match &surface.descriptor {
-        coral_spec::v4::SurfaceDescriptor::File { file } => read_file_descriptor(file),
-        coral_spec::v4::SurfaceDescriptor::Url { url } => read_url_descriptor(url),
+        coral_spec::v4::SurfaceDescriptor::File { file, .. } => read_file_descriptor(file),
+        coral_spec::v4::SurfaceDescriptor::Url { url, .. } => read_url_descriptor(url),
         coral_spec::v4::SurfaceDescriptor::McpServer { .. } => {
             Err(AppError::FailedPrecondition(format!(
                 "DSL v4 MCP surface '{}' does not have an OpenAPI descriptor",
@@ -1093,7 +1093,7 @@ fn write_yaml<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), AppErro
     Ok(())
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
@@ -1119,6 +1119,41 @@ mod tests {
 
     fn source_name() -> SourceName {
         SourceName::parse("github_v4_materialization_test").expect("source name")
+    }
+
+    fn parse_v4_manifest(manifest_yaml: &str) -> V4SourceManifest {
+        parse_source_manifest_yaml(manifest_yaml)
+            .expect("parse v4 manifest")
+            .as_v4()
+            .expect("v4")
+            .clone()
+    }
+
+    /// Rewrites the installed fingerprint after mutating its surface entries.
+    fn rewrite_fingerprint_surfaces(
+        layout: &AppStateLayout,
+        mutate: impl FnOnce(&mut Vec<serde_yaml::Value>),
+    ) {
+        let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
+        let mut fingerprint: serde_yaml::Value =
+            serde_yaml::from_slice(&std::fs::read(&fingerprint_path).expect("fingerprint"))
+                .expect("fingerprint yaml");
+        let surfaces = fingerprint
+            .get_mut("surfaces")
+            .and_then(serde_yaml::Value::as_sequence_mut)
+            .expect("surfaces");
+        mutate(surfaces);
+        std::fs::write(
+            &fingerprint_path,
+            serde_yaml::to_string(&fingerprint).expect("encode fingerprint"),
+        )
+        .expect("write fingerprint");
+    }
+
+    fn raw_document_path(layout: &AppStateLayout) -> std::path::PathBuf {
+        layout
+            .v4_surface_dir(&workspace_name(), &source_name(), "rest")
+            .join("source-document.raw")
     }
 
     fn openapi_fixture() -> &'static str {
@@ -1237,16 +1272,10 @@ paths:
         assert!(result.is_none(), "request methods must include an id");
     }
 
-    fn setup_materialization() -> (TempDir, TempDir, AppStateLayout, String, V4SourceManifest) {
-        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
-        let openapi_file = descriptor_temp.path().join("openapi.yaml");
-        std::fs::write(&openapi_file, openapi_fixture()).expect("write descriptor");
-
-        let state_temp = TempDir::new().expect("state temp dir");
-        let layout =
-            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let manifest_yaml = format!(
+    /// Manifest for the fixture source pointing at `openapi_file` with the
+    /// given descriptor hash.
+    fn fixture_manifest_yaml(openapi_file: &std::path::Path, descriptor_sha256: &str) -> String {
+        format!(
             r"
 name: github_v4_materialization_test
 dsl_version: 4
@@ -1254,15 +1283,60 @@ surfaces:
   - id: rest
     type: openapi
     file: {}
+    sha256: {}
     base_url: https://api.example.com
 ",
-            openapi_file.display()
-        );
-        let manifest = parse_source_manifest_yaml(&manifest_yaml)
-            .expect("parse v4 manifest")
-            .as_v4()
-            .expect("v4")
-            .clone();
+            openapi_file.display(),
+            descriptor_sha256
+        )
+    }
+
+    /// Authored descriptor + fresh layout + the result of building the
+    /// fixture manifest's materialization (not yet installed).
+    struct MaterializationFixture {
+        _state: TempDir,
+        _descriptor: TempDir,
+        layout: AppStateLayout,
+        manifest_yaml: String,
+        manifest: V4SourceManifest,
+        build: Result<MaterializationBuild, AppError>,
+    }
+
+    impl MaterializationFixture {
+        /// Asserts loading the installed materialization fails with a message
+        /// containing each expected fragment.
+        #[track_caller]
+        fn assert_load_rejected(&self, expect_label: &str, expected_fragments: &[&str]) {
+            let error = load_v4_materialization(
+                &self.layout,
+                &workspace_name(),
+                &source_name(),
+                &self.manifest_yaml,
+                &self.manifest,
+            )
+            .expect_err(expect_label);
+            let message = error.to_string();
+            for fragment in expected_fragments {
+                assert!(message.contains(fragment), "unexpected error: {message}");
+            }
+        }
+    }
+
+    /// Writes the `OpenAPI` descriptor into a temp dir and builds the fixture
+    /// manifest against a fresh layout; `descriptor_sha256` overrides the
+    /// real descriptor hash.
+    fn build_materialization(descriptor_sha256: Option<&str>) -> MaterializationFixture {
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("openapi.yaml");
+        std::fs::write(&openapi_file, openapi_fixture()).expect("write descriptor");
+        let state_temp = TempDir::new().expect("state temp dir");
+        let layout =
+            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let real_sha256 = sha256_hex(openapi_fixture().as_bytes());
+        let manifest_yaml =
+            fixture_manifest_yaml(&openapi_file, descriptor_sha256.unwrap_or(&real_sha256));
+        let manifest = parse_v4_manifest(&manifest_yaml);
         let build = build_v4_materialization_tmp(
             &layout,
             &workspace_name(),
@@ -1271,11 +1345,29 @@ surfaces:
             &manifest,
             &MaterializationInputs::default(),
             "test",
+        );
+        MaterializationFixture {
+            _state: state_temp,
+            _descriptor: descriptor_temp,
+            layout,
+            manifest_yaml,
+            manifest,
+            build,
+        }
+    }
+
+    /// Builds and installs the fixture source's materialization.
+    fn setup_materialization() -> MaterializationFixture {
+        let fixture = build_materialization(None);
+        let build = fixture.build.as_ref().expect("build materialization");
+        replace_v4_materialization(
+            &fixture.layout,
+            &workspace_name(),
+            &source_name(),
+            &build.temp_dir,
         )
-        .expect("build materialization");
-        replace_v4_materialization(&layout, &workspace_name(), &source_name(), &build.temp_dir)
-            .expect("install materialization");
-        (state_temp, descriptor_temp, layout, manifest_yaml, manifest)
+        .expect("install materialization");
+        fixture
     }
 
     #[tokio::test]
@@ -1365,6 +1457,7 @@ surfaces:
     namespace_suffix: rest
     type: openapi
     file: {}
+    sha256: {}
     base_url: https://api.example.com
   - id: mcp
     namespace_suffix: mcp
@@ -1373,7 +1466,8 @@ surfaces:
       transport: stdio
       command: definitely-missing-coral-mcp-server
 ",
-            openapi_file.display()
+            openapi_file.display(),
+            sha256_hex(openapi_fixture().as_bytes())
         );
         let manifest = parse_source_manifest_yaml(&manifest_yaml)
             .expect("parse v4 manifest")
@@ -1438,7 +1532,7 @@ surfaces:
         );
     }
 
-    fn credential_method_hint_manifest(hint: &str) -> V4SourceManifest {
+    fn variable_hint_manifest(hint: &str) -> V4SourceManifest {
         let manifest_yaml = format!(
             r"
 name: github_v4_materialization_test
@@ -1447,28 +1541,20 @@ surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     inputs:
-      ACCESS_TOKEN:
-        kind: secret
-        credential:
-          methods:
-            - type: source_config
-              label: Paste token
-              description: Configure a token manually.
-              hint: {hint}
+      API_BASE:
+        kind: variable
+        hint: {hint}
 "
         );
-        parse_source_manifest_yaml(&manifest_yaml)
-            .expect("parse v4 manifest")
-            .as_v4()
-            .expect("v4")
-            .clone()
+        parse_v4_manifest(&manifest_yaml)
     }
 
     #[test]
-    fn input_declarations_fingerprint_includes_credential_method_hint() {
-        let first = credential_method_hint_manifest("Use source config one.");
-        let second = credential_method_hint_manifest("Use source config two.");
+    fn input_declarations_fingerprint_includes_variable_hint() {
+        let first = variable_hint_manifest("Use API base one.");
+        let second = variable_hint_manifest("Use API base two.");
 
         let first_hash =
             stable_input_declarations_sha256(&first.surfaces.first().expect("surface").inputs)
@@ -1482,119 +1568,60 @@ surfaces:
 
     #[test]
     fn load_v4_materialization_rejects_mismatched_manifest_hash() {
-        let (_state, _descriptor, layout, manifest_yaml, _manifest) = setup_materialization();
-        let changed_manifest_yaml = format!("description: changed\n{manifest_yaml}");
-        let changed_manifest = parse_source_manifest_yaml(&changed_manifest_yaml)
-            .expect("parse changed manifest")
-            .as_v4()
-            .expect("v4")
-            .clone();
+        let mut installed = setup_materialization();
+        installed.manifest_yaml = format!("description: changed\n{}", installed.manifest_yaml);
+        installed.manifest = parse_v4_manifest(&installed.manifest_yaml);
 
-        let error = load_v4_materialization(
-            &layout,
-            &workspace_name(),
-            &source_name(),
-            &changed_manifest_yaml,
-            &changed_manifest,
-        )
-        .expect_err("changed manifest hash should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("manifest fingerprint does not match installed manifest"),
-            "unexpected error: {error}"
+        installed.assert_load_rejected(
+            "changed manifest hash should fail",
+            &["manifest fingerprint does not match installed manifest"],
         );
     }
 
     #[test]
     fn load_v4_materialization_rejects_corrupted_artifact_yaml_with_readd_guidance() {
-        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
-        let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
+        let installed = setup_materialization();
+        let fingerprint_path = installed
+            .layout
+            .v4_fingerprint_file(&workspace_name(), &source_name());
         std::fs::write(&fingerprint_path, b": not yaml").expect("corrupt fingerprint");
 
-        let error = load_v4_materialization(
-            &layout,
-            &workspace_name(),
-            &source_name(),
-            &manifest_yaml,
-            &manifest,
-        )
-        .expect_err("corrupted artifact should fail");
-        let message = error.to_string();
-
-        assert!(
-            message.contains("missing or incompatible DSL v4 materialized artifacts"),
-            "unexpected error: {error}"
-        );
-        assert!(
-            message.contains("Re-add the source"),
-            "unexpected error: {error}"
+        installed.assert_load_rejected(
+            "corrupted artifact should fail",
+            &[
+                "missing or incompatible DSL v4 materialized artifacts",
+                "Re-add the source",
+            ],
         );
     }
 
     #[test]
     fn load_v4_materialization_rejects_extra_fingerprint_surface() {
-        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
-        let fingerprint_path = layout.v4_fingerprint_file(&workspace_name(), &source_name());
-        let mut fingerprint: serde_yaml::Value =
-            serde_yaml::from_slice(&std::fs::read(&fingerprint_path).expect("fingerprint"))
-                .expect("fingerprint yaml");
-        let surfaces = fingerprint
-            .get_mut("surfaces")
-            .and_then(serde_yaml::Value::as_sequence_mut)
-            .expect("surfaces");
-        let mut extra = surfaces.first().expect("first surface").clone();
-        extra
-            .as_mapping_mut()
-            .expect("surface mapping")
-            .insert("surface_id".into(), "extra".into());
-        surfaces.push(extra);
-        std::fs::write(
-            &fingerprint_path,
-            serde_yaml::to_string(&fingerprint).expect("encode fingerprint"),
-        )
-        .expect("write fingerprint");
+        let installed = setup_materialization();
+        rewrite_fingerprint_surfaces(&installed.layout, |surfaces| {
+            let mut extra = surfaces.first().expect("first surface").clone();
+            extra
+                .as_mapping_mut()
+                .expect("surface mapping")
+                .insert("surface_id".into(), "extra".into());
+            surfaces.push(extra);
+        });
 
-        let error = load_v4_materialization(
-            &layout,
-            &workspace_name(),
-            &source_name(),
-            &manifest_yaml,
-            &manifest,
-        )
-        .expect_err("extra surface should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("fingerprint surface set mismatch"),
-            "unexpected error: {error}"
+        installed.assert_load_rejected(
+            "extra surface should fail",
+            &["fingerprint surface set mismatch"],
         );
     }
 
     #[test]
     fn load_v4_materialization_rejects_corrupted_raw_source_document() {
-        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
-        let raw_path = layout
-            .v4_surface_dir(&workspace_name(), &source_name(), "rest")
-            .join("source-document.raw");
-        std::fs::write(&raw_path, b"corrupted").expect("corrupt raw descriptor");
+        let installed = setup_materialization();
+        std::fs::write(raw_document_path(&installed.layout), b"corrupted")
+            .expect("corrupt raw descriptor");
 
-        let error = load_v4_materialization(
-            &layout,
-            &workspace_name(),
-            &source_name(),
-            &manifest_yaml,
-            &manifest,
-        )
-        .expect_err("corrupted raw descriptor should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("raw source document hash does not match"),
-            "unexpected error: {error}"
+        installed.assert_load_rejected(
+            "corrupted raw descriptor should fail",
+            &["raw source document hash does not match"],
         );
     }
 
@@ -1603,10 +1630,8 @@ surfaces:
     fn load_v4_materialization_rejects_unreadable_raw_source_document_with_readd_guidance() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
-        let raw_path = layout
-            .v4_surface_dir(&workspace_name(), &source_name(), "rest")
-            .join("source-document.raw");
+        let installed = setup_materialization();
+        let raw_path = raw_document_path(&installed.layout);
         let original_permissions = std::fs::metadata(&raw_path)
             .expect("raw descriptor metadata")
             .permissions();
@@ -1620,31 +1645,17 @@ surfaces:
             return;
         }
 
-        let result = load_v4_materialization(
-            &layout,
-            &workspace_name(),
-            &source_name(),
-            &manifest_yaml,
-            &manifest,
+        installed.assert_load_rejected(
+            "unreadable raw descriptor should fail",
+            &[
+                "missing or incompatible DSL v4 materialized artifacts",
+                "failed to read raw source document artifact",
+                "Re-add the source",
+            ],
         );
 
         std::fs::set_permissions(&raw_path, original_permissions)
             .expect("restore raw descriptor permissions");
-        let message = result
-            .expect_err("unreadable raw descriptor should fail")
-            .to_string();
-        assert!(
-            message.contains("missing or incompatible DSL v4 materialized artifacts"),
-            "unexpected error: {message}"
-        );
-        assert!(
-            message.contains("failed to read raw source document artifact"),
-            "unexpected error: {message}"
-        );
-        assert!(
-            message.contains("Re-add the source"),
-            "unexpected error: {message}"
-        );
     }
 
     #[test]

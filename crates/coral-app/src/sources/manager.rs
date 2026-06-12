@@ -1429,6 +1429,7 @@ mod tests {
         CredentialStore, CredentialsError,
     };
     use crate::sources::SourceName;
+    use crate::sources::materialization::sha256_hex;
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
@@ -1591,7 +1592,7 @@ servers:
 
     /// Renders a v4 manifest whose `rest` surface points at the authored
     /// descriptor, with `extra_surface_yaml` appended to the surface entry.
-    fn manifest_v4(openapi_file: &Path, extra_surface_yaml: &str) -> String {
+    fn manifest_v4(openapi_file: &Path, sha256: &str, extra_surface_yaml: &str) -> String {
         format!(
             r"
 name: github_v4_test
@@ -1600,8 +1601,10 @@ surfaces:
   - id: rest
     type: openapi
     file: {}
+    sha256: {}
 {extra_surface_yaml}",
             openapi_file.display(),
+            sha256
         )
     }
 
@@ -1612,12 +1615,13 @@ surfaces:
     base_url: "{{input.API_BASE}}"
 "#;
 
-    fn manifest_v4_with_file_descriptor(openapi_file: &Path) -> String {
-        manifest_v4(openapi_file, V4_LOCAL_BASE_URL_YAML)
+    fn manifest_v4_with_file_descriptor(openapi_file: &Path, sha256: &str) -> String {
+        manifest_v4(openapi_file, sha256, V4_LOCAL_BASE_URL_YAML)
     }
 
     fn manifest_v4_with_surface_namespace(
         openapi_file: &Path,
+        sha256: &str,
         source_name: &str,
         namespace_suffix: &str,
     ) -> String {
@@ -1630,14 +1634,17 @@ surfaces:
     namespace_suffix: {namespace_suffix}
     type: openapi
     file: {}
+    sha256: {}
 {V4_LOCAL_BASE_URL_YAML}",
             openapi_file.display(),
+            sha256,
         )
     }
 
-    fn manifest_v4_with_input_and_derived_base_url(openapi_file: &Path) -> String {
+    fn manifest_v4_with_input_and_derived_base_url(openapi_file: &Path, sha256: &str) -> String {
         manifest_v4(
             openapi_file,
+            sha256,
             r"    inputs:
       API_BASE:
         kind: variable
@@ -1646,8 +1653,8 @@ surfaces:
         )
     }
 
-    fn manifest_v4_without_description_or_base_url(openapi_file: &Path) -> String {
-        manifest_v4(openapi_file, "")
+    fn manifest_v4_without_description_or_base_url(openapi_file: &Path, sha256: &str) -> String {
+        manifest_v4(openapi_file, sha256, "")
     }
 
     /// Authored-descriptor state plus a source manager over a fresh app
@@ -1657,18 +1664,19 @@ surfaces:
         _descriptor_temp: TempDir,
         layout: AppStateLayout,
         openapi_file: PathBuf,
+        openapi_sha256: String,
         manager: SourceManager,
     }
 
     impl V4ImportFixture {
         /// Renders `manifest` against the fixture descriptor.
-        fn manifest(&self, manifest: fn(&Path) -> String) -> String {
-            manifest(&self.openapi_file)
+        fn manifest(&self, manifest: fn(&Path, &str) -> String) -> String {
+            manifest(&self.openapi_file, &self.openapi_sha256)
         }
 
         /// Imports the rendered `manifest` with no bindings into the default
         /// workspace.
-        fn import(&self, manifest: fn(&Path) -> String) -> Result<InstalledSource, AppError> {
+        fn import(&self, manifest: fn(&Path, &str) -> String) -> Result<InstalledSource, AppError> {
             import_manifest(
                 &self.manager,
                 self.manifest(manifest),
@@ -1695,6 +1703,7 @@ surfaces:
             _descriptor_temp: descriptor_temp,
             layout,
             openapi_file,
+            openapi_sha256: sha256_hex(openapi_yaml.as_bytes()),
             manager,
         }
     }
@@ -2071,7 +2080,8 @@ surfaces:
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
-        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
+        let openapi_yaml = v4_openapi_fixture();
+        std::fs::write(&openapi_file, &openapi_yaml).expect("write fixture");
         let manager = SourceManager::new(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
@@ -2095,6 +2105,7 @@ surfaces:
                 &ImportSourceCommand {
                     manifest_yaml: manifest_v4_with_surface_namespace(
                         &openapi_file,
+                        &sha256_hex(openapi_yaml.as_bytes()),
                         "github_v4",
                         "rest",
                     ),
@@ -2148,7 +2159,7 @@ surfaces:
 
         let error = import_manifest(
             &fixture.manager,
-            manifest_v4_with_file_descriptor(Path::new("openapi.yaml")),
+            manifest_v4_with_file_descriptor(Path::new("openapi.yaml"), &"0".repeat(64)),
             SourceBindings::default(),
         )
         .expect_err("raw relative descriptors should fail in app import");

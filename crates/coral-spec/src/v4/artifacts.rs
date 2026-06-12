@@ -151,6 +151,7 @@ surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
   - id: mcp
     namespace_suffix: mcp
     type: mcp

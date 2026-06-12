@@ -19,6 +19,7 @@ surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     inputs:
       GITHUB_API_BASE:
         kind: variable
@@ -52,6 +53,7 @@ surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     base_url: https://api.github.com
 ",
     )
@@ -132,8 +134,7 @@ surfaces:
         .collect::<BTreeSet<_>>();
     assert_eq!(stale_filter_names, filter_names);
 
-    let stale_request =
-        request_spec_for_projection(&stale_projection, operation).expect("stale request");
+    let stale_request = request_spec_for_projection(&stale_projection, operation).expect("request");
     let stale_query_names = stale_request
         .query
         .iter()
@@ -164,6 +165,7 @@ surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     base_url: https://api.example.com
 ",
     )
@@ -229,6 +231,7 @@ surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     base_url: https://api.github.com
 ",
     )
@@ -388,6 +391,7 @@ surfaces:
     namespace_suffix: rest
     type: openapi
     file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     base_url: https://api.github.com
   - id: mcp
     namespace_suffix: mcp
@@ -410,11 +414,13 @@ surfaces:
     namespace_suffix: rest_primary
     type: openapi
     file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     base_url: https://api.github.com
   - id: rest_secondary
     namespace_suffix: rest_secondary
     type: openapi
     file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     base_url: https://api.github.com
 ",
     )
@@ -491,6 +497,7 @@ surfaces:
   - id: rest
     type: openapi
     file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
     base_url: https://api.example.com
 ",
     )

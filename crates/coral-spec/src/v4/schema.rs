@@ -6,15 +6,17 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::HeaderSpec;
 use crate::backends::http::RateLimitSpec;
 use crate::backends::mcp::McpServerSpec;
-use crate::{AuthSpec, HeaderSpec};
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct V4SourceManifestSchema {
     dsl_version: u32,
     name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -39,12 +41,13 @@ struct V4OpenApiSurfaceSchema {
     url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     file: Option<String>,
+    sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     base_url: Option<String>,
-    #[serde(default)]
-    auth: AuthSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identity_requirements: Option<IdentityRequirementsSchema>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     request_headers: Vec<HeaderSpec>,
     #[serde(default)]
@@ -63,6 +66,21 @@ struct V4McpSurfaceSchema {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct IdentityRequirementsSchema {
+    accepts: Vec<AcceptedIdentityRequirementSchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AcceptedIdentityRequirementSchema {
+    id: String,
+    identity_specs: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    audience: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum V4InputSpecSchema {
     Variable {
@@ -72,14 +90,6 @@ enum V4InputSpecSchema {
         required: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hint: Option<String>,
-    },
-    Secret {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required: Option<bool>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        hint: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        credential: Option<Value>,
     },
 }
 
@@ -149,6 +159,10 @@ fn post_process_schema(schema: &mut Value) {
             file.insert("minLength".to_string(), json!(1));
         }
         post_process_surface_inputs(properties);
+        if let Some(sha256) = properties.get_mut("sha256").and_then(Value::as_object_mut) {
+            sha256.insert("type".to_string(), json!("string"));
+            sha256.insert("pattern".to_string(), json!("^[0-9a-f]{64}$"));
+        }
         if let Some(base_url) = properties
             .get_mut("base_url")
             .and_then(Value::as_object_mut)
@@ -189,6 +203,10 @@ fn post_process_root_properties(properties: &mut serde_json::Map<String, Value>)
         .and_then(Value::as_object_mut)
     {
         description.insert("type".to_string(), json!("string"));
+    }
+    if let Some(version) = properties.get_mut("version").and_then(Value::as_object_mut) {
+        version.insert("type".to_string(), json!("string"));
+        version.insert("minLength".to_string(), json!(1));
     }
     if let Some(test_queries) = properties
         .get_mut("test_queries")
@@ -242,6 +260,10 @@ fn post_process_surface_variants(surface_schema: &mut Value) {
             if let Some(file) = properties.get_mut("file").and_then(Value::as_object_mut) {
                 file.insert("type".to_string(), json!("string"));
                 file.insert("minLength".to_string(), json!(1));
+            }
+            if let Some(sha256) = properties.get_mut("sha256").and_then(Value::as_object_mut) {
+                sha256.insert("type".to_string(), json!("string"));
+                sha256.insert("pattern".to_string(), json!("^[0-9a-f]{64}$"));
             }
             if let Some(base_url) = properties
                 .get_mut("base_url")
@@ -352,17 +374,21 @@ mod tests {
     }
 
     #[test]
-    fn generated_schema_accepts_core_v4_fixture_and_parser_agrees() {
-        let raw = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../sources/core-v4/github_v4/manifest.yaml"),
-        )
-        .expect("core v4 fixture");
-        if let Err(errors) = validator().validate(&manifest_json(&raw)) {
+    fn generated_schema_accepts_valid_v4_manifest_and_parser_agrees() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+";
+        if let Err(errors) = validator().validate(&manifest_json(raw)) {
             let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
-            panic!("generated schema should accept core v4 fixture: {errors:?}");
+            panic!("generated schema should accept a valid v4 manifest: {errors:?}");
         }
-        parse_source_manifest_yaml(&raw).expect("parser accepts core v4 fixture");
+        parse_source_manifest_yaml(raw).expect("parser accepts a valid v4 manifest");
     }
 
     #[test]
@@ -375,15 +401,12 @@ surfaces:
     namespace_suffix: mcp
     type: mcp
     inputs:
-      MCP_TOKEN:
-        kind: secret
+      MCP_HOST:
+        kind: variable
+        default: mcp.example.com
     server:
       transport: streamable_http
       url: https://mcp.example.com/mcp
-      auth:
-        type: bearer
-        from: input
-        key: MCP_TOKEN
 ";
 
         if let Err(errors) = validator().validate(&manifest_json(raw)) {
@@ -403,28 +426,22 @@ surfaces:
     namespace_suffix: stdio
     type: mcp
     inputs:
-      MCP_TOKEN:
-        kind: secret
+      MCP_HOST:
+        kind: variable
+        default: mcp.example.com
     server:
       transport: stdio
       command: demo-mcp-server
       env:
-        - name: MCP_TOKEN
+        - name: MCP_HOST
           from: input
-          key: MCP_TOKEN
+          key: MCP_HOST
   - id: http_mcp
     namespace_suffix: http
     type: mcp
-    inputs:
-      HTTP_TOKEN:
-        kind: secret
     server:
       transport: streamable_http
       url: https://mcp.example.com/mcp
-      auth:
-        type: bearer
-        from: input
-        key: HTTP_TOKEN
 ";
 
         if let Err(errors) = validator().validate(&manifest_json(raw)) {
@@ -437,7 +454,6 @@ surfaces:
     #[test]
     fn generated_schema_rejects_v3_only_fields_and_removed_snapshot_fields() {
         let invalid = [
-            "version: 1.0.0\n",
             "backend: http\n",
             "tables: []\n",
             "auth: {type: HeaderAuth}\n",
@@ -445,29 +461,42 @@ surfaces:
         ];
         for field in invalid {
             let raw = format!(
-                "name: demo\ndsl_version: 4\n{field}surfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n"
+                "name: demo\nversion: 1.0.0\ndsl_version: 4\n{field}surfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n"
             );
             assert!(
                 validator().validate(&manifest_json(&raw)).is_err(),
                 "field should be rejected: {field}"
             );
         }
+    }
 
-        let raw = "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n";
-        assert!(
-            validator().validate(&manifest_json(raw)).is_err(),
-            "surface sha256 should be rejected"
-        );
+    #[test]
+    fn generated_schema_rejects_missing_or_invalid_surface_sha256() {
+        let invalid_surfaces = [
+            "    url: https://example.com/openapi.yaml\n",
+            "    url: https://example.com/openapi.yaml\n    sha256: 0000\n",
+            "    url: https://example.com/openapi.yaml\n    sha256: A000000000000000000000000000000000000000000000000000000000000000\n",
+            "    url: https://example.com/openapi.yaml\n    sha256: z000000000000000000000000000000000000000000000000000000000000000\n",
+        ];
+        for surface_fields in invalid_surfaces {
+            let raw = format!(
+                "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n{surface_fields}"
+            );
+            assert!(
+                validator().validate(&manifest_json(&raw)).is_err(),
+                "sha256 should be rejected: {surface_fields}"
+            );
+        }
     }
 
     #[test]
     fn generated_schema_rejects_explicit_null_surface_fields() {
         let invalid_surfaces = [
-            "    url: null\n",
-            "    file: null\n",
-            "    url: https://example.com/openapi.yaml\n    base_url: null\n",
-            "    url: https://example.com/openapi.yaml\n    auth: null\n",
-            "    url: https://example.com/openapi.yaml\n    rate_limit: null\n",
+            "    url: null\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n",
+            "    file: null\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n",
+            "    url: https://example.com/openapi.yaml\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n    base_url: null\n",
+            "    url: https://example.com/openapi.yaml\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n    auth: null\n",
+            "    url: https://example.com/openapi.yaml\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n    rate_limit: null\n",
         ];
         for surface_fields in invalid_surfaces {
             let raw = format!(
@@ -478,6 +507,27 @@ surfaces:
                 "explicit null should be rejected: {surface_fields}"
             );
         }
+    }
+
+    #[test]
+    fn generated_schema_rejects_v4_secret_inputs() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    inputs:
+      API_TOKEN:
+        kind: secret
+";
+
+        assert!(
+            validator().validate(&manifest_json(raw)).is_err(),
+            "v4 source schema should reject secret inputs"
+        );
     }
 
     #[test]
@@ -500,6 +550,7 @@ surfaces:
   - id: rest
     type: openapi
     url: https://example.com/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
   - id: mcp
     namespace_suffix: mcp
     type: mcp
@@ -525,6 +576,7 @@ surfaces:
   - id: rest
     type: openapi
     url: https://example.com/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
   - id: mcp
     type: mcp
     server:
@@ -550,6 +602,7 @@ surfaces:
     namespace_suffix: GitHubRest
     type: openapi
     url: https://example.com/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
 ";
 
         assert!(

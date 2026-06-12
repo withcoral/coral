@@ -724,6 +724,7 @@ surfaces:
   - id: rest
     type: openapi
     file: openapi.yaml
+    sha256: 0693619bd2b15b9257926af5d5738c75f504186daf51acb9ec247e24b493da89
 ";
 
 /// Writes the v4 github manifest plus its `openapi.yaml` descriptor into a

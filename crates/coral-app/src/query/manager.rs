@@ -613,6 +613,7 @@ mod tests {
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
     use crate::identity::SingleUserPrincipalProvider;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
+    use crate::sources::materialization::sha256_hex;
     use crate::sources::model::SourceOrigin;
 
     struct QueryManagerFixture {
@@ -832,10 +833,8 @@ tables:
         let workspace_name = WorkspaceName::default();
         let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
-        std::fs::write(
-            &openapi_file,
-            format!(
-                r"
+        let openapi_yaml = format!(
+            r"
 openapi: 3.0.3
 info:
   title: GitHub
@@ -857,10 +856,10 @@ paths:
                     id: {{type: integer}}
                     title: {{type: string}}
 ",
-                server.uri()
-            ),
-        )
-        .expect("write OpenAPI fixture");
+            server.uri()
+        );
+        let openapi_sha256 = sha256_hex(openapi_yaml.as_bytes());
+        std::fs::write(&openapi_file, openapi_yaml).expect("write OpenAPI fixture");
         source_manager
             .import_source(
                 &workspace_name,
@@ -873,8 +872,10 @@ surfaces:
   - id: rest
     type: openapi
     file: {}
+    sha256: {}
 ",
-                        openapi_file.display()
+                        openapi_file.display(),
+                        openapi_sha256
                     ),
                     bindings: SourceBindings::default(),
                 },
@@ -919,6 +920,7 @@ surfaces:
   - id: rest
     type: openapi
     url: https://example.com/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
 ",
         )
         .expect("write manifest");
