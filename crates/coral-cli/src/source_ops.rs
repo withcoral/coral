@@ -126,6 +126,7 @@ pub(crate) async fn import_source(
             variables,
             secrets,
             oauth_credential_retrievals: Vec::new(),
+            ..Default::default()
         }))
         .await?
         .into_inner();
@@ -220,6 +221,7 @@ pub(crate) async fn import_source_with_credentials(
             variables: inputs.variables,
             secrets: inputs.secrets,
             oauth_credential_retrievals: inputs.oauth_credential_retrievals,
+            ..Default::default()
         }))
         .await?;
     completion_from_oauth_stream(

@@ -14,7 +14,7 @@ static PROPAGATOR_INIT: OnceLock<()> = OnceLock::new();
 /// Installs `TraceContextPropagator` as the process-global text-map
 /// propagator the first time this is called.
 ///
-/// `ClientMetadataInterceptor` injects via the global propagator on every
+/// `TraceContextInterceptor` injects via the global propagator on every
 /// outgoing request. Without this, a client-only process (talking to a
 /// remote endpoint or a separate test server, with no local
 /// `ServerBuilder::start` to install one) would fall back to the default
@@ -119,18 +119,18 @@ mod tests {
 
     #[test]
     fn interceptor_injects_static_metadata() {
-        let metadata =
-            StaticClientMetadata::try_from_pairs([("x-coral-user-id", "saul")]).expect("metadata");
+        let metadata = StaticClientMetadata::try_from_pairs([("x-coral-cloud-member-id", "saul")])
+            .expect("metadata");
         let mut interceptor = ClientMetadataInterceptor::new(metadata);
 
         let request = interceptor
             .call(tonic::Request::new(()))
-            .expect("interceptor");
+            .expect("intercept request");
 
         assert_eq!(
             request
                 .metadata()
-                .get("x-coral-user-id")
+                .get("x-coral-cloud-member-id")
                 .and_then(|value| value.to_str().ok()),
             Some("saul")
         );
