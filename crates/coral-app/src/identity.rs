@@ -334,6 +334,8 @@ impl SourceIdentitySelection {
 pub struct SourceIdentitySelectionRequest {
     /// Workspace selected by the request.
     pub workspace_name: String,
+    /// User principal that initiated the request.
+    pub request_principal: UserPrincipal,
     /// Subject selected by Coral for this binding; user-owned bindings carry
     /// the request user id (`subject.user_id()`).
     pub subject: SourceIdentitySubject,
@@ -350,6 +352,8 @@ pub struct SourceIdentitySelectionRequest {
 pub struct SourceIdentityResolutionRequest {
     /// Workspace selected by the request.
     pub workspace_name: String,
+    /// User principal that initiated the request.
+    pub request_principal: UserPrincipal,
     /// Subject selected by Coral for this binding.
     ///
     /// User-owned bindings carry the request user id. Workspace-owned bindings

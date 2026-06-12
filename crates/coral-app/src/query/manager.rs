@@ -659,6 +659,7 @@ impl LazyRuntimeIdentityResolver {
             .identity_manager
             .resolve_source_identity_selection(SourceIdentitySelectionRequest {
                 workspace_name: self.workspace_name.as_str().to_string(),
+                request_principal: self.request_principal.clone(),
                 subject: subject.clone(),
                 source_name: identity.source_name().to_string(),
                 surface_id: identity.surface_id().to_string(),
@@ -675,6 +676,7 @@ impl LazyRuntimeIdentityResolver {
             .identity_manager
             .resolve_source_identity(SourceIdentityResolutionRequest {
                 workspace_name: self.workspace_name.as_str().to_string(),
+                request_principal: self.request_principal.clone(),
                 subject,
                 source_name: identity.source_name().to_string(),
                 surface_id: identity.surface_id().to_string(),

@@ -1503,6 +1503,7 @@ oauth:
     fn resolution_request(identity_name: &str) -> SourceIdentityResolutionRequest {
         SourceIdentityResolutionRequest {
             workspace_name: "default".to_string(),
+            request_principal: UserPrincipal::local(),
             subject: SourceIdentitySubject::User("local".to_string()),
             source_name: "github".to_string(),
             surface_id: "rest".to_string(),
@@ -1783,6 +1784,7 @@ oauth:
 
         let request = SourceIdentitySelectionRequest {
             workspace_name: "default".to_string(),
+            request_principal: principal.clone(),
             subject: SourceIdentitySubject::User("saul".to_string()),
             source_name: "github_v4".to_string(),
             surface_id: "rest".to_string(),
@@ -1797,6 +1799,7 @@ oauth:
         assert_eq!(resolved, selection);
 
         let missing_user = SourceIdentitySelectionRequest {
+            request_principal: UserPrincipal::for_user("tina").expect("principal"),
             subject: SourceIdentitySubject::User("tina".to_string()),
             ..request
         };
