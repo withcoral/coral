@@ -16,7 +16,7 @@ use opentelemetry_otlp::{
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::trace::{SdkTracerProvider, SpanData, SpanExporter};
+use opentelemetry_sdk::trace::{SdkTracerProvider, SimpleSpanProcessor, SpanData, SpanExporter};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use tracing_subscriber::Layer as _;
 use tracing_subscriber::filter::Targets;
@@ -471,9 +471,7 @@ fn try_init_tracing(
                 build_trace_targets(DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOCAL_TRACE_FILTER);
             let exporter = TargetFilteringSpanExporter::new(exporter, internal_trace_targets)
                 .excluding_rpc_services(LOCAL_TRACE_EXCLUDED_RPC_SERVICES);
-            builder = builder.with_span_processor(
-                opentelemetry_sdk::trace::BatchSpanProcessor::builder(exporter).build(),
-            );
+            builder = builder.with_span_processor(SimpleSpanProcessor::new(exporter));
         }
 
         let provider = builder.build();
