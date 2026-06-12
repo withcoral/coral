@@ -96,7 +96,7 @@ impl AppClient {
         I: IntoIterator<Item = (K, V)>,
     {
         let static_metadata = StaticClientMetadata::try_from_pairs(metadata)?;
-        let endpoint = Endpoint::from_shared(endpoint_uri.to_string())?
+        let endpoint = Endpoint::new(endpoint_uri.to_string())?
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
         let grpc_endpoint = GrpcClientEndpoint::from_endpoint_uri(endpoint_uri);
         let channel = endpoint.connect().await?;
