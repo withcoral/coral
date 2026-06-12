@@ -4,9 +4,16 @@
 //! Registers `{ episode_id -> intent, parent }` into the per-workspace
 //! [`EpisodeStore`](super::store::EpisodeStore). Experimental: the capture that
 //! drives this — opening an episode per session and tagging each query with the
-//! `coral-episode-id` metadata key — is wired in `coral-mcp` in a later PR. Like
-//! the other local gRPC services, the handler is always registered; the
-//! `episodes` feature gates the consumer that calls it.
+//! `coral-episode-id` metadata key — is wired in `coral-mcp` in a later PR.
+//!
+//! Like the other local gRPC services (e.g. `FeedbackService`), the route is
+//! **registered unconditionally**: the transport is feature-agnostic by design,
+//! and effective features are resolved in `coral-cli`, which gates the
+//! *consumers* rather than the routes. The `episodes` feature gates the only
+//! caller — the `coral-mcp` capture path — so on a default/disabled install this
+//! endpoint is reachable but inert: nothing opens an episode, so no `intent`
+//! (possibly PII) is ever written. The always-registered write endpoint is the
+//! supported contract; see the `open_episode_*` server smoke tests.
 
 use coral_api::v1::episode_service_server::EpisodeService as EpisodeServiceApi;
 use coral_api::v1::{OpenEpisodeRequest, OpenEpisodeResponse};

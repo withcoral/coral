@@ -398,6 +398,13 @@ async fn start_server(
         .add_service(GrpcMethodAnnotatedService::new(FeedbackServiceServer::new(
             feedback_service,
         )))
+        // Registered unconditionally, like `FeedbackService` above: the local
+        // transport is feature-agnostic by design (effective features are resolved
+        // in `coral-cli`, which gates the *consumers*, not the routes). The
+        // `episodes` feature gates the only caller — the `coral-mcp` capture path —
+        // so on a default/disabled install this endpoint is reachable but inert:
+        // nothing opens an episode, so no intent is ever written. See the
+        // `EpisodeService` module docs and `open_episode_*` server tests below.
         .add_service(GrpcMethodAnnotatedService::new(EpisodeServiceServer::new(
             episode_service,
         )))
@@ -629,12 +636,13 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use coral_api::v1::episode_service_client::EpisodeServiceClient;
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
         ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-        ListTracesRequest, Workspace, import_source_response,
+        ListTracesRequest, OpenEpisodeRequest, Workspace, import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -701,6 +709,52 @@ enabled = false
             .expect_err("trace service should be disabled");
 
         assert_eq!(status.code(), Code::Unimplemented);
+        server.shutdown().await.expect("shutdown");
+    }
+
+    /// The `OpenEpisode` route is registered unconditionally — the transport is
+    /// feature-agnostic, and the `episodes` feature gates the `coral-mcp` consumer
+    /// rather than the route. Drive the full path end-to-end through a real
+    /// `EpisodeServiceClient` on a default install (episodes disabled) and confirm
+    /// the call is served and the intent is persisted. Guards against a dropped or
+    /// miswired `EpisodeServiceServer` route, which the direct-`EpisodeService`
+    /// unit tests cannot catch.
+    #[tokio::test]
+    async fn open_episode_through_server_persists() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir.clone())
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut episode_client = EpisodeServiceClient::new(channel);
+
+        episode_client
+            .open_episode(Request::new(OpenEpisodeRequest {
+                workspace: Some(default_workspace()),
+                episode_id: "ep_smoke".to_string(),
+                intent: "find the HR onboarding form".to_string(),
+                parent_episode_id: String::new(),
+            }))
+            .await
+            .expect("OpenEpisode is served regardless of the episodes feature");
+
+        // The handler ran the full path through to the per-workspace episode log.
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        let raw = std::fs::read_to_string(layout.episodes_file(&WorkspaceName::default()))
+            .expect("episode file should exist");
+        assert!(raw.contains("ep_smoke"), "episode id should be persisted");
+        assert!(
+            raw.contains("find the HR onboarding form"),
+            "intent should be persisted"
+        );
         server.shutdown().await.expect("shutdown");
     }
 
