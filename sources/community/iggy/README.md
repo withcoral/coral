@@ -41,8 +41,10 @@ Use the resulting JWT as `IGGY_ACCESS_TOKEN` when running `coral source add`.
 ## Local Setup
 
 ```bash
-# Run Iggy with Docker. The iggy/iggy root account isn't enabled by default,
-# so set IGGY_ROOT_USERNAME/IGGY_ROOT_PASSWORD to create it on first boot.
+# Run Iggy with Docker. A root user ("iggy") is always created on first boot,
+# but gets a randomly generated password (printed to the container logs)
+# unless IGGY_ROOT_USERNAME/IGGY_ROOT_PASSWORD are set — set both to "iggy"
+# for the well-known iggy/iggy credentials used below.
 docker run -d \
   --name iggy-server \
   --cap-add SYS_NICE \
