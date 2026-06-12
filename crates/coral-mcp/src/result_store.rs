@@ -105,6 +105,15 @@ impl ResultStore {
         Self::with_limits(ResultStoreLimits::default())
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_test_limits(max_results: usize, max_bytes: usize) -> Self {
+        Self::with_limits(ResultStoreLimits::new(
+            DEFAULT_RESULT_TTL,
+            max_results,
+            max_bytes,
+        ))
+    }
+
     fn with_limits(limits: ResultStoreLimits) -> Self {
         Self {
             state: Arc::new(Mutex::new(ResultStoreState::default())),

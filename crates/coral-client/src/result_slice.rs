@@ -28,7 +28,8 @@ pub struct ColumnSummary {
 pub struct ResultSliceRequest<'a> {
     /// Zero-based row offset.
     pub offset: usize,
-    /// Maximum rows to return. `0` returns metadata only.
+    /// Maximum rows to return. `0` returns metadata only and does not advance
+    /// pagination.
     pub limit: usize,
     /// Optional projected column names. Omitted means all columns.
     pub columns: Option<&'a [String]>,
@@ -45,9 +46,10 @@ pub struct ResultPage {
     pub offset: usize,
     /// Maximum rows requested for this page.
     pub limit: usize,
-    /// Whether there are more rows after this page.
+    /// Whether there are more rows after this positive-limit page.
     pub has_more: bool,
-    /// Next offset to request when `has_more` is true.
+    /// Next offset to request when `has_more` is true. Metadata-only pages do
+    /// not emit a pagination cursor because they consume no rows.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_offset: Option<usize>,
     /// JSON-safe row objects for this page.
@@ -228,11 +230,8 @@ fn slice_batches(batches: &[RecordBatch], offset: usize, limit: usize) -> Vec<Re
 }
 
 fn next_offset(row_count: usize, offset: usize, limit: usize) -> Option<usize> {
-    if offset >= row_count {
+    if limit == 0 || offset >= row_count {
         return None;
-    }
-    if limit == 0 {
-        return Some(offset);
     }
     let next = offset.saturating_add(limit);
     (next < row_count).then_some(next)
@@ -354,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn slice_result_limit_zero_returns_metadata_only() {
+    fn slice_result_limit_zero_returns_metadata_only_without_next_page() {
         let result = two_batch_result();
         let page = slice_result(
             &result,
@@ -366,8 +365,8 @@ mod tests {
         )
         .expect("slice");
         assert!(page.rows.is_empty());
-        assert!(page.has_more);
-        assert_eq!(page.next_offset, Some(0));
+        assert!(!page.has_more);
+        assert_eq!(page.next_offset, None);
     }
 
     #[test]

@@ -1000,16 +1000,18 @@ fn optional_string_array_argument(
     }
     let mut out = Vec::with_capacity(values.len());
     for value in values {
-        let column = value
-            .as_str()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                ErrorData::invalid_params(
-                    format!("argument '{key}' must be an array of non-empty strings"),
-                    None,
-                )
-            })?;
+        let column = value.as_str().ok_or_else(|| {
+            ErrorData::invalid_params(
+                format!("argument '{key}' must be an array of non-empty strings"),
+                None,
+            )
+        })?;
+        if column.trim().is_empty() {
+            return Err(ErrorData::invalid_params(
+                format!("argument '{key}' must be an array of non-empty strings"),
+                None,
+            ));
+        }
         out.push(column.to_string());
     }
     Ok(Some(out))
@@ -1083,14 +1085,14 @@ mod tests {
         let mut arguments = Map::new();
         arguments.insert("result_id".to_string(), Value::String("res_1".to_string()));
         arguments.insert("limit".to_string(), Value::from(0));
-        arguments.insert("columns".to_string(), serde_json::json!(["name", "id"]));
+        arguments.insert("columns".to_string(), serde_json::json!(["name", " id "]));
 
         let parsed = result_get_arguments(Some(&arguments)).expect("arguments");
         assert_eq!(parsed.result_id, "res_1");
         assert_eq!(parsed.limit, 0);
         assert_eq!(
             parsed.columns.expect("columns"),
-            vec!["name".to_string(), "id".to_string()]
+            vec!["name".to_string(), " id ".to_string()]
         );
     }
 
@@ -1101,6 +1103,15 @@ mod tests {
         arguments.insert("columns".to_string(), serde_json::json!([]));
 
         result_get_arguments(Some(&arguments)).expect_err("empty columns should fail");
+    }
+
+    #[test]
+    fn result_get_arguments_reject_whitespace_only_column_names() {
+        let mut arguments = Map::new();
+        arguments.insert("result_id".to_string(), Value::String("res_1".to_string()));
+        arguments.insert("columns".to_string(), serde_json::json!([" \t "]));
+
+        result_get_arguments(Some(&arguments)).expect_err("blank column name should fail");
     }
 
     #[test]

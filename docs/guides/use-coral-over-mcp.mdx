@@ -247,14 +247,25 @@ For small results, the `sql` tool returns rows inline as a JSON array of objects
 {"rows":[{"title":"Fix deploy","state":"open"}]}
 ```
 
+The `sql` response has four shapes clients should branch on:
+
+- `rows`: small result returned inline.
+- `result_id`: stored in-memory result handle; use `next_call` or `result_get` for more rows.
+- `preview_only: true`: result was too large to store; use the preview and metadata, or rerun narrower SQL.
+- `duplicate_column_names: true`: rows were omitted because JSON object rows would lose duplicate-key data; alias duplicate columns and rerun.
+
 For larger results, `sql` may return an in-memory result handle instead of every row. The response includes `result_id`, `row_count`, column metadata, a preview page, and a suggested `next_call`:
 
 ```json
 {
   "result_id": "res_...",
   "row_count": 1200,
-  "column_count": 8,
-  "preview": {"offset": 0, "limit": 20, "has_more": true, "next_offset": 20, "rows": []},
+  "column_count": 2,
+  "columns": [
+    {"name": "title", "data_type": "Utf8", "is_nullable": true, "ordinal_position": 0},
+    {"name": "state", "data_type": "Utf8", "is_nullable": true, "ordinal_position": 1}
+  ],
+  "preview": {"offset": 0, "limit": 20, "has_more": true, "next_offset": 20, "rows": [{"title": "Fix deploy", "state": "open"}]},
   "next_call": {"tool": "result_get", "arguments": {"result_id": "res_...", "offset": 20, "limit": 500}}
 }
 ```
@@ -267,7 +278,23 @@ Use `result_get` to page through the stored result or request only selected colu
 
 Result handles are process-local MCP session state. They expire and can be evicted under memory pressure; if `result_get` reports a missing or expired handle, rerun the SQL with tighter filters, a smaller projection, or `LIMIT`.
 
-The initial preview is byte-budgeted. If preview rows would make the `sql` response too large, Coral returns a metadata-only preview with `limit: 0`, `rows: []`, and `next_offset: 0`; call `result_get` with a column projection or rerun the SQL with filters, `LIMIT`, or smaller expressions.
+If a result exceeds the in-memory handle store limit, `sql` returns preview-only metadata instead of a `result_id`. This shape is not pageable:
+
+```json
+{
+  "preview_only": true,
+  "row_count": 1200,
+  "column_count": 2,
+  "columns": [
+    {"name": "title", "data_type": "Utf8", "is_nullable": true, "ordinal_position": 0},
+    {"name": "state", "data_type": "Utf8", "is_nullable": true, "ordinal_position": 1}
+  ],
+  "preview": {"offset": 0, "limit": 20, "has_more": true, "next_offset": 20, "rows": [{"title": "Fix deploy", "state": "open"}]},
+  "warning": "Result exceeded the in-memory handle limit; rerun the SQL with LIMIT, filters, or a smaller column set."
+}
+```
+
+The initial preview is byte-budgeted. If preview rows would make the `sql` response too large, Coral returns a metadata-only preview with `limit: 0` and `rows: []`. For a handled result, use the provided `next_call` or call `result_get` with a positive limit and column projection. For a `preview_only` result, rerun the SQL with filters, `LIMIT`, or smaller expressions because there is no stored handle to page.
 
 If a query returns duplicate column names, such as `SELECT a.id, b.id ...`, MCP cannot render rows as JSON objects without losing one of the duplicate values. Coral returns row and column metadata with a warning instead of rows; alias duplicate columns in SQL, for example `SELECT a.id AS a_id, b.id AS b_id ...`, then rerun the query.
 

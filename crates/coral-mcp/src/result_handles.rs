@@ -174,7 +174,7 @@ impl ResultHandles {
                     return Ok(value);
                 }
 
-                let preview = metadata_only_preview(result.row_count());
+                let preview = metadata_only_preview();
                 let guidance = result_guidance(result.row_count(), true);
                 telemetry::record_sql_result(
                     &tracing::Span::current(),
@@ -209,7 +209,7 @@ impl ResultHandles {
                     return Ok(value);
                 }
 
-                let preview = metadata_only_preview(result.row_count());
+                let preview = metadata_only_preview();
                 telemetry::record_sql_result(
                     &tracing::Span::current(),
                     "preview_only",
@@ -321,12 +321,12 @@ fn preview_page(result: &CollectedQueryResult) -> Result<ResultPreviewValue, ton
     })
 }
 
-fn metadata_only_preview(row_count: usize) -> ResultPreviewValue {
+fn metadata_only_preview() -> ResultPreviewValue {
     ResultPreviewValue {
         offset: 0,
         limit: 0,
-        has_more: row_count > 0,
-        next_offset: (row_count > 0).then_some(0),
+        has_more: false,
+        next_offset: None,
         rows: Vec::new(),
     }
 }
@@ -349,7 +349,12 @@ fn serialize_handled_sql_value(
 ) -> Result<Value, tonic::Status> {
     // Advertise the maximum page size: agents tend to copy these
     // arguments verbatim, and small pages multiply round trips.
-    let next_call = preview.next_offset.map(|offset| NextCallValue {
+    let next_call_offset = if preview.limit == 0 && result.row_count() > preview.offset {
+        Some(preview.offset)
+    } else {
+        preview.next_offset
+    };
+    let next_call = next_call_offset.map(|offset| NextCallValue {
         tool: "result_get",
         arguments: NextCallArgumentsValue {
             result_id: result_id.clone(),
@@ -438,6 +443,12 @@ mod tests {
         CollectedQueryResult::new(schema, vec![batch], 1).expect("result")
     }
 
+    fn handles_with_rejecting_store() -> ResultHandles {
+        ResultHandles {
+            store: ResultStore::with_test_limits(0, usize::MAX),
+        }
+    }
+
     #[test]
     fn single_row_over_inline_budget_returns_handle() {
         let value = ResultHandles::new()
@@ -481,8 +492,8 @@ mod tests {
                 .starts_with("res_")
         );
         assert_eq!(value["preview"]["limit"], 0);
-        assert_eq!(value["preview"]["has_more"], true);
-        assert_eq!(value["preview"]["next_offset"], 0);
+        assert_eq!(value["preview"]["has_more"], false);
+        assert!(value["preview"].get("next_offset").is_none());
         assert!(
             value["preview"]["rows"]
                 .as_array()
@@ -496,6 +507,64 @@ mod tests {
                 .expect("guidance")
                 .contains("Preview omitted")
         );
+        assert!(
+            serialized_value_len(&value).expect("serialized length")
+                <= SQL_PREVIEW_RESPONSE_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn preview_only_result_exposes_contract_shape() {
+        let body = "x".repeat(SQL_INLINE_MAX_BYTES + 512);
+        let value = handles_with_rejecting_store()
+            .sql_value(single_string_result(body.clone()))
+            .expect("sql value");
+
+        assert_eq!(value["preview_only"], true);
+        assert!(value.get("result_id").is_none());
+        assert!(value.get("next_call").is_none());
+        assert_eq!(value["row_count"], 1);
+        assert_eq!(value["column_count"], 1);
+        assert_eq!(value["columns"][0]["name"], "body");
+        assert_eq!(value["preview"]["offset"], 0);
+        assert_eq!(value["preview"]["limit"], SQL_PREVIEW_ROWS);
+        assert_eq!(value["preview"]["has_more"], false);
+        assert!(value["preview"].get("next_offset").is_none());
+        assert_eq!(
+            value["preview"]["rows"][0]["body"]
+                .as_str()
+                .expect("preview body")
+                .len(),
+            body.len()
+        );
+        assert_eq!(value["warning"], RESULT_TOO_LARGE_WARNING);
+    }
+
+    #[test]
+    fn preview_only_result_can_omit_oversized_preview_rows() {
+        let value = handles_with_rejecting_store()
+            .sql_value(single_string_result(
+                "x".repeat(SQL_PREVIEW_RESPONSE_MAX_BYTES + 512),
+            ))
+            .expect("sql value");
+
+        assert_eq!(value["preview_only"], true);
+        assert!(value.get("result_id").is_none());
+        assert!(value.get("next_call").is_none());
+        assert_eq!(value["row_count"], 1);
+        assert_eq!(value["column_count"], 1);
+        assert_eq!(value["columns"][0]["name"], "body");
+        assert_eq!(value["preview"]["offset"], 0);
+        assert_eq!(value["preview"]["limit"], 0);
+        assert_eq!(value["preview"]["has_more"], false);
+        assert!(value["preview"].get("next_offset").is_none());
+        assert!(
+            value["preview"]["rows"]
+                .as_array()
+                .expect("preview rows")
+                .is_empty()
+        );
+        assert_eq!(value["warning"], RESULT_TOO_LARGE_PREVIEW_OMITTED_WARNING);
         assert!(
             serialized_value_len(&value).expect("serialized length")
                 <= SQL_PREVIEW_RESPONSE_MAX_BYTES
