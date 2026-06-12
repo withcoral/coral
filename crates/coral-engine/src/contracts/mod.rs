@@ -12,9 +12,9 @@ pub use catalog::{
 pub use error::{CoreError, StatusCode, StructuredQueryError};
 pub use query::{
     DependentJoinConfig, DependentJoinSourceConfig, EffectiveDependentJoinConfig, QueryExecution,
-    QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure,
-    QueryTestResult, QueryTestSuccess, RuntimeSourceComponent, RuntimeSourcePackage,
-    SourceValidationReport,
+    QueryParameterValue, QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
+    QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeSourceComponent,
+    RuntimeSourcePackage, SourceValidationReport,
 };
 pub(crate) use query_error::{ColumnParts, TableRefParts};
 
