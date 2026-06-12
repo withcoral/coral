@@ -149,7 +149,6 @@ impl CompiledBackendSource for FileCompiledSource {
         Ok(BackendRegistration {
             schemas: vec![BackendSchemaRegistration {
                 tables,
-                table_functions: HashMap::default(),
                 source: RegisteredSource {
                     schema_name,
                     tables: table_infos,

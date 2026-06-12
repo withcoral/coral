@@ -9,7 +9,7 @@ use tracing::{Instrument as _, info_span};
 
 use crate::backends::{
     BackendRegistration, BackendRegistrationContext, BackendSchemaRegistration,
-    CompiledBackendSource, RegisteredSource, SourceTableFunctions,
+    CompiledBackendSource, RegisteredSource,
 };
 use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
 use crate::runtime::schema_provider::StaticSchemaProvider;
@@ -134,7 +134,6 @@ async fn register_sources_inner(
                 {
                     Ok(registration) => {
                         register_backend_registration(
-                            ctx,
                             catalog.as_ref(),
                             source_decorators,
                             query_source,
@@ -243,7 +242,6 @@ async fn register_source(
 }
 
 fn register_backend_registration(
-    ctx: &SessionContext,
     catalog: &dyn datafusion::catalog::CatalogProvider,
     source_decorators: &mut [Box<dyn SourceDecorator>],
     query_source: &QuerySource,
@@ -255,21 +253,15 @@ fn register_backend_registration(
     for schema_registration in registration.schemas {
         let BackendSchemaRegistration {
             tables,
-            table_functions,
             source: registered_source,
         } = schema_registration;
         let schema_name = registered_source.schema_name.clone();
         let decorated_tables = decorate_source_tables(source_decorators, query_source, tables)?;
-        staged.push((
-            schema_name,
-            decorated_tables,
-            table_functions,
-            registered_source,
-        ));
+        staged.push((schema_name, decorated_tables, registered_source));
     }
 
     let mut registered_schema_names = Vec::with_capacity(staged.len());
-    for (schema_name, decorated_tables, _table_functions, _registered_source) in &mut staged {
+    for (schema_name, decorated_tables, _registered_source) in &mut staged {
         match catalog.register_schema(
             schema_name,
             Arc::new(StaticSchemaProvider::new(std::mem::take(decorated_tables))),
@@ -290,8 +282,7 @@ fn register_backend_registration(
         }
     }
 
-    for (_schema_name, _decorated_tables, table_functions, registered_source) in staged {
-        register_table_functions(ctx, table_functions);
+    for (_schema_name, _decorated_tables, registered_source) in staged {
         result.active_sources.push(registered_source);
     }
     Ok(())
@@ -329,12 +320,6 @@ fn push_source_failure(
         "skipping source"
     );
     result.failures.push(failure);
-}
-
-fn register_table_functions(ctx: &SessionContext, table_functions: SourceTableFunctions) {
-    for (internal_name, function) in table_functions {
-        ctx.register_udtf(&internal_name, function);
-    }
 }
 
 fn prepare_source_decorators(
