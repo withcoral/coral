@@ -18,10 +18,7 @@ use rmcp::ErrorData;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{
-    result_store::{ResultStore, ResultStoreError},
-    telemetry,
-};
+use crate::result_store::{ResultStore, ResultStoreError};
 
 const SQL_PREVIEW_ROWS: usize = 20;
 const SQL_INLINE_BYTE_CHECK_MAX_ROWS: usize = 100;
@@ -131,8 +128,6 @@ impl ResultHandles {
         let columns = schema_summary(&result);
         match self.store.insert_result(Arc::clone(&result)) {
             Ok(result_id) => {
-                let preview_rows = preview.rows.len();
-                let preview_has_more = preview.has_more;
                 let guidance = result_guidance(result.row_count(), false);
                 let value = serialize_handled_sql_value(
                     result_id.clone(),
@@ -142,34 +137,14 @@ impl ResultHandles {
                     guidance,
                 )?;
                 if serialized_value_len(&value)? <= SQL_PREVIEW_RESPONSE_MAX_BYTES {
-                    telemetry::record_sql_result(
-                        &tracing::Span::current(),
-                        "handle",
-                        result.row_count(),
-                        columns.len(),
-                        preview_rows,
-                        Some(preview_has_more),
-                        guidance.is_some(),
-                    );
                     return Ok(value);
                 }
 
                 let preview = metadata_only_preview();
                 let guidance = result_guidance(result.row_count(), true);
-                telemetry::record_sql_result(
-                    &tracing::Span::current(),
-                    "handle",
-                    result.row_count(),
-                    columns.len(),
-                    0,
-                    Some(preview.has_more),
-                    true,
-                );
                 serialize_handled_sql_value(result_id, &result, columns, preview, guidance)
             }
             Err(ResultStoreError::TooLarge { .. }) => {
-                let preview_rows = preview.rows.len();
-                let preview_has_more = preview.has_more;
                 let value = serialize_preview_only_sql_value(
                     &result,
                     columns.clone(),
@@ -177,28 +152,10 @@ impl ResultHandles {
                     RESULT_TOO_LARGE_WARNING,
                 )?;
                 if serialized_value_len(&value)? <= SQL_PREVIEW_RESPONSE_MAX_BYTES {
-                    telemetry::record_sql_result(
-                        &tracing::Span::current(),
-                        "preview_only",
-                        result.row_count(),
-                        columns.len(),
-                        preview_rows,
-                        Some(preview_has_more),
-                        false,
-                    );
                     return Ok(value);
                 }
 
                 let preview = metadata_only_preview();
-                telemetry::record_sql_result(
-                    &tracing::Span::current(),
-                    "preview_only",
-                    result.row_count(),
-                    columns.len(),
-                    0,
-                    Some(preview.has_more),
-                    false,
-                );
                 serialize_preview_only_sql_value(
                     &result,
                     columns,
@@ -217,12 +174,6 @@ impl ResultHandles {
         limit: usize,
         columns: Option<&[String]>,
     ) -> Result<Value, ErrorData> {
-        telemetry::record_result_get_request(
-            &tracing::Span::current(),
-            offset,
-            limit,
-            columns.map(<[String]>::len),
-        );
         let result = self
             .store
             .get(&result_id)
@@ -236,14 +187,6 @@ impl ResultHandles {
             },
         )
         .map_err(result_page_error_data)?;
-        telemetry::record_result_get_page(
-            &tracing::Span::current(),
-            page.row_count,
-            page.rows.len(),
-            page.columns.len(),
-            page.has_more,
-            page.next_offset,
-        );
         serde_json::to_value(ResultGetValue { result_id, page })
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))
     }
@@ -261,21 +204,11 @@ fn inline_sql_value_if_small(
     }
     let rows = batches_to_json_rows_json_safe_numbers(result.batches())
         .map_err(|error| query_result_status(&error))?;
-    let rows_len = rows.len();
     let value = serialize_tool_value(SqlRowsValue { rows })?;
     let compact_len = serde_json::to_string(&value)
         .map_err(|error| tonic::Status::internal(error.to_string()))?
         .len();
     if compact_len <= SQL_INLINE_MAX_BYTES {
-        telemetry::record_sql_result(
-            &tracing::Span::current(),
-            "inline_rows",
-            result.row_count(),
-            result.schema().fields().len(),
-            rows_len,
-            Some(false),
-            false,
-        );
         Ok(Some(value))
     } else {
         Ok(None)
@@ -287,15 +220,6 @@ fn duplicate_column_sql_value(result: &CollectedQueryResult) -> Result<Value, to
     // rows for these results. Require aliases instead of returning corrupt data
     // or bypassing the large-result policy.
     let columns = schema_summary(result);
-    telemetry::record_sql_result(
-        &tracing::Span::current(),
-        "duplicate_named_metadata",
-        result.row_count(),
-        columns.len(),
-        0,
-        None,
-        true,
-    );
     serialize_tool_value(SqlDuplicateColumnsValue {
         duplicate_column_names: true,
         rows_omitted: true,

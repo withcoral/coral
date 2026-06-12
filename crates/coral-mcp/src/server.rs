@@ -483,7 +483,6 @@ impl ServerHandler for CoralMcpServer {
                     Vec::new()
                 }
             };
-            let source_count = source_names.len();
             let tool_context = ToolDescriptionContext::new(
                 visible_table_count,
                 visible_function_count,
@@ -500,14 +499,6 @@ impl ServerHandler for CoralMcpServer {
             if self.options.feedback_enabled {
                 tools.push(feedback_tool());
             }
-            telemetry::record_list_tools_surface(
-                &tracing::Span::current(),
-                source_count,
-                visible_table_count,
-                visible_function_count,
-                tools.len(),
-                self.options.feedback_enabled,
-            );
             Ok(ListToolsResult::with_all_items(tools))
         })
         .await
@@ -535,14 +526,6 @@ impl ServerHandler for CoralMcpServer {
                 .load_sources_and_catalog_counts()
                 .await
                 .map_err(|status| status_to_error_data(&status))?;
-            let source_count = sources.len();
-            telemetry::record_list_resources_surface(
-                &tracing::Span::current(),
-                source_count,
-                visible_table_count,
-                visible_function_count,
-                2,
-            );
             Ok(ListResourcesResult::with_all_items(vec![
                 guide_resource(&sources, visible_table_count, visible_function_count),
                 tables_resource(visible_table_count),
@@ -604,17 +587,14 @@ fn finish_tool_call(
     match outcome {
         Ok(ToolCallOutcome::Success(value)) => {
             let result = build_tool_result(value);
-            if let Ok(result) = &result {
-                telemetry::record_tool_response(span, result);
-            }
             telemetry::record_protocol_result(span, &result);
             result
         }
         Ok(ToolCallOutcome::ToolError { operation, status }) => {
             telemetry::record_tonic_status(span, &status);
-            let result = tool_error_result(tool_error_from_status(operation, &status));
-            telemetry::record_tool_response(span, &result);
-            Ok(result)
+            Ok(tool_error_result(tool_error_from_status(
+                operation, &status,
+            )))
         }
         Err(error) => {
             telemetry::record_protocol_error(span, &error);
