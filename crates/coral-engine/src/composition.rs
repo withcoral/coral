@@ -38,105 +38,59 @@ pub enum SourceFailurePolicy {
     Abort,
 }
 
-/// Neutral error type for source-decoration failures.
-#[derive(Debug, thiserror::Error)]
-pub enum SourceDecoratorError {
-    /// The decorator was configured with invalid input.
-    #[error("{0}")]
-    InvalidInput(String),
-    /// The decorator could not proceed because a precondition was unmet.
-    #[error("{0}")]
-    FailedPrecondition(String),
+/// Defines one neutral two-variant error type for an engine extension point.
+///
+/// Every extension seam reports failures the same way, so the error shape is
+/// kept uniform on purpose: callers map `InvalidInput` to invalid-argument
+/// handling and `FailedPrecondition` to precondition handling.
+macro_rules! extension_error {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        #[derive(Debug, thiserror::Error)]
+        pub enum $name {
+            /// The extension was configured with invalid input.
+            #[error("{0}")]
+            InvalidInput(String),
+            /// The extension could not proceed because a precondition was unmet.
+            #[error("{0}")]
+            FailedPrecondition(String),
+        }
+
+        impl $name {
+            #[must_use]
+            /// Builds an invalid-input error.
+            pub fn invalid_input(detail: impl Into<String>) -> Self {
+                Self::InvalidInput(detail.into())
+            }
+
+            #[must_use]
+            /// Builds a failed-precondition error.
+            pub fn failed_precondition(detail: impl Into<String>) -> Self {
+                Self::FailedPrecondition(detail.into())
+            }
+        }
+    };
 }
 
-impl SourceDecoratorError {
-    #[must_use]
-    /// Builds an invalid-input error.
-    pub fn invalid_input(detail: impl Into<String>) -> Self {
-        Self::InvalidInput(detail.into())
-    }
+extension_error!(
+    /// Neutral error type for source-decoration failures.
+    SourceDecoratorError
+);
 
-    #[must_use]
-    /// Builds a failed-precondition error.
-    pub fn failed_precondition(detail: impl Into<String>) -> Self {
-        Self::FailedPrecondition(detail.into())
-    }
-}
+extension_error!(
+    /// Neutral error type for query-result observer failures.
+    QueryResultObserverError
+);
 
-/// Neutral error type for query-result observer failures.
-#[derive(Debug, thiserror::Error)]
-pub enum QueryResultObserverError {
-    /// The observer was configured with invalid input.
-    #[error("{0}")]
-    InvalidInput(String),
-    /// The observer could not proceed because a precondition was unmet.
-    #[error("{0}")]
-    FailedPrecondition(String),
-}
+extension_error!(
+    /// Neutral error type for request-authenticator failures.
+    RequestAuthenticatorError
+);
 
-impl QueryResultObserverError {
-    #[must_use]
-    /// Builds an invalid-input error.
-    pub fn invalid_input(detail: impl Into<String>) -> Self {
-        Self::InvalidInput(detail.into())
-    }
-
-    #[must_use]
-    /// Builds a failed-precondition error.
-    pub fn failed_precondition(detail: impl Into<String>) -> Self {
-        Self::FailedPrecondition(detail.into())
-    }
-}
-
-/// Neutral error type for request-authenticator failures.
-#[derive(Debug, thiserror::Error)]
-pub enum RequestAuthenticatorError {
-    /// The authenticator was configured with invalid input.
-    #[error("{0}")]
-    InvalidInput(String),
-    /// The authenticator could not proceed because a precondition was unmet.
-    #[error("{0}")]
-    FailedPrecondition(String),
-}
-
-impl RequestAuthenticatorError {
-    #[must_use]
-    /// Builds an invalid-input error.
-    pub fn invalid_input(detail: impl Into<String>) -> Self {
-        Self::InvalidInput(detail.into())
-    }
-
-    #[must_use]
-    /// Builds a failed-precondition error.
-    pub fn failed_precondition(detail: impl Into<String>) -> Self {
-        Self::FailedPrecondition(detail.into())
-    }
-}
-
-/// Neutral error type for request-time source input resolution failures.
-#[derive(Debug, thiserror::Error)]
-pub enum SourceInputResolverError {
-    /// The resolver was configured with invalid input.
-    #[error("{0}")]
-    InvalidInput(String),
-    /// The resolver could not proceed because a precondition was unmet.
-    #[error("{0}")]
-    FailedPrecondition(String),
-}
-
-impl SourceInputResolverError {
-    #[must_use]
-    /// Builds an invalid-input error.
-    pub fn invalid_input(detail: impl Into<String>) -> Self {
-        Self::InvalidInput(detail.into())
-    }
-
-    #[must_use]
-    /// Builds a failed-precondition error.
-    pub fn failed_precondition(detail: impl Into<String>) -> Self {
-        Self::FailedPrecondition(detail.into())
-    }
-}
+extension_error!(
+    /// Neutral error type for request-time source input resolution failures.
+    SourceInputResolverError
+);
 
 /// Request-time source input-resolution context exposed to source input resolvers.
 ///

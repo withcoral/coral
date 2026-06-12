@@ -37,7 +37,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_stream::Stream;
-use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
+use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
@@ -572,22 +572,61 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
     }
 }
 
-#[derive(Default)]
-struct Captured {
-    execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
-    list_catalog: Mutex<Vec<ListCatalogRequest>>,
-    search_catalog: Mutex<Vec<SearchCatalogRequest>>,
-    describe_table: Mutex<Vec<DescribeTableRequest>>,
-    list_columns: Mutex<Vec<ListColumnsRequest>>,
-    discover_sources: Mutex<Vec<DiscoverSourcesRequest>>,
-    list_sources: Mutex<Vec<ListSourcesRequest>>,
-    get_source: Mutex<Vec<GetSourceRequest>>,
-    get_source_info: Mutex<Vec<GetSourceInfoRequest>>,
-    create_bundled_source: Mutex<Vec<CreateBundledSourceRequest>>,
-    create_bundled_source_with_oauth: Mutex<Vec<CreateBundledSourceWithOAuthRequest>>,
-    import_source: Mutex<Vec<ImportSourceRequest>>,
-    delete_source: Mutex<Vec<DeleteSourceRequest>>,
-    validate_source: Mutex<Vec<ValidateSourceRequest>>,
+/// Declares one capture slot per mocked RPC together with the `MockServer`
+/// getter that exposes the recorded requests to tests.
+macro_rules! captured_requests {
+    ($($field:ident as $getter:ident: $request:ty),* $(,)?) => {
+        #[derive(Default)]
+        struct Captured {
+            $($field: Mutex<Vec<$request>>,)*
+        }
+
+        impl MockServer {
+            $(pub(crate) fn $getter(&self) -> Vec<$request> {
+                self.captured
+                    .$field
+                    .lock()
+                    .expect("captured requests lock")
+                    .clone()
+            })*
+        }
+    };
+}
+
+captured_requests! {
+    execute_sql as execute_sql_requests: ExecuteSqlRequest,
+    list_catalog as list_catalog_requests: ListCatalogRequest,
+    search_catalog as search_catalog_requests: SearchCatalogRequest,
+    describe_table as describe_table_requests: DescribeTableRequest,
+    list_columns as list_columns_requests: ListColumnsRequest,
+    discover_sources as discover_sources_requests: DiscoverSourcesRequest,
+    list_sources as list_sources_requests: ListSourcesRequest,
+    get_source as get_source_requests: GetSourceRequest,
+    get_source_info as get_source_info_requests: GetSourceInfoRequest,
+    create_bundled_source as create_bundled_source_requests: CreateBundledSourceRequest,
+    create_bundled_source_with_oauth as create_bundled_source_with_oauth_requests:
+        CreateBundledSourceWithOAuthRequest,
+    import_source as import_source_requests: ImportSourceRequest,
+    delete_source as delete_source_requests: DeleteSourceRequest,
+    validate_source as validate_source_requests: ValidateSourceRequest,
+}
+
+/// Records the unwrapped `request` in its capture slot and returns it for
+/// handlers that also inspect the request.
+fn capture<T: Clone>(slot: &Mutex<Vec<T>>, request: Request<T>) -> T {
+    let request = request.into_inner();
+    slot.lock()
+        .expect("captured requests lock")
+        .push(request.clone());
+    request
+}
+
+/// Server-streaming response type used by the mocks: one event, then end of
+/// stream.
+type EventStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
+
+fn single_event_stream<T: Send + 'static>(event: T) -> EventStream<T> {
+    Box::pin(tokio_stream::once(Ok(event)))
 }
 
 pub(crate) fn encode_arrow_ipc_stream(
@@ -617,13 +656,7 @@ impl QueryService for MockQueryService {
         &self,
         request: Request<ExecuteSqlRequest>,
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
-        let request = request.into_inner();
-        self.captured
-            .execute_sql
-            .lock()
-            .expect("execute_sql capture")
-            .push(request.clone());
-        let sql = request.sql;
+        let sql = capture(&self.captured.execute_sql, request).sql;
         if sql
             .trim_start()
             .to_ascii_uppercase()
@@ -665,12 +698,7 @@ impl CatalogService for MockCatalogService {
         &self,
         request: Request<ListCatalogRequest>,
     ) -> Result<Response<ListCatalogResponse>, Status> {
-        let request = request.into_inner();
-        self.captured
-            .list_catalog
-            .lock()
-            .expect("list_catalog capture")
-            .push(request.clone());
+        let request = capture(&self.captured.list_catalog, request);
         Ok(Response::new(list_catalog_response(&request)))
     }
 
@@ -678,12 +706,7 @@ impl CatalogService for MockCatalogService {
         &self,
         request: Request<SearchCatalogRequest>,
     ) -> Result<Response<SearchCatalogResponse>, Status> {
-        let request = request.into_inner();
-        self.captured
-            .search_catalog
-            .lock()
-            .expect("search_catalog capture")
-            .push(request.clone());
+        let request = capture(&self.captured.search_catalog, request);
         let pattern = regex::RegexBuilder::new(&request.pattern)
             .case_insensitive(request.ignore_case)
             .build()
@@ -721,12 +744,7 @@ impl CatalogService for MockCatalogService {
         &self,
         request: Request<DescribeTableRequest>,
     ) -> Result<Response<DescribeTableResponse>, Status> {
-        let request = request.into_inner();
-        self.captured
-            .describe_table
-            .lock()
-            .expect("describe_table capture")
-            .push(request.clone());
+        let request = capture(&self.captured.describe_table, request);
         let table = mock_visible_tables().into_iter().find(|table| {
             table.schema_name == request.schema_name && table.name == request.table_name
         });
@@ -756,12 +774,7 @@ impl CatalogService for MockCatalogService {
         &self,
         request: Request<ListColumnsRequest>,
     ) -> Result<Response<ListColumnsResponse>, Status> {
-        let request = request.into_inner();
-        self.captured
-            .list_columns
-            .lock()
-            .expect("list_columns capture")
-            .push(request.clone());
+        let request = capture(&self.captured.list_columns, request);
         let table = mock_visible_tables()
             .into_iter()
             .find(|table| {
@@ -810,163 +823,80 @@ impl CatalogService for MockCatalogService {
     }
 }
 
+/// Generates one mock service impl. Every method records the request in its
+/// `captured` slot, then evaluates `$body` (with the captured request and the
+/// server config in scope) to produce the response. Generating the whole
+/// `impl` keeps `#[tonic::async_trait]` running after macro expansion.
+macro_rules! mock_service {
+    (
+        impl $service:ident for $mock:ident {
+            $(type $stream:ident = $stream_ty:ty;)*
+            $(fn $rpc:ident($slot:ident, $req:ty) -> $resp:ty = |$cfg:ident, $request:ident| $body:expr;)*
+        }
+    ) => {
+        #[tonic::async_trait]
+        impl $service for $mock {
+            $(type $stream = $stream_ty;)*
+            $(
+                async fn $rpc(&self, request: Request<$req>) -> Result<Response<$resp>, Status> {
+                    let $request = capture(&self.captured.$slot, request);
+                    let $cfg = &self.config;
+                    Ok(Response::new($body))
+                }
+            )*
+        }
+    };
+}
+
 #[derive(Clone)]
 struct MockSourceService {
     config: Arc<MockServerConfig>,
     captured: Arc<Captured>,
 }
 
-type MockBundledSourceStream =
-    Pin<Box<dyn Stream<Item = Result<CreateBundledSourceWithOAuthResponse, Status>> + Send>>;
-type MockImportSourceStream =
-    Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
-
-fn mock_bundled_source_stream() -> MockBundledSourceStream {
-    let (tx, rx) =
-        tokio::sync::mpsc::channel::<Result<CreateBundledSourceWithOAuthResponse, Status>>(1);
-    tx.try_send(Ok(CreateBundledSourceWithOAuthResponse {
-        event: Some(create_bundled_source_with_o_auth_response::Event::Source(
-            mock_source(),
-        )),
-    }))
-    .expect("send mock bundled source credential event");
-    Box::pin(ReceiverStream::new(rx))
-}
-
-fn mock_import_source_stream() -> MockImportSourceStream {
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<ImportSourceResponse, Status>>(1);
-    tx.try_send(Ok(ImportSourceResponse {
-        event: Some(import_source_response::Event::Source(mock_source())),
-    }))
-    .expect("send mock import source credential event");
-    Box::pin(ReceiverStream::new(rx))
-}
-
-#[tonic::async_trait]
-impl SourceService for MockSourceService {
-    type CreateBundledSourceWithOAuthStream = MockBundledSourceStream;
-    type ImportSourceStream = MockImportSourceStream;
-
-    async fn discover_sources(
-        &self,
-        request: Request<DiscoverSourcesRequest>,
-    ) -> Result<Response<DiscoverSourcesResponse>, Status> {
-        self.captured
-            .discover_sources
-            .lock()
-            .expect("discover_sources capture")
-            .push(request.into_inner());
-        Ok(Response::new(
-            self.config.discover_sources.clone().into_tonic_result()?,
-        ))
-    }
-
-    async fn list_sources(
-        &self,
-        request: Request<ListSourcesRequest>,
-    ) -> Result<Response<ListSourcesResponse>, Status> {
-        self.captured
-            .list_sources
-            .lock()
-            .expect("list_sources capture")
-            .push(request.into_inner());
-        Ok(Response::new(
-            self.config.list_sources.clone().into_tonic_result()?,
-        ))
-    }
-
-    async fn get_source(
-        &self,
-        request: Request<GetSourceRequest>,
-    ) -> Result<Response<GetSourceResponse>, Status> {
-        self.captured
-            .get_source
-            .lock()
-            .expect("get_source capture")
-            .push(request.into_inner());
-        Ok(Response::new(GetSourceResponse {
-            source: Some(mock_source()),
-        }))
-    }
-
-    async fn get_source_info(
-        &self,
-        request: Request<GetSourceInfoRequest>,
-    ) -> Result<Response<GetSourceInfoResponse>, Status> {
-        let request = request.into_inner();
-        self.captured
-            .get_source_info
-            .lock()
-            .expect("get_source_info capture")
-            .push(request.clone());
-        Ok(Response::new(GetSourceInfoResponse {
-            source_info: Some(mock_source_info(&request.name)?),
-        }))
-    }
-
-    async fn create_bundled_source(
-        &self,
-        request: Request<CreateBundledSourceRequest>,
-    ) -> Result<Response<CreateBundledSourceResponse>, Status> {
-        self.captured
-            .create_bundled_source
-            .lock()
-            .expect("create_bundled_source capture")
-            .push(request.into_inner());
-        Ok(Response::new(CreateBundledSourceResponse {
-            source: Some(mock_source()),
-        }))
-    }
-
-    async fn create_bundled_source_with_o_auth(
-        &self,
-        request: Request<CreateBundledSourceWithOAuthRequest>,
-    ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
-        self.captured
-            .create_bundled_source_with_oauth
-            .lock()
-            .expect("create_bundled_source_with_oauth capture")
-            .push(request.into_inner());
-        Ok(Response::new(mock_bundled_source_stream()))
-    }
-
-    async fn import_source(
-        &self,
-        request: Request<ImportSourceRequest>,
-    ) -> Result<Response<Self::ImportSourceStream>, Status> {
-        self.captured
-            .import_source
-            .lock()
-            .expect("import_source capture")
-            .push(request.into_inner());
-        Ok(Response::new(mock_import_source_stream()))
-    }
-
-    async fn delete_source(
-        &self,
-        request: Request<DeleteSourceRequest>,
-    ) -> Result<Response<DeleteSourceResponse>, Status> {
-        self.captured
-            .delete_source
-            .lock()
-            .expect("delete_source capture")
-            .push(request.into_inner());
-        self.config.delete_source.clone().into_tonic_result()?;
-        Ok(Response::new(DeleteSourceResponse {}))
-    }
-
-    async fn validate_source(
-        &self,
-        request: Request<ValidateSourceRequest>,
-    ) -> Result<Response<ValidateSourceResponse>, Status> {
-        self.captured
-            .validate_source
-            .lock()
-            .expect("validate_source capture")
-            .push(request.into_inner());
-        Ok(Response::new(
-            self.config.validate_source.clone().into_tonic_result()?,
-        ))
+mock_service! {
+    impl SourceService for MockSourceService {
+        type CreateBundledSourceWithOAuthStream =
+            EventStream<CreateBundledSourceWithOAuthResponse>;
+        type ImportSourceStream = EventStream<ImportSourceResponse>;
+        fn discover_sources(discover_sources, DiscoverSourcesRequest) -> DiscoverSourcesResponse =
+            |cfg, _request| cfg.discover_sources.clone().into_tonic_result()?;
+        fn list_sources(list_sources, ListSourcesRequest) -> ListSourcesResponse =
+            |cfg, _request| cfg.list_sources.clone().into_tonic_result()?;
+        fn get_source(get_source, GetSourceRequest) -> GetSourceResponse =
+            |_cfg, _request| GetSourceResponse {
+                source: Some(mock_source()),
+            };
+        fn get_source_info(get_source_info, GetSourceInfoRequest) -> GetSourceInfoResponse =
+            |_cfg, request| GetSourceInfoResponse {
+                source_info: Some(mock_source_info(&request.name)?),
+            };
+        fn create_bundled_source(create_bundled_source, CreateBundledSourceRequest)
+            -> CreateBundledSourceResponse =
+            |_cfg, _request| CreateBundledSourceResponse {
+                source: Some(mock_source()),
+            };
+        fn create_bundled_source_with_o_auth(
+            create_bundled_source_with_oauth,
+            CreateBundledSourceWithOAuthRequest
+        ) -> EventStream<CreateBundledSourceWithOAuthResponse> =
+            |_cfg, _request| single_event_stream(CreateBundledSourceWithOAuthResponse {
+                event: Some(create_bundled_source_with_o_auth_response::Event::Source(
+                    mock_source(),
+                )),
+            });
+        fn import_source(import_source, ImportSourceRequest)
+            -> EventStream<ImportSourceResponse> =
+            |_cfg, _request| single_event_stream(ImportSourceResponse {
+                event: Some(import_source_response::Event::Source(mock_source())),
+            });
+        fn delete_source(delete_source, DeleteSourceRequest) -> DeleteSourceResponse =
+            |cfg, _request| {
+                cfg.delete_source.clone().into_tonic_result()?;
+                DeleteSourceResponse {}
+            };
+        fn validate_source(validate_source, ValidateSourceRequest) -> ValidateSourceResponse =
+            |cfg, _request| cfg.validate_source.clone().into_tonic_result()?;
     }
 }
 
@@ -991,22 +921,20 @@ impl MockServer {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let config = Arc::new(config);
         let captured = Arc::new(Captured::default());
-        let query_captured = Arc::clone(&captured);
-        let catalog_captured = Arc::clone(&captured);
-        let source_captured = Arc::clone(&captured);
-        let query_config = Arc::clone(&config);
+        let task_captured = Arc::clone(&captured);
         let task = tokio::spawn(async move {
+            let captured = task_captured;
             Server::builder()
                 .add_service(CatalogServiceServer::new(MockCatalogService {
-                    captured: catalog_captured,
+                    captured: Arc::clone(&captured),
                 }))
                 .add_service(QueryServiceServer::new(MockQueryService {
-                    config: query_config,
-                    captured: query_captured,
+                    config: Arc::clone(&config),
+                    captured: Arc::clone(&captured),
                 }))
                 .add_service(SourceServiceServer::new(MockSourceService {
                     config,
-                    captured: source_captured,
+                    captured,
                 }))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     drop(shutdown_rx.await);
@@ -1040,94 +968,6 @@ impl MockServer {
 
     pub(crate) fn config_dir(&self) -> &Path {
         self.config_dir.path()
-    }
-
-    pub(crate) fn execute_sql_requests(&self) -> Vec<ExecuteSqlRequest> {
-        self.captured
-            .execute_sql
-            .lock()
-            .expect("execute_sql capture")
-            .clone()
-    }
-
-    pub(crate) fn discover_sources_requests(&self) -> Vec<DiscoverSourcesRequest> {
-        self.captured
-            .discover_sources
-            .lock()
-            .expect("discover_sources capture")
-            .clone()
-    }
-
-    pub(crate) fn list_sources_requests(&self) -> Vec<ListSourcesRequest> {
-        self.captured
-            .list_sources
-            .lock()
-            .expect("list_sources capture")
-            .clone()
-    }
-
-    pub(crate) fn list_catalog_requests(&self) -> Vec<ListCatalogRequest> {
-        self.captured
-            .list_catalog
-            .lock()
-            .expect("list_catalog capture")
-            .clone()
-    }
-
-    pub(crate) fn search_catalog_requests(&self) -> Vec<SearchCatalogRequest> {
-        self.captured
-            .search_catalog
-            .lock()
-            .expect("search_catalog capture")
-            .clone()
-    }
-
-    pub(crate) fn describe_table_requests(&self) -> Vec<DescribeTableRequest> {
-        self.captured
-            .describe_table
-            .lock()
-            .expect("describe_table capture")
-            .clone()
-    }
-
-    pub(crate) fn list_columns_requests(&self) -> Vec<ListColumnsRequest> {
-        self.captured
-            .list_columns
-            .lock()
-            .expect("list_columns capture")
-            .clone()
-    }
-
-    pub(crate) fn get_source_info_requests(&self) -> Vec<GetSourceInfoRequest> {
-        self.captured
-            .get_source_info
-            .lock()
-            .expect("get_source_info capture")
-            .clone()
-    }
-
-    pub(crate) fn validate_source_requests(&self) -> Vec<ValidateSourceRequest> {
-        self.captured
-            .validate_source
-            .lock()
-            .expect("validate_source capture")
-            .clone()
-    }
-
-    pub(crate) fn delete_source_requests(&self) -> Vec<DeleteSourceRequest> {
-        self.captured
-            .delete_source
-            .lock()
-            .expect("delete_source capture")
-            .clone()
-    }
-
-    pub(crate) fn import_source_requests(&self) -> Vec<ImportSourceRequest> {
-        self.captured
-            .import_source
-            .lock()
-            .expect("import_source capture")
-            .clone()
     }
 
     pub(crate) fn endpoint_uri(&self) -> &str {

@@ -2,9 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::{
-    ExecuteSqlRequest, ImportSourceRequest, ListCatalogRequest, ListSourcesRequest,
-    PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, catalog_item, import_source_response,
+    ExecuteSqlRequest, ExecuteSqlResponse, ImportSourceRequest, ListCatalogRequest,
+    ListSourcesRequest, PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary,
+    ValidateSourceRequest, ValidateSourceResponse, catalog_item, import_source_response,
 };
 use coral_client::{
     AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
@@ -83,19 +83,27 @@ impl GrpcHarness {
         variables: Vec<SourceVariable>,
         secrets: Vec<SourceSecret>,
     ) -> Source {
+        self.try_import_source(ImportSourceRequest {
+            variables,
+            secrets,
+            ..import_request(manifest_yaml)
+        })
+        .await
+        .expect("import source")
+    }
+
+    /// Sends `request` and returns the first `Source` event, or the status when
+    /// opening the import stream fails.
+    pub(crate) async fn try_import_source(
+        &self,
+        request: ImportSourceRequest,
+    ) -> Result<Source, tonic::Status> {
         let mut stream = self
             .source_client()
-            .import_source(Request::new(ImportSourceRequest {
-                workspace: Some(default_workspace()),
-                manifest_yaml,
-                variables,
-                secrets,
-                oauth_credential_retrievals: Vec::new(),
-            }))
-            .await
-            .expect("import source")
+            .import_source(Request::new(request))
+            .await?
             .into_inner();
-        stream
+        Ok(stream
             .message()
             .await
             .expect("import source stream")
@@ -103,7 +111,7 @@ impl GrpcHarness {
                 Some(import_source_response::Event::Source(source)) => Some(source),
                 _ => None,
             })
-            .expect("import source response")
+            .expect("import source response"))
     }
 
     pub(crate) async fn list_sources(&self) -> Vec<Source> {
@@ -141,32 +149,71 @@ impl GrpcHarness {
     }
 
     pub(crate) async fn validate_source(&self, source_name: &str) -> ValidateSourceResponse {
-        self.source_client()
+        self.try_validate_source(source_name)
+            .await
+            .expect("validate source")
+    }
+
+    pub(crate) async fn try_validate_source(
+        &self,
+        source_name: &str,
+    ) -> Result<ValidateSourceResponse, tonic::Status> {
+        Ok(self
+            .source_client()
             .validate_source(Request::new(ValidateSourceRequest {
                 workspace: Some(default_workspace()),
                 name: source_name.to_string(),
             }))
-            .await
-            .expect("validate source")
-            .into_inner()
+            .await?
+            .into_inner())
     }
 
     pub(crate) async fn execute_sql_rows(&self, sql: &str) -> Vec<Value> {
-        let response = self
-            .query_client()
-            .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(default_workspace()),
-                sql: sql.to_string(),
-            }))
-            .await
-            .expect("execute sql")
-            .into_inner();
+        let response = self.try_execute_sql(sql).await.expect("execute sql");
         batches_to_json_rows(
             decode_execute_sql_response(&response)
                 .expect("decode query response")
                 .batches(),
         )
         .expect("query rows")
+    }
+
+    pub(crate) async fn try_execute_sql(
+        &self,
+        sql: &str,
+    ) -> Result<ExecuteSqlResponse, tonic::Status> {
+        Ok(self
+            .query_client()
+            .execute_sql(Request::new(ExecuteSqlRequest {
+                workspace: Some(default_workspace()),
+                sql: sql.to_string(),
+            }))
+            .await?
+            .into_inner())
+    }
+}
+
+/// Builds an `ImportSourceRequest` for the default workspace with every other
+/// field left at its default; tests override fields with struct-update syntax.
+pub(crate) fn import_request(manifest_yaml: String) -> ImportSourceRequest {
+    ImportSourceRequest {
+        workspace: Some(default_workspace()),
+        manifest_yaml,
+        ..Default::default()
+    }
+}
+
+pub(crate) fn variable(key: &str, value: &str) -> SourceVariable {
+    SourceVariable {
+        key: key.to_string(),
+        value: value.to_string(),
+    }
+}
+
+pub(crate) fn secret(key: &str, value: &str) -> SourceSecret {
+    SourceSecret {
+        key: key.to_string(),
+        value: value.to_string(),
     }
 }
 
@@ -244,6 +291,23 @@ pub(crate) fn fixture_manifest_yaml(root: &Path) -> String {
 }
 
 pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String {
+    let data_dir = fixture_data_dir(root);
+    manifest_yaml(&json!({
+        "name": "local_messages",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [
+            jsonl_table("events", "Fixture events", &data_dir),
+            jsonl_table("messages", "Fixture messages", &data_dir),
+            jsonl_table("sessions", "Fixture sessions", &data_dir),
+        ],
+    }))
+}
+
+/// Writes the shared `messages.jsonl` fixture under `root` and returns its
+/// data directory.
+fn fixture_data_dir(root: &Path) -> PathBuf {
     let data_dir = root.join("fixture-data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     fs::write(
@@ -253,44 +317,24 @@ pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String 
 "#,
     )
     .expect("write jsonl");
-    let table_source = json!({
-        "location": format!("file://{}/", data_dir.display()),
-        "glob": "**/*.jsonl",
-    });
-    let table_columns = json!([
-        {"name": "type", "type": "Utf8"},
-        {"name": "sessionId", "type": "Utf8"},
-        {"name": "text", "type": "Utf8"},
-    ]);
-    manifest_yaml(&json!({
-        "name": "local_messages",
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "file",
-        "tables": [
-            {
-                "name": "events",
-                "description": "Fixture events",
-                "format": "jsonl",
-                "source": table_source.clone(),
-                "columns": table_columns.clone(),
-            },
-            {
-                "name": "messages",
-                "description": "Fixture messages",
-                "format": "jsonl",
-                "source": table_source.clone(),
-                "columns": table_columns.clone(),
-            },
-            {
-                "name": "sessions",
-                "description": "Fixture sessions",
-                "format": "jsonl",
-                "source": table_source,
-                "columns": table_columns,
-            },
+    data_dir
+}
+
+fn jsonl_table(name: &str, description: &str, data_dir: &Path) -> Value {
+    json!({
+        "name": name,
+        "description": description,
+        "format": "jsonl",
+        "source": {
+            "location": format!("file://{}/", data_dir.display()),
+            "glob": "**/*.jsonl",
+        },
+        "columns": [
+            {"name": "type", "type": "Utf8"},
+            {"name": "sessionId", "type": "Utf8"},
+            {"name": "text", "type": "Utf8"},
         ],
-    }))
+    })
 }
 
 pub(crate) fn fixture_manifest_with_required_filter_yaml() -> String {
@@ -431,80 +475,43 @@ pub(crate) fn fixture_manifest_with_test_queries_yaml(
     root: &Path,
     test_queries: &[&str],
 ) -> String {
-    let data_dir = root.join("fixture-data");
-    fs::create_dir_all(&data_dir).expect("create data dir");
-    fs::write(
-        data_dir.join("messages.jsonl"),
-        r#"{"type":"user","sessionId":"s1","text":"hello"}
-{"type":"assistant","sessionId":"s1","text":"world"}
-"#,
-    )
-    .expect("write jsonl");
+    let data_dir = fixture_data_dir(root);
     manifest_yaml(&json!({
         "name": "local_messages",
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "file",
         "test_queries": test_queries,
-        "tables": [{
-            "name": "messages",
-            "description": "Fixture messages",
-            "format": "jsonl",
-            "source": {
-                "location": format!("file://{}/", data_dir.display()),
-                "glob": "**/*.jsonl",
-            },
-            "columns": [
-                {"name": "type", "type": "Utf8"},
-                {"name": "sessionId", "type": "Utf8"},
-                {"name": "text", "type": "Utf8"},
-            ],
-        }],
+        "tables": [jsonl_table("messages", "Fixture messages", &data_dir)],
     }))
 }
 
 pub(crate) fn fixture_manifest_with_inputs_yaml() -> String {
-    manifest_yaml(&json!({
-        "name": "secured_messages",
-        "version": "0.1.0",
-        "dsl_version": 3,
-        "backend": "http",
-        "inputs": {
-            "API_BASE": { "kind": "variable", "default": "https://example.com" },
-            "API_TOKEN": { "kind": "secret" },
-        },
-        "base_url": "{{input.API_BASE}}",
-        "auth": {
-            "type": "HeaderAuth",
-            "headers": [{
-                "name": "Authorization",
-                "from": "template",
-                "template": "Bearer {{input.API_TOKEN}}",
-            }],
-        },
-        "tables": [{
-            "name": "messages",
-            "description": "Secured messages",
-            "request": {
-                "method": "GET",
-                "path": "/messages",
-            },
-            "response": {},
-            "columns": [
-                {"name": "id", "type": "Utf8"},
-            ],
-        }],
-    }))
+    inputs_manifest_yaml(
+        "secured_messages",
+        &json!({ "kind": "variable", "default": "https://example.com" }),
+        "Secured messages",
+    )
 }
 
 pub(crate) fn fixture_manifest_with_required_inputs_yaml() -> String {
+    inputs_manifest_yaml(
+        "required_messages",
+        &json!({ "kind": "variable" }),
+        "Required-input messages",
+    )
+}
+
+/// Single-table HTTP manifest with an `API_BASE` variable (declared as
+/// `api_base_input`) and a required `API_TOKEN` secret used for auth.
+fn inputs_manifest_yaml(name: &str, api_base_input: &Value, table_description: &str) -> String {
     manifest_yaml(&json!({
-        "name": "required_messages",
+        "name": name,
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "http",
         "inputs": {
-            "API_BASE": { "kind": "variable" },
+            "API_BASE": api_base_input,
             "API_TOKEN": { "kind": "secret" },
         },
         "base_url": "{{input.API_BASE}}",
@@ -518,7 +525,7 @@ pub(crate) fn fixture_manifest_with_required_inputs_yaml() -> String {
         },
         "tables": [{
             "name": "messages",
-            "description": "Required-input messages",
+            "description": table_description,
             "request": {
                 "method": "GET",
                 "path": "/messages",

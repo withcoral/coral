@@ -21,7 +21,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::Notify;
 use tonic::{Code, Request};
 
-use crate::harness::{GrpcHarness, fixture_manifest_yaml, source_dir};
+use crate::harness::{GrpcHarness, fixture_manifest_yaml, import_request, source_dir};
 
 #[tokio::test]
 async fn query_refreshes_expired_oauth_access_token_at_request_time() {
@@ -398,8 +398,6 @@ async fn manual_credential_replacement_waits_for_in_flight_refresh() {
     let import = tokio::spawn(async move {
         let mut stream = source_client
             .import_source(Request::new(ImportSourceRequest {
-                workspace: Some(default_workspace()),
-                manifest_yaml: import_manifest_yaml,
                 variables: vec![SourceVariable {
                     key: "API_BASE".to_string(),
                     value: import_base_url,
@@ -408,7 +406,7 @@ async fn manual_credential_replacement_waits_for_in_flight_refresh() {
                     key: "API_TOKEN".to_string(),
                     value: "manual-token".to_string(),
                 }],
-                oauth_credential_retrievals: Vec::new(),
+                ..import_request(import_manifest_yaml)
             }))
             .await
             .expect("import source")

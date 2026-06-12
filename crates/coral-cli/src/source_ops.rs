@@ -11,9 +11,8 @@ use std::time::Duration;
 use anyhow::{Context as _, bail};
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
-    CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DiscoverSourcesRequest,
-    GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
+    CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest, DeleteSourceRequest,
+    DiscoverSourcesRequest, GetSourceInfoRequest, ImportSourceRequest, ListSourcesRequest,
     OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
     SourceCredentialStorage, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
     ValidateSourceRequest, ValidateSourceResponse, create_bundled_source_with_o_auth_response,
@@ -191,7 +190,18 @@ pub(crate) async fn add_bundled_source_with_credentials(
             oauth_credential_retrievals: inputs.oauth_credential_retrievals,
         }))
         .await?;
-    source_from_bundled_credential_stream(response.into_inner(), &inputs.oauth_labels).await
+    completion_from_oauth_stream(
+        response.into_inner(),
+        &inputs.oauth_labels,
+        OAuthStreamContext {
+            ended_message:
+                "source credential retrieval stream ended before source installation completed",
+            error_action: "retrieve",
+            retry_command: "coral source add",
+        },
+        |response| response.event.map(CredentialStreamEvent::from),
+    )
+    .await
 }
 
 pub(crate) async fn import_source_with_credentials(
@@ -212,69 +222,62 @@ pub(crate) async fn import_source_with_credentials(
             oauth_credential_retrievals: inputs.oauth_credential_retrievals,
         }))
         .await?;
-    source_from_import_credential_stream(response.into_inner(), &inputs.oauth_labels).await
+    completion_from_oauth_stream(
+        response.into_inner(),
+        &inputs.oauth_labels,
+        OAuthStreamContext {
+            ended_message:
+                "source credential retrieval stream ended before source import completed",
+            error_action: "retrieve",
+            retry_command: "coral source add",
+        },
+        |response| response.event.map(CredentialStreamEvent::from),
+    )
+    .await
 }
 
-async fn source_from_bundled_credential_stream(
-    mut stream: tonic::Streaming<CreateBundledSourceWithOAuthResponse>,
+struct OAuthStreamContext {
+    ended_message: &'static str,
+    error_action: &'static str,
+    retry_command: &'static str,
+}
+
+/// Drives one OAuth-progress response stream to completion, rendering
+/// authorization prompts along the way, and returns the completion payload.
+async fn completion_from_oauth_stream<M, T>(
+    mut stream: tonic::Streaming<M>,
     oauth_labels: &BTreeMap<String, String>,
-) -> Result<Source, anyhow::Error> {
+    context: OAuthStreamContext,
+    event_from: impl Fn(M) -> Option<CredentialStreamEvent<T>>,
+) -> Result<T, anyhow::Error> {
     let mut redirect_prompt = OAuthRedirectPastePrompt::default();
     loop {
         let response = match stream.message().await {
             Ok(Some(response)) => response,
             Ok(None) => {
                 redirect_prompt.cancel_and_join();
-                return Err(anyhow::anyhow!(
-                    "source credential retrieval stream ended before source installation completed"
-                ));
+                return Err(anyhow::anyhow!(context.ended_message));
             }
             Err(error) => {
                 redirect_prompt.cancel_and_join();
-                return Err(oauth_error("retrieve", &error));
+                return Err(oauth_error(
+                    context.error_action,
+                    &error,
+                    context.retry_command,
+                ));
             }
         };
-        let event = response.event.map(CredentialStreamEvent::from);
-        if let Some(source) =
-            handle_credential_stream_event(event, oauth_labels, &mut redirect_prompt)
+        if let Some(completed) =
+            handle_credential_stream_event(event_from(response), oauth_labels, &mut redirect_prompt)
         {
             redirect_prompt.cancel_and_join();
-            return Ok(source);
+            return Ok(completed);
         }
     }
 }
 
-async fn source_from_import_credential_stream(
-    mut stream: tonic::Streaming<ImportSourceResponse>,
-    oauth_labels: &BTreeMap<String, String>,
-) -> Result<Source, anyhow::Error> {
-    let mut redirect_prompt = OAuthRedirectPastePrompt::default();
-    loop {
-        let response = match stream.message().await {
-            Ok(Some(response)) => response,
-            Ok(None) => {
-                redirect_prompt.cancel_and_join();
-                return Err(anyhow::anyhow!(
-                    "source credential retrieval stream ended before source import completed"
-                ));
-            }
-            Err(error) => {
-                redirect_prompt.cancel_and_join();
-                return Err(oauth_error("retrieve", &error));
-            }
-        };
-        let event = response.event.map(CredentialStreamEvent::from);
-        if let Some(source) =
-            handle_credential_stream_event(event, oauth_labels, &mut redirect_prompt)
-        {
-            redirect_prompt.cancel_and_join();
-            return Ok(source);
-        }
-    }
-}
-
-enum CredentialStreamEvent {
-    Source(Source),
+enum CredentialStreamEvent<T> {
+    Completed(T),
     OAuthAuthorization {
         input_key: String,
         authorization_url: String,
@@ -283,11 +286,11 @@ enum CredentialStreamEvent {
     OAuthCompleted,
 }
 
-impl From<create_bundled_source_with_o_auth_response::Event> for CredentialStreamEvent {
+impl From<create_bundled_source_with_o_auth_response::Event> for CredentialStreamEvent<Source> {
     fn from(event: create_bundled_source_with_o_auth_response::Event) -> Self {
         match event {
             create_bundled_source_with_o_auth_response::Event::Source(source) => {
-                Self::Source(source)
+                Self::Completed(source)
             }
             create_bundled_source_with_o_auth_response::Event::OauthAuthorization(
                 authorization,
@@ -303,10 +306,10 @@ impl From<create_bundled_source_with_o_auth_response::Event> for CredentialStrea
     }
 }
 
-impl From<import_source_response::Event> for CredentialStreamEvent {
+impl From<import_source_response::Event> for CredentialStreamEvent<Source> {
     fn from(event: import_source_response::Event) -> Self {
         match event {
-            import_source_response::Event::Source(source) => Self::Source(source),
+            import_source_response::Event::Source(source) => Self::Completed(source),
             import_source_response::Event::OauthAuthorization(authorization) => {
                 Self::OAuthAuthorization {
                     input_key: authorization.input_key,
@@ -319,43 +322,58 @@ impl From<import_source_response::Event> for CredentialStreamEvent {
     }
 }
 
-fn handle_credential_stream_event(
-    event: Option<CredentialStreamEvent>,
+fn handle_credential_stream_event<T>(
+    event: Option<CredentialStreamEvent<T>>,
     oauth_labels: &BTreeMap<String, String>,
     redirect_prompt: &mut OAuthRedirectPastePrompt,
-) -> Option<Source> {
+) -> Option<T> {
     match event {
         Some(CredentialStreamEvent::OAuthAuthorization {
             input_key,
             authorization_url,
             user_code,
         }) => {
-            let label = oauth_labels
-                .get(&input_key)
-                .map_or(input_key.as_str(), String::as_str);
-            println!("Open this URL to connect {label}:");
-            println!("{authorization_url}");
-            redirect_prompt.cancel_and_join();
-            if user_code.is_empty() {
-                redirect_prompt
-                    .replace(spawn_oauth_redirect_paste_prompt(&authorization_url, label));
-            } else {
-                println!("Enter this code when prompted: {user_code}");
-            }
-            if let Err(err) = crate::browser::open_url(&authorization_url) {
-                println!("{}", style(format!("Could not open browser: {err}")).dim());
-            }
+            handle_oauth_authorization_event(
+                &input_key,
+                &authorization_url,
+                &user_code,
+                oauth_labels,
+                redirect_prompt,
+            );
             None
         }
-        Some(CredentialStreamEvent::Source(source)) => {
+        Some(CredentialStreamEvent::Completed(completed)) => {
             redirect_prompt.cancel_and_join();
-            Some(source)
+            Some(completed)
         }
         Some(CredentialStreamEvent::OAuthCompleted) => {
             redirect_prompt.cancel_and_join();
             None
         }
         None => None,
+    }
+}
+
+fn handle_oauth_authorization_event(
+    input_key: &str,
+    authorization_url: &str,
+    user_code: &str,
+    oauth_labels: &BTreeMap<String, String>,
+    redirect_prompt: &mut OAuthRedirectPastePrompt,
+) {
+    let label = oauth_labels
+        .get(input_key)
+        .map_or(input_key, String::as_str);
+    println!("Open this URL to connect {label}:");
+    println!("{authorization_url}");
+    redirect_prompt.cancel_and_join();
+    if user_code.is_empty() {
+        redirect_prompt.replace(spawn_oauth_redirect_paste_prompt(authorization_url, label));
+    } else {
+        println!("Enter this code when prompted: {user_code}");
+    }
+    if let Err(err) = crate::browser::open_url(authorization_url) {
+        println!("{}", style(format!("Could not open browser: {err}")).dim());
     }
 }
 
@@ -415,7 +433,7 @@ fn durable_manifest_file_yaml(
     };
     let mut replacement_files = BTreeMap::new();
     for surface in &v4.surfaces {
-        let SurfaceDescriptor::File { file } = &surface.descriptor else {
+        let SurfaceDescriptor::File { file, .. } = &surface.descriptor else {
             continue;
         };
         let canonical = canonicalize_manifest_descriptor(file, manifest_dir)?;
@@ -1202,9 +1220,9 @@ fn collect_oauth_credential_method(
     })
 }
 
-fn oauth_error(action: &str, error: &tonic::Status) -> anyhow::Error {
+fn oauth_error(action: &str, error: &tonic::Status, retry_command: &str) -> anyhow::Error {
     anyhow::anyhow!(
-        "OAuth credential retrieval failed during {action}: {error}. Rerun `coral source add` to try again."
+        "OAuth credential retrieval failed during {action}: {error}. Rerun `{retry_command}` to try again."
     )
 }
 
