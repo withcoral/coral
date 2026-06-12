@@ -57,8 +57,11 @@
   runtime/bootstrap env reads, `coral-cli` owns CLI-surface env reads, and
   other crates should receive explicit values from callers instead of reading
   ambient process environment directly.
-- Changes to CLI or MCP surfaces must include corresponding documentation
-  updates under `docs/` in the same change.
+- Keep docs lean and readable. For CLI or MCP changes, update `docs/` only
+  when the change affects a public surface or captures important user-facing or
+  contributor-facing knowledge. Do not document every implementation detail.
+  When docs are warranted, choose the best existing location first and make the
+  amount of space match the feature's user-facing weight and visibility.
 - Keep stable bundled sources under `sources/core/**`; put preview DSL v4 source
   specs under `sources/core-v4/**` with distinct manifest names such as
   `<name>_v4`. Do not bundle `sources/core-v4` into the binary; install preview
@@ -129,8 +132,9 @@ source-authoring instructions.
 For meta changes:
 
 - Update the nearest relevant `AGENTS.md` in the same change.
-- Update `docs/`, generated docs, or docs tooling when the changed behavior is
-  user-facing or docs-authoring-facing.
+- Update `docs/`, generated docs, or docs tooling only when the changed
+  behavior is user-facing or docs-authoring-facing, and use the smallest useful
+  edit in the best existing location.
 - Preserve provenance: keep observed repo facts, project direction, local
   preferences, and generated context separate instead of merging them into one
   untraceable rule.
