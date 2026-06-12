@@ -28,6 +28,7 @@ const SQL_INLINE_BYTE_CHECK_MAX_ROWS: usize = 100;
 const SQL_INLINE_MAX_BYTES: usize = 8192;
 const LARGE_RESULT_GUIDANCE_MIN_ROWS: usize = 1_000;
 const LARGE_RESULT_GUIDANCE: &str = "Result is large; answer from row_count or rerun the SQL with filters or aggregates instead of paging every row. If raw rows are required, call result_get with limit 500 and a columns projection.";
+const DUPLICATE_COLUMN_NAMES_WARNING: &str = "Result contains duplicate column names and cannot be rendered as JSON object rows without losing data. Alias duplicate columns in the SQL query, for example SELECT a.id AS a_id, b.id AS b_id, then rerun the query.";
 
 pub(crate) const RESULT_GET_DEFAULT_LIMIT: usize = 200;
 pub(crate) const RESULT_GET_MAX_LIMIT: usize = 500;
@@ -61,6 +62,16 @@ struct SqlPreviewOnlyValue {
     column_count: usize,
     columns: Vec<ColumnSummary>,
     preview: ResultPreviewValue,
+    warning: &'static str,
+}
+
+#[derive(Serialize)]
+struct SqlDuplicateColumnsValue {
+    duplicate_column_names: bool,
+    rows_omitted: bool,
+    row_count: usize,
+    column_count: usize,
+    columns: Vec<ColumnSummary>,
     warning: &'static str,
 }
 
@@ -102,26 +113,32 @@ impl ResultHandles {
     }
 
     pub(crate) fn sql_value(&self, result: CollectedQueryResult) -> Result<Value, tonic::Status> {
-        if let Some(value) = inline_sql_value_if_small(&result)? {
-            return Ok(value);
-        }
-
-        // JSON object rows collapse duplicate column names and result_get
-        // projects columns by name, so duplicate-named results cannot be
-        // paged through a handle. Keep the legacy inline shape for them.
+        // JSON object rows collapse duplicate column names, so do not render
+        // any rows for these results. Require aliases instead of returning
+        // corrupt data or bypassing the large-result policy.
         if has_duplicate_column_names(&result) {
-            let rows = batches_to_json_rows_json_safe_numbers(result.batches())
-                .map_err(|error| query_result_status(&error))?;
+            let columns = schema_summary(&result);
             telemetry::record_sql_result(
                 &tracing::Span::current(),
-                "duplicate_named_inline",
+                "duplicate_named_metadata",
                 result.row_count(),
-                result.schema().fields().len(),
-                rows.len(),
-                Some(false),
-                false,
+                columns.len(),
+                0,
+                None,
+                true,
             );
-            return serialize_tool_value(SqlRowsValue { rows });
+            return serialize_tool_value(SqlDuplicateColumnsValue {
+                duplicate_column_names: true,
+                rows_omitted: true,
+                row_count: result.row_count(),
+                column_count: columns.len(),
+                columns,
+                warning: DUPLICATE_COLUMN_NAMES_WARNING,
+            });
+        }
+
+        if let Some(value) = inline_sql_value_if_small(&result)? {
+            return Ok(value);
         }
 
         let result = Arc::new(result);

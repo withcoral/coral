@@ -1208,37 +1208,55 @@ async fn mcp_tool_error_does_not_end_session() {
     session.shutdown().await;
 }
 
-/// Duplicate-named results cannot be paged by name through `result_get`, so
-/// even large ones must keep the legacy inline shape instead of a handle.
+/// Duplicate-named results cannot be represented as JSON object rows without
+/// data loss, so they must return metadata plus alias guidance instead of rows.
 #[tokio::test]
-async fn mcp_sql_duplicate_named_result_stays_inline() {
+async fn mcp_sql_duplicate_named_result_requires_aliases_without_rows() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session(&temp).await;
     let client = &session.client;
 
-    let values = (0..121)
-        .map(|idx| format!("({idx})"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = client
-        .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": format!(
-                    "WITH t AS (SELECT * FROM (VALUES {values}) AS v(id)) \
-                     SELECT a.id, b.id FROM t a JOIN t b ON a.id = b.id ORDER BY a.id"
-                )
-            }))),
-        )
-        .await
-        .expect("sql");
-    assert_eq!(sql.is_error, Some(false));
+    for row_count in [2, 121] {
+        let values = (0..row_count)
+            .map(|idx| format!("({idx})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = client
+            .call_tool(
+                CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                    "sql": format!(
+                        "WITH t AS (SELECT * FROM (VALUES {values}) AS v(id)) \
+                         SELECT a.id, b.id FROM t a JOIN t b ON a.id = b.id ORDER BY a.id"
+                    )
+                }))),
+            )
+            .await
+            .expect("sql");
+        assert_eq!(sql.is_error, Some(false));
 
-    let structured = sql.structured_content.expect("structured content");
-    assert!(
-        structured.get("result_id").is_none(),
-        "duplicate-named results should not return a handle"
-    );
-    assert_eq!(structured["rows"].as_array().expect("rows").len(), 121);
+        let structured = sql.structured_content.expect("structured content");
+        assert_eq!(structured["duplicate_column_names"], true);
+        assert_eq!(structured["rows_omitted"], true);
+        assert_eq!(structured["row_count"], row_count);
+        assert_eq!(structured["column_count"], 2);
+        assert_eq!(structured["columns"][0]["name"], "id");
+        assert_eq!(structured["columns"][1]["name"], "id");
+        assert!(
+            structured["warning"]
+                .as_str()
+                .expect("warning")
+                .contains("Alias duplicate columns"),
+            "duplicate-column warning should tell callers to alias columns"
+        );
+        assert!(
+            structured.get("rows").is_none(),
+            "duplicate-named results must not serialize object rows"
+        );
+        assert!(
+            structured.get("result_id").is_none(),
+            "duplicate-named results should not return a name-projected handle"
+        );
+    }
 
     session.shutdown().await;
 }
