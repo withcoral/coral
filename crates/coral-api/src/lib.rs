@@ -86,6 +86,13 @@ pub const CORAL_EPISODE_ID_METADATA_KEY: &str = "coral-episode-id";
 /// server- and client-side so the contract stays in one place.
 pub const CORAL_EPISODE_ID_MAX_LEN: usize = 128;
 
+/// Maximum length of an episode `intent`, in characters. Generous for a task
+/// description while bounding the per-record size of the episode log. Owned here
+/// (rather than in `coral-app`) so the `OpenEpisode` request contract — the
+/// exact bound generated clients can prevalidate against — lives in one place
+/// and a change is visible as a `coral-api` diff.
+pub const CORAL_EPISODE_INTENT_MAX_CHARS: usize = 4096;
+
 /// Machine-readable reason for a configured source lookup miss.
 pub const CORAL_ERROR_REASON_SOURCE_NOT_FOUND: &str = "SOURCE_NOT_FOUND";
 

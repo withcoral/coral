@@ -18,16 +18,13 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use coral_api::CORAL_EPISODE_INTENT_MAX_CHARS;
 use serde::{Deserialize, Serialize};
 
 use super::EpisodeId;
 use crate::state::AppStateLayout;
 use crate::storage::fs::{self as storage_fs, FileLock};
 use crate::workspaces::WorkspaceName;
-
-/// Maximum intent length, in characters — generous for a task description while
-/// bounding the per-record size of the append-only log.
-const MAX_INTENT_CHARS: usize = 4096;
 
 /// A registered episode — one task-attempt's intent and lineage.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,9 +121,9 @@ impl EpisodeStore {
         // immutable key — a retry with an accidental trailing space must stay
         // idempotent, not conflict.
         let intent = episode.intent.trim();
-        if intent.is_empty() || intent.chars().count() > MAX_INTENT_CHARS {
+        if intent.is_empty() || intent.chars().count() > CORAL_EPISODE_INTENT_MAX_CHARS {
             return Err(EpisodeStoreError::InvalidIntent {
-                max: MAX_INTENT_CHARS,
+                max: CORAL_EPISODE_INTENT_MAX_CHARS,
             });
         }
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
@@ -233,8 +230,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        Episode, EpisodeId, EpisodeStore, EpisodeStoreError, MAX_INTENT_CHARS, now_unix_nanos,
-        read_episode,
+        CORAL_EPISODE_INTENT_MAX_CHARS, Episode, EpisodeId, EpisodeStore, EpisodeStoreError,
+        now_unix_nanos, read_episode,
     };
     use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
@@ -265,7 +262,7 @@ mod tests {
             .open_episode(&episode(&workspace, "ep_blank", "   ", None))
             .expect_err("blank intent must be rejected");
         assert!(matches!(blank, EpisodeStoreError::InvalidIntent { .. }));
-        let overlong = "x".repeat(MAX_INTENT_CHARS + 1);
+        let overlong = "x".repeat(CORAL_EPISODE_INTENT_MAX_CHARS + 1);
         let too_long = store
             .open_episode(&episode(&workspace, "ep_long", &overlong, None))
             .expect_err("overlong intent must be rejected");
@@ -404,6 +401,75 @@ mod tests {
         let error = store
             .open_episode(&episode(&workspace, "ep_1", "intent B", None))
             .expect_err("changed intent must conflict");
+        assert!(matches!(error, EpisodeStoreError::Conflict { .. }));
+    }
+
+    #[test]
+    fn open_child_round_trips_parent() {
+        let (_dir, layout) = layout();
+        let store = EpisodeStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        store
+            .open_episode(&episode(&workspace, "root_ep", "root task", None))
+            .expect("open root");
+        let child = episode(&workspace, "child_ep", "sub task", Some("root_ep"));
+        store.open_episode(&child).expect("open child");
+        let read = read_episode(&layout.episodes_file(&workspace), "child_ep")
+            .expect("read")
+            .expect("child should be present");
+        assert_eq!(
+            read.parent_episode_id.as_deref(),
+            Some("root_ep"),
+            "the parent link must persist and round-trip"
+        );
+        assert_eq!(read.intent, "sub task");
+    }
+
+    #[test]
+    fn reopen_child_with_identical_parent_is_idempotent() {
+        let (_dir, layout) = layout();
+        let store = EpisodeStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        let child = episode(&workspace, "child_ep", "sub task", Some("root_ep"));
+        store.open_episode(&child).expect("first open");
+        store
+            .open_episode(&child)
+            .expect("identical reopen (same id/intent/parent) is idempotent");
+        let lines = fs::read_to_string(layout.episodes_file(&workspace))
+            .expect("read file")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count();
+        assert_eq!(
+            lines, 1,
+            "reopening with an identical parent must not append a duplicate"
+        );
+    }
+
+    #[test]
+    fn reopen_same_intent_different_parent_conflicts() {
+        let (_dir, layout) = layout();
+        let store = EpisodeStore::new(layout);
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        store
+            .open_episode(&episode(
+                &workspace,
+                "child_ep",
+                "sub task",
+                Some("parent_a"),
+            ))
+            .expect("first open");
+        // Same id and intent, but a different parent. The parent is half of the
+        // idempotency key, so this must conflict rather than silently re-parent
+        // the child's lineage.
+        let error = store
+            .open_episode(&episode(
+                &workspace,
+                "child_ep",
+                "sub task",
+                Some("parent_b"),
+            ))
+            .expect_err("changed parent must conflict");
         assert!(matches!(error, EpisodeStoreError::Conflict { .. }));
     }
 
