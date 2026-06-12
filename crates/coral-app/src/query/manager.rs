@@ -550,7 +550,7 @@ impl QueryManager {
         let provider_input_resolver = extensions.source_input_resolver.take();
         extensions.source_input_resolver = Some(Arc::new(CredentialRefreshingInputResolver::new(
             workspace_name.clone(),
-            self.config_store.clone(),
+            Arc::clone(&self.source_registry),
             self.credential_manager.clone(),
             provider_input_resolver,
         )));
