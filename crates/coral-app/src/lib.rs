@@ -44,6 +44,8 @@ mod identities;
 mod identity;
 mod identity_specs;
 mod query;
+mod source_artifacts;
+mod source_management;
 mod source_registry;
 mod sources;
 mod state;
@@ -62,6 +64,10 @@ pub use bootstrap::{
 pub use coral_engine::{
     EngineExtensions, QuerySource, RequestIdentityResolutionContext, RequestIdentityResolver,
     RequestIdentityResolverError,
+};
+pub use coral_spec::v4::{
+    Diagnostic, Fingerprint, MaterializedSurface, ProjectionCatalog, SemanticIr,
+    V4MaterializedSource, V4SourceManifest, validate_materialized_source,
 };
 pub use credentials::oauth::{OAuthProgressEvent, OAuthProgressEventSender};
 pub use identities::{
@@ -84,6 +90,8 @@ pub use identity_specs::{
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
+pub use source_artifacts::{SourceArtifactBackup, SourceArtifactStore};
+pub use source_management::{ImportManagedSourceCommand, ManagedSource, SourceManagementHandle};
 pub use source_registry::{
     BundleIdentityInputDiscoveryError, BundleIdentityInputKind, BundleIdentityInputSpec,
     SourceRegistry, SourceRegistryCredentialStorage, SourceRegistryOrigin, SourceRegistryRecord,

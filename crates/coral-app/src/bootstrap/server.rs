@@ -43,7 +43,7 @@ use crate::authorization::{AllowAllManagementAuthorizer, ManagementAuthorizer};
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
-use crate::features::{FeatureOverrides, FeatureStore};
+use crate::features::{FeatureOverrides, FeatureStore, Features};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
@@ -55,10 +55,12 @@ use crate::identities::{
 use crate::identity_specs::{IdentitySpecManager, IdentitySpecRegistry, IdentitySpecService};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
+use crate::source_artifacts::{LocalSourceArtifactStore, SourceArtifactStore};
+use crate::source_management::SourceManagementHandle;
 use crate::source_registry::SourceRegistry;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
-use crate::state::ConfigStore;
+use crate::state::{AppStateLayout, ConfigStore};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
@@ -94,12 +96,17 @@ type SourceIdentityProviderFactory =
 #[derive(Clone)]
 pub struct ServerExtensionContext {
     identity_management: IdentityManagementHandle,
+    source_management: SourceManagementHandle,
 }
 
 impl ServerExtensionContext {
-    fn new(identity_management: IdentityManagementHandle) -> Self {
+    fn new(
+        identity_management: IdentityManagementHandle,
+        source_management: SourceManagementHandle,
+    ) -> Self {
         Self {
             identity_management,
+            source_management,
         }
     }
 
@@ -107,6 +114,12 @@ impl ServerExtensionContext {
     #[must_use]
     pub fn identity_management(&self) -> &IdentityManagementHandle {
         &self.identity_management
+    }
+
+    /// Returns the shared source management handle for this server.
+    #[must_use]
+    pub fn source_management(&self) -> &SourceManagementHandle {
+        &self.source_management
     }
 }
 
@@ -150,6 +163,7 @@ pub struct ServerBuilder {
     source_identity_provider_factories: Vec<SourceIdentityProviderFactory>,
     identity_spec_usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
     source_registry: Option<Arc<dyn SourceRegistry>>,
+    source_artifact_store: Option<Arc<dyn SourceArtifactStore>>,
     identity_spec_registry: Option<Arc<dyn IdentitySpecRegistry>>,
     user_owned_identity_store: Option<Arc<dyn UserOwnedIdentityStore>>,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
@@ -179,6 +193,7 @@ impl ServerBuilder {
             source_identity_provider_factories: Vec::new(),
             identity_spec_usage_providers: Vec::new(),
             source_registry: None,
+            source_artifact_store: None,
             identity_spec_registry: None,
             user_owned_identity_store: None,
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
@@ -334,6 +349,21 @@ impl ServerBuilder {
     }
 
     #[must_use]
+    /// Sets the durable artifact store used for installed source manifests and
+    /// DSL v4 materialized artifacts.
+    ///
+    /// The default store persists artifacts in the local Coral config
+    /// directory. Product-specific siblings can install a store backed by their
+    /// own durable control-plane storage.
+    pub fn with_source_artifact_store(
+        mut self,
+        source_artifact_store: Arc<dyn SourceArtifactStore>,
+    ) -> Self {
+        self.source_artifact_store = Some(source_artifact_store);
+        self
+    }
+
+    #[must_use]
     /// Sets the durable registry used for global identity specs.
     ///
     /// The default registry persists identity specs in local app state.
@@ -464,17 +494,21 @@ impl ServerBuilder {
             internal_trace_store_dir.clone(),
         )?;
         let config_store = ConfigStore::new(layout.clone());
-        let source_registry = self
-            .source_registry
-            .unwrap_or_else(|| Arc::new(config_store.clone()));
+        let (source_registry, source_artifact_store) = source_stores(
+            layout.clone(),
+            config_store.clone(),
+            self.source_registry,
+            self.source_artifact_store,
+        );
         let features =
             FeatureStore::new(layout.clone()).load_with_overrides(&self.feature_overrides)?;
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store.clone());
-        let source_manager = SourceManager::new_with_features_and_source_registry(
+        let source_manager = SourceManager::new_with_features_source_registry_and_artifact_store(
             Arc::clone(&source_registry),
+            Arc::clone(&source_artifact_store),
             credential_manager.clone(),
             layout.clone(),
             features.clone(),
@@ -487,40 +521,34 @@ impl ServerBuilder {
         let query_runtime_context = env
             .query_runtime_context()
             .with_body_capture_max_bytes(body_capture_max_bytes);
-        let identity_spec_manager =
-            if let Some(identity_spec_registry) = self.identity_spec_registry {
-                IdentitySpecManager::new_with_registry(
-                    layout.clone(),
-                    identity_spec_registry,
-                    features.clone(),
-                    self.identity_spec_usage_providers,
-                )
-            } else {
-                IdentitySpecManager::new_with_credential_store(
-                    layout.clone(),
-                    credential_store,
-                    features.clone(),
-                    self.identity_spec_usage_providers,
-                )
-            };
+        let identity_spec_manager = identity_spec_manager(
+            layout.clone(),
+            credential_store,
+            features.clone(),
+            self.identity_spec_registry,
+            self.identity_spec_usage_providers,
+        );
         let user_owned_identity_manager = if let Some(store) = self.user_owned_identity_store {
             UserOwnedIdentityManager::new_with_store(identity_spec_manager.clone(), store)
         } else {
             UserOwnedIdentityManager::new(layout.clone(), identity_spec_manager.clone())
         };
-        let extension_context = ServerExtensionContext::new(user_owned_identity_manager.handle());
+        let extension_context = ServerExtensionContext::new(
+            user_owned_identity_manager.handle(),
+            SourceManagementHandle::new(source_manager.clone()),
+        );
         let mut source_identity_providers = self.source_identity_providers;
         for source_identity_provider_factory in self.source_identity_provider_factories {
             source_identity_providers.push(source_identity_provider_factory(&extension_context));
         }
         source_identity_providers.push(Arc::new(user_owned_identity_manager.clone()));
 
-        let query_manager = QueryManager::new_with_features_and_source_registry(
+        let query_manager = QueryManager::new_with_features_source_registry_and_artifact_store(
             config_store,
             source_registry,
+            source_artifact_store,
             credential_manager,
             query_runtime_context,
-            layout.clone(),
             self.engine_extensions_providers,
             source_identity_providers,
             features,
@@ -545,6 +573,42 @@ impl ServerBuilder {
             extension_context,
         })
         .await
+    }
+}
+
+fn source_stores(
+    layout: AppStateLayout,
+    config_store: ConfigStore,
+    source_registry: Option<Arc<dyn SourceRegistry>>,
+    source_artifact_store: Option<Arc<dyn SourceArtifactStore>>,
+) -> (Arc<dyn SourceRegistry>, Arc<dyn SourceArtifactStore>) {
+    let source_registry = source_registry.unwrap_or_else(|| Arc::new(config_store));
+    let source_artifact_store =
+        source_artifact_store.unwrap_or_else(|| Arc::new(LocalSourceArtifactStore::new(layout)));
+    (source_registry, source_artifact_store)
+}
+
+fn identity_spec_manager(
+    layout: AppStateLayout,
+    credential_store: CredentialStore,
+    features: Features,
+    identity_spec_registry: Option<Arc<dyn IdentitySpecRegistry>>,
+    identity_spec_usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
+) -> IdentitySpecManager {
+    if let Some(identity_spec_registry) = identity_spec_registry {
+        IdentitySpecManager::new_with_registry(
+            layout,
+            identity_spec_registry,
+            features,
+            identity_spec_usage_providers,
+        )
+    } else {
+        IdentitySpecManager::new_with_credential_store(
+            layout,
+            credential_store,
+            features,
+            identity_spec_usage_providers,
+        )
     }
 }
 
@@ -959,7 +1023,7 @@ mod tests {
     use crate::workspaces::WorkspaceName;
     use crate::{
         AwsEngineExtensionsProvider, NoopEngineExtensionsProvider, SingleUserPrincipalProvider,
-        UserPrincipal, UserPrincipalError, UserPrincipalProvider,
+        SourceManagementHandle, UserPrincipal, UserPrincipalError, UserPrincipalProvider,
     };
 
     fn default_workspace() -> Workspace {
@@ -1010,13 +1074,17 @@ enabled = false
         let identity_spec_manager = IdentitySpecManager::new(layout.clone());
         let user_owned_identity_manager =
             UserOwnedIdentityManager::new(layout.clone(), identity_spec_manager.clone());
-        let extension_context = ServerExtensionContext::new(user_owned_identity_manager.handle());
+        let source_manager = SourceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+        );
+        let extension_context = ServerExtensionContext::new(
+            user_owned_identity_manager.handle(),
+            SourceManagementHandle::new(source_manager.clone()),
+        );
         let server = start_server(ServerServices {
-            source_manager: SourceManager::new(
-                config_store.clone(),
-                credential_manager.clone(),
-                layout.clone(),
-            ),
+            source_manager,
             query_manager: QueryManager::new(
                 config_store,
                 credential_manager,

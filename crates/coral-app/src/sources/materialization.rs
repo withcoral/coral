@@ -98,14 +98,6 @@ pub(crate) fn replace_v4_materialization(
     Ok(had_existing.then_some(backup))
 }
 
-pub(crate) fn cleanup_materialization_backup(backup: Option<PathBuf>) {
-    if let Some(backup) = backup
-        && backup.exists()
-    {
-        drop(std::fs::remove_dir_all(backup));
-    }
-}
-
 pub(crate) fn cleanup_materialization_tmp(temp_dir: Option<&Path>) {
     if let Some(temp_dir) = temp_dir
         && temp_dir.exists()
