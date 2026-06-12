@@ -2840,7 +2840,7 @@ tables:
         type: Utf8
       - name: resource_id
         tool_arg: resource_id
-        type: Int64
+        type: Utf8
       - name: page
         tool_arg: page
         type: Int64
@@ -2892,7 +2892,7 @@ tables:
           kind: from_filter
           key: repo
       - name: resource_id
-        type: Int64
+        type: Utf8
         virtual: true
         expr:
           kind: from_filter
@@ -2915,7 +2915,7 @@ tables:
         type: Utf8
       - name: resource_id
         tool_arg: resource_id
-        type: Int64
+        type: Utf8
       - name: page
         tool_arg: page
         type: Int64
@@ -2983,7 +2983,7 @@ tables:
           kind: from_filter
           key: repo
       - name: resource_id
-        type: Int64
+        type: Utf8
         virtual: true
         expr:
           kind: from_filter
@@ -3007,7 +3007,7 @@ tables:
       - name: resource_id
         tool_arg: resource_id
         required: true
-        type: Int64
+        type: Utf8
       - name: page
         tool_arg: page
         type: Int64
@@ -3067,7 +3067,7 @@ tables:
           kind: from_filter
           key: repo
       - name: resource_id
-        type: Int64
+        type: Utf8
         virtual: true
         expr:
           kind: from_filter
@@ -3091,7 +3091,7 @@ tables:
       - name: resource_id
         tool_arg: resource_id
         required: true
-        type: Int64
+        type: Utf8
       - name: page
         tool_arg: page
         type: Int64
@@ -3145,7 +3145,7 @@ tables:
           kind: from_filter
           key: repo
       - name: resource_id
-        type: Int64
+        type: Utf8
         virtual: true
         expr:
           kind: from_filter
@@ -3169,7 +3169,7 @@ tables:
       - name: resource_id
         tool_arg: resource_id
         required: true
-        type: Int64
+        type: Utf8
     columns:
       - name: id
         type: Int64
@@ -3207,7 +3207,7 @@ tables:
           kind: from_filter
           key: repo
       - name: resource_id
-        type: Int64
+        type: Utf8
         virtual: true
         expr:
           kind: from_filter
@@ -3231,7 +3231,7 @@ tables:
       - name: resource_id
         tool_arg: resource_id
         required: true
-        type: Int64
+        type: Utf8
     columns:
       - name: id
         type: Int64
@@ -3285,7 +3285,7 @@ tables:
           kind: from_filter
           key: repo
       - name: resource_id
-        type: Int64
+        type: Utf8
         virtual: true
         expr:
           kind: from_filter
@@ -3309,7 +3309,7 @@ tables:
       - name: resource_id
         tool_arg: resource_id
         required: true
-        type: Int64
+        type: Utf8
     columns:
       - name: id
         type: Int64
@@ -3355,7 +3355,7 @@ tables:
           kind: from_filter
           key: repo
       - name: resource_id
-        type: Int64
+        type: Utf8
         virtual: true
         expr:
           kind: from_filter
@@ -3379,7 +3379,7 @@ tables:
       - name: resource_id
         tool_arg: resource_id
         required: true
-        type: Int64
+        type: Utf8
     columns:
       - name: billable
         type: Json
@@ -3403,7 +3403,7 @@ tables:
           kind: from_filter
           key: repo
       - name: resource_id
-        type: Int64
+        type: Utf8
         virtual: true
         expr:
           kind: from_filter
@@ -3427,7 +3427,7 @@ tables:
       - name: resource_id
         tool_arg: resource_id
         required: true
-        type: Int64
+        type: Utf8
     columns:
       - name: logs_url
         type: Utf8
@@ -3453,7 +3453,7 @@ tables:
           kind: from_filter
           key: repo
       - name: resource_id
-        type: Int64
+        type: Utf8
         virtual: true
         expr:
           kind: from_filter
