@@ -26,9 +26,14 @@ use crate::{
 const SQL_PREVIEW_ROWS: usize = 20;
 const SQL_INLINE_BYTE_CHECK_MAX_ROWS: usize = 100;
 const SQL_INLINE_MAX_BYTES: usize = 8192;
+const SQL_PREVIEW_RESPONSE_MAX_BYTES: usize = 16 * 1024;
 const LARGE_RESULT_GUIDANCE_MIN_ROWS: usize = 1_000;
 const LARGE_RESULT_GUIDANCE: &str = "Result is large; answer from row_count or rerun the SQL with filters or aggregates instead of paging every row. If raw rows are required, call result_get with limit 500 and a columns projection.";
 const DUPLICATE_COLUMN_NAMES_WARNING: &str = "Result contains duplicate column names and cannot be rendered as JSON object rows without losing data. Alias duplicate columns in the SQL query, for example SELECT a.id AS a_id, b.id AS b_id, then rerun the query.";
+const PREVIEW_OMITTED_GUIDANCE: &str = "Preview omitted because it exceeds Coral's MCP response budget; call result_get with a columns projection or rerun the SQL with filters, LIMIT, or smaller expressions.";
+const PREVIEW_OMITTED_LARGE_RESULT_GUIDANCE: &str = "Preview omitted because it exceeds Coral's MCP response budget. Result is large; answer from row_count or rerun the SQL with filters or aggregates instead of paging every row. If raw rows are required, call result_get with limit 500 and a columns projection.";
+const RESULT_TOO_LARGE_WARNING: &str = "Result exceeded the in-memory handle limit; rerun the SQL with LIMIT, filters, or a smaller column set.";
+const RESULT_TOO_LARGE_PREVIEW_OMITTED_WARNING: &str = "Result exceeded the in-memory handle limit, and its preview exceeds Coral's MCP response budget; rerun the SQL with LIMIT, filters, or a smaller column set.";
 
 pub(crate) const RESULT_GET_DEFAULT_LIMIT: usize = 200;
 pub(crate) const RESULT_GET_MAX_LIMIT: usize = 500;
@@ -146,55 +151,80 @@ impl ResultHandles {
         let columns = schema_summary(&result);
         match self.store.insert_result(Arc::clone(&result)) {
             Ok(result_id) => {
-                // Advertise the maximum page size: agents tend to copy these
-                // arguments verbatim, and small pages multiply round trips.
-                let next_call = preview.next_offset.map(|offset| NextCallValue {
-                    tool: "result_get",
-                    arguments: NextCallArgumentsValue {
-                        result_id: result_id.clone(),
-                        offset,
-                        limit: RESULT_GET_MAX_LIMIT,
-                    },
-                });
-                let guidance = (result.row_count() >= LARGE_RESULT_GUIDANCE_MIN_ROWS)
-                    .then_some(LARGE_RESULT_GUIDANCE);
+                let preview_rows = preview.rows.len();
+                let preview_has_more = preview.has_more;
+                let guidance = result_guidance(result.row_count(), false);
+                let value = serialize_handled_sql_value(
+                    result_id.clone(),
+                    &result,
+                    columns.clone(),
+                    preview,
+                    guidance,
+                )?;
+                if serialized_value_len(&value)? <= SQL_PREVIEW_RESPONSE_MAX_BYTES {
+                    telemetry::record_sql_result(
+                        &tracing::Span::current(),
+                        "handle",
+                        result.row_count(),
+                        columns.len(),
+                        preview_rows,
+                        Some(preview_has_more),
+                        guidance.is_some(),
+                    );
+                    return Ok(value);
+                }
+
+                let preview = metadata_only_preview(result.row_count());
+                let guidance = result_guidance(result.row_count(), true);
                 telemetry::record_sql_result(
                     &tracing::Span::current(),
                     "handle",
                     result.row_count(),
                     columns.len(),
-                    preview.rows.len(),
+                    0,
                     Some(preview.has_more),
-                    guidance.is_some(),
+                    true,
                 );
-                serialize_tool_value(SqlHandledValue {
-                    result_id,
-                    row_count: result.row_count(),
-                    column_count: columns.len(),
-                    columns,
-                    preview,
-                    next_call,
-                    guidance,
-                })
+                serialize_handled_sql_value(result_id, &result, columns, preview, guidance)
             }
             Err(ResultStoreError::TooLarge { .. }) => {
+                let preview_rows = preview.rows.len();
+                let preview_has_more = preview.has_more;
+                let value = serialize_preview_only_sql_value(
+                    &result,
+                    columns.clone(),
+                    preview,
+                    RESULT_TOO_LARGE_WARNING,
+                )?;
+                if serialized_value_len(&value)? <= SQL_PREVIEW_RESPONSE_MAX_BYTES {
+                    telemetry::record_sql_result(
+                        &tracing::Span::current(),
+                        "preview_only",
+                        result.row_count(),
+                        columns.len(),
+                        preview_rows,
+                        Some(preview_has_more),
+                        false,
+                    );
+                    return Ok(value);
+                }
+
+                let preview = metadata_only_preview(result.row_count());
                 telemetry::record_sql_result(
                     &tracing::Span::current(),
                     "preview_only",
                     result.row_count(),
                     columns.len(),
-                    preview.rows.len(),
+                    0,
                     Some(preview.has_more),
                     false,
                 );
-                serialize_tool_value(SqlPreviewOnlyValue {
-                    preview_only: true,
-                    row_count: result.row_count(),
-                    column_count: columns.len(),
+                serialize_preview_only_sql_value(
+                    &result,
                     columns,
                     preview,
-                    warning: "Result exceeded the in-memory handle limit; rerun the SQL with LIMIT, filters, or a smaller column set.",
-                })
+                    RESULT_TOO_LARGE_PREVIEW_OMITTED_WARNING,
+                )
             }
             Err(error) => Err(result_store_status(&error)),
         }
@@ -256,8 +286,7 @@ fn inline_sql_value_if_small(
     let compact_len = serde_json::to_string(&value)
         .map_err(|error| tonic::Status::internal(error.to_string()))?
         .len();
-    let preview_would_include_full_result = result.row_count() <= SQL_PREVIEW_ROWS;
-    if preview_would_include_full_result || compact_len <= SQL_INLINE_MAX_BYTES {
+    if compact_len <= SQL_INLINE_MAX_BYTES {
         telemetry::record_sql_result(
             &tracing::Span::current(),
             "inline_rows",
@@ -292,6 +321,75 @@ fn preview_page(result: &CollectedQueryResult) -> Result<ResultPreviewValue, ton
     })
 }
 
+fn metadata_only_preview(row_count: usize) -> ResultPreviewValue {
+    ResultPreviewValue {
+        offset: 0,
+        limit: 0,
+        has_more: row_count > 0,
+        next_offset: (row_count > 0).then_some(0),
+        rows: Vec::new(),
+    }
+}
+
+fn result_guidance(row_count: usize, preview_omitted: bool) -> Option<&'static str> {
+    match (preview_omitted, row_count >= LARGE_RESULT_GUIDANCE_MIN_ROWS) {
+        (true, true) => Some(PREVIEW_OMITTED_LARGE_RESULT_GUIDANCE),
+        (true, false) => Some(PREVIEW_OMITTED_GUIDANCE),
+        (false, true) => Some(LARGE_RESULT_GUIDANCE),
+        (false, false) => None,
+    }
+}
+
+fn serialize_handled_sql_value(
+    result_id: String,
+    result: &CollectedQueryResult,
+    columns: Vec<ColumnSummary>,
+    preview: ResultPreviewValue,
+    guidance: Option<&'static str>,
+) -> Result<Value, tonic::Status> {
+    // Advertise the maximum page size: agents tend to copy these
+    // arguments verbatim, and small pages multiply round trips.
+    let next_call = preview.next_offset.map(|offset| NextCallValue {
+        tool: "result_get",
+        arguments: NextCallArgumentsValue {
+            result_id: result_id.clone(),
+            offset,
+            limit: RESULT_GET_MAX_LIMIT,
+        },
+    });
+    serialize_tool_value(SqlHandledValue {
+        result_id,
+        row_count: result.row_count(),
+        column_count: columns.len(),
+        columns,
+        preview,
+        next_call,
+        guidance,
+    })
+}
+
+fn serialize_preview_only_sql_value(
+    result: &CollectedQueryResult,
+    columns: Vec<ColumnSummary>,
+    preview: ResultPreviewValue,
+    warning: &'static str,
+) -> Result<Value, tonic::Status> {
+    serialize_tool_value(SqlPreviewOnlyValue {
+        preview_only: true,
+        row_count: result.row_count(),
+        column_count: columns.len(),
+        columns,
+        preview,
+        warning,
+    })
+}
+
+fn serialized_value_len(value: &Value) -> Result<usize, tonic::Status> {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .map_err(|error| tonic::Status::internal(error.to_string()))
+}
+
 fn result_store_error_data(error: &ResultStoreError) -> ErrorData {
     match error {
         ResultStoreError::NotFound(_) | ResultStoreError::Expired(_) => {
@@ -316,4 +414,91 @@ fn result_page_error_data(error: QueryResultError) -> ErrorData {
 
 fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
     serde_json::to_value(value).map_err(|error| tonic::Status::internal(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::{
+        array::StringArray,
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+
+    use super::*;
+
+    fn single_string_result(value: String) -> CollectedQueryResult {
+        let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(StringArray::from(vec![value]))],
+        )
+        .expect("batch");
+        CollectedQueryResult::new(schema, vec![batch], 1).expect("result")
+    }
+
+    #[test]
+    fn single_row_over_inline_budget_returns_handle() {
+        let value = ResultHandles::new()
+            .sql_value(single_string_result("x".repeat(SQL_INLINE_MAX_BYTES + 512)))
+            .expect("sql value");
+
+        assert!(value.get("rows").is_none());
+        assert!(
+            value["result_id"]
+                .as_str()
+                .expect("result id")
+                .starts_with("res_")
+        );
+        assert_eq!(value["row_count"], 1);
+        assert_eq!(
+            value["preview"]["rows"]
+                .as_array()
+                .expect("preview rows")
+                .len(),
+            1
+        );
+        assert!(
+            serialized_value_len(&value).expect("serialized length")
+                <= SQL_PREVIEW_RESPONSE_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn preview_response_over_budget_uses_metadata_only_preview() {
+        let value = ResultHandles::new()
+            .sql_value(single_string_result(
+                "x".repeat(SQL_PREVIEW_RESPONSE_MAX_BYTES + 512),
+            ))
+            .expect("sql value");
+
+        assert!(value.get("rows").is_none());
+        assert!(
+            value["result_id"]
+                .as_str()
+                .expect("result id")
+                .starts_with("res_")
+        );
+        assert_eq!(value["preview"]["limit"], 0);
+        assert_eq!(value["preview"]["has_more"], true);
+        assert_eq!(value["preview"]["next_offset"], 0);
+        assert!(
+            value["preview"]["rows"]
+                .as_array()
+                .expect("preview rows")
+                .is_empty()
+        );
+        assert_eq!(value["next_call"]["arguments"]["offset"], 0);
+        assert!(
+            value["guidance"]
+                .as_str()
+                .expect("guidance")
+                .contains("Preview omitted")
+        );
+        assert!(
+            serialized_value_len(&value).expect("serialized length")
+                <= SQL_PREVIEW_RESPONSE_MAX_BYTES
+        );
+    }
 }

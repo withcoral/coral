@@ -267,6 +267,8 @@ Use `result_get` to page through the stored result or request only selected colu
 
 Result handles are process-local MCP session state. They expire and can be evicted under memory pressure; if `result_get` reports a missing or expired handle, rerun the SQL with tighter filters, a smaller projection, or `LIMIT`.
 
+The initial preview is byte-budgeted. If preview rows would make the `sql` response too large, Coral returns a metadata-only preview with `limit: 0`, `rows: []`, and `next_offset: 0`; call `result_get` with a column projection or rerun the SQL with filters, `LIMIT`, or smaller expressions.
+
 If a query returns duplicate column names, such as `SELECT a.id, b.id ...`, MCP cannot render rows as JSON objects without losing one of the duplicate values. Coral returns row and column metadata with a warning instead of rows; alias duplicate columns in SQL, for example `SELECT a.id AS a_id, b.id AS b_id ...`, then rerun the query.
 
 To preserve exact values across JSON parsers, Coral encodes precision-sensitive numeric types as JSON **strings** rather than JSON numbers:
