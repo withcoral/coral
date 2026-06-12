@@ -48,6 +48,7 @@ mod credentials;
 mod episode;
 pub mod features;
 mod feedback;
+mod identities;
 mod identity;
 mod query;
 mod request_context;
@@ -62,7 +63,13 @@ pub use bootstrap::{
     AppError, RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
 };
 pub use coral_engine::{EngineExtensions, QuerySource};
-pub use identity::{SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider};
+pub use identities::{
+    IdentityOwnerKey, UserOwnedIdentityMaterialGuard, UserOwnedIdentityRecord,
+    UserOwnedIdentityStore,
+};
+pub use identity::{
+    SingleUserPrincipalProvider, UserPrincipal, UserPrincipalError, UserPrincipalProvider,
+};
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
