@@ -1391,6 +1391,7 @@ async fn mcp_sql_large_result_returns_handle_and_result_get_pages() {
     assert_eq!(page["limit"], 3);
     assert_eq!(page["has_more"], true);
     assert_eq!(page["next_offset"], 23);
+    assert!(page.get("guidance").is_none());
     assert_eq!(
         page["columns"]
             .as_array()
@@ -1433,8 +1434,10 @@ async fn mcp_sql_huge_result_includes_enumeration_guidance() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session(&temp).await;
     let client = &session.client;
+    let tools = client.list_all_tools().await.expect("tools");
+    let result_get_tool = tool_by_name(&tools, "result_get");
 
-    let values = (0..1000)
+    let values = (0..1600)
         .map(|idx| format!("({idx})"))
         .collect::<Vec<_>>()
         .join(", ");
@@ -1452,11 +1455,37 @@ async fn mcp_sql_huge_result_includes_enumeration_guidance() {
     assert_eq!(sql.is_error, Some(false));
 
     let structured = sql.structured_content.expect("structured content");
-    assert_eq!(structured["row_count"], 1000);
+    let result_id = structured["result_id"]
+        .as_str()
+        .expect("result id")
+        .to_string();
+    assert_eq!(structured["row_count"], 1600);
     assert_eq!(structured["next_call"]["arguments"]["limit"], 500);
     let guidance = structured["guidance"].as_str().expect("guidance");
     assert!(guidance.contains("filters or aggregates"));
     assert!(guidance.contains("limit 500"));
+
+    let page = client
+        .call_tool(
+            CallToolRequestParams::new("result_get").with_arguments(json_object(&json!({
+                "result_id": result_id,
+                "offset": 520,
+                "limit": 500
+            }))),
+        )
+        .await
+        .expect("result_get");
+    assert_eq!(page.is_error, Some(false));
+
+    let page = page.structured_content.expect("structured page");
+    assert_matches_output_schema(result_get_tool, &page);
+    assert_eq!(page["offset"], 520);
+    assert_eq!(page["limit"], 500);
+    assert_eq!(page["has_more"], true);
+    assert_eq!(page["next_offset"], 1020);
+    let guidance = page["guidance"].as_str().expect("page guidance");
+    assert!(guidance.contains("stop sequential paging"));
+    assert!(guidance.contains("rerun the SQL"));
 
     session.shutdown().await;
 }

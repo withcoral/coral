@@ -276,6 +276,12 @@ Use `result_get` to page through the stored result or request only selected colu
 {"result_id":"res_...","offset":20,"limit":500,"columns":["title","state"]}
 ```
 
+When a client pages deeply into a result and more rows still remain,
+`result_get` may include `guidance` telling the agent to stop sequential paging
+and rerun SQL with filters, aggregates, ordering, `LIMIT`, or a narrower
+projection. Treat that as a prompt to refine the query rather than following
+`has_more` mechanically.
+
 Result handles are process-local MCP session state. They expire and can be evicted under memory pressure; if `result_get` reports a missing or expired handle, rerun the SQL with tighter filters, a smaller projection, or `LIMIT`.
 
 If a result exceeds the in-memory handle store limit, `sql` returns preview-only metadata instead of a `result_id`. This shape is not pageable:

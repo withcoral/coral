@@ -803,7 +803,8 @@ fn result_get_output_schema() -> Arc<Map<String, Value>> {
             "rows": {
                 "type": "array",
                 "items": { "type": "object" }
-            }
+            },
+            "guidance": { "type": "string" }
         }
     }))
 }
@@ -1031,9 +1032,9 @@ mod tests {
     use serde_json::{Map, Value, json};
 
     use super::{
-        ToolDescriptionContext, build_tool_result, connected_source_names_text,
-        list_catalog_arguments, result_get_arguments, search_catalog_arguments,
-        search_catalog_tool, sql_tool,
+        RESULT_GET_DEFAULT_LIMIT, ToolDescriptionContext, build_tool_result,
+        connected_source_names_text, list_catalog_arguments, result_get_arguments,
+        search_catalog_arguments, search_catalog_tool, sql_tool,
     };
 
     #[test]
@@ -1094,6 +1095,16 @@ mod tests {
             parsed.columns.expect("columns"),
             vec!["name".to_string(), "id".to_string()]
         );
+    }
+
+    #[test]
+    fn result_get_arguments_default_to_conservative_page_size() {
+        let mut arguments = Map::new();
+        arguments.insert("result_id".to_string(), Value::String("res_1".to_string()));
+
+        let parsed = result_get_arguments(Some(&arguments)).expect("arguments");
+
+        assert_eq!(parsed.limit, RESULT_GET_DEFAULT_LIMIT);
     }
 
     #[test]

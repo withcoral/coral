@@ -31,9 +31,11 @@ const PREVIEW_OMITTED_GUIDANCE: &str = "Preview omitted because it exceeds Coral
 const PREVIEW_OMITTED_LARGE_RESULT_GUIDANCE: &str = "Preview omitted because it exceeds Coral's MCP response budget. Result is large; answer from row_count or rerun the SQL with filters or aggregates instead of paging every row. If raw rows are required, call result_get with limit 500 and a columns projection.";
 const RESULT_TOO_LARGE_WARNING: &str = "Result exceeded the in-memory handle limit; rerun the SQL with LIMIT, filters, or a smaller column set.";
 const RESULT_TOO_LARGE_PREVIEW_OMITTED_WARNING: &str = "Result exceeded the in-memory handle limit, and its preview exceeds Coral's MCP response budget; rerun the SQL with LIMIT, filters, or a smaller column set.";
+const DEEP_PAGING_GUIDANCE: &str = "You have already paged through many rows from this result. If this page does not answer the question, stop sequential paging and rerun the SQL with filters, aggregates, ORDER BY, LIMIT, or a narrower columns projection.";
 
-pub(crate) const RESULT_GET_DEFAULT_LIMIT: usize = 200;
 pub(crate) const RESULT_GET_MAX_LIMIT: usize = 500;
+pub(crate) const RESULT_GET_DEFAULT_LIMIT: usize = 200;
+const RESULT_GET_DEEP_PAGING_MIN_NEXT_OFFSET: usize = RESULT_GET_MAX_LIMIT * 2;
 
 #[derive(Clone, Default)]
 pub(crate) struct ResultHandles {
@@ -105,6 +107,8 @@ struct ResultGetValue {
     result_id: String,
     #[serde(flatten)]
     page: ResultPage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guidance: Option<&'static str>,
 }
 
 impl ResultHandles {
@@ -187,8 +191,13 @@ impl ResultHandles {
             },
         )
         .map_err(result_page_error_data)?;
-        serde_json::to_value(ResultGetValue { result_id, page })
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+        let guidance = result_get_guidance(&page);
+        serde_json::to_value(ResultGetValue {
+            result_id,
+            page,
+            guidance,
+        })
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
     }
 }
 
@@ -265,6 +274,17 @@ fn result_guidance(row_count: usize, preview_omitted: bool) -> Option<&'static s
         (true, false) => Some(PREVIEW_OMITTED_GUIDANCE),
         (false, true) => Some(LARGE_RESULT_GUIDANCE),
         (false, false) => None,
+    }
+}
+
+fn result_get_guidance(page: &ResultPage) -> Option<&'static str> {
+    if page
+        .next_offset
+        .is_some_and(|next_offset| next_offset >= RESULT_GET_DEEP_PAGING_MIN_NEXT_OFFSET)
+    {
+        Some(DEEP_PAGING_GUIDANCE)
+    } else {
+        None
     }
 }
 
@@ -380,6 +400,42 @@ mod tests {
         ResultHandles {
             store: ResultStore::with_test_limits(0, usize::MAX),
         }
+    }
+
+    fn page_with_next_offset(next_offset: Option<usize>) -> ResultPage {
+        ResultPage {
+            row_count: 2_000,
+            columns: Vec::new(),
+            offset: next_offset.unwrap_or(1_200).saturating_sub(1),
+            limit: 1,
+            has_more: next_offset.is_some(),
+            next_offset,
+            rows: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn result_get_guidance_starts_at_deep_paging_threshold() {
+        assert_eq!(
+            result_get_guidance(&page_with_next_offset(Some(
+                RESULT_GET_DEEP_PAGING_MIN_NEXT_OFFSET - 1,
+            ))),
+            None
+        );
+        assert_eq!(
+            result_get_guidance(&page_with_next_offset(Some(
+                RESULT_GET_DEEP_PAGING_MIN_NEXT_OFFSET,
+            ))),
+            Some(DEEP_PAGING_GUIDANCE)
+        );
+    }
+
+    #[test]
+    fn result_get_guidance_is_omitted_on_terminal_pages() {
+        let mut page = page_with_next_offset(None);
+        page.offset = RESULT_GET_DEEP_PAGING_MIN_NEXT_OFFSET;
+
+        assert_eq!(result_get_guidance(&page), None);
     }
 
     #[test]
