@@ -6,6 +6,7 @@ mod fetch;
 mod function;
 mod provider;
 mod response;
+mod trace;
 mod transport;
 
 pub(crate) use error::McpProviderQueryError;
@@ -14,7 +15,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coral_spec::backends::mcp::McpSourceManifest;
+use coral_spec::SourceBackend;
+use coral_spec::backends::mcp::{McpServerSpec, McpSourceManifest, McpTableSpec};
 use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
@@ -22,12 +24,12 @@ use datafusion::error::Result;
 use self::client::{McpSourceClient, McpToolCaller};
 use self::function::McpSourceTableFunction;
 use self::provider::McpTableProvider;
-use self::transport::StdioMcpToolCaller;
+use self::transport::{StdioMcpToolCaller, StreamableHttpMcpToolCaller};
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    SourceTableFunctions, build_registered_inputs, build_registered_table,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
+    RegisteredSource, SourceTableFunctions, build_registered_inputs, build_registered_table,
     build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
-    required_filter_names,
+    required_filter_names, validate_lookup_key_filter_backend_support,
 };
 use crate::{SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError};
 
@@ -59,7 +61,7 @@ impl McpSourceInputs {
         }
     }
 
-    fn static_inputs(fallback: Arc<BTreeMap<String, String>>) -> Self {
+    pub(super) fn static_inputs(fallback: Arc<BTreeMap<String, String>>) -> Self {
         Self {
             fallback,
             source: None,
@@ -97,11 +99,22 @@ pub(crate) fn compile_manifest(
         ),
         None => McpSourceInputs::static_inputs(Arc::clone(&resolved_inputs)),
     });
-    let caller = Arc::new(StdioMcpToolCaller {
-        source_name: manifest.common.name.clone(),
-        server: manifest.server.clone(),
-        source_inputs: Arc::clone(&source_inputs),
-    });
+    let body_capture =
+        self::trace::McpBodyCapture::new(request.runtime_context.body_capture_max_bytes);
+    let caller: Arc<dyn McpToolCaller> = match &manifest.server {
+        McpServerSpec::Stdio { .. } => Arc::new(StdioMcpToolCaller {
+            source_name: manifest.common.name.clone(),
+            server: manifest.server.clone(),
+            source_inputs: Arc::clone(&source_inputs),
+            body_capture,
+        }),
+        McpServerSpec::StreamableHttp { .. } => Arc::new(StreamableHttpMcpToolCaller {
+            source_name: manifest.common.name.clone(),
+            server: manifest.server.clone(),
+            source_inputs: Arc::clone(&source_inputs),
+            body_capture,
+        }),
+    };
     compile_source_with_caller(
         manifest.clone(),
         source_input_resolution,
@@ -134,9 +147,22 @@ impl CompiledBackendSource for McpCompiledSource {
         &self.manifest.common.name
     }
 
+    fn validate_runtime_capabilities(&self) -> Result<()> {
+        validate_lookup_key_filter_backend_support(
+            self.source_name(),
+            SourceBackend::Mcp,
+            self.manifest
+                .tables
+                .iter()
+                .flat_map(McpTableSpec::filters)
+                .any(|filter| filter.lookup_key),
+        )
+    }
+
     async fn register(
         &self,
         _ctx: &datafusion::prelude::SessionContext,
+        _registration: &BackendRegistrationContext,
     ) -> Result<BackendRegistration> {
         let mut table_functions =
             SourceTableFunctions::with_capacity(self.manifest.functions.len());
