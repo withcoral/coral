@@ -33,8 +33,8 @@ use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
     CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, QueryExecution, QueryPlan,
     QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext,
-    QuerySource, RequestAuthenticator, SourceDecorator, SourceInputResolver, TableFunctionInfo,
-    TableInfo,
+    QuerySource, RequestAuthenticator, RequestIdentityResolver, SourceDecorator,
+    SourceInputResolver, TableFunctionInfo, TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -58,6 +58,7 @@ struct FallbackRuntimeConfig {
     dependent_join: DependentJoinConfig,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
 }
 
 struct RegisteredRuntime {
@@ -89,6 +90,7 @@ async fn build_runtime_inner(
         context: runtime_context,
         dependent_join,
         mut extensions,
+        request_identity_resolver,
     } = runtime;
     let request_authenticators = extensions.request_authenticators.clone();
     let source_input_resolver = extensions.source_input_resolver.clone();
@@ -106,6 +108,7 @@ async fn build_runtime_inner(
             dependent_join: dependent_join.clone(),
             request_authenticators: request_authenticators.clone(),
             source_input_resolver: source_input_resolver.clone(),
+            request_identity_resolver: request_identity_resolver.clone(),
         })
     });
 
@@ -114,6 +117,7 @@ async fn build_runtime_inner(
         &runtime_context,
         &request_authenticators,
         source_input_resolver,
+        request_identity_resolver,
         extensions.source_decorators.as_mut_slice(),
         &dependent_join,
     )
@@ -134,6 +138,7 @@ async fn build_registered_runtime(
     runtime_context: &QueryRuntimeContext,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
     source_decorators: &mut [Box<dyn SourceDecorator>],
     dependent_join: &DependentJoinConfig,
 ) -> Result<RegisteredRuntime, CoreError> {
@@ -144,6 +149,7 @@ async fn build_registered_runtime(
         runtime_context,
         request_authenticators,
         source_input_resolver,
+        request_identity_resolver,
         source_decorators,
     )
     .await?;
@@ -228,6 +234,7 @@ async fn register_runtime_sources(
     runtime_context: &QueryRuntimeContext,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
     source_decorators: &mut [Box<dyn SourceDecorator>],
 ) -> Result<crate::runtime::registry::SourceRegistrationResult, CoreError> {
     let mut source_candidates = Vec::new();
@@ -237,6 +244,7 @@ async fn register_runtime_sources(
             runtime_context,
             request_authenticators,
             source_input_resolver.clone(),
+            request_identity_resolver.clone(),
         ) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(
@@ -502,6 +510,7 @@ impl FallbackRuntimeConfig {
             &self.runtime_context,
             &self.request_authenticators,
             self.source_input_resolver.clone(),
+            self.request_identity_resolver.clone(),
             source_decorators.as_mut_slice(),
             &self.dependent_join.without_rewrites(),
         )

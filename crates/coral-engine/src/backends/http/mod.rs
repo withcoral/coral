@@ -9,14 +9,19 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
+#[cfg(test)]
+use crate::backends::BackendCompileRequest;
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
-    BackendSchemaRegistration, CompiledBackendSource, RegisteredSource, RegisteredTable,
-    SourceFunctionProviderFactory, build_registered_inputs, build_registered_table,
-    build_registered_table_function, registered_columns_from_specs, required_filter_names,
+    BackendRegistration, BackendRegistrationContext, BackendSchemaRegistration,
+    CompiledBackendSource, RegisteredSource, RegisteredTable, SourceFunctionProviderFactory,
+    build_registered_inputs, build_registered_table, build_registered_table_function,
+    registered_columns_from_specs, required_filter_names,
     validate_lookup_key_filter_backend_support,
 };
-use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
+use crate::{
+    RequestAuthenticator, RequestIdentityResolutionContext, RequestIdentityResolver,
+    SourceInputResolutionContext, SourceInputResolver,
+};
 use coral_spec::SourceBackend;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
@@ -50,26 +55,38 @@ struct HttpCompiledSource {
     body_capture_max_bytes: Option<usize>,
     trace_context: Option<opentelemetry::Context>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    identity_context: Option<RequestIdentityResolutionContext>,
+    request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct HttpCompileRuntime {
+    pub(crate) body_capture_max_bytes: Option<usize>,
+    pub(crate) trace_context: Option<opentelemetry::Context>,
+    pub(crate) source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    pub(crate) identity_context: Option<RequestIdentityResolutionContext>,
+    pub(crate) request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
 }
 
 pub(crate) fn compile_source(
     manifest: HttpSourceManifest,
     source_input_resolution: SourceInputResolutionContext,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
-    body_capture_max_bytes: Option<usize>,
-    trace_context: Option<opentelemetry::Context>,
-    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    runtime: HttpCompileRuntime,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
         manifest,
         source_input_resolution,
         request_authenticators,
-        body_capture_max_bytes,
-        trace_context,
-        source_input_resolver,
+        body_capture_max_bytes: runtime.body_capture_max_bytes,
+        trace_context: runtime.trace_context,
+        source_input_resolver: runtime.source_input_resolver,
+        identity_context: runtime.identity_context,
+        request_identity_resolver: runtime.request_identity_resolver,
     })
 }
 
+#[cfg(test)]
 pub(crate) fn compile_manifest(
     manifest: &HttpSourceManifest,
     request: &BackendCompileRequest<'_>,
@@ -78,9 +95,13 @@ pub(crate) fn compile_manifest(
         manifest.clone(),
         SourceInputResolutionContext::from_query_source(request.source),
         request.request_authenticators.clone(),
-        request.runtime_context.body_capture_max_bytes,
-        request.runtime_context.trace_context.clone(),
-        request.source_input_resolver.clone(),
+        HttpCompileRuntime {
+            body_capture_max_bytes: request.runtime_context.body_capture_max_bytes,
+            trace_context: request.runtime_context.trace_context.clone(),
+            source_input_resolver: request.source_input_resolver.clone(),
+            identity_context: None,
+            request_identity_resolver: request.request_identity_resolver.clone(),
+        },
     )
 }
 
@@ -115,6 +136,8 @@ impl CompiledBackendSource for HttpCompiledSource {
         let runtime = HttpSourceClientRuntime::new(
             self.source_input_resolution.clone(),
             self.source_input_resolver.clone(),
+            self.identity_context.clone(),
+            self.request_identity_resolver.clone(),
             self.body_capture_max_bytes,
             self.trace_context.clone(),
             http,

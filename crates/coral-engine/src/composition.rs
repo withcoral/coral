@@ -8,9 +8,11 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::datasource::TableProvider;
 use reqwest::header::{HeaderName, HeaderValue};
+use serde_json::Value;
 
 use crate::CoreError;
 use crate::contracts::QuerySource;
+use coral_spec::v4::IdentityRequirements;
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
 /// One source's table providers keyed by manifest table name.
@@ -110,9 +112,22 @@ impl SourceInputResolutionContext {
     #[must_use]
     /// Builds request input-resolution context from one selected query source.
     pub fn from_query_source(source: &QuerySource) -> Self {
+        Self::from_query_source_with_declared_inputs(source, source.declared_inputs())
+    }
+
+    #[must_use]
+    /// Builds request input-resolution context with a narrowed input contract.
+    ///
+    /// DSL v4 compiles each surface into its own executable HTTP source, so each
+    /// synthesized surface should expose only the inputs declared by that
+    /// surface rather than the union of every surface in the manifest.
+    pub fn from_query_source_with_declared_inputs(
+        source: &QuerySource,
+        declared_inputs: &[ManifestInputSpec],
+    ) -> Self {
         Self {
             source_name: Arc::from(source.source_name()),
-            declared_inputs: Arc::from(source.declared_inputs().to_vec()),
+            declared_inputs: Arc::from(declared_inputs.to_vec()),
             variables: Arc::new(source.variables().clone()),
             secrets: Arc::new(source.secrets().clone()),
         }
@@ -164,6 +179,81 @@ impl SourceInputResolutionContext {
     }
 }
 
+/// Request-time identity-resolution context exposed to request identity resolvers.
+#[derive(Debug, Clone)]
+pub struct RequestIdentityResolutionContext {
+    source_name: Arc<str>,
+    surface_id: Arc<str>,
+    identity_requirements: Arc<IdentityRequirements>,
+}
+
+impl RequestIdentityResolutionContext {
+    #[must_use]
+    /// Builds identity-resolution context for one executable source surface.
+    pub fn new(
+        source_name: impl Into<Arc<str>>,
+        surface_id: impl Into<Arc<str>>,
+        identity_requirements: IdentityRequirements,
+    ) -> Self {
+        Self {
+            source_name: source_name.into(),
+            surface_id: surface_id.into(),
+            identity_requirements: Arc::new(identity_requirements),
+        }
+    }
+
+    #[must_use]
+    /// Returns the canonical source name. This is also the SQL schema name.
+    pub fn source_name(&self) -> &str {
+        &self.source_name
+    }
+
+    #[must_use]
+    /// Returns the DSL v4 surface id whose request is being executed.
+    pub fn surface_id(&self) -> &str {
+        &self.surface_id
+    }
+
+    #[must_use]
+    /// Returns the identity requirements declared by the selected surface.
+    pub fn identity_requirements(&self) -> &IdentityRequirements {
+        &self.identity_requirements
+    }
+
+    #[must_use]
+    /// Returns whether a candidate identity satisfies the selected surface's
+    /// declared requirements.
+    ///
+    /// Accepted identity entries have OR semantics: the candidate is accepted if
+    /// it satisfies any single accepted entry. Within one accepted entry, the
+    /// candidate identity's spec id must be listed in `identity_specs`, and the
+    /// declared `audience` must be a *subset* of the candidate `audience`: every
+    /// required key/value must appear in the candidate, but the candidate may
+    /// carry additional audience entries. An accepted entry with an empty
+    /// `audience` therefore imposes no audience constraint.
+    ///
+    /// Audience values are compared by exact JSON equality, type included: a
+    /// required `443` (integer) does not match a candidate `443.0` (float) or
+    /// `"443"` (string). Resolvers must construct candidate audience values
+    /// with the same JSON types the manifest declares.
+    pub fn accepts_identity(
+        &self,
+        identity_spec_id: &str,
+        audience: &BTreeMap<String, Value>,
+    ) -> bool {
+        self.identity_requirements.accepts.iter().any(|accepted| {
+            accepted
+                .identity_specs
+                .iter()
+                .any(|accepted_spec_id| accepted_spec_id == identity_spec_id)
+                && accepted
+                    .audience
+                    .iter()
+                    .all(|(key, required_value)| audience.get(key) == Some(required_value))
+        })
+    }
+}
+
 /// Request-time HTTP authenticator registered through engine extensions.
 pub trait RequestAuthenticator: Send + Sync + std::fmt::Debug {
     /// Stable authenticator name used in diagnostics and manifest dispatch.
@@ -195,6 +285,31 @@ pub trait RequestAuthenticator: Send + Sync + std::fmt::Debug {
     ) -> Result<(), RequestAuthenticatorError> {
         Ok(())
     }
+}
+
+extension_error!(
+    /// Neutral error type for request identity-resolution failures.
+    RequestIdentityResolverError
+);
+
+/// Request-time resolver for app-managed identities.
+///
+/// The engine calls this only when a DSL v4 surface declares identity
+/// requirements and an outbound request is about to be sent.
+#[async_trait]
+pub trait RequestIdentityResolver: Send + Sync + std::fmt::Debug {
+    /// Returns identity headers to append to the outbound request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RequestIdentityResolverError`] when no suitable identity is
+    /// bound, the identity is unhealthy, or identity material cannot be minted.
+    async fn resolve_identity_headers(
+        &self,
+        identity: &RequestIdentityResolutionContext,
+        request: &reqwest::Request,
+        resolved_inputs: &BTreeMap<String, String>,
+    ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestIdentityResolverError>;
 }
 
 /// Request-time resolver for source inputs owned by the app layer.
@@ -308,9 +423,29 @@ mod tests {
     use std::collections::BTreeMap;
 
     use coral_spec::parse_source_manifest_value;
-    use serde_json::json;
+    use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
+    use serde_json::{Value, json};
 
-    use crate::{QuerySource, SourceInputResolutionContext};
+    use crate::{QuerySource, RequestIdentityResolutionContext, SourceInputResolutionContext};
+
+    /// One-requirement identity context accepting `identity_specs` for the
+    /// `github-rest-read` requirement with the given audience constraints.
+    fn identity_context(
+        identity_specs: &[&str],
+        audience: BTreeMap<String, Value>,
+    ) -> RequestIdentityResolutionContext {
+        RequestIdentityResolutionContext::new(
+            "github",
+            "github_rest",
+            IdentityRequirements {
+                accepts: vec![AcceptedIdentityRequirement {
+                    id: "github-rest-read".to_string(),
+                    identity_specs: identity_specs.iter().map(ToString::to_string).collect(),
+                    audience,
+                }],
+            },
+        )
+    }
 
     #[test]
     fn source_input_resolution_context_keeps_only_request_input_contract() {
@@ -397,5 +532,56 @@ mod tests {
             Some("fresh-token")
         );
         assert!(!refreshed.secrets().contains_key("OPTIONAL_TOKEN"));
+    }
+
+    #[test]
+    fn request_identity_context_matches_candidate_by_spec_id_and_audience() {
+        let audience = BTreeMap::from([("host".to_string(), json!("github.com"))]);
+        let context = identity_context(&["github_oauth", "github_pat"], audience.clone());
+
+        assert!(context.accepts_identity("github_oauth", &audience));
+        assert!(context.accepts_identity("github_pat", &audience));
+        assert!(!context.accepts_identity("gitlab_oauth", &audience));
+    }
+
+    #[test]
+    fn request_identity_context_audience_is_subset_and_json_type_exact() {
+        let context = identity_context(
+            &["github_oauth"],
+            BTreeMap::from([("port".to_string(), json!(443))]),
+        );
+        let accepts =
+            |audience: &BTreeMap<String, Value>| context.accepts_identity("github_oauth", audience);
+
+        // Required entry present plus an extra candidate entry still matches
+        // (declared audience is a subset of the candidate audience).
+        assert!(accepts(&BTreeMap::from([
+            ("port".to_string(), json!(443)),
+            ("tenant".to_string(), json!("acme")),
+        ])));
+        // Exact JSON-type equality: float and string do not match the integer.
+        assert!(!accepts(&BTreeMap::from([(
+            "port".to_string(),
+            json!(443.0)
+        )])));
+        assert!(!accepts(&BTreeMap::from([(
+            "port".to_string(),
+            json!("443")
+        )])));
+        // Missing required key does not match.
+        assert!(!accepts(&BTreeMap::new()));
+    }
+
+    #[test]
+    fn request_identity_context_empty_audience_imposes_no_constraint() {
+        let context = identity_context(&["github_oauth"], BTreeMap::new());
+
+        // An accepted shape with no declared audience matches any candidate
+        // audience, but identity spec id still must match exactly.
+        assert!(context.accepts_identity(
+            "github_oauth",
+            &BTreeMap::from([("host".to_string(), json!("github.com"))])
+        ));
+        assert!(!context.accepts_identity("gitlab_oauth", &BTreeMap::new()));
     }
 }
