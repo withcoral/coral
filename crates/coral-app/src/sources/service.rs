@@ -460,21 +460,26 @@ where
 }
 
 async fn import_source_with_identity_specs(
-    sources: &SourceManager,
+    sources: SourceManager,
     identity_import: IdentitySpecImportContext<'_>,
-    workspace_name: &WorkspaceName,
-    command: &ImportSourceCommand,
+    workspace_name: WorkspaceName,
+    command: ImportSourceCommand,
 ) -> Result<InstalledSource, AppError> {
     let rollback = install_and_validate_identity_specs_for_import(
-        sources,
+        &sources,
         identity_import,
-        workspace_name,
+        &workspace_name,
         &command.manifest_yaml,
         &command.identity_bindings,
         command.replace_identity_bindings,
     )
     .await?;
-    match sources.import_source(workspace_name, command) {
+    let span = tracing::Span::current();
+    let import = tokio::task::spawn_blocking(move || {
+        span.in_scope(|| sources.import_source(&workspace_name, &command))
+    })
+    .await?;
+    match import {
         Ok(source) => Ok(source),
         Err(error) => {
             rollback_identity_specs_for_import(identity_import.identity_specs, rollback);
@@ -613,10 +618,10 @@ async fn import_source_without_credentials(
     command: ImportSourceCommand,
 ) -> Result<Response<ImportSourceResponseStreamBox>, Status> {
     let installed = import_source_with_identity_specs(
-        &sources,
+        sources,
         identity_context.as_import_context(),
-        &workspace_name,
-        &command,
+        workspace_name.clone(),
+        command,
     )
     .await
     .map_err(app_status)?;
