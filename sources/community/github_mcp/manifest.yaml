@@ -1,18 +1,36 @@
 dsl_version: 3
 name: github_mcp
 version: "0.1.0"
-description: "Query GitHub repositories, issues, pull requests, Actions, security alerts, projects, discussions, notifications, and other GitHub MCP tools through GitHub's official remote MCP server."
+description: >-
+  Query GitHub repositories, issues, pull requests, Actions, security alerts,
+  projects, discussions, notifications, and other GitHub MCP tools through
+  GitHub's official remote MCP server.
 backend: mcp
 inputs:
   GITHUB_MCP_ACCESS_TOKEN:
     kind: secret
-    hint: "Connect with GitHub OAuth or paste a personal access token. The OAuth\nmethods request the GitHub scopes used by the read-oriented GitHub MCP\ntools exposed by this source: `repo`, `read:org`, `read:user`,\n`user:email`, `gist`, `notifications`, `read:project`, and\n`security_events`.\n\nSee GitHub's MCP server docs:\nhttps://github.com/github/github-mcp-server\n"
+    hint: |
+      Connect with GitHub OAuth or paste a personal access token. The OAuth
+      methods request the GitHub scopes used by the read-oriented GitHub MCP
+      tools exposed by this source: `repo`, `read:org`, `read:user`,
+      `user:email`, `gist`, `notifications`, `read:project`, and
+      `security_events`.
+
+      See GitHub's MCP server docs:
+      https://github.com/github/github-mcp-server
     credential:
       methods:
         - type: oauth
           label: Connect with GitHub device code
           description: Sign in to GitHub with a device code.
-          hint: "Signs you in through GitHub, with no app setup or client secret\nneeded. Requests the scopes needed for the read-oriented GitHub MCP\ntools exposed by this source: `repo`, `read:org`, `read:user`,\n`user:email`, `gist`, `notifications`, `read:project`, and\n`security_events`. To use your own GitHub app instead, set\nGITHUB_MCP_OAUTH_CLIENT_ID to its Client ID and enable device flow on\nthe app.\n"
+          hint: |
+            Signs you in through GitHub, with no app setup or client secret
+            needed. Requests the scopes needed for the read-oriented GitHub MCP
+            tools exposed by this source: `repo`, `read:org`, `read:user`,
+            `user:email`, `gist`, `notifications`, `read:project`, and
+            `security_events`. To use your own GitHub app instead, set
+            GITHUB_MCP_OAUTH_CLIENT_ID to its Client ID and enable device flow
+            on the app.
           oauth:
             flow:
               type: device_code
@@ -30,7 +48,11 @@ inputs:
         - type: oauth
           label: Connect with GitHub OAuth app
           description: Sign in through a GitHub OAuth app in your browser.
-          hint: "Uses your own GitHub OAuth app. Register one with its Authorization\ncallback URL set to `http://127.0.0.1:53682/oauth/callback`, then\nenter the app's Client ID and Client secret below. Requests the\nread-oriented GitHub MCP scopes exposed by this source.\n"
+          hint: |
+            Uses your own GitHub OAuth app. Register one with its Authorization
+            callback URL set to `http://127.0.0.1:53682/oauth/callback`, then
+            enter the app's Client ID and Client secret below. Requests the
+            read-oriented GitHub MCP scopes exposed by this source.
           oauth:
             flow:
               type: authorization_code
@@ -54,7 +76,11 @@ inputs:
         - type: source_config
           label: Paste GitHub token
           description: Paste an existing GitHub token or provide GITHUB_MCP_ACCESS_TOKEN.
-          hint: "If you use GitHub CLI, run `gh auth token`. Otherwise create a\npersonal access token with read access to the repositories,\norganizations, notifications, projects, gists, and security data you\nquery. Paste the raw token value, without a `Bearer ` prefix.\n"
+          hint: |
+            If you use GitHub CLI, run `gh auth token`. Otherwise create a
+            personal access token with read access to the repositories,
+            organizations, notifications, projects, gists, and security data
+            you query. Paste the raw token value, without a `Bearer ` prefix.
 server:
   transport: streamable_http
   url: "https://api.githubcopilot.com/mcp/x/all/readonly"
