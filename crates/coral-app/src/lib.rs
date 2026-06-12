@@ -39,6 +39,7 @@ mod catalog;
 mod credentials;
 pub mod features;
 mod feedback;
+mod identities;
 mod identity;
 mod query;
 mod sources;
@@ -52,6 +53,10 @@ pub use bootstrap::{
     AppError, RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
 };
 pub use coral_engine::{EngineExtensions, QuerySource};
+pub use identities::{
+    IdentityOwnerKey, UserOwnedIdentityMaterialGuard, UserOwnedIdentityRecord,
+    UserOwnedIdentityStore,
+};
 pub use identity::{
     SingleUserPrincipalProvider, UserPrincipal, UserPrincipalError, UserPrincipalProvider,
 };
