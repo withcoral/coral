@@ -83,12 +83,14 @@ fn non_blank(field: &str, value: &str) -> Result<String, Status> {
 }
 
 /// Maps an [`EpisodeStoreError`] to a gRPC [`Status`]. A reopen with a different
-/// intent/parent is a client-visible precondition failure; IO/serialization
-/// faults are internal and logged rather than surfaced.
+/// intent/parent is a client-visible precondition failure; a full workspace is
+/// resource-exhausted; IO/serialization faults are internal and logged rather than
+/// surfaced.
 fn open_episode_status(error: &EpisodeStoreError) -> Status {
     match error {
         EpisodeStoreError::Conflict { .. } => Status::failed_precondition(error.to_string()),
         EpisodeStoreError::InvalidIntent { .. } => Status::invalid_argument(error.to_string()),
+        EpisodeStoreError::CapacityExceeded { .. } => Status::resource_exhausted(error.to_string()),
         EpisodeStoreError::Io(_) | EpisodeStoreError::Serde(_) => {
             warn!(%error, "failed to persist episode");
             Status::internal("failed to persist episode")
