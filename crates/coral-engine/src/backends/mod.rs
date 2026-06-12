@@ -83,7 +83,7 @@ pub(crate) use common::{
     RegisteredSource, RegisteredTable, RegisteredTableFunction, SourceTableFunctions,
     build_registered_inputs, build_registered_table, build_registered_table_function,
     internal_table_function_name, registered_columns_from_schema, registered_columns_from_specs,
-    required_filter_names, schema_from_columns,
+    required_filter_names, schema_from_columns, validate_lookup_key_filter_backend_support,
 };
 
 pub(crate) mod file;
