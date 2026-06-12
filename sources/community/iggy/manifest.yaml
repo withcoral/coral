@@ -221,8 +221,8 @@ tables:
   - name: users
     description: Users registered on the Iggy server.
     guide: >
-      Returns one row per user. Requires ManageUsers or ReadUsers global permission
-      (root bypasses permission checks). status is "active" or "inactive".
+      Returns one row per user. Requires read_users global permission
+      (root bypasses). status is "active" or "inactive".
       id can be used to correlate with the user_id field in iggy.clients.
     request:
       method: GET
@@ -260,8 +260,7 @@ tables:
       Returns one row per connected client. transport is one of "http",
       "tcp", or "quic". address is the client IP and port.
       user_id links to iggy.users (null for unauthenticated clients).
-      Requires ManageClients or ReadClients global permission
-      (root bypasses permission checks).
+      Requires read_servers global permission (root bypasses).
     request:
       method: GET
       path: /clients
@@ -305,7 +304,8 @@ tables:
       Timestamps (start_time) are microseconds since epoch.
       run_time is server uptime in microseconds.
       cpu_usage is the percentage for the Iggy process only.
-      No special permissions required — available to all authenticated users.
+      Requires read_servers global permission (root bypasses) and a
+      valid JWT - /stats is not a public endpoint.
     request:
       method: GET
       path: /stats

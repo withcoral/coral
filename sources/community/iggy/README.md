@@ -41,17 +41,20 @@ Use the resulting JWT as `IGGY_ACCESS_TOKEN` when running `coral source add`.
 ## Local Setup
 
 ```bash
-# Run Iggy with Docker (default credentials: iggy / iggy)
+# Run Iggy with Docker. The iggy/iggy root account isn't enabled by default,
+# so set IGGY_ROOT_USERNAME/IGGY_ROOT_PASSWORD to create it on first boot.
 docker run -d \
   --name iggy-server \
   --cap-add SYS_NICE \
   -p 3000:3000 \
   -p 8090:8090 \
   -p 8080:8080 \
+  -e IGGY_ROOT_USERNAME=iggy \
+  -e IGGY_ROOT_PASSWORD=iggy \
   apache/iggy:latest
 
-# Verify it is running
-curl http://localhost:3000/stats | jq .iggy_server_version
+# Verify it is running (/ping doesn't require auth)
+curl http://localhost:3000/ping
 ```
 
 ### Get an access token
@@ -84,14 +87,14 @@ iggy -u iggy -p iggy topic create 1 1 3 none test-topic
 The examples below use the default `iggy` root account which bypasses permission checks.
 For non-root tokens, grant the following permissions:
 
-| Table             | Required Permission              |
-|-------------------|----------------------------------|
-| `streams`         | Read on each stream              |
-| `topics`          | Read on the stream               |
-| `consumer_groups` | Read on the stream and topic     |
-| `users`           | `ReadUsers` global permission    |
-| `clients`         | `ReadClients` global permission  |
-| `stats`           | None — available to all users    |
+| Table             | Required Permission                                |
+|-------------------|-----------------------------------------------------|
+| `streams`         | `read_streams` global permission, or per-stream read access |
+| `topics`          | `read_topics` global permission, or per-stream/topic read access |
+| `consumer_groups` | `read_topics` global permission, or per-stream/topic read access |
+| `users`           | `read_users` global permission                       |
+| `clients`         | `read_servers` global permission                     |
+| `stats`           | `read_servers` global permission, plus a valid JWT (`/stats` is not public) |
 
 See [Iggy security docs](https://iggy.apache.org/docs/server/security) for details.
 
@@ -111,16 +114,17 @@ One row per consumer group. Requires both `stream_id` and `topic_id`.
 
 ### `users`
 
-One row per registered user. Requires `ReadUsers` global permission (root bypasses).
+One row per registered user. Requires `read_users` global permission (root bypasses).
 
 ### `clients`
 
 One row per connected client. Shows transport type (`http`, `tcp`, `quic`), address, and user.
-Requires `ReadClients` global permission (root bypasses).
+Requires `read_servers` global permission (root bypasses).
 
 ### `stats`
 
-Single row with server-wide counters and health metrics. No special permissions required.
+Single row with server-wide counters and health metrics. Requires `read_servers` global
+permission (root bypasses) and a valid JWT - `/stats` is not a public endpoint.
 
 ## Example Queries
 
