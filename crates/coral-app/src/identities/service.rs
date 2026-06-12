@@ -130,20 +130,20 @@ impl IdentityServiceApi for IdentityService {
         &self,
         request: Request<GetUserOwnedIdentityRequest>,
     ) -> Result<Response<GetUserOwnedIdentityResponse>, Status> {
+        let span = grpc_span(&request);
         let identities = self.identities.clone();
-        instrument_authenticated_grpc(
-            &self.user_principal_provider,
-            request,
-            |principal, request| async move {
-                let record = identities
-                    .get_user_owned_identity(&principal, &request.name)
-                    .await
-                    .map_err(app_status)?;
-                Ok(Response::new(GetUserOwnedIdentityResponse {
-                    identity: Some(identity_record_to_proto(record)),
-                }))
-            },
-        )
+        instrument_grpc(span, async move {
+            let request_context = RequestContext::from_request(&request)?;
+            let principal = request_context.principal().clone();
+            let request = request.into_inner();
+            let record = identities
+                .get_user_owned_identity(&principal, &request.name)
+                .await
+                .map_err(app_status)?;
+            Ok(Response::new(GetUserOwnedIdentityResponse {
+                identity: Some(identity_record_to_proto(record)),
+            }))
+        })
         .await
     }
 
@@ -151,18 +151,18 @@ impl IdentityServiceApi for IdentityService {
         &self,
         request: Request<DeleteUserOwnedIdentityRequest>,
     ) -> Result<Response<DeleteUserOwnedIdentityResponse>, Status> {
+        let span = grpc_span(&request);
         let identities = self.identities.clone();
-        instrument_authenticated_grpc(
-            &self.user_principal_provider,
-            request,
-            |principal, request| async move {
-                identities
-                    .delete_user_owned_identity(&principal, &request.name)
-                    .await
-                    .map_err(app_status)?;
-                Ok(Response::new(DeleteUserOwnedIdentityResponse {}))
-            },
-        )
+        instrument_grpc(span, async move {
+            let request_context = RequestContext::from_request(&request)?;
+            let principal = request_context.principal().clone();
+            let request = request.into_inner();
+            identities
+                .delete_user_owned_identity(&principal, &request.name)
+                .await
+                .map_err(app_status)?;
+            Ok(Response::new(DeleteUserOwnedIdentityResponse {}))
+        })
         .await
     }
 }

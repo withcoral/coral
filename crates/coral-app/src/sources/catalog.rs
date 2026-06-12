@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 
 use crate::bootstrap::AppError;
+use crate::source_artifacts::SourceArtifactStore;
 use crate::sources::SourceName;
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
-use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
 include!(concat!(env!("OUT_DIR"), "/bundled_sources.rs"));
@@ -63,21 +63,33 @@ pub(crate) fn load_bundled_source(name: &SourceName) -> Result<BundledSourceMani
 pub(crate) fn resolve_installed_manifest(
     workspace_name: &WorkspaceName,
     source: &InstalledSource,
-    layout: &AppStateLayout,
+    artifacts: &dyn SourceArtifactStore,
 ) -> Result<InstalledSourceManifest, AppError> {
-    resolve_installed_manifest_with_imported_yaml(workspace_name, source, None, layout)
+    resolve_installed_manifest_with_imported_yaml(workspace_name, source, None, artifacts)
 }
 
 pub(crate) fn resolve_installed_manifest_with_imported_yaml(
     workspace_name: &WorkspaceName,
     source: &InstalledSource,
     imported_manifest_yaml: Option<&str>,
-    layout: &AppStateLayout,
+    artifacts: &dyn SourceArtifactStore,
 ) -> Result<InstalledSourceManifest, AppError> {
     let manifest_yaml = match source.origin {
         SourceOrigin::Bundled => load_bundled_source(&source.name)?.manifest_yaml,
         SourceOrigin::Imported => imported_manifest_yaml.map_or_else(
-            || std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name)),
+            || {
+                artifacts
+                    .read_manifest_artifact(workspace_name.as_str(), source.name.as_str())?
+                    .ok_or_else(|| {
+                        AppError::Io(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!(
+                                "source '{}' is missing installed manifest artifact",
+                                source.name
+                            ),
+                        ))
+                    })
+            },
             |manifest_yaml| Ok(manifest_yaml.to_string()),
         )?,
     };

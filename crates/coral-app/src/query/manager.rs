@@ -31,15 +31,18 @@ use crate::query::QueryContext;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
+#[cfg(test)]
+use crate::source_artifacts::LocalSourceArtifactStore;
+use crate::source_artifacts::SourceArtifactStore;
 use crate::source_registry::{SourceRegistry, installed_source_from_record};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest_with_imported_yaml;
-use crate::sources::materialization::{
-    incompatible_materialization_error, load_v4_materialization,
-};
+use crate::sources::materialization::incompatible_materialization_error;
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_components_for_v4_source;
-use crate::state::{AppConfig, AppStateLayout, ConfigStore};
+#[cfg(test)]
+use crate::state::AppStateLayout;
+use crate::state::{AppConfig, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug)]
@@ -72,9 +75,9 @@ struct RegistryQuerySource {
 pub(crate) struct QueryManager {
     config_store: ConfigStore,
     source_registry: Arc<dyn SourceRegistry>,
+    artifact_store: Arc<dyn SourceArtifactStore>,
     credential_manager: CredentialManager,
     runtime_context: QueryRuntimeContext,
-    layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     identity_manager: IdentityManager,
     features: Features,
@@ -126,6 +129,7 @@ impl QueryManager {
         clippy::too_many_arguments,
         reason = "one-time wiring constructor; every argument is a distinct runtime dependency"
     )]
+    #[cfg(test)]
     pub(crate) fn new_with_features_and_source_registry(
         config_store: ConfigStore,
         source_registry: Arc<dyn SourceRegistry>,
@@ -136,12 +140,38 @@ impl QueryManager {
         identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
         features: Features,
     ) -> Self {
+        Self::new_with_features_source_registry_and_artifact_store(
+            config_store,
+            source_registry,
+            Arc::new(LocalSourceArtifactStore::new(layout)),
+            credential_manager,
+            runtime_context,
+            engine_extensions_providers,
+            identity_providers,
+            features,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one-time wiring constructor; every argument is a distinct runtime dependency"
+    )]
+    pub(crate) fn new_with_features_source_registry_and_artifact_store(
+        config_store: ConfigStore,
+        source_registry: Arc<dyn SourceRegistry>,
+        artifact_store: Arc<dyn SourceArtifactStore>,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
+        features: Features,
+    ) -> Self {
         Self {
             config_store,
             source_registry,
+            artifact_store,
             credential_manager,
             runtime_context,
-            layout,
             engine_extensions_providers,
             identity_manager: IdentityManager::new(identity_providers),
             features,
@@ -405,15 +435,14 @@ impl QueryManager {
             workspace_name,
             source,
             imported_manifest_yaml,
-            &self.layout,
+            self.artifact_store.as_ref(),
         )?;
         let source_spec = installed.source_spec;
         let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
             self.features.ensure_dsl_v4_enabled()?;
-            let materialized = load_v4_materialization(
-                &self.layout,
-                workspace_name,
-                &source.name,
+            let materialized = self.artifact_store.load_v4_materialization(
+                workspace_name.as_str(),
+                source.name.as_str(),
                 &installed.manifest_yaml,
                 v4,
             )?;
@@ -972,6 +1001,7 @@ mod tests {
 
     struct QueryManagerFixture {
         _temp: TempDir,
+        layout: AppStateLayout,
         manager: QueryManager,
     }
 
@@ -1003,13 +1033,14 @@ mod tests {
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             runtime_context,
-            layout,
+            layout.clone(),
             providers,
             identity_providers,
             features,
         );
         QueryManagerFixture {
             _temp: temp,
+            layout,
             manager,
         }
     }
@@ -1269,11 +1300,11 @@ mod tests {
     /// Ensures the fixture layout exists and returns a v4-enabled source
     /// manager that shares the fixture's stores.
     fn v4_source_manager(fixture: &QueryManagerFixture) -> SourceManager {
-        fixture.manager.layout.ensure().expect("ensure layout");
+        fixture.layout.ensure().expect("ensure layout");
         SourceManager::new_with_features(
             fixture.manager.config_store.clone(),
             fixture.manager.credential_manager.clone(),
-            fixture.manager.layout.clone(),
+            fixture.layout.clone(),
             dsl_v4_features(),
         )
     }
@@ -1438,10 +1469,9 @@ surfaces:
         source_name: &str,
         manifest_yaml: &str,
     ) -> SourceName {
-        fixture.manager.layout.ensure().expect("ensure layout");
+        fixture.layout.ensure().expect("ensure layout");
         let source_name = SourceName::parse(source_name).expect("source name");
         let manifest_path = fixture
-            .manager
             .layout
             .manifest_file(&WorkspaceName::default(), &source_name);
         std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
