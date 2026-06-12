@@ -1,0 +1,65 @@
+---
+- name: Gather selected facts for Coral normalization
+  hosts: all
+  gather_facts: false
+
+  vars:
+    collected_facts_dir: "{{ playbook_dir }}/../collected-facts"
+    coral_ansible_become: false
+
+  tasks:
+    - name: Ensure selected facts directory exists on control node
+      ansible.builtin.file:
+        path: "{{ collected_facts_dir }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+    - name: Gather setup facts used by Coral
+      ansible.builtin.setup:
+        gather_subset:
+          - "!all"
+          - "!min"
+          - apparmor
+          - architecture
+          - distribution
+          - fips
+          - hardware
+          - interfaces
+          - kernel
+          - mounts
+          - network
+          - os_family
+          - pkg_mgr
+          - processor
+          - python
+          - selinux
+          - service_mgr
+          - system
+          - virtual
+      become: "{{ coral_ansible_become | bool }}"
+
+    - name: Gather service facts
+      ansible.builtin.service_facts:
+      become: "{{ coral_ansible_become | bool }}"
+
+    - name: Gather package facts
+      ansible.builtin.package_facts:
+        manager: auto
+      ignore_errors: true
+      become: "{{ coral_ansible_become | bool }}"
+
+    - name: Export selected facts to local JSON
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/selected-facts.json.j2"
+        dest: >-
+          {{ collected_facts_dir }}/{{ inventory_hostname
+          | ansible.builtin.regex_replace('[^A-Za-z0-9_-]', '_')
+          | ansible.builtin.regex_replace('_+', '_')
+          | ansible.builtin.regex_replace('^_+|_+$', '')
+          | ansible.builtin.default('host', true) }}.json
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
