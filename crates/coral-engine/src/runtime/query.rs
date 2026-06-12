@@ -158,7 +158,8 @@ async fn build_registered_runtime(
             .flat_map(|source| source.table_functions.iter()),
     );
     if !source_functions.is_empty() {
-        ctx.register_relation_planner(Arc::new(source_functions))
+        source_functions
+            .install(&ctx)
             .map_err(|err| datafusion_to_core(&err, &tables))?;
     }
     for failure in &registration.failures {

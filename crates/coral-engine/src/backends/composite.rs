@@ -10,7 +10,6 @@ use datafusion::prelude::SessionContext;
 
 use crate::backends::{
     BackendRegistration, BackendRegistrationContext, CompiledBackendSource, RegisteredSource,
-    SourceTableFunctions,
 };
 
 struct CompositeCompiledSource {
@@ -51,9 +50,9 @@ impl CompiledBackendSource for CompositeCompiledSource {
         registration_context: &BackendRegistrationContext,
     ) -> datafusion::error::Result<BackendRegistration> {
         let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
-        let mut table_functions = SourceTableFunctions::new();
         let mut registered_tables = Vec::new();
         let mut registered_functions = Vec::new();
+        let mut function_keys = BTreeSet::new();
         let mut inputs = Vec::new();
         let mut input_keys = BTreeSet::new();
 
@@ -67,16 +66,17 @@ impl CompiledBackendSource for CompositeCompiledSource {
                     )));
                 }
             }
-            for (name, function) in registration.table_functions {
-                if table_functions.insert(name.clone(), function).is_some() {
+            for function in registration.source.table_functions {
+                let key = (function.schema_name.clone(), function.function_name.clone());
+                if !function_keys.insert(key) {
                     return Err(DataFusionError::Execution(format!(
-                        "source '{}' registered duplicate table function '{name}'",
-                        self.source_name
+                        "source '{}' registered duplicate table function '{}.{}'",
+                        self.source_name, function.schema_name, function.function_name
                     )));
                 }
+                registered_functions.push(function);
             }
             registered_tables.extend(registration.source.tables);
-            registered_functions.extend(registration.source.table_functions);
             for input in registration.source.inputs {
                 if input_keys.insert(input.key.clone()) {
                     inputs.push(input);
@@ -86,7 +86,6 @@ impl CompiledBackendSource for CompositeCompiledSource {
 
         Ok(BackendRegistration {
             tables,
-            table_functions,
             source: RegisteredSource {
                 schema_name: self.source_name.clone(),
                 tables: registered_tables,

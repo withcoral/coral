@@ -8,7 +8,6 @@ use tracing::{Instrument as _, info_span};
 
 use crate::backends::{
     BackendRegistration, BackendRegistrationContext, CompiledBackendSource, RegisteredSource,
-    SourceTableFunctions,
 };
 use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
 use crate::runtime::schema_provider::StaticSchemaProvider;
@@ -128,7 +127,6 @@ async fn register_sources_inner(
                     Ok(registration) => {
                         let BackendRegistration {
                             tables,
-                            table_functions,
                             source: registered_source,
                         } = registration;
                         let decorated_tables =
@@ -138,7 +136,6 @@ async fn register_sources_inner(
                             Arc::new(StaticSchemaProvider::new(decorated_tables)),
                         ) {
                             Ok(_) => {
-                                register_table_functions(ctx, table_functions);
                                 result.active_sources.push(registered_source);
                             }
                             Err(error) => {
@@ -248,12 +245,6 @@ fn push_source_failure(
         "skipping source"
     );
     result.failures.push(failure);
-}
-
-fn register_table_functions(ctx: &SessionContext, table_functions: SourceTableFunctions) {
-    for (internal_name, function) in table_functions {
-        ctx.register_udtf(&internal_name, function);
-    }
 }
 
 fn prepare_source_decorators(

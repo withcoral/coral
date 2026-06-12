@@ -340,7 +340,8 @@ fn register_test_sources(ctx: &SessionContext, sources: Vec<CompiledQuerySource>
             .iter()
             .flat_map(|source| source.table_functions.iter()),
     );
-    ctx.register_relation_planner(Arc::new(source_functions))
+    source_functions
+        .install(ctx)
         .expect("source function planner should register");
 }
 
@@ -353,7 +354,8 @@ fn register_test_sources_with_catalog(ctx: &SessionContext, sources: Vec<Compile
             .iter()
             .flat_map(|source| source.table_functions.iter()),
     );
-    ctx.register_relation_planner(Arc::new(source_functions))
+    source_functions
+        .install(ctx)
         .expect("source function planner should register");
 }
 
