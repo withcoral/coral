@@ -1085,15 +1085,25 @@ mod tests {
         let mut arguments = Map::new();
         arguments.insert("result_id".to_string(), Value::String("res_1".to_string()));
         arguments.insert("limit".to_string(), Value::from(0));
-        arguments.insert("columns".to_string(), serde_json::json!(["name", " id "]));
+        arguments.insert("columns".to_string(), serde_json::json!(["name", "id"]));
 
         let parsed = result_get_arguments(Some(&arguments)).expect("arguments");
         assert_eq!(parsed.result_id, "res_1");
         assert_eq!(parsed.limit, 0);
         assert_eq!(
             parsed.columns.expect("columns"),
-            vec!["name".to_string(), " id ".to_string()]
+            vec!["name".to_string(), "id".to_string()]
         );
+    }
+
+    #[test]
+    fn result_get_arguments_preserve_exact_column_names() {
+        let mut arguments = Map::new();
+        arguments.insert("result_id".to_string(), Value::String("res_1".to_string()));
+        arguments.insert("columns".to_string(), serde_json::json!([" id "]));
+
+        let parsed = result_get_arguments(Some(&arguments)).expect("arguments");
+        assert_eq!(parsed.columns.expect("columns"), vec![" id ".to_string()]);
     }
 
     #[test]
