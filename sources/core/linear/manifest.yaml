@@ -1366,8 +1366,10 @@ tables:
     filters:
       - name: team_id
         required: false
+        lookup_key: true
       - name: team_key
         required: false
+        lookup_key: true
       - name: is_active
         type: Boolean
         required: false
@@ -2469,11 +2471,16 @@ tables:
       and SLA timestamp columns.
     filters:
       - name: team_id
+        lookup_key: true
       - name: team_key
+        lookup_key: true
       - name: project_id
+        lookup_key: true
       - name: project_milestone_id
+        lookup_key: true
       - name: project_milestone_name
       - name: cycle_id
+        lookup_key: true
       - name: cycle_number
         type: Int64
     request:

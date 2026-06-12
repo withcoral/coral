@@ -38,6 +38,13 @@ impl CompiledBackendSource for CompositeCompiledSource {
         &self.source_name
     }
 
+    fn validate_runtime_capabilities(&self) -> datafusion::error::Result<()> {
+        for component in &self.components {
+            component.validate_runtime_capabilities()?;
+        }
+        Ok(())
+    }
+
     async fn register(
         &self,
         ctx: &SessionContext,

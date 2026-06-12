@@ -24,6 +24,7 @@ pub fn projection_filter_specs(projection: &Projection) -> Vec<FilterSpec> {
             required: input.required,
             mode: FilterMode::Equality,
             description: input.description.clone(),
+            lookup_key: false,
         })
         .collect()
 }

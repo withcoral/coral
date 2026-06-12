@@ -242,6 +242,7 @@ impl SourceManager {
                 candidate.credential_storage = Some(*storage);
             }
         }
+
         Ok(candidates)
     }
 

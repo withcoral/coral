@@ -121,8 +121,8 @@ pub use url_policy::{
     is_loopback_url, validate_https_or_loopback_scheme, validate_https_or_loopback_url,
 };
 pub(crate) use validate::{
-    DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, validate_columns,
-    validate_declared_relation_namespace, validate_detail_hint_references,
+    DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, HttpTableValidation,
+    validate_columns, validate_declared_relation_namespace, validate_detail_hint_references,
     validate_filters_and_column_exprs, validate_http_function, validate_http_table,
     validate_identifier, validate_unique_values,
 };
