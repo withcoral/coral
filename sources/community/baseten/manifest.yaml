@@ -8,7 +8,11 @@ base_url: https://api.baseten.co
 inputs:
   BASETEN_API_KEY:
     kind: secret
-    hint: "Your Baseten API key from https://app.baseten.co/settings/account/api_keys"
+    hint: >-
+      Your Baseten API key from https://app.baseten.co/settings/account/api_keys.
+      Use a personal API key, or a team API key with "Full access" permissions —
+      "Inference only" and "Metrics only" team keys cannot list models, deployments,
+      or secrets. See https://docs.baseten.co/organization/api-keys for details.
 
 auth:
   type: HeaderAuth
@@ -20,11 +24,6 @@ auth:
 test_queries:
   - SELECT id, name, instance_type_name, deployments_count FROM baseten.models LIMIT 5
   - SELECT name, created_at, team_name FROM baseten.secrets LIMIT 10
-  - >-
-    SELECT id, name, status, min_replicas, max_replicas, target_concurrency
-    FROM baseten.deployments
-    WHERE model_id = (SELECT id FROM baseten.models LIMIT 1)
-    LIMIT 5
 
 tables:
   - name: models

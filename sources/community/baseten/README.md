@@ -37,11 +37,11 @@ WHERE model_id = '<model_id from baseten.models>'
 SELECT name, created_at, team_name
 FROM baseten.secrets;
 
--- Models with their production deployment details
-SELECT m.name AS model_name, d.status, d.active_replica_count, d.instance_type_name
-FROM baseten.models m
-JOIN baseten.deployments d ON d.model_id = m.id
-WHERE d.is_production = true;
+-- Production deployment details for a model (get the model id from baseten.models first)
+SELECT id, name, status, active_replica_count, instance_type_name
+FROM baseten.deployments
+WHERE model_id = '<model_id from baseten.models>'
+  AND is_production = true;
 ```
 
 ## Tables
@@ -56,8 +56,17 @@ WHERE d.is_production = true;
 
 Get your API key from **app.baseten.co → Settings → API Keys**.
 
+Use a personal API key, or a team API key with **"Full access"** permissions.
+"Inference only" and "Metrics only" team keys cannot list models, deployments,
+or secrets and will fail against this source. See
+[Baseten API keys](https://docs.baseten.co/organization/api-keys) for details
+on key types and how to create one.
+
 ## Notes
 
-- `deployments` requires the `model_id` filter — get IDs from `baseten.models`
+- `deployments` requires the `model_id` filter — get IDs from `baseten.models`.
+  Required filters must be a literal value, not a subquery or join — query
+  `baseten.models` first, then use that `id` in a separate `baseten.deployments`
+  query.
 - `autoscaling_settings` fields are flattened into the `deployments` table as `min_replicas`, `max_replicas`, `target_concurrency` (mapped from Baseten's `min_replica`, `max_replica`, `concurrency_target` fields)
 - Secret values are never returned by the API for security reasons
