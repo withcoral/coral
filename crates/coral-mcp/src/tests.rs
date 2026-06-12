@@ -1484,8 +1484,9 @@ async fn mcp_sql_huge_result_includes_enumeration_guidance() {
     assert_eq!(page["has_more"], true);
     assert_eq!(page["next_offset"], 1020);
     let guidance = page["guidance"].as_str().expect("page guidance");
-    assert!(guidance.contains("stop sequential paging"));
-    assert!(guidance.contains("rerun the SQL"));
+    assert!(guidance.contains("Do not continue sequential paging"));
+    assert!(guidance.contains("rows already seen"));
+    assert!(guidance.contains("Only rerun SQL when you can name a specific"));
 
     session.shutdown().await;
 }

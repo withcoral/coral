@@ -31,7 +31,7 @@ const PREVIEW_OMITTED_GUIDANCE: &str = "Preview omitted because it exceeds Coral
 const PREVIEW_OMITTED_LARGE_RESULT_GUIDANCE: &str = "Preview omitted because it exceeds Coral's MCP response budget. Result is large; answer from row_count or rerun the SQL with filters or aggregates instead of paging every row. If raw rows are required, call result_get with limit 500 and a columns projection.";
 const RESULT_TOO_LARGE_WARNING: &str = "Result exceeded the in-memory handle limit; rerun the SQL with LIMIT, filters, or a smaller column set.";
 const RESULT_TOO_LARGE_PREVIEW_OMITTED_WARNING: &str = "Result exceeded the in-memory handle limit, and its preview exceeds Coral's MCP response budget; rerun the SQL with LIMIT, filters, or a smaller column set.";
-const DEEP_PAGING_GUIDANCE: &str = "You have already paged through many rows from this result. If this page does not answer the question, stop sequential paging and rerun the SQL with filters, aggregates, ORDER BY, LIMIT, or a narrower columns projection.";
+const DEEP_PAGING_GUIDANCE: &str = "You have already paged through many rows from this result. Do not continue sequential paging. If the answer is not evident from the rows already seen, answer from row_count or explain that the current query is too broad. Only rerun SQL when you can name a specific filter, aggregate, ORDER BY, LIMIT, or columns projection that directly answers the question.";
 
 pub(crate) const RESULT_GET_MAX_LIMIT: usize = 500;
 pub(crate) const RESULT_GET_DEFAULT_LIMIT: usize = 200;
