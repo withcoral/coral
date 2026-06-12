@@ -30,7 +30,9 @@ message OpenEpisodeRequest {
   string episode_id = 2;
   // Natural-language task description — the retrieval handle. Possibly PII;
   // persisted only in the episode store, never on spans, headers, or logs.
-  // Required and non-empty, bounded in length; not carried as metadata.
+  // Required and non-empty (trimmed) and at most 4096 characters; the server
+  // rejects a blank or over-long intent with `INVALID_ARGUMENT`. Not carried as
+  // metadata.
   string intent = 3;
   // Set for a child episode (a sub-task); links to the open parent episode.
   // Empty when there is no parent (a root episode); otherwise the same format
