@@ -45,6 +45,28 @@ pub(crate) struct StartOAuthCredentialRequest<'a> {
     pub(crate) oauth: &'a ManifestOAuthCredentialSpec,
     pub(crate) source_inputs: &'a BTreeMap<String, String>,
     pub(crate) credential_inputs: Vec<(String, String)>,
+    pub(crate) client_material_persistence: OAuthClientMaterialPersistence,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OAuthClientMaterialPersistence {
+    #[expect(
+        dead_code,
+        reason = "constructed by the identity manager in a later PR"
+    )]
+    None,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "constructed by the identity manager in a later PR"
+        )
+    )]
+    ClientCredentials {
+        client_id: bool,
+        client_secret: bool,
+    },
+    All,
 }
 
 /// Progress event emitted while an OAuth credential authorization runs.
@@ -117,12 +139,37 @@ impl PendingOAuthProgressEvent {
     }
 }
 
+impl OAuthClientMaterialPersistence {
+    fn stores_client_id(self) -> bool {
+        matches!(
+            self,
+            Self::All
+                | Self::ClientCredentials {
+                    client_id: true,
+                    ..
+                }
+        )
+    }
+
+    fn stores_client_secret(self) -> bool {
+        matches!(
+            self,
+            Self::All
+                | Self::ClientCredentials {
+                    client_secret: true,
+                    ..
+                }
+        )
+    }
+}
+
 pub(crate) struct RefreshOAuthCredentialRequest<'a> {
     access_token_material_key: &'a str,
     material_label: String,
     reconnect_label: &'static str,
     metadata_prefix: String,
     oauth: &'a ManifestOAuthCredentialSpec,
+    resolved_inputs: Option<&'a BTreeMap<String, String>>,
 }
 
 impl<'a> RefreshOAuthCredentialRequest<'a> {
@@ -136,6 +183,27 @@ impl<'a> RefreshOAuthCredentialRequest<'a> {
             reconnect_label: "reconnect the source",
             metadata_prefix: oauth_metadata_prefix(input_key),
             oauth,
+            resolved_inputs: None,
+        }
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "consumed by the identity runtime in a later PR")
+    )]
+    pub(crate) fn for_identity(
+        identity_name: &str,
+        access_token_material_key: &'a str,
+        oauth: &'a ManifestOAuthCredentialSpec,
+        resolved_inputs: &'a BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            access_token_material_key,
+            material_label: format!("identity '{identity_name}'"),
+            reconnect_label: "reconnect the identity",
+            metadata_prefix: oauth_metadata_prefix(access_token_material_key),
+            oauth,
+            resolved_inputs: Some(resolved_inputs),
         }
     }
 }
@@ -162,6 +230,7 @@ struct OAuthSessionCommon {
     endpoints: ManifestOAuthEndpointUrls,
     client_id: String,
     client_secret: Option<String>,
+    client_material_persistence: OAuthClientMaterialPersistence,
 }
 
 struct AuthorizationCodeSessionConfig {
@@ -294,6 +363,7 @@ impl OAuthCredentialService {
             endpoints,
             client_id,
             client_secret,
+            client_material_persistence: request.client_material_persistence,
         };
         match flow_kind {
             ManifestOAuthFlowKind::AuthorizationCode => {
@@ -397,6 +467,7 @@ impl OAuthCredentialService {
             request.reconnect_label,
             request.metadata_prefix.as_str(),
             request.oauth,
+            request.resolved_inputs,
             credential_material,
         )?
         else {
@@ -1329,19 +1400,25 @@ fn oauth_credential_material(
     if let Some(scope) = token.scope.as_deref() {
         internal_metadata.insert(format!("{prefix}scope"), scope.to_string());
     }
-    internal_metadata.insert(format!("{prefix}client_id"), session.client_id.clone());
-    internal_metadata.insert(
-        format!("{prefix}token_url"),
-        session.endpoints.token_url.clone(),
-    );
-    if let Some(secret) = session.oauth.client.secret.as_ref() {
+    if session.client_material_persistence.stores_client_id() {
+        internal_metadata.insert(format!("{prefix}client_id"), session.client_id.clone());
+    }
+    if session.client_material_persistence == OAuthClientMaterialPersistence::All {
         internal_metadata.insert(
-            format!("{prefix}client_secret_transport"),
-            secret.transport.label().to_string(),
+            format!("{prefix}token_url"),
+            session.endpoints.token_url.clone(),
         );
     }
-    if let Some(client_secret) = session.client_secret.as_deref() {
-        internal_metadata.insert(format!("{prefix}client_secret"), client_secret.to_string());
+    if session.client_material_persistence.stores_client_secret() {
+        if let Some(secret) = session.oauth.client.secret.as_ref() {
+            internal_metadata.insert(
+                format!("{prefix}client_secret_transport"),
+                secret.transport.label().to_string(),
+            );
+        }
+        if let Some(client_secret) = session.client_secret.as_deref() {
+            internal_metadata.insert(format!("{prefix}client_secret"), client_secret.to_string());
+        }
     }
     OAuthCredentialMaterial {
         input_key: session.input_key.clone(),
@@ -1367,8 +1444,11 @@ fn oauth_refresh_config(
     reconnect_label: &str,
     metadata_prefix: &str,
     oauth: &ManifestOAuthCredentialSpec,
+    resolved_inputs: Option<&BTreeMap<String, String>>,
     material: &BTreeMap<String, String>,
 ) -> Result<Option<OAuthRefreshConfig>, AppError> {
+    let empty_resolved_inputs = BTreeMap::new();
+    let resolved_inputs = resolved_inputs.unwrap_or(&empty_resolved_inputs);
     if material
         .get(&format!("{metadata_prefix}method"))
         .map(String::as_str)
@@ -1403,22 +1483,14 @@ fn oauth_refresh_config(
             "OAuth access token for {material_label} expired and cannot be refreshed because no refresh token is stored; {reconnect_label}"
         )));
     };
-    let client_id = material
-        .get(&format!("{metadata_prefix}client_id"))
-        .filter(|value| !value.is_empty())
-        .cloned()
-        .or_else(|| oauth.client.id.default.clone())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            AppError::FailedPrecondition(format!(
-                "OAuth access token for {material_label} expired and cannot be refreshed because client ID metadata is missing"
-            ))
-        })?;
-    let token_url = material
-        .get(&format!("{metadata_prefix}token_url"))
-        .filter(|value| !value.is_empty())
-        .cloned()
-        .unwrap_or_else(|| oauth.token_url.clone());
+    let client_id = oauth_refresh_client_id(
+        material_label,
+        metadata_prefix,
+        oauth,
+        resolved_inputs,
+        material,
+    )?;
+    let token_url = oauth_refresh_token_url(metadata_prefix, oauth, resolved_inputs, material)?;
     let client_secret_transport = material
         .get(&format!("{metadata_prefix}client_secret_transport"))
         .map(|value| {
@@ -1430,10 +1502,8 @@ fn oauth_refresh_config(
         })
         .transpose()?
         .or_else(|| oauth.client.secret.as_ref().map(|secret| secret.transport));
-    let client_secret = material
-        .get(&format!("{metadata_prefix}client_secret"))
-        .filter(|value| !value.is_empty())
-        .cloned();
+    let client_secret =
+        oauth_refresh_client_secret(metadata_prefix, oauth, resolved_inputs, material);
     if client_secret_transport.is_some() && client_secret.is_none() {
         return Err(AppError::FailedPrecondition(format!(
             "OAuth access token for {material_label} expired and cannot be refreshed because client secret metadata is missing"
@@ -1446,6 +1516,77 @@ fn oauth_refresh_config(
         client_secret_transport,
         refresh_token,
     }))
+}
+
+fn oauth_refresh_client_id(
+    material_label: &str,
+    metadata_prefix: &str,
+    oauth: &ManifestOAuthCredentialSpec,
+    resolved_inputs: &BTreeMap<String, String>,
+    material: &BTreeMap<String, String>,
+) -> Result<String, AppError> {
+    material
+        .get(&format!("{metadata_prefix}client_id"))
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .or_else(|| {
+            oauth.client
+                .id
+                .input
+                .as_deref()
+                .and_then(|input| resolved_inputs.get(input))
+                .filter(|value| !value.is_empty())
+                .cloned()
+        })
+        .or_else(|| oauth.client.id.default.clone())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::FailedPrecondition(format!(
+                "OAuth access token for {material_label} expired and cannot be refreshed because client ID metadata is missing"
+            ))
+        })
+}
+
+fn oauth_refresh_token_url(
+    metadata_prefix: &str,
+    oauth: &ManifestOAuthCredentialSpec,
+    resolved_inputs: &BTreeMap<String, String>,
+    material: &BTreeMap<String, String>,
+) -> Result<String, AppError> {
+    material
+        .get(&format!("{metadata_prefix}token_url"))
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .map_or_else(
+            || {
+                oauth
+                    .endpoint_urls(resolved_inputs)
+                    .map(|endpoints| endpoints.token_url)
+                    .map_err(|error| AppError::FailedPrecondition(error.to_string()))
+            },
+            Ok,
+        )
+}
+
+fn oauth_refresh_client_secret(
+    metadata_prefix: &str,
+    oauth: &ManifestOAuthCredentialSpec,
+    resolved_inputs: &BTreeMap<String, String>,
+    material: &BTreeMap<String, String>,
+) -> Option<String> {
+    material
+        .get(&format!("{metadata_prefix}client_secret"))
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .or_else(|| {
+            oauth
+                .client
+                .secret
+                .as_ref()
+                .and_then(|secret| resolved_inputs.get(&secret.input))
+                .filter(|value| !value.is_empty())
+                .cloned()
+        })
 }
 
 fn apply_refreshed_token(
@@ -1531,10 +1672,11 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        AuthorizationCodeSessionConfig, OAuthAuthorization, OAuthCredentialMaterial,
-        OAuthCredentialService, OAuthSessionCommon, RefreshOAuthCredentialRequest,
-        StartOAuthCredentialRequest, basic_client_authorization, join_scope_values,
-        material_key_belongs_to_input, oauth_metadata_prefix, parse_token_response, pkce_challenge,
+        AuthorizationCodeSessionConfig, OAuthAuthorization, OAuthClientMaterialPersistence,
+        OAuthCredentialMaterial, OAuthCredentialService, OAuthSessionCommon,
+        RefreshOAuthCredentialRequest, StartOAuthCredentialRequest, TokenResponse,
+        basic_client_authorization, join_scope_values, material_key_belongs_to_input,
+        oauth_credential_material, oauth_metadata_prefix, parse_token_response, pkce_challenge,
         receive_callback, request_device_code,
     };
     use crate::bootstrap::AppError;
@@ -1601,6 +1743,78 @@ mod tests {
 
         assert_eq!(token.access_token, "access-token");
         assert!(token.expires_at.is_none());
+    }
+
+    #[test]
+    fn legacy_identity_client_credentials_persistence_omits_token_url() {
+        let oauth = oauth_spec(
+            "https://auth.example.test/token",
+            53682,
+            ManifestOAuthPkceMode::Disabled,
+            confidential_client(ManifestOAuthClientSecretTransport::RequestBody),
+        );
+        let material = legacy_identity_material(
+            &oauth,
+            &EMPTY_SOURCE_INPUTS,
+            "legacy-secret",
+            true,
+            "access-token",
+            "refresh-token",
+            chrono::Utc::now(),
+        );
+
+        assert_oauth_meta(
+            &material.internal_metadata,
+            "ACCESS_TOKEN",
+            &[
+                ("client_id", Some("legacy-client")),
+                ("client_secret", Some("legacy-secret")),
+                ("token_url", None),
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn mixed_identity_client_persistence_omits_spec_owned_secret_and_refreshes() {
+        let fixture = OAuthFixture::new(Some(REFRESHED_TOKEN_RESPONSE));
+        let oauth = confidential_basic_spec("{{input.TOKEN_URL}}", free_loopback_port());
+        let resolved_inputs = BTreeMap::from([
+            ("TOKEN_URL".to_string(), fixture.token_url.clone()),
+            (
+                "OAUTH_CLIENT_SECRET".to_string(),
+                "resolved-secret".to_string(),
+            ),
+        ]);
+        let material = legacy_identity_material(
+            &oauth,
+            &resolved_inputs,
+            "spec-owned-secret",
+            false,
+            "expired-token",
+            "stored-refresh-token",
+            chrono::Utc::now() - chrono::Duration::minutes(5),
+        );
+
+        assert_oauth_meta(
+            &material.internal_metadata,
+            "ACCESS_TOKEN",
+            &[
+                ("client_id", Some("legacy-client")),
+                ("client_secret", None),
+                ("client_secret_transport", None),
+            ],
+        );
+
+        let mut stored = material.internal_metadata;
+        stored.insert("ACCESS_TOKEN".to_string(), material.access_token);
+        let refreshed = refresh_identity(&oauth, &resolved_inputs, &mut stored)
+            .await
+            .expect("refresh oauth material");
+        let captured = fixture.token_server.await.expect("token server");
+
+        assert!(refreshed);
+        assert_basic_auth(&captured, "legacy-client", "resolved-secret");
+        assert_entry(&stored, "ACCESS_TOKEN", Some("refreshed-token"));
     }
 
     #[tokio::test]
@@ -1753,6 +1967,78 @@ mod tests {
         assert_basic_auth(&captured, "stored-client", "stored-secret");
         assert!(!captured.form.contains_key("client_secret"));
         assert_entry(&material, "API_TOKEN", Some("refreshed-token"));
+    }
+
+    #[tokio::test]
+    async fn confidential_identity_oauth_refresh_uses_resolved_inputs() {
+        let fixture = OAuthFixture::new(Some(REFRESHED_TOKEN_RESPONSE));
+        let oauth = oauth_spec(
+            "{{input.TOKEN_URL}}",
+            free_loopback_port(),
+            ManifestOAuthPkceMode::Disabled,
+            ManifestOAuthClientSpec {
+                id: client_id_spec(Some("default-client"), None),
+                secret: Some(ManifestOAuthClientSecretSpec {
+                    input: "OAUTH_CLIENT_SECRET".to_string(),
+                    transport: ManifestOAuthClientSecretTransport::BasicAuth,
+                }),
+            },
+        );
+        let mut material = stored_oauth_material(
+            "ACCESS_TOKEN",
+            "expired-token",
+            chrono::Duration::minutes(-5),
+            &[("refresh_token", "stored-refresh-token")],
+        );
+        let resolved_inputs = BTreeMap::from([
+            ("TOKEN_URL".to_string(), fixture.token_url.clone()),
+            (
+                "OAUTH_CLIENT_SECRET".to_string(),
+                "resolved-secret".to_string(),
+            ),
+        ]);
+
+        let refreshed = refresh_identity(&oauth, &resolved_inputs, &mut material)
+            .await
+            .expect("refresh oauth material");
+        let captured = fixture.token_server.await.expect("token server");
+
+        assert!(refreshed);
+        assert_basic_auth(&captured, "default-client", "resolved-secret");
+        assert_entry(
+            &captured.form,
+            "refresh_token",
+            Some("stored-refresh-token"),
+        );
+        assert_entry(&material, "ACCESS_TOKEN", Some("refreshed-token"));
+    }
+
+    #[tokio::test]
+    async fn confidential_legacy_identity_oauth_refresh_uses_stored_client_credentials() {
+        let fixture = OAuthFixture::new(Some(REFRESHED_TOKEN_RESPONSE));
+        let oauth = confidential_basic_spec("{{input.TOKEN_URL}}", free_loopback_port());
+        let mut material = stored_oauth_material(
+            "ACCESS_TOKEN",
+            "expired-token",
+            chrono::Duration::minutes(-5),
+            &[
+                ("refresh_token", "stored-refresh-token"),
+                ("client_id", "legacy-client"),
+                ("client_secret", "legacy-secret"),
+                ("client_secret_transport", "basic_auth"),
+            ],
+        );
+        let resolved_inputs =
+            BTreeMap::from([("TOKEN_URL".to_string(), fixture.token_url.clone())]);
+
+        let refreshed = refresh_identity(&oauth, &resolved_inputs, &mut material)
+            .await
+            .expect("refresh oauth material");
+        let captured = fixture.token_server.await.expect("token server");
+
+        assert!(refreshed);
+        assert_basic_auth(&captured, "legacy-client", "legacy-secret");
+        assert_entry(&material, "ACCESS_TOKEN", Some("refreshed-token"));
     }
 
     #[tokio::test]
@@ -2119,6 +2405,7 @@ mod tests {
                         oauth,
                         source_inputs,
                         credential_inputs,
+                        client_material_persistence: OAuthClientMaterialPersistence::All,
                     },
                     move |authorization| async move {
                         authorization_tx
@@ -2176,6 +2463,26 @@ mod tests {
             .await
     }
 
+    /// Runs an identity refresh for identity "`demo_identity`" with access token
+    /// key "`ACCESS_TOKEN`" on a default-configured service.
+    async fn refresh_identity(
+        oauth: &ManifestOAuthCredentialSpec,
+        resolved_inputs: &BTreeMap<String, String>,
+        material: &mut BTreeMap<String, String>,
+    ) -> Result<bool, AppError> {
+        OAuthCredentialService::new()
+            .refresh_if_needed(
+                RefreshOAuthCredentialRequest::for_identity(
+                    "demo_identity",
+                    "ACCESS_TOKEN",
+                    oauth,
+                    resolved_inputs,
+                ),
+                material,
+            )
+            .await
+    }
+
     /// Persisted OAuth material for `input_key`: access token, `method=oauth`
     /// marker, and an expiry offset from now, plus `extra` metadata entries
     /// (stored under the input's OAuth metadata prefix).
@@ -2200,6 +2507,41 @@ mod tests {
         material
     }
 
+    /// Builds credential material the way legacy identity flows persisted it:
+    /// input key "`ACCESS_TOKEN`" with spec-resolved client id "legacy-client",
+    /// persisting the client id and (per `store_client_secret`) the secret.
+    fn legacy_identity_material(
+        oauth: &ManifestOAuthCredentialSpec,
+        inputs: &BTreeMap<String, String>,
+        client_secret: &str,
+        store_client_secret: bool,
+        access_token: &str,
+        refresh_token: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> OAuthCredentialMaterial {
+        let endpoints = oauth.endpoint_urls(inputs).expect("oauth endpoints");
+        oauth_credential_material(
+            &OAuthSessionCommon {
+                input_key: "ACCESS_TOKEN".to_string(),
+                oauth: oauth.clone(),
+                endpoints,
+                client_id: "legacy-client".to_string(),
+                client_secret: Some(client_secret.to_string()),
+                client_material_persistence: OAuthClientMaterialPersistence::ClientCredentials {
+                    client_id: true,
+                    client_secret: store_client_secret,
+                },
+            },
+            &TokenResponse {
+                access_token: access_token.to_string(),
+                refresh_token: Some(refresh_token.to_string()),
+                token_type: None,
+                scope: None,
+                expires_at: Some(expires_at),
+            },
+        )
+    }
+
     /// Authorization-code callback session listening on `redirect_port` for
     /// state "expected-state" at path /oauth/callback.
     async fn callback_session(redirect_port: u16) -> AuthorizationCodeSessionConfig {
@@ -2222,6 +2564,7 @@ mod tests {
                 endpoints,
                 client_id: "client".to_string(),
                 client_secret: None,
+                client_material_persistence: OAuthClientMaterialPersistence::All,
             },
             state: "expected-state".to_string(),
             code_verifier: None,

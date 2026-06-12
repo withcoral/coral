@@ -17,6 +17,13 @@ use crate::workspaces::WorkspaceName;
 use self::oauth::{OAuthCredentialService, RefreshOAuthCredentialRequest};
 
 pub(crate) use store::{CredentialStore, CredentialsError};
+#[expect(
+    unused_imports,
+    reason = "re-exports consumed by the identity managers in later PRs"
+)]
+pub(crate) use store::{
+    parse_env_file, remove_file_if_exists_unlocked, render_env_file, write_file_unlocked,
+};
 
 /// Opaque credential material captured for best-effort rollback.
 #[derive(Clone)]
@@ -97,6 +104,16 @@ impl CredentialSetId {
         Self(format!("source.{}", source_name.as_str()))
     }
 
+    /// Build the identity-spec-backed credential-set id used for spec-owned
+    /// input material.
+    #[expect(
+        dead_code,
+        reason = "consumed by the identity-spec manager in a later PR"
+    )]
+    pub(crate) fn for_identity_spec(identity_spec_name: &str) -> Self {
+        Self(format!("identity-spec.{identity_spec_name}"))
+    }
+
     pub(crate) fn source_name(&self) -> Result<SourceName, AppError> {
         let Some(source_name) = self.0.strip_prefix("source.") else {
             return Err(AppError::FailedPrecondition(format!(
@@ -105,6 +122,19 @@ impl CredentialSetId {
             )));
         };
         SourceName::parse(source_name)
+    }
+
+    pub(crate) fn identity_spec_name(&self) -> Result<&str, AppError> {
+        self.0.strip_prefix("identity-spec.").ok_or_else(|| {
+            AppError::FailedPrecondition(format!(
+                "credential set '{}' is not identity-spec-backed",
+                self.0
+            ))
+        })
+    }
+
+    pub(crate) fn is_identity_spec_backed(&self) -> bool {
+        self.0.starts_with("identity-spec.")
     }
 }
 

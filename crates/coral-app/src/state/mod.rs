@@ -9,3 +9,8 @@ pub(crate) use config::{
     set_raw_feature_override,
 };
 pub(crate) use layout::AppStateLayout;
+#[expect(
+    unused_imports,
+    reason = "re-export consumed by the identity-spec manager in a later PR"
+)]
+pub(crate) use layout::INSTALLED_IDENTITY_FILE_NAME;

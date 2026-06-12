@@ -110,6 +110,14 @@ trait CredentialMaterialBackend: Send + Sync {
         material: Option<&EncodedCredentialMaterial>,
     ) -> Result<(), CredentialsError>;
 
+    fn write_unlocked(
+        &self,
+        set: &CredentialSetRef<'_>,
+        material: Option<&EncodedCredentialMaterial>,
+    ) -> Result<(), CredentialsError> {
+        self.write(set, material)
+    }
+
     fn snapshot(
         &self,
         set: &CredentialSetRef<'_>,
@@ -207,6 +215,37 @@ impl CredentialStore {
         };
         contextualize_storage_error(
             backend.write(&set, encoded.as_ref()),
+            "writing",
+            credential_set_id,
+            storage,
+        )?;
+        Ok(())
+    }
+
+    #[expect(
+        dead_code,
+        reason = "consumed by the identity-spec manager in a later PR"
+    )]
+    pub(crate) fn replace_material_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
+        values: &BTreeMap<String, String>,
+    ) -> Result<(), AppError> {
+        let set = CredentialSetRef {
+            workspace_name,
+            credential_set_id,
+        };
+        let backend = self.backend(storage);
+        tracing::trace!(%credential_set_id, %storage, "replacing credential material without taking a state lock");
+        let encoded = if values.is_empty() {
+            None
+        } else {
+            Some(encode_values(storage, values)?)
+        };
+        contextualize_storage_error(
+            backend.write_unlocked(&set, encoded.as_ref()),
             "writing",
             credential_set_id,
             storage,
@@ -328,6 +367,30 @@ impl CredentialStore {
         Ok(())
     }
 
+    #[expect(
+        dead_code,
+        reason = "consumed by the identity-spec manager in a later PR"
+    )]
+    pub(crate) fn remove_material_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
+    ) -> Result<(), AppError> {
+        let set = CredentialSetRef {
+            workspace_name,
+            credential_set_id,
+        };
+        tracing::trace!(%credential_set_id, %storage, "removing credential material without taking a state lock");
+        contextualize_storage_error(
+            self.backend(storage).write_unlocked(&set, None),
+            "removing",
+            credential_set_id,
+            storage,
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn default_write_storage(&self) -> Result<CredentialStorageKind, CredentialsError> {
         match self.preference {
             CredentialStoragePreference::File => Ok(CredentialStorageKind::File),
@@ -375,7 +438,7 @@ fn keychain_route_unavailable(
 ) -> CredentialsError {
     match error {
         CredentialsError::Unavailable(detail) => CredentialsError::Unavailable(format!(
-            "source credential set '{credential_set_id}' is configured for keychain storage, \
+            "credential set '{credential_set_id}' is configured for keychain storage, \
              but keychain is unavailable while {operation}: {detail}"
         )),
         error => error,
@@ -488,6 +551,13 @@ impl FileCredentialBackend {
         &self,
         set: &CredentialSetRef<'_>,
     ) -> Result<std::path::PathBuf, CredentialsError> {
+        if set.credential_set_id.is_identity_spec_backed() {
+            let identity_spec_name = set
+                .credential_set_id
+                .identity_spec_name()
+                .map_err(|error| CredentialsError::Parse(error.to_string()))?;
+            return Ok(self.layout.identity_spec_material_file(identity_spec_name));
+        }
         let source_name = set
             .credential_set_id
             .source_name()
@@ -516,10 +586,16 @@ impl CredentialMaterialBackend for FileCredentialBackend {
     ) -> Result<(), CredentialsError> {
         let path = self.material_file(set)?;
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
-        match material {
-            Some(material) => write_file_unlocked(&path, material.bytes()),
-            None => remove_file_if_exists_unlocked(&path).map_err(Into::into),
-        }
+        Self::write_material_file_unlocked(path.as_path(), material)
+    }
+
+    fn write_unlocked(
+        &self,
+        set: &CredentialSetRef<'_>,
+        material: Option<&EncodedCredentialMaterial>,
+    ) -> Result<(), CredentialsError> {
+        let path = self.material_file(set)?;
+        Self::write_material_file_unlocked(path.as_path(), material)
     }
 
     fn snapshot(
@@ -556,6 +632,18 @@ impl CredentialMaterialBackend for FileCredentialBackend {
         match snapshot.material() {
             Some(bytes) => write_file_unlocked(&path, bytes),
             None => remove_file_if_exists_unlocked(&path).map_err(Into::into),
+        }
+    }
+}
+
+impl FileCredentialBackend {
+    fn write_material_file_unlocked(
+        path: &Path,
+        material: Option<&EncodedCredentialMaterial>,
+    ) -> Result<(), CredentialsError> {
+        match material {
+            Some(material) => write_file_unlocked(path, material.bytes()),
+            None => remove_file_if_exists_unlocked(path).map_err(Into::into),
         }
     }
 }
@@ -749,6 +837,15 @@ struct KeychainEntryAddress {
 
 impl KeychainEntryAddress {
     fn from_set(config_namespace: &CredentialConfigNamespace, set: &CredentialSetRef<'_>) -> Self {
+        if set.credential_set_id.is_identity_spec_backed() {
+            return Self {
+                service: format!(
+                    "com.withcoral.coral/{}/identity-specs",
+                    config_namespace.as_str()
+                ),
+                account: set.credential_set_id.to_string(),
+            };
+        }
         Self {
             service: format!(
                 "com.withcoral.coral/{}/workspace/{}",
@@ -924,14 +1021,14 @@ fn save_values_unlocked(
     write_file_unlocked(path, render_env_file(values).as_bytes())
 }
 
-fn write_file_unlocked(path: &Path, bytes: &[u8]) -> Result<(), CredentialsError> {
+pub(crate) fn write_file_unlocked(path: &Path, bytes: &[u8]) -> Result<(), CredentialsError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     storage_fs::ensure_dir(parent)?;
     storage_fs::write_atomic(path, bytes)?;
     Ok(())
 }
 
-fn render_env_file(values: &BTreeMap<String, String>) -> String {
+pub(crate) fn render_env_file(values: &BTreeMap<String, String>) -> String {
     let mut output = String::new();
     for (env_var, value) in values {
         output.push_str(env_var);
@@ -942,7 +1039,7 @@ fn render_env_file(values: &BTreeMap<String, String>) -> String {
     output
 }
 
-fn remove_file_if_exists_unlocked(path: &Path) -> Result<(), io::Error> {
+pub(crate) fn remove_file_if_exists_unlocked(path: &Path) -> Result<(), io::Error> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -950,7 +1047,7 @@ fn remove_file_if_exists_unlocked(path: &Path) -> Result<(), io::Error> {
     }
 }
 
-fn parse_env_file(raw: &str) -> Result<BTreeMap<String, String>, CredentialsError> {
+pub(crate) fn parse_env_file(raw: &str) -> Result<BTreeMap<String, String>, CredentialsError> {
     let mut values = BTreeMap::new();
     for (index, line) in raw.lines().enumerate() {
         let line_number = index + 1;
