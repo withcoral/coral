@@ -118,28 +118,8 @@ impl ResultHandles {
     }
 
     pub(crate) fn sql_value(&self, result: CollectedQueryResult) -> Result<Value, tonic::Status> {
-        // JSON object rows collapse duplicate column names, so do not render
-        // any rows for these results. Require aliases instead of returning
-        // corrupt data or bypassing the large-result policy.
         if has_duplicate_column_names(&result) {
-            let columns = schema_summary(&result);
-            telemetry::record_sql_result(
-                &tracing::Span::current(),
-                "duplicate_named_metadata",
-                result.row_count(),
-                columns.len(),
-                0,
-                None,
-                true,
-            );
-            return serialize_tool_value(SqlDuplicateColumnsValue {
-                duplicate_column_names: true,
-                rows_omitted: true,
-                row_count: result.row_count(),
-                column_count: columns.len(),
-                columns,
-                warning: DUPLICATE_COLUMN_NAMES_WARNING,
-            });
+            return duplicate_column_sql_value(&result);
         }
 
         if let Some(value) = inline_sql_value_if_small(&result)? {
@@ -302,6 +282,30 @@ fn inline_sql_value_if_small(
     }
 }
 
+fn duplicate_column_sql_value(result: &CollectedQueryResult) -> Result<Value, tonic::Status> {
+    // JSON object rows collapse duplicate column names, so do not render any
+    // rows for these results. Require aliases instead of returning corrupt data
+    // or bypassing the large-result policy.
+    let columns = schema_summary(result);
+    telemetry::record_sql_result(
+        &tracing::Span::current(),
+        "duplicate_named_metadata",
+        result.row_count(),
+        columns.len(),
+        0,
+        None,
+        true,
+    );
+    serialize_tool_value(SqlDuplicateColumnsValue {
+        duplicate_column_names: true,
+        rows_omitted: true,
+        row_count: result.row_count(),
+        column_count: columns.len(),
+        columns,
+        warning: DUPLICATE_COLUMN_NAMES_WARNING,
+    })
+}
+
 fn preview_page(result: &CollectedQueryResult) -> Result<ResultPreviewValue, tonic::Status> {
     let page = slice_result(
         result,
@@ -423,6 +427,11 @@ fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::indexing_slicing,
+        reason = "test code: assertion-style JSON indexing keeps response shape checks readable"
+    )]
+
     use std::sync::Arc;
 
     use arrow::{
