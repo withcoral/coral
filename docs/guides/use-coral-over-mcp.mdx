@@ -22,7 +22,7 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Resource | `coral://guide`  | Database workflow guide for agents                     |
 | Resource | `coral://tables` | JSON summaries of database tables and required filters  |
 
-Benchmark episode runs can also expose an experimental `search_trajectory` tool. It searches local trajectory memory for an exact-intent golden SQL path and returns procedure steps only, not cached answer rows.
+Benchmark episode runs can also expose an experimental `search_trajectory` tool. It searches local trajectory memory for an exact-intent golden SQL path that passes query and ordered-path consensus gates, then returns procedure steps only, not cached answer rows.
 
 Clients see the same database catalog and query results as `coral sql`. You set up sources with the CLI, then agents query Coral over MCP as SQL schemas and tables.
 

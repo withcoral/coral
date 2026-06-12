@@ -479,6 +479,7 @@ impl TrajectoryStore {
                 WHERE workspace = ?1
                   AND intent = ?2
                   AND query_consensus >= ?3
+                  AND path_consensus >= ?3
                 ORDER BY query_consensus DESC, path_consensus DESC, step_count ASC, path_key ASC
                 LIMIT 1
                 ",
@@ -929,6 +930,67 @@ mod tests {
                 .expect("retrieve")
                 .is_none(),
             "same query in another intent must not borrow consensus"
+        );
+    }
+
+    #[test]
+    fn exact_intent_retrieval_requires_path_consensus() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace = workspace_name("acme");
+        let mut store =
+            TrajectoryStore::open(&layout(&temp).trajectory_memory_db(&workspace)).expect("store");
+        let mut steps = vec![
+            observed(
+                &workspace,
+                "ep_1",
+                "find onboarding",
+                "a",
+                "SELECT shared",
+                1,
+                StoredTraceStatus::Ok,
+            ),
+            observed(
+                &workspace,
+                "ep_1",
+                "find onboarding",
+                "b",
+                "SELECT branch one",
+                2,
+                StoredTraceStatus::Ok,
+            ),
+            observed(
+                &workspace,
+                "ep_2",
+                "find onboarding",
+                "c",
+                "SELECT shared",
+                3,
+                StoredTraceStatus::Ok,
+            ),
+            observed(
+                &workspace,
+                "ep_2",
+                "find onboarding",
+                "d",
+                "SELECT branch two",
+                4,
+                StoredTraceStatus::Ok,
+            ),
+        ];
+        assign_step_indices(&mut steps);
+        store
+            .replace_workspace_steps(workspace.as_str(), &steps)
+            .expect("replace steps");
+        store
+            .rebuild_exact_intent_index(workspace.as_str())
+            .expect("rebuild index");
+
+        let hit = store
+            .retrieve_exact(workspace.as_str(), "find onboarding", 2)
+            .expect("retrieve");
+        assert!(
+            hit.is_none(),
+            "shared query consensus without exact path consensus is not enough"
         );
     }
 

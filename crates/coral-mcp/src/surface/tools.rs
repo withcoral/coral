@@ -313,7 +313,7 @@ pub(crate) fn search_trajectory_tool() -> Tool {
                 },
                 "min_query_consensus": {
                     "type": "integer",
-                    "description": "Minimum number of episodes that must agree on at least one query shape. Defaults to 2.",
+                    "description": "Minimum number of episodes that must agree on at least one query shape and on the exact ordered path. Defaults to 2.",
                     "minimum": 1,
                     "maximum": u32::MAX,
                     "default": 2

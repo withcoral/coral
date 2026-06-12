@@ -51,8 +51,9 @@ message SearchTrajectoryRequest {
   Workspace workspace = 1;
   // Natural-language task intent to match exactly.
   string intent = 2;
-  // Minimum number of episodes that must agree on at least one query shape.
-  // Defaults to the server's conservative threshold when unset/zero.
+  // Minimum number of episodes that must agree on at least one query shape and
+  // on the exact ordered path. Defaults to the server's conservative threshold
+  // when unset/zero.
   uint32 min_query_consensus = 3;
 }
 

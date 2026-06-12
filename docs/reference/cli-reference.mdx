@@ -241,7 +241,7 @@ This server exposes:
 | Resource | `coral://guide`  | Database workflow guide for agents |
 | Resource | `coral://tables` | Database table summaries         |
 
-Benchmark episode mode can additionally expose `search_trajectory`, an experimental local trajectory-memory lookup that returns prior exact-intent SQL procedure steps without returning cached rows.
+Benchmark episode mode can additionally expose `search_trajectory`, an experimental local trajectory-memory lookup that returns prior exact-intent SQL procedure steps only after query and ordered-path consensus pass. It never returns cached rows.
 
 ## `coral completion <SHELL>`
 
