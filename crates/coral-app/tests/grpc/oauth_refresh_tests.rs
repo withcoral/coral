@@ -23,6 +23,9 @@ use tonic::{Code, Request};
 
 use crate::harness::{GrpcHarness, fixture_manifest_yaml, source_dir};
 
+const ASYNC_TEST_TIMEOUT: Duration = Duration::from_secs(30);
+const BLOCKED_IMPORT_CHECK: Duration = Duration::from_millis(200);
+
 #[tokio::test]
 async fn query_refreshes_expired_oauth_access_token_at_request_time() {
     let fixture = RefreshingHttpFixture::new().await;
@@ -395,7 +398,7 @@ async fn manual_credential_replacement_waits_for_in_flight_refresh() {
     let mut source_client = harness.source_client();
     let import_manifest_yaml = oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url);
     let import_base_url = fixture.base_url.clone();
-    let import = tokio::spawn(async move {
+    let mut import = tokio::spawn(async move {
         let mut stream = source_client
             .import_source(Request::new(ImportSourceRequest {
                 workspace: Some(default_workspace()),
@@ -428,15 +431,22 @@ async fn manual_credential_replacement_waits_for_in_flight_refresh() {
             })
             .expect("import source response")
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
-        !import.is_finished(),
+        tokio::time::timeout(BLOCKED_IMPORT_CHECK, &mut import)
+            .await
+            .is_err(),
         "manual credential replacement should wait for the in-flight refresh"
     );
     fixture.allow_token_response();
 
-    let rows = query.await.expect("query task");
-    import.await.expect("import task");
+    let rows = tokio::time::timeout(ASYNC_TEST_TIMEOUT, query)
+        .await
+        .expect("query should complete after token response is released")
+        .expect("query task");
+    tokio::time::timeout(ASYNC_TEST_TIMEOUT, import)
+        .await
+        .expect("manual replacement should complete after refresh lock is released")
+        .expect("import task");
 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], "ok");
@@ -804,7 +814,9 @@ impl RefreshingHttpFixture {
     }
 
     async fn wait_for_token_request(&self) {
-        self.token_request_seen.notified().await;
+        tokio::time::timeout(ASYNC_TEST_TIMEOUT, self.token_request_seen.notified())
+            .await
+            .expect("query should request an OAuth token refresh");
     }
 
     fn allow_token_response(&self) {
