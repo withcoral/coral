@@ -3,13 +3,14 @@
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListSourcesRequest, PaginationRequest, SearchCatalogRequest, Source, SubmitFeedbackRequest,
-    TableSummary as ProtoTableSummary, catalog_item,
+    ListSourcesRequest, PaginationRequest, SearchCatalogRequest, SearchTrajectoryRequest,
+    SearchTrajectoryResponse, Source, SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
+    TrajectoryPath as ProtoTrajectoryPath, catalog_item,
 };
 use std::future::Future;
 
 use coral_client::{
-    AppClient, CatalogClient, FeedbackClient, QueryClient, SourceClient,
+    AppClient, CatalogClient, EpisodeClient, FeedbackClient, QueryClient, SourceClient,
     batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
     with_episode_id as scoped_episode_id,
 };
@@ -33,9 +34,9 @@ use crate::{
         describe_table_value, feedback_tool, guide_resource, guide_resource_content,
         initial_instructions, list_catalog_arguments, list_catalog_tool, list_catalog_value,
         list_columns_arguments, list_columns_tool, list_columns_value, required_string_argument,
-        search_catalog_arguments, search_catalog_tool, search_catalog_value, sql_tool,
-        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
-        tool_error_result,
+        search_catalog_arguments, search_catalog_tool, search_catalog_value,
+        search_trajectory_arguments, search_trajectory_tool, sql_tool, status_to_error_data,
+        tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -66,6 +67,30 @@ struct FeedbackStoredValue {
     message: &'static str,
 }
 
+#[derive(Serialize)]
+struct TrajectorySearchValue {
+    matched: bool,
+    path: Option<TrajectoryPathValue>,
+}
+
+#[derive(Serialize)]
+struct TrajectoryPathValue {
+    workspace: String,
+    intent: String,
+    path_key: String,
+    steps: Vec<TrajectoryStepValue>,
+    relations: Vec<String>,
+    query_consensus: u32,
+    path_consensus: u32,
+    episode_count: u32,
+}
+
+#[derive(Serialize)]
+struct TrajectoryStepValue {
+    step_index: usize,
+    sql: String,
+}
+
 fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
     serde_json::to_value(value).map_err(|error| tonic::Status::internal(error.to_string()))
 }
@@ -84,6 +109,7 @@ pub(crate) struct CoralMcpServer {
     source: SourceClient,
     catalog: CatalogClient,
     query: QueryClient,
+    episode: EpisodeClient,
     feedback: FeedbackClient,
     options: McpOptions,
 }
@@ -94,6 +120,7 @@ impl CoralMcpServer {
             source: app.source_client(),
             catalog: app.catalog_client(),
             query: app.query_client(),
+            episode: app.episode_client(),
             feedback: app.feedback_client(),
             options,
         }
@@ -276,6 +303,31 @@ impl CoralMcpServer {
         })
     }
 
+    async fn search_trajectory_value(
+        &self,
+        arguments: crate::surface::SearchTrajectoryArguments,
+    ) -> Result<Value, tonic::Status> {
+        let intent = match arguments.intent {
+            Some(intent) => intent,
+            None => self
+                .options
+                .episode
+                .as_ref()
+                .map(|episode| episode.intent.clone())
+                .ok_or_else(|| tonic::Status::invalid_argument("missing current episode intent"))?,
+        };
+        let mut episode_client = self.episode.clone();
+        let response = episode_client
+            .search_trajectory(Request::new(SearchTrajectoryRequest {
+                workspace: Some(default_workspace()),
+                intent,
+                min_query_consensus: arguments.min_query_consensus,
+            }))
+            .await?
+            .into_inner();
+        serialize_tool_value(trajectory_search_value(response))
+    }
+
     async fn search_catalog_tool_result(
         &self,
         request_arguments: Option<&Map<String, Value>>,
@@ -380,6 +432,13 @@ impl CoralMcpServer {
             "list_columns" => {
                 self.list_columns_tool_result(request.arguments.as_ref())
                     .await
+            }
+            "search_trajectory" if self.options.episode.is_some() => {
+                let arguments = search_trajectory_arguments(request.arguments.as_ref())?;
+                Ok(ToolCallOutcome::from_value_result(
+                    "Trajectory search",
+                    self.search_trajectory_value(arguments).await,
+                ))
             }
             "feedback" if self.options.feedback_enabled => {
                 let trying_to_do =
@@ -489,6 +548,9 @@ impl ServerHandler for CoralMcpServer {
                 describe_table_tool(),
                 list_columns_tool(),
             ];
+            if self.options.episode.is_some() {
+                tools.push(search_trajectory_tool());
+            }
             if self.options.feedback_enabled {
                 tools.push(feedback_tool());
             }
@@ -601,6 +663,34 @@ fn catalog_item_kind_from_tool(kind: Option<CatalogToolKind>) -> ProtoCatalogIte
         None => CATALOG_KIND_ALL,
         Some(CatalogToolKind::Table) => CATALOG_KIND_TABLE,
         Some(CatalogToolKind::TableFunction) => CATALOG_KIND_TABLE_FUNCTION,
+    }
+}
+
+fn trajectory_search_value(response: SearchTrajectoryResponse) -> TrajectorySearchValue {
+    TrajectorySearchValue {
+        matched: response.matched,
+        path: response.path.map(trajectory_path_value),
+    }
+}
+
+fn trajectory_path_value(path: ProtoTrajectoryPath) -> TrajectoryPathValue {
+    TrajectoryPathValue {
+        workspace: path.workspace,
+        intent: path.intent,
+        path_key: path.path_key,
+        steps: path
+            .steps
+            .into_iter()
+            .enumerate()
+            .map(|(index, step)| TrajectoryStepValue {
+                step_index: index + 1,
+                sql: step.sql,
+            })
+            .collect(),
+        relations: path.relations,
+        query_consensus: path.query_consensus,
+        path_consensus: path.path_consensus,
+        episode_count: path.episode_count,
     }
 }
 

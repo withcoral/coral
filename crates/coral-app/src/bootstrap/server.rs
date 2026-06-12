@@ -315,6 +315,7 @@ impl ServerBuilder {
             None
         };
         start_server(
+            layout,
             source_manager,
             query_manager,
             feedback_manager,
@@ -412,6 +413,7 @@ impl Drop for RunningServer {
 }
 
 async fn start_server(
+    layout: AppStateLayout,
     source_manager: SourceManager,
     query_manager: QueryManager,
     feedback_manager: FeedbackManager,
@@ -421,9 +423,10 @@ async fn start_server(
 ) -> Result<RunningServer, AppError> {
     let source_service = SourceService::new(source_manager, query_manager.clone());
     let catalog_service = CatalogService::new(query_manager.clone());
-    let query_service = QueryService::new(query_manager);
+    let query_service = QueryService::new(query_manager.clone());
     let feedback_service = FeedbackService::new(feedback_manager);
-    let episode_service = EpisodeService::new(episode_store);
+    let episode_service = EpisodeService::new(episode_store)
+        .with_trajectory_memory(TrajectoryMemory::new(layout), query_manager);
     let mut routes = Routes::default()
         .add_service(GrpcMethodAnnotatedService::new(SourceServiceServer::new(
             source_service,
@@ -761,12 +764,13 @@ enabled = false
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
+            layout,
             source_manager,
             query_manager,
             feedback_manager,
@@ -1144,10 +1148,11 @@ tables:
                 home_dir: Some(fake_home.clone()),
                 ..QueryRuntimeContext::default()
             },
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let running = start_server(
+            layout,
             source_manager,
             query_manager,
             feedback_manager,
@@ -1245,10 +1250,11 @@ tables:
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let running = start_server(
+            layout,
             source_manager,
             query_manager,
             feedback_manager,
@@ -1346,10 +1352,11 @@ tables:
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let running = start_server(
+            layout,
             source_manager,
             query_manager,
             feedback_manager,

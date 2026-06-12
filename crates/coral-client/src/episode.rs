@@ -51,7 +51,7 @@ where
 /// [`with_episode_id`]) as the `coral-episode-id` request metadata.
 ///
 /// A no-op when no episode is in scope, or when the active id fails the
-/// `coral-episode-id` contract ([`is_valid_episode_id`]) — episode attribution
+/// `coral-episode-id` contract (`is_valid_episode_id`) — episode attribution
 /// is best-effort and never fails a call.
 #[derive(Clone)]
 pub struct EpisodeIdInterceptor;

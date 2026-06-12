@@ -9,23 +9,46 @@
 //! `episodes` feature gates the consumer that calls it.
 
 use coral_api::v1::episode_service_server::EpisodeService as EpisodeServiceApi;
-use coral_api::v1::{OpenEpisodeRequest, OpenEpisodeResponse};
+use coral_api::v1::{
+    OpenEpisodeRequest, OpenEpisodeResponse, SearchTrajectoryRequest, SearchTrajectoryResponse,
+    TrajectoryPath, TrajectoryStep,
+};
 use tonic::{Request, Response, Status};
 use tracing::warn;
 
 use super::EpisodeId;
 use super::store::{Episode, EpisodeStore, EpisodeStoreError, now_unix_nanos};
 use crate::bootstrap::app_status;
+use crate::query::manager::QueryManager;
+use crate::trajectory::{
+    DEFAULT_MIN_QUERY_CONSENSUS, GoldenPath, TrajectoryError, TrajectoryMemory,
+};
 use crate::transport::{grpc_span, instrument_grpc, workspace_name_from_proto};
 
 #[derive(Clone)]
 pub(crate) struct EpisodeService {
     store: EpisodeStore,
+    trajectory_memory: Option<TrajectoryMemory>,
+    query_manager: Option<QueryManager>,
 }
 
 impl EpisodeService {
     pub(crate) fn new(store: EpisodeStore) -> Self {
-        Self { store }
+        Self {
+            store,
+            trajectory_memory: None,
+            query_manager: None,
+        }
+    }
+
+    pub(crate) fn with_trajectory_memory(
+        mut self,
+        trajectory_memory: TrajectoryMemory,
+        query_manager: QueryManager,
+    ) -> Self {
+        self.trajectory_memory = Some(trajectory_memory);
+        self.query_manager = Some(query_manager);
+        self
     }
 }
 
@@ -62,6 +85,45 @@ impl EpisodeServiceApi for EpisodeService {
         })
         .await
     }
+
+    async fn search_trajectory(
+        &self,
+        request: Request<SearchTrajectoryRequest>,
+    ) -> Result<Response<SearchTrajectoryResponse>, Status> {
+        let span = grpc_span(&request);
+        let trajectory_memory = self.trajectory_memory.clone();
+        let query_manager = self.query_manager.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace = workspace_name_from_proto(request.workspace.as_ref())?;
+            let intent = non_blank("intent", &request.intent)?;
+            let min_query_consensus = if request.min_query_consensus == 0 {
+                DEFAULT_MIN_QUERY_CONSENSUS
+            } else {
+                request.min_query_consensus
+            };
+            let (Some(trajectory_memory), Some(query_manager)) = (trajectory_memory, query_manager)
+            else {
+                return Err(Status::failed_precondition(
+                    "trajectory memory is not configured",
+                ));
+            };
+            let path = trajectory_memory
+                .rebuild_and_retrieve_exact(
+                    &query_manager,
+                    &workspace,
+                    &intent,
+                    min_query_consensus,
+                )
+                .await
+                .map_err(|error| trajectory_status(&error))?;
+            Ok(Response::new(SearchTrajectoryResponse {
+                matched: path.is_some(),
+                path: path.map(trajectory_path_to_proto),
+            }))
+        })
+        .await
+    }
 }
 
 /// Trims `value` and rejects a blank result with `INVALID_ARGUMENT`.
@@ -89,6 +151,28 @@ fn open_episode_status(error: &EpisodeStoreError) -> Status {
             Status::internal("failed to persist episode")
         }
     }
+}
+
+fn trajectory_path_to_proto(path: GoldenPath) -> TrajectoryPath {
+    TrajectoryPath {
+        workspace: path.workspace,
+        intent: path.intent,
+        path_key: path.path_key,
+        steps: path
+            .steps
+            .into_iter()
+            .map(|sql| TrajectoryStep { sql })
+            .collect(),
+        relations: path.relations,
+        query_consensus: path.query_consensus,
+        path_consensus: path.path_consensus,
+        episode_count: path.episode_count,
+    }
+}
+
+fn trajectory_status(error: &TrajectoryError) -> Status {
+    warn!(%error, "trajectory lookup failed");
+    Status::internal("trajectory lookup failed")
 }
 
 #[cfg(test)]

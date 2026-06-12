@@ -22,7 +22,7 @@ use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use tonic::Request;
 
-use crate::{CoralMcpServer, McpOptions};
+use crate::{CoralMcpServer, McpEpisodeOptions, McpOptions};
 
 fn write_fixture_manifest(root: &Path) -> PathBuf {
     let source_dir = root.join("fixture-source");
@@ -1010,6 +1010,72 @@ async fn mcp_feedback_tool_is_disabled_by_default() {
             .join("coral-config/workspaces/default/feedback/reports.jsonl")
             .exists()
     );
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_trajectory_search_tool_is_episode_gated() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+
+    let search = client
+        .call_tool(CallToolRequestParams::new("search_trajectory"))
+        .await
+        .expect_err("trajectory search should not be exposed by default");
+    assert!(
+        search
+            .to_string()
+            .contains("tool 'search_trajectory' not found")
+    );
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_trajectory_search_uses_current_episode_intent() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            episode: Some(McpEpisodeOptions {
+                episode_id: "episode_1".to_string(),
+                intent: "find the onboarding form".to_string(),
+                parent_episode_id: None,
+            }),
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec![
+            "sql",
+            "list_catalog",
+            "search_catalog",
+            "describe_table",
+            "list_columns",
+            "search_trajectory"
+        ]
+    );
+    let search_tool = tool_by_name(&tools, "search_trajectory");
+
+    let search = client
+        .call_tool(CallToolRequestParams::new("search_trajectory"))
+        .await
+        .expect("trajectory search")
+        .structured_content
+        .expect("structured trajectory search");
+    assert_eq!(search["matched"], false);
+    assert!(search["path"].is_null());
+    assert_matches_output_schema(search_tool, &search);
 
     session.shutdown().await;
 }

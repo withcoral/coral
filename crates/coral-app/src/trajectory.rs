@@ -19,7 +19,7 @@ use crate::telemetry::local_store::{
 use crate::workspaces::WorkspaceName;
 
 const TRACE_PAGE_SIZE: usize = 1_000;
-const DEFAULT_MIN_QUERY_CONSENSUS: u32 = 2;
+pub(crate) const DEFAULT_MIN_QUERY_CONSENSUS: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TrajectoryError {
@@ -160,6 +160,29 @@ impl TrajectoryMemory {
             store.record_shadow_lookup(workspace_name.as_str(), &intent, path.as_ref())?;
         }
         Ok(())
+    }
+
+    /// Rebuilds and retrieves the strongest exact-intent path for one workspace.
+    pub(crate) async fn rebuild_and_retrieve_exact(
+        &self,
+        query_manager: &QueryManager,
+        workspace_name: &WorkspaceName,
+        intent: &str,
+        min_query_consensus: u32,
+    ) -> Result<Option<GoldenPath>, TrajectoryError> {
+        self.rebuild_workspace(query_manager, workspace_name)
+            .await?;
+        self.retrieve_exact(workspace_name, intent, min_query_consensus)
+    }
+
+    fn retrieve_exact(
+        &self,
+        workspace_name: &WorkspaceName,
+        intent: &str,
+        min_query_consensus: u32,
+    ) -> Result<Option<GoldenPath>, TrajectoryError> {
+        let store = TrajectoryStore::open(&self.layout.trajectory_memory_db(workspace_name))?;
+        store.retrieve_exact(workspace_name.as_str(), intent, min_query_consensus)
     }
 }
 

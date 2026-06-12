@@ -241,6 +241,8 @@ This server exposes:
 | Resource | `coral://guide`  | Database workflow guide for agents |
 | Resource | `coral://tables` | Database table summaries         |
 
+Benchmark episode mode can additionally expose `search_trajectory`, an experimental local trajectory-memory lookup that returns prior exact-intent SQL procedure steps without returning cached rows.
+
 ## `coral completion <SHELL>`
 
 Generate a shell completion script and write it to standard output. Supported shells are `bash`, `zsh`, `fish`, `elvish`, and `powershell`.

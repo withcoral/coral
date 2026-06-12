@@ -15,6 +15,10 @@ service EpisodeService {
   // `{ episode_id, intent, parent_episode_id }`; the same `episode_id` with a
   // different intent/parent is an error.
   rpc OpenEpisode(OpenEpisodeRequest) returns (OpenEpisodeResponse);
+  // Rebuilds the local exact-intent trajectory index and returns the strongest
+  // matching golden path for one intent. Experimental and intended for local
+  // benchmark validation; returns procedure steps only, never result rows.
+  rpc SearchTrajectory(SearchTrajectoryRequest) returns (SearchTrajectoryResponse);
 }
 
 // Registers an episode: its intent (and optional parent) keyed by a
@@ -40,3 +44,48 @@ message OpenEpisodeRequest {
 
 // Acknowledgement; intentionally empty for v1.
 message OpenEpisodeResponse {}
+
+// Exact-intent trajectory lookup request.
+message SearchTrajectoryRequest {
+  // Workspace that scopes episode, trace, and trajectory-memory state.
+  Workspace workspace = 1;
+  // Natural-language task intent to match exactly.
+  string intent = 2;
+  // Minimum number of episodes that must agree on at least one query shape.
+  // Defaults to the server's conservative threshold when unset/zero.
+  uint32 min_query_consensus = 3;
+}
+
+// One golden-path SQL step. This is a procedure step, not cached output.
+message TrajectoryStep {
+  // One read-only SQL statement previously observed for this intent.
+  string sql = 1;
+}
+
+// Golden path distilled from prior episodes with the same exact intent.
+message TrajectoryPath {
+  // Workspace that scoped the indexed episodes and traces.
+  string workspace = 1;
+  // Exact natural-language intent for this golden path.
+  string intent = 2;
+  // Stable hash for the ordered exact-key path.
+  string path_key = 3;
+  // Ordered SQL procedure steps to rerun.
+  repeated TrajectoryStep steps = 4;
+  // SQL relations referenced by the golden path.
+  repeated string relations = 5;
+  // Number of episodes agreeing on at least one query shape for this intent.
+  uint32 query_consensus = 6;
+  // Number of episodes agreeing on this exact ordered path.
+  uint32 path_consensus = 7;
+  // Number of episodes indexed for this exact intent.
+  uint32 episode_count = 8;
+}
+
+// Exact-intent trajectory lookup response.
+message SearchTrajectoryResponse {
+  // True when `path` passed the consensus gate.
+  bool matched = 1;
+  // Present only when `matched` is true.
+  TrajectoryPath path = 2;
+}

@@ -42,6 +42,11 @@ pub(crate) struct ListColumnsArguments {
     pub(crate) pagination: Pagination,
 }
 
+pub(crate) struct SearchTrajectoryArguments {
+    pub(crate) intent: Option<String>,
+    pub(crate) min_query_consensus: u32,
+}
+
 pub(crate) fn sql_tool(visible_table_count: usize) -> Tool {
     Tool::new(
         "sql",
@@ -295,6 +300,37 @@ pub(crate) fn feedback_tool() -> Tool {
     )
 }
 
+pub(crate) fn search_trajectory_tool() -> Tool {
+    Tool::new(
+        "search_trajectory",
+        "Search local trajectory memory for a prior exact-intent golden SQL path. Returns procedure steps only; it does not execute SQL or return cached result rows.",
+        json_object_schema(&json!({
+            "type": "object",
+            "properties": {
+                "intent": {
+                    "type": "string",
+                    "description": "Optional exact task intent to search. Omit to use the current benchmark episode intent."
+                },
+                "min_query_consensus": {
+                    "type": "integer",
+                    "description": "Minimum number of episodes that must agree on at least one query shape. Defaults to 2.",
+                    "minimum": 1,
+                    "maximum": u32::MAX,
+                    "default": 2
+                }
+            }
+        })),
+    )
+    .with_raw_output_schema(search_trajectory_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("Search Trajectory")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+    )
+}
+
 pub(crate) fn required_string_argument(
     arguments: Option<&Map<String, Value>>,
     key: &str,
@@ -367,6 +403,15 @@ pub(crate) fn list_columns_arguments(
         ignore_case: optional_bool_argument(arguments, "ignore_case", true)?,
         required_only: optional_bool_argument(arguments, "required_only", false)?,
         pagination: parse_pagination(arguments)?,
+    })
+}
+
+pub(crate) fn search_trajectory_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<SearchTrajectoryArguments, ErrorData> {
+    Ok(SearchTrajectoryArguments {
+        intent: optional_string_argument(arguments, "intent")?,
+        min_query_consensus: optional_u32_argument(arguments, "min_query_consensus", 2)?,
     })
 }
 
@@ -603,6 +648,77 @@ fn list_columns_output_schema() -> Arc<Map<String, Value>> {
     }))
 }
 
+fn search_trajectory_output_schema() -> Arc<Map<String, Value>> {
+    json_object_schema(&json!({
+        "type": "object",
+        "required": ["matched", "path"],
+        "additionalProperties": false,
+        "properties": {
+            "matched": { "type": "boolean" },
+            "path": {
+                "anyOf": [
+                    { "type": "null" },
+                    trajectory_path_output_schema()
+                ]
+            }
+        }
+    }))
+}
+
+fn trajectory_path_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": [
+            "workspace",
+            "intent",
+            "path_key",
+            "steps",
+            "relations",
+            "query_consensus",
+            "path_consensus",
+            "episode_count"
+        ],
+        "additionalProperties": false,
+        "properties": {
+            "workspace": { "type": "string" },
+            "intent": { "type": "string" },
+            "path_key": { "type": "string" },
+            "steps": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "required": ["step_index", "sql"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "step_index": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "sql": { "type": "string" }
+                    }
+                }
+            },
+            "relations": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "query_consensus": {
+                "type": "integer",
+                "minimum": 1
+            },
+            "path_consensus": {
+                "type": "integer",
+                "minimum": 1
+            },
+            "episode_count": {
+                "type": "integer",
+                "minimum": 1
+            }
+        }
+    })
+}
+
 fn list_columns_page_output_schema() -> Value {
     json!({
         "type": "object",
@@ -786,6 +902,28 @@ fn optional_bool_argument(
     value.as_bool().ok_or_else(|| {
         ErrorData::invalid_params(format!("argument '{key}' must be a boolean"), None)
     })
+}
+
+fn optional_u32_argument(
+    arguments: Option<&Map<String, Value>>,
+    key: &str,
+    default: u32,
+) -> Result<u32, ErrorData> {
+    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
+        return Ok(default);
+    };
+    let raw = value.as_u64().ok_or_else(|| {
+        ErrorData::invalid_params(format!("argument '{key}' must be a positive integer"), None)
+    })?;
+    u32::try_from(raw)
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            ErrorData::invalid_params(
+                format!("argument '{key}' must be between 1 and {}", u32::MAX),
+                None,
+            )
+        })
 }
 
 fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
