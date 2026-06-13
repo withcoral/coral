@@ -10,69 +10,6 @@ Before setting up a client, make sure you have [connected at least one source](/
 
 </Note>
 
-## What MCP clients get
-
-| Type     | Name             | Description                                             |
-| -------- | ---------------- | ------------------------------------------------------- |
-| Tool     | `sql`            | Execute read-only SQL against the Coral database        |
-| Tool     | `list_catalog`   | List database tables and table functions with pagination |
-| Tool     | `search_catalog` | Search database catalog metadata with a Rust regex      |
-| Tool     | `describe_table` | Show compact metadata for one database table            |
-| Tool     | `list_columns`   | List columns for one database table with pagination     |
-| Resource | `coral://guide`  | Database workflow guide for agents                     |
-| Resource | `coral://tables` | JSON summaries of query-visible database tables, including Coral catalog tables and required filters |
-
-Clients see the same database catalog and query results as `coral sql`. You set up sources with the CLI, then agents query Coral over MCP as SQL schemas and tables.
-
-The `coral` system schema is part of that catalog. No-schema `list_catalog` and `coral://tables` include both configured source tables and Coral catalog tables: `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs`. Agents can also call `describe_table` and `list_columns` on those system tables.
-
-Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. Tool descriptions include connected source/schema names, such as `github` or `slack`, to help clients route provider-specific prompts to Coral. For data questions, prefer a single `sql` call using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over multiple tool calls that fetch rows and combine them in the agent.
-
-### Discovery tools
-
-**`list_catalog`**: paginated list of database tables and parameterized table functions.
-
-- Arguments: optional `schema`, `kind`, `limit`, `offset`. Omit `kind` (or pass `null`) to include both `"table"` and `"table_function"` items.
-- For tables, use `sql_reference` in `FROM` and `JOIN` clauses.
-- For table functions, use `sql_call_example` and fill in the required arguments.
-- Do not quote the whole `schema.item` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
-
-**`search_catalog`**: deterministic regex matching over database catalog metadata.
-
-- Arguments: required `pattern` plus optional `schema`, `kind`, `ignore_case`, `limit`, `offset`.
-
-**`describe_table`**: compact metadata for one table.
-
-- Arguments: exact `schema` and `table`.
-- Returns guide text, required filters, and a column count without dumping full columns.
-
-**`list_columns`**: paginated columns for one table.
-
-- Arguments: exact `schema` and `table`, plus optional `pattern`, `ignore_case`, `required_only`, `limit`, `offset`.
-- For existing tables, returns a `columns` page with `total`, `has_more`, and optional `next_offset`. When `pattern` is set, matching rows include `matched_fields` so clients can explain why a column matched.
-- When the requested table does not exist, returns `found: false` with recovery hints instead of an empty page. Clients should branch to `search_catalog` or `list_catalog` rather than pretending the table has zero columns.
-
-### Richer metadata via SQL
-
-For deeper introspection, query `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` through the `sql` tool instead of relying only on `list_catalog` or `coral://tables`. Use `coral.filters` as the normalized filter surface, with `coral.columns.filter_mode` available when inspecting filter-only virtual columns.
-
-### Searching a provider's data
-
-Some sources expose native search endpoints (for example, GitHub issue search) as table functions with `kind = 'search'`. Prefer these over scanning a regular table when the agent needs ranked, query-driven results. They return provider-ranked candidates, so agents should preserve any returned rank columns and use the returned ids plus catalog-described tables to fetch full detail rows when the search result itself is incomplete.
-
-## Query result format
-
-The `sql` tool returns rows as a JSON array of objects. To preserve exact values across JSON parsers, Coral encodes precision-sensitive numeric types as JSON **strings** rather than JSON numbers:
-
-- `Int64` (`BIGINT`) and `UInt64`
-- `Decimal32`, `Decimal64`, `Decimal128`, and `Decimal256`
-
-This applies wherever these types appear, including nested inside `Struct`, `List`, and `Map` columns. The column's declared SQL type does not change — `describe_table`, `list_columns`, and `coral.columns` still report `Int64` or `Decimal(p, s)`; only the JSON encoding of the value is a string. A `BIGINT` `user_id`, for example, comes back as `{ "user_id": "-8504475857937456387" }`.
-
-Coral does this because MCP uses JSON-RPC, and many clients — JavaScript/TypeScript `JSON.parse` and most MCP hosts — decode JSON numbers as IEEE-754 doubles. Values beyond 2^53 silently lose precision when read as a number.
-
-The CLI is unaffected: `coral sql --format json` keeps emitting these types as JSON numbers.
-
 ## Client setup
 
 Coral uses stdio transport. If a client supports a command-based install flow, point it at `coral mcp-stdio`.
@@ -241,7 +178,7 @@ Coral uses stdio transport. If a client supports a command-based install flow, p
   </Tab>
 </Tabs>
 
-## Verify the connection
+### Verify the connection
 
 Once your client is connected, ask the agent to list available tables or run a simple database query. Examples:
 
@@ -251,7 +188,70 @@ Once your client is connected, ask the agent to list available tables or run a s
 
 The agent should call `list_catalog`, `search_catalog`, or query `coral.tables` and `coral.table_functions` to return SQL schemas and catalog items, and use `describe_table` or `list_columns` for table-specific metadata. Large catalogs should be paged with `limit` and `offset`.
 
+## Available tools and resources
+
+| Type     | Name             | Description                                             |
+| -------- | ---------------- | ------------------------------------------------------- |
+| Tool     | `sql`            | Execute read-only SQL against the Coral database        |
+| Tool     | `list_catalog`   | List database tables and table functions with pagination |
+| Tool     | `search_catalog` | Search database catalog metadata with a Rust regex      |
+| Tool     | `describe_table` | Show compact metadata for one database table            |
+| Tool     | `list_columns`   | List columns for one database table with pagination     |
+| Resource | `coral://guide`  | Database workflow guide for agents                     |
+| Resource | `coral://tables` | JSON summaries of query-visible database tables, including Coral catalog tables and required filters |
+
+Clients see the same database catalog and query results as `coral sql`. You set up sources with the CLI, then agents query Coral over MCP as SQL schemas and tables.
+
+The `coral` system schema is part of that catalog. No-schema `list_catalog` and `coral://tables` include both configured source tables and Coral catalog tables: `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs`. Agents can also call `describe_table` and `list_columns` on those system tables.
+
+Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. Tool descriptions include connected source/schema names, such as `github` or `slack`, to help clients route provider-specific prompts to Coral. For data questions, prefer a single `sql` call using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over multiple tool calls that fetch rows and combine them in the agent.
+
+### Discovery tools
+
+**`list_catalog`**: paginated list of database tables and parameterized table functions.
+
+- Arguments: optional `schema`, `kind`, `limit`, `offset`. Omit `kind` (or pass `null`) to include both `"table"` and `"table_function"` items.
+- For tables, use `sql_reference` in `FROM` and `JOIN` clauses.
+- For table functions, use `sql_call_example` and fill in the required arguments.
+- Do not quote the whole `schema.item` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
+
+**`search_catalog`**: deterministic regex matching over database catalog metadata.
+
+- Arguments: required `pattern` plus optional `schema`, `kind`, `ignore_case`, `limit`, `offset`.
+
+**`describe_table`**: compact metadata for one table.
+
+- Arguments: exact `schema` and `table`.
+- Returns guide text, required filters, and a column count without dumping full columns.
+
+**`list_columns`**: paginated columns for one table.
+
+- Arguments: exact `schema` and `table`, plus optional `pattern`, `ignore_case`, `required_only`, `limit`, `offset`.
+- For existing tables, returns a `columns` page with `total`, `has_more`, and optional `next_offset`. When `pattern` is set, matching rows include `matched_fields` so clients can explain why a column matched.
+- When the requested table does not exist, returns `found: false` with recovery hints instead of an empty page. Clients should branch to `search_catalog` or `list_catalog` rather than pretending the table has zero columns.
+
+### Richer metadata when using SQL tool
+
+When the agent needs metadata it can filter, join, sort, or aggregate before writing the final SQL, query `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` through the `sql` tool instead of relying only on `list_catalog` or `coral://tables`. Use `coral.filters` as the normalized filter surface, with `coral.columns.filter_mode` available when inspecting filter-only virtual columns.
+
+### Searching a provider's data
+
+Some sources expose native search endpoints (for example, GitHub issue search) as table functions with `kind = 'search'`. Prefer these over scanning a regular table when the agent needs ranked, query-driven results. They return provider-ranked candidates, so agents should preserve any returned rank columns and use the returned ids plus catalog-described tables to fetch full detail rows when the search result itself is incomplete.
+
+## Query result format
+
+The `sql` tool returns rows as a JSON array of objects. To preserve exact values across JSON parsers, Coral encodes precision-sensitive numeric types as JSON **strings** rather than JSON numbers:
+
+- `Int64` (`BIGINT`) and `UInt64`
+- `Decimal32`, `Decimal64`, `Decimal128`, and `Decimal256`
+
+This applies wherever these types appear, including nested inside `Struct`, `List`, and `Map` columns. The column's declared SQL type does not change — `describe_table`, `list_columns`, and `coral.columns` still report `Int64` or `Decimal(p, s)`; only the JSON encoding of the value is a string. A `BIGINT` `user_id`, for example, comes back as `{ "user_id": "-8504475857937456387" }`.
+
+Coral does this because MCP uses JSON-RPC, and many clients — JavaScript/TypeScript `JSON.parse` and most MCP hosts — decode JSON numbers as IEEE-754 doubles. Values beyond 2^53 silently lose precision when read as a number.
+
+The CLI is unaffected: `coral sql --format json` keeps emitting these types as JSON numbers.
+
 ## Troubleshooting
 
 - **`coral` not found:** Make sure `coral` is on your `PATH`, or use the full path from `which coral` on macOS or Linux or `(Get-Command coral).Source` in PowerShell.
-- **No tables visible:** Run `coral source list` in your terminal to confirm you have sources installed. If empty, add one with `coral source add`.
+- **No tables visible:** Run `coral source list` in your terminal to confirm you have sources installed. If empty, add one with `coral source add`. See the [CLI reference](/reference/cli-reference#coral-source).

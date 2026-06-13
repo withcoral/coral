@@ -456,11 +456,7 @@ fn validate_stdio_server(source_name: &str, command: &str, env: &[McpEnvSpec]) -
 
     let mut env_names = HashSet::new();
     for env in env {
-        if env.name.trim().is_empty() {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' MCP server env name must not be empty"
-            )));
-        }
+        validate_stdio_env_name(source_name, &env.name)?;
         if !env_names.insert(env.name.as_str()) {
             return Err(ManifestError::validation(format!(
                 "source '{source_name}' MCP server env '{}' is declared more than once",
@@ -468,6 +464,20 @@ fn validate_stdio_server(source_name: &str, command: &str, env: &[McpEnvSpec]) -
             )));
         }
         validate_server_env_value_source(source_name, env)?;
+    }
+    Ok(())
+}
+
+fn validate_stdio_env_name(source_name: &str, name: &str) -> Result<()> {
+    if name.trim().is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' MCP server env name must not be empty"
+        )));
+    }
+    if name.contains('=') || name.contains('\0') {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' MCP server env '{name}' must not contain '=' or NUL"
+        )));
     }
     Ok(())
 }
@@ -1527,6 +1537,68 @@ mod tests {
             error
                 .to_string()
                 .contains("MCP server env 'FILTERED' template references table filter 'state'"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_mcp_server_env_name_with_equals() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "stdio",
+                "command": "demo-mcp-server",
+                "env": [{
+                    "name": "BAD=KEY",
+                    "from": "literal",
+                    "value": "ignored"
+                }]
+            },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("env name containing equals should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("MCP server env 'BAD=KEY' must not contain '=' or NUL"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_mcp_server_env_name_with_nul() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "stdio",
+                "command": "demo-mcp-server",
+                "env": [{
+                    "name": "BAD\0KEY",
+                    "from": "literal",
+                    "value": "ignored"
+                }]
+            },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("env name containing NUL should fail");
+
+        assert!(
+            error.to_string().contains("must not contain '=' or NUL"),
             "got: {error}"
         );
     }
