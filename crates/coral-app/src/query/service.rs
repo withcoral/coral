@@ -11,8 +11,11 @@ use coral_api::v1::{
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::core_status;
+use crate::query::QueryAttribution;
 use crate::query::manager::QueryManager;
-use crate::transport::{grpc_span, instrument_grpc, query_status, workspace_name_from_proto};
+use crate::transport::{
+    episode_id_from_metadata, grpc_span, instrument_grpc, query_status, workspace_name_from_proto,
+};
 
 #[derive(Clone)]
 pub(crate) struct QueryService {
@@ -35,11 +38,14 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
+        let attribution = QueryAttribution {
+            episode_id: episode_id_from_metadata(request.metadata()),
+        };
         Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let execution = queries
-                .execute_sql(&workspace_name, &inner.sql)
+                .execute_sql(&workspace_name, &inner.sql, &attribution)
                 .await
                 .map_err(query_status)?;
             let response = ExecuteSqlResponse {
@@ -62,11 +68,14 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ExplainSqlResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
+        let attribution = QueryAttribution {
+            episode_id: episode_id_from_metadata(request.metadata()),
+        };
         Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let plan = queries
-                .explain_sql(&workspace_name, &inner.sql)
+                .explain_sql(&workspace_name, &inner.sql, &attribution)
                 .await
                 .map_err(query_status)?;
             Ok(Response::new(ExplainSqlResponse {

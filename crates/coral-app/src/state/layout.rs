@@ -86,6 +86,15 @@ impl AppStateLayout {
         self.feedback_dir(workspace_name).join("reports.jsonl")
     }
 
+    /// Per-workspace episode log (JSONL) for experimental trajectory memory. The
+    /// episode store appends here; the `OpenEpisode` handler that reads it lands in
+    /// a later PR.
+    pub(crate) fn episodes_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.workspace_dir(workspace_name)
+            .join("episodes")
+            .join("episodes.jsonl")
+    }
+
     pub(crate) fn source_dir(
         &self,
         workspace_name: &WorkspaceName,
@@ -225,6 +234,14 @@ mod tests {
                 .join("default")
                 .join("feedback")
                 .join("reports.jsonl")
+        );
+        assert_eq!(
+            layout.episodes_file(&workspace_name),
+            config_dir
+                .join("workspaces")
+                .join("default")
+                .join("episodes")
+                .join("episodes.jsonl")
         );
         assert_eq!(
             layout.local_trace_store_dir(),
