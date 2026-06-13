@@ -45,7 +45,7 @@ echo '{"id": "550e8400-e29b-41d4-a716-446655440000", "source": "github", "event_
 ### 2. Add the source to Coral
 
 ```bash
-coral source add webhooks --path ./sources/community/webhooks --WEBHOOKS_PATH ./webhooks.jsonl
+coral source add --file ./sources/community/webhooks/manifest.yaml --WEBHOOKS_PATH ./webhooks.jsonl
 ```
 
 ### 3. Query deliveries via Coral SQL
