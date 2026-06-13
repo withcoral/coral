@@ -1,0 +1,214 @@
+name: kafka_connect
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query connector inventory, configs, status, and task state from Apache
+  Kafka Connect clusters via the Kafka Connect REST API. Read-only v1; use a
+  base URL that is directly reachable without adding auth headers in this
+  source.
+
+inputs:
+  KAFKA_CONNECT_URL:
+    kind: variable
+    default: "http://localhost:8083"
+    hint: |
+      Kafka Connect API base URL that Coral can call without extra auth headers.
+      Examples: http://localhost:8083, http://kafka-connect:8083, http://192.168.1.10:8083
+      You may also point to an authenticating reverse proxy or gateway in front
+      of Kafka Connect.
+      Do not include trailing slash. For self-hosted Kafka Connect, verify the REST API
+      is enabled with CONNECT_REST_PORT and CONNECT_REST_ADVERTISED_HOST_NAME.
+
+base_url: "{{input.KAFKA_CONNECT_URL}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT connector_name, connector_type, state FROM kafka_connect.connectors LIMIT 1
+
+tables:
+  - name: connectors
+    description: Kafka Connect connectors visible to this worker.
+    guide: |
+      Returns one row per connector by expanding connector info and status
+      from the Kafka Connect REST API. Use connector_name to query
+      connector-specific detail tables.
+    request:
+      method: GET
+      path: /connectors
+      query:
+        - name: expand
+          from: literal
+          value: info
+        - name: expand
+          from: literal
+          value: status
+    response:
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: connector_name
+        type: Utf8
+        nullable: false
+        description: Connector name (map key).
+        expr: {kind: path, path: [_key]}
+      - name: connector_type
+        type: Utf8
+        nullable: true
+        description: Connector type returned by Kafka Connect (source or sink).
+        expr: {kind: path, path: [_value, info, type]}
+      - name: connector_class
+        type: Utf8
+        nullable: true
+        description: Connector implementation class.
+        expr: {kind: path, path: [_value, info, config, connector.class]}
+      - name: tasks_max
+        type: Utf8
+        nullable: true
+        description: Configured max task count.
+        expr: {kind: path, path: [_value, info, config, tasks.max]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Current connector runtime state.
+        expr: {kind: path, path: [_value, status, connector, state]}
+      - name: worker_id
+        type: Utf8
+        nullable: true
+        description: Worker that currently owns connector coordination.
+        expr: {kind: path, path: [_value, status, connector, worker_id]}
+      - name: trace
+        type: Utf8
+        nullable: true
+        description: Last connector-level error trace when returned.
+        expr: {kind: path, path: [_value, status, connector, trace]}
+
+  - name: connector_configs
+    description: Effective key-value config entries for one connector.
+    guide: |
+      Requires connector_name. Each row is one configuration key and value
+      from GET /connectors/{name}/config.
+    filters:
+      - name: connector_name
+        required: true
+    request:
+      method: GET
+      path: /connectors/{{filter.connector_name}}/config
+    response:
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: connector_name
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Connector name from the required filter.
+        expr: {kind: from_filter, key: connector_name}
+      - name: config_key
+        type: Utf8
+        nullable: false
+        description: Connector config key.
+        expr: {kind: path, path: [_key]}
+      - name: config_value
+        type: Utf8
+        nullable: true
+        description: Connector config value.
+        expr: {kind: path, path: [_value]}
+
+  - name: connector_statuses
+    description: Runtime status for one connector.
+    guide: |
+      Requires connector_name. Returns connector state plus task status
+      summary fields from GET /connectors/{name}/status.
+    filters:
+      - name: connector_name
+        required: true
+    request:
+      method: GET
+      path: /connectors/{{filter.connector_name}}/status
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: connector_name
+        type: Utf8
+        nullable: false
+        description: Connector name.
+        expr: {kind: path, path: [name]}
+      - name: connector_type
+        type: Utf8
+        nullable: true
+        description: Connector type (source or sink) when returned.
+        expr: {kind: path, path: [type]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Connector runtime state.
+        expr: {kind: path, path: [connector, state]}
+      - name: worker_id
+        type: Utf8
+        nullable: true
+        description: Worker currently running connector coordination.
+        expr: {kind: path, path: [connector, worker_id]}
+      - name: trace
+        type: Utf8
+        nullable: true
+        description: Last connector-level error trace when returned.
+        expr: {kind: path, path: [connector, trace]}
+      - name: requested_connector_name
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Connector name from the required filter.
+        expr: {kind: from_filter, key: connector_name}
+
+  - name: connector_tasks
+    description: Task-level runtime status for one connector.
+    guide: |
+      Requires connector_name. Each row is one task from
+      GET /connectors/{name}/status.
+    filters:
+      - name: connector_name
+        required: true
+    request:
+      method: GET
+      path: /connectors/{{filter.connector_name}}/status
+    response:
+      rows_path: [tasks]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: connector_name
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Connector name from the required filter.
+        expr: {kind: from_filter, key: connector_name}
+      - name: task_id
+        type: Int64
+        nullable: false
+        description: Task ID within the connector.
+        expr: {kind: path, path: [id]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Task runtime state.
+        expr: {kind: path, path: [state]}
+      - name: worker_id
+        type: Utf8
+        nullable: true
+        description: Worker currently running this task.
+        expr: {kind: path, path: [worker_id]}
+      - name: trace
+        type: Utf8
+        nullable: true
+        description: Task-level error trace when returned.
+        expr: {kind: path, path: [trace]}
