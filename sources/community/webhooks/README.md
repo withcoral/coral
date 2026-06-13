@@ -20,54 +20,35 @@ secrets are required by the receiver for ingestion.
 
 | Table | Key Columns |
 |---|---|
-| `deliveries` | `id`, `source`, `event_type`, `payload`, `received_at`, `hmac_valid`, `delivery_id`, `content_length_bytes` |
+| `deliveries` | `id`, `source`, `event_type`, `payload`, `received_at` |
 | `subscriptions` | `source`, `receiver_url`, `secret_alias`, `events`, `active`, `registered_at` |
 
 ---
 
 ## Inputs
 
-| Input | Default | Description |
-|---|---|---|
-| `WEBHOOKS_PATH` | `~/.webhooks/deliveries.jsonl` | Path to the JSONL file the receiver writes deliveries to |
-| `WEBHOOK_SUBSCRIPTIONS_PATH` | `~/.webhooks/subscriptions.jsonl` | Path to the JSONL file storing subscription configuration rows |
+- `WEBHOOKS_PATH`: Path to the JSONL file containing webhook deliveries (default: `~/.kraken/webhooks.jsonl`).
+- `WEBHOOK_SUBSCRIPTIONS_PATH`: Path to the JSONL file containing subscription configurations (default: `~/.kraken/webhooks-subscriptions.jsonl`).
 
 ---
 
 ## Quick start
 
-### 1. Start a webhook receiver
+### 1. Create sample webhook data
 
-You need a local HTTP receiver that validates HMAC signatures and appends
-accepted deliveries as JSONL rows to the path configured in `WEBHOOKS_PATH`.
-Each row must conform to the `deliveries` table schema below.
-
-Example using a FastAPI receiver:
+Create a local `webhooks.jsonl` file with sample deliveries:
 
 ```bash
-uvicorn webhook_receiver:app --port 9000
+echo '{"id": "550e8400-e29b-41d4-a716-446655440000", "source": "github", "event_type": "push", "payload": "{\"repository\": {\"full_name\": \"withcoral/coral\"}}", "received_at": "2023-10-24T12:00:00Z", "hmac_valid": true, "delivery_id": "123", "content_length_bytes": 50}' > webhooks.jsonl
 ```
 
-### 2. Configure secrets (per source)
+### 2. Add the source to Coral
 
 ```bash
-# Set the HMAC secret for GitHub webhooks
-export WEBHOOK_SECRET_GITHUB="your-github-webhook-secret"
-
-# Or use a single shared secret for local testing
-export WEBHOOK_SECRET="dev-secret"
+coral source add webhooks --path ./sources/community/webhooks --WEBHOOKS_PATH ./webhooks.jsonl
 ```
 
-### 3. Expose publicly (for external providers)
-
-Use ngrok or a similar tunnel so GitHub / Sentry / Stripe can reach port 9000:
-
-```bash
-ngrok http 9000
-# Then configure https://<ngrok-id>.ngrok.io/webhook/github in GitHub
-```
-
-### 4. Query deliveries via Coral SQL
+### 3. Query deliveries via Coral SQL
 
 ```sql
 SELECT
@@ -75,7 +56,7 @@ SELECT
     source,
     event_type,
     received_at,
-    json_extract_string(payload, '$.repository.full_name') AS repo
+    json_get_str(payload, '$.repository.full_name') AS repo
 FROM webhooks.deliveries
 WHERE source = 'github'
   AND event_type = 'push'
@@ -91,9 +72,9 @@ ORDER BY received_at DESC
 |---|---|---|
 | `github` | `X-Hub-Signature-256` | HMAC-SHA256 |
 | `sentry` | `Sentry-Hook-Signature` | HMAC-SHA256 |
-| `stripe` | `Stripe-Signature` | HMAC-SHA256 |
-| `pagerduty` | `X-Webhook-Signature` | HMAC-SHA256 |
-| `linear` | `Linear-Signature` | HMAC-SHA256 |
+| `stripe` | `Stripe-Signature` | Timestamp + HMAC-SHA256 |
+| `pagerduty` | `X-PagerDuty-Signature` / `X-Webhook-Subscription` | HMAC-SHA256 |
+| `linear` | `Linear-Signature` | Timestamp replay checks + HMAC-SHA256 |
 
 Add new sources by extending your receiver's signature header map and setting
 the corresponding secret environment variable.
@@ -102,7 +83,7 @@ the corresponding secret environment variable.
 
 ## JSONL row schemas
 
-### deliveries (`WEBHOOKS_PATH`)
+### Deliveries (`WEBHOOKS_PATH`)
 
 Each row written to `WEBHOOKS_PATH` must be a JSON object with these fields:
 
@@ -117,15 +98,15 @@ Each row written to `WEBHOOKS_PATH` must be a JSON object with these fields:
 | `delivery_id` | string | Provider-assigned delivery ID, if present |
 | `content_length_bytes` | integer | Byte length of the raw payload |
 
-### subscriptions (`WEBHOOK_SUBSCRIPTIONS_PATH`)
+### Subscriptions (`WEBHOOK_SUBSCRIPTIONS_PATH`)
 
-Each row written to `WEBHOOK_SUBSCRIPTIONS_PATH` must be a JSON object with these fields:
+Each row written to `WEBHOOK_SUBSCRIPTIONS_PATH` configures a webhook source:
 
 | Field | Type | Description |
 |---|---|---|
 | `source` | string | Service name this subscription is for, e.g. `github` |
 | `receiver_url` | string | Public URL where the provider will deliver webhooks |
-| `secret_alias` | string | Name of the credential alias holding the HMAC secret for this source |
+| `secret_alias` | string | Name of the credential alias that holds the HMAC secret for this source |
 | `events` | string | Comma-separated list of event types this subscription covers |
 | `active` | boolean | Whether this subscription is currently active |
 | `registered_at` | ISO 8601 string | UTC timestamp when this subscription was registered |
@@ -137,16 +118,16 @@ Each row written to `WEBHOOK_SUBSCRIPTIONS_PATH` must be a JSON object with thes
 ```sql
 SELECT
     w.received_at                                           AS push_time,
-    json_extract_string(w.payload, '$.pusher.name')        AS pusher,
-    json_extract_string(w.payload, '$.repository.name')    AS repo,
-    json_extract_string(w.payload, '$.after')              AS new_sha,
+    json_get_str(w.payload, '$.pusher.name')        AS pusher,
+    json_get_str(w.payload, '$.repository.name')    AS repo,
+    json_get_str(w.payload, '$.after')              AS new_sha,
     d.id                                                    AS deploy_id,
     d.status                                                AS deploy_status,
     d.created_at                                            AS deploy_time,
     s.title                                                 AS sentry_error
 FROM webhooks.deliveries AS w
 INNER JOIN github.deployments AS d
-    ON d.sha = json_extract_string(w.payload, '$.after')
+    ON d.sha = json_get_str(w.payload, '$.after')
 LEFT JOIN sentry.issues AS s
     ON s.first_seen >= w.received_at
     AND s.first_seen <= w.received_at + INTERVAL '15 minutes'

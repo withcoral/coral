@@ -111,12 +111,3 @@ tables:
       - name: registered_at
         type: Timestamp
         description: "UTC timestamp when this subscription was registered"
-    filters:
-      - name: source
-        mode: exact
-        operators: ["="]
-        description: "Look up subscription config for a specific source"
-      - name: active
-        mode: exact
-        operators: ["="]
-        description: "Filter to active subscriptions only"
