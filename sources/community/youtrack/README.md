@@ -132,7 +132,7 @@ coral sql "SELECT login, name, email FROM youtrack.users LIMIT 3;"
 +---------------+-------------+--------------------+
 | login         | name        | email              |
 +---------------+-------------+--------------------+
-| admin         | admin       | 23202037@rmd.ac.in |
+| admin         | admin       | admin@example.com  |
 | guest         | guest       |                    |
 | ravindhar1108 | Ravindhar G |                    |
 +---------------+-------------+--------------------+
