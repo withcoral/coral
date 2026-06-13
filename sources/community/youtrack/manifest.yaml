@@ -144,7 +144,8 @@ tables:
   - name: issues
     description: Issues in the YouTrack instance.
     guide: |
-      Use the `query` filter to search using YouTrack's native search syntax.
+      By default, querying issues without a filter fetches a large, unconstrained list.
+      To avoid exhausting API limits and pulling excessive data, strongly prefer using the `query` filter with YouTrack's native search syntax (e.g., `WHERE query = '#Unresolved'`).
     filters:
       - name: query
         required: false
@@ -167,6 +168,7 @@ tables:
         default: 50
         max: 100
         query_param: $top
+    fetch_limit_default: 1000
     columns:
       - name: id
         type: Utf8
@@ -291,11 +293,11 @@ tables:
     description: Issue tags defined in the YouTrack instance.
     request:
       method: GET
-      path: /issueTags
+      path: /tags
       query:
         - name: fields
           from: literal
-          value: "id,name,untagOnResolve"
+          value: "id,name,untagOnResolve,owner(id)"
     response:
       row_strategy: direct
     pagination:
@@ -327,6 +329,14 @@ tables:
           kind: path
           path:
             - untagOnResolve
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - owner
+            - id
 
   # ──────────────────────────────────────────────────────────────────────────
   # agile_boards

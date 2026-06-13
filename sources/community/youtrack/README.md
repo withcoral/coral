@@ -11,14 +11,24 @@
 Requires `YOUTRACK_BASE_URL` and `YOUTRACK_TOKEN` environment variables, or saved credentials via `coral source add`.
 
 ```bash
-coral source add youtrack --file sources/community/youtrack/manifest.yaml
+coral source add --file sources/community/youtrack/manifest.yaml
 ```
 
 To rotate or update your token, run the same command again.
 
 ### Token Setup
 
-Generate a permanent token in your YouTrack instance under **Profile** -> **Account Security** -> **Tokens**. Ensure the token has the necessary read scopes for the data you intend to query (e.g., issues, projects, users).
+Generate a permanent token in your YouTrack instance under **Profile** -> **Account Security** -> **Tokens**.
+
+Permanent tokens are constrained by the permissions of the user who created them rather than OAuth scopes. The user account generating the token must have access to the resources being queried.
+
+Additional requirements:
+
+* The `users`, `groups`, and `roles` tables rely on the YouTrack REST API introduced in **YouTrack 2026.1+**.
+* Querying the `roles` table requires the **Read Role** permission.
+* Querying the `groups` table requires permission to view groups available to the authenticated user.
+* Querying the `users` table requires permission to view users available to the authenticated user.
+* Tables such as `issues`, `projects`, `comments`, `tags`, and `agile_boards` require standard read access to those entities.
 
 Your `YOUTRACK_BASE_URL` should be the base path of your instance (e.g. `https://example.myjetbrains.com/youtrack`), without the `/api` suffix or a trailing slash.
 
@@ -65,15 +75,94 @@ Your `YOUTRACK_BASE_URL` should be the base path of your instance (e.g. `https:/
 export YOUTRACK_BASE_URL=https://yourinstance.myjetbrains.com/youtrack
 export YOUTRACK_TOKEN=perm:your_token
 
-coral source add youtrack --file sources/community/youtrack/manifest.yaml
+coral source add --file sources/community/youtrack/manifest.yaml
+```
 
-# Query examples
-coral sql \
-  "SELECT login, name, email FROM youtrack.users LIMIT 10;"
+```text
+Added source youtrack
+```
 
-coral sql \
-  "SELECT id, summary FROM youtrack.issues WHERE query = '#Unresolved' LIMIT 5;"
+Run tests to verify connectivity:
 
-coral sql \
-  "SELECT id, text FROM youtrack.comments WHERE issue_id = '81-12' LIMIT 5;"
+```bash
+coral source test youtrack
+```
+
+```text
+  ✓ youtrack connected successfully
+
+    youtrack (11 tables)
+    ├─ agile_boards
+    ├─ comments
+    ├─ custom_fields
+    ├─ groups
+    ├─ issues
+    ├─ projects
+    ├─ roles
+    ├─ saved_searches
+    ├─ sprints
+    ├─ tags
+    └─ users
+    Query tests
+    5 declared · 5 passed · 0 failed
+
+    ✓ SELECT login, name FROM youtrack.users LIMIT 5
+      3 rows
+
+    ✓ SELECT short_name, name FROM youtrack.projects LIMIT 5
+      1 row
+
+    ✓ SELECT id, summary FROM youtrack.issues LIMIT 5
+      4 rows
+
+    ✓ SELECT id, name FROM youtrack.agile_boards LIMIT 5
+      0 rows
+
+    ✓ SELECT id, name FROM youtrack.groups LIMIT 5
+      4 rows
+```
+
+Query examples:
+
+```bash
+coral sql "SELECT login, name, email FROM youtrack.users LIMIT 3;"
+```
+
+```text
++---------------+-------------+--------------------+
+| login         | name        | email              |
++---------------+-------------+--------------------+
+| admin         | admin       | 23202037@rmd.ac.in |
+| guest         | guest       |                    |
+| ravindhar1108 | Ravindhar G |                    |
++---------------+-------------+--------------------+
+```
+
+```bash
+coral sql "SELECT id, summary FROM youtrack.issues WHERE query = '#Unresolved' LIMIT 5;"
+```
+
+```text
++------+-----------------------------------------------------+
+| id   | summary                                             |
++------+-----------------------------------------------------+
+| 3-22 | Docs: Update README with setup instructions         |
+| 3-21 | Security: Upgrade Jackson databind library          |
+| 3-20 | Feature Request: Add caching to InventoryController |
+| 3-19 | Bug: NullPointerException in PaymentController      |
++------+-----------------------------------------------------+
+```
+
+```bash
+coral sql "SELECT id, name FROM youtrack.groups LIMIT 3;"
+```
+
+```text
++-----+---------------------+
+| id  | name                |
++-----+---------------------+
+| 4-0 | demo-project admins |
+| 5-1 | demo-project Team   |
+| 6-0 | Registered Users    |
++-----+---------------------+
 ```
