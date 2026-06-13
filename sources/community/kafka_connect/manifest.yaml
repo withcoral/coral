@@ -61,32 +61,32 @@ tables:
         type: Utf8
         nullable: true
         description: Connector type returned by Kafka Connect (source or sink).
-        expr: {kind: path, path: [_value, info, type]}
+        expr: {kind: path, path: [info, type]}
       - name: connector_class
         type: Utf8
         nullable: true
         description: Connector implementation class.
-        expr: {kind: path, path: [_value, info, config, connector.class]}
+        expr: {kind: path, path: [info, config, connector.class]}
       - name: tasks_max
         type: Utf8
         nullable: true
         description: Configured max task count.
-        expr: {kind: path, path: [_value, info, config, tasks.max]}
+        expr: {kind: path, path: [info, config, tasks.max]}
       - name: state
         type: Utf8
         nullable: true
         description: Current connector runtime state.
-        expr: {kind: path, path: [_value, status, connector, state]}
+        expr: {kind: path, path: [status, connector, state]}
       - name: worker_id
         type: Utf8
         nullable: true
         description: Worker that currently owns connector coordination.
-        expr: {kind: path, path: [_value, status, connector, worker_id]}
+        expr: {kind: path, path: [status, connector, worker_id]}
       - name: trace
         type: Utf8
         nullable: true
         description: Last connector-level error trace when returned.
-        expr: {kind: path, path: [_value, status, connector, trace]}
+        expr: {kind: path, path: [status, connector, trace]}
 
   - name: connector_configs
     description: Effective key-value config entries for one connector.

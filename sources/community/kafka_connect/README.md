@@ -170,11 +170,11 @@ $ cargo run -p coral-cli -- source test kafka_connect
       0 rows
 
 $ cargo run -p coral-cli -- sql "SELECT connector_name, connector_type, state FROM kafka_connect.connectors ORDER BY connector_name LIMIT 5"
-+-----------------------+----------------+-------+
-| connector_name        | connector_type | state |
-+-----------------------+----------------+-------+
-| test-source-connector |                |       |
-+-----------------------+----------------+-------+
++-----------------------+----------------+---------+
+| connector_name        | connector_type | state   |
++-----------------------+----------------+---------+
+| test-source-connector | source         | RUNNING |
++-----------------------+----------------+---------+
 
 $ cargo run -p coral-cli -- sql "SELECT connector_name, state, worker_id FROM kafka_connect.connector_statuses WHERE connector_name = 'test-source-connector'"
 +-----------------------+---------+--------------------+
@@ -184,18 +184,18 @@ $ cargo run -p coral-cli -- sql "SELECT connector_name, state, worker_id FROM ka
 +-----------------------+---------+--------------------+
 
 $ cargo run -p coral-cli -- sql "SELECT config_key, config_value FROM kafka_connect.connector_configs WHERE connector_name = 'test-source-connector' ORDER BY config_key LIMIT 8"
-+----------------------------------+--------------------------------------------------------------+
-| config_key                       | config_value                                                 |
-+----------------------------------+--------------------------------------------------------------+
-| connector.class                  | org.apache.kafka.connect.mirror.MirrorSourceConnector        |
-| groups                           | test-group                                                   |
-| name                             | test-source-connector                                        |
-| source.cluster.alias             | src                                                          |
-| source.cluster.bootstrap.servers | kafka-mq:9092                                                |
-| target.cluster.alias             | tgt                                                          |
-| target.cluster.bootstrap.servers | kafka-mq:9092                                                |
-| tasks.max                        | 2                                                            |
-+----------------------------------+--------------------------------------------------------------+
++----------------------------------+-------------------------------------------------------+
+| config_key                       | config_value                                          |
++----------------------------------+-------------------------------------------------------+
+| connector.class                  | org.apache.kafka.connect.mirror.MirrorSourceConnector |
+| groups                           | test-group                                            |
+| name                             | test-source-connector                                 |
+| source.cluster.alias             | src                                                   |
+| source.cluster.bootstrap.servers | kafka-mq:9092                                         |
+| target.cluster.alias             | tgt                                                   |
+| target.cluster.bootstrap.servers | kafka-mq:9092                                         |
+| tasks.max                        | 2                                                     |
++----------------------------------+-------------------------------------------------------+
 ```
 
 ## Schema
@@ -284,7 +284,7 @@ One row per task in a connector. **Requires** `connector_name` filter.
 | `worker_id` | Utf8 | yes | Worker running this task |
 | `trace` | Utf8 | yes | Error trace if task failed |
 
-**Example output (empty tasks, normal for status queries):**
+**Example output (this local fixture returned no task rows):**
 ```
 connector_name          | task_id | state | worker_id | trace
 ------------------------+---------+-------+-----------+-------
