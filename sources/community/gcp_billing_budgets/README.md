@@ -3,10 +3,10 @@
 Query GCP Cloud Billing budgets from the
 [Cloud Billing Budgets API (v1)](https://cloud.google.com/billing/docs/reference/budget/rest).
 
-This source stands on its own: pass a billing account resource name to
-`budgets(billing_account => 'billingAccounts/…')`. You can also join it in Coral SQL
-with any other installed source whose rows expose compatible billing account resource
-names (`billingAccounts/{id}`).
+This source stands on its own: pass a billing account resource name as a
+**literal** argument to
+`budgets(billing_account => 'billingAccounts/…')`. Table function arguments must
+be string literals; column values from joins or subqueries are not supported.
 
 ## Prerequisites
 
@@ -25,8 +25,7 @@ names (`billingAccounts/{id}`).
   List uses `.list`; `get_budget` uses `.get`.
 - **Project IAM** (single-project budgets only): `billing.resourcebudgets.read` and
   `resourcemanager.projects.get` on the project (`roles/viewer`, `roles/editor`, or
-  `roles/owner`). You still pass `billing_account` in queries; if billing-account IAM
-  fails, check project IAM before escalating to `roles/billing.costsManager`. See
+  `roles/owner`). You still pass `billing_account` in queries. See
   [Budget API access control](https://cloud.google.com/billing/docs/how-to/budget-api-access-control).
 - A billing account resource name in the form `billingAccounts/{id}` (from the
   [GCP Console](https://console.cloud.google.com/billing) or another data source).
@@ -40,11 +39,18 @@ or `https://www.googleapis.com/auth/cloud-platform`. The readonly billing scope
 
 Two setup paths are supported.
 
-> **Token expiry.** GCP access tokens expire after exactly 1 hour. Coral does not
-> auto-refresh tokens. Re-run `coral source add --interactive` to obtain a fresh token when
-> the current one expires. Interactive OAuth requests offline access (`access_type=offline`,
-> `prompt=consent`) so Google can issue refresh-token metadata when your consent screen
-> allows it.
+> **Access and refresh tokens (interactive OAuth).** Google access tokens are
+> short-lived (about one hour). For Desktop (installed) OAuth clients, Google's
+> authorization-code exchange always includes a `refresh_token` — see
+> [OAuth 2.0 for iOS & Desktop Apps](https://developers.google.com/identity/protocols/oauth2/native-app).
+> Coral refreshes stored OAuth credentials automatically when a refresh token is
+> available. The authorization URL uses `prompt=consent` so Google always shows the
+> consent screen and issues a fresh refresh token on reconnect.
+> If the OAuth consent screen publishing status is **Testing**, refresh tokens
+> expire after 7 days unless the app is published to Production — see
+> [Refresh token expiration](https://developers.google.com/identity/protocols/oauth2#expiration).
+> Re-run `coral source add --interactive` to reconnect when tokens are revoked or
+> missing.
 
 ### Option 1 — OAuth 2.0 (recommended)
 
@@ -69,9 +75,10 @@ bar when the CLI prompts you.
 Note your **Client ID** and **Client secret**. You will enter these during
 `coral source add --interactive`.
 
-> **Refresh tokens.** List your account on the OAuth consent screen as a test user when
-> using an app in testing mode. The manifest authorization URL requests offline access so
-> Google can return refresh-token metadata; Coral does not yet refresh tokens automatically.
+> **Refresh tokens.** When the consent screen is in Testing mode, add your Google
+> account under **Test users**. The manifest authorization URL uses `prompt=consent`
+> so Google always shows the consent screen and issues a fresh refresh token — see
+> [OAuth 2.0 for Desktop Apps](https://developers.google.com/identity/protocols/oauth2/native-app).
 
 #### Step 3 — Grant billing.budgets.list and billing.budgets.get
 
@@ -136,9 +143,31 @@ The Budgets API is **free**. There is no per-request charge.
 
 | IAM role | Role ID | Includes `billing.budgets.list` / `billing.budgets.get`? | Notes |
 |---|---|---|---|
-| Billing Account Viewer | `roles/billing.viewer` | Yes (view-only) | Sufficient for this source |
-| Billing Account Costs Manager | `roles/billing.costsManager` | Yes (+ create/edit/delete) | Use if viewer gives PERMISSION_DENIED |
-| Billing Account Administrator | `roles/billing.admin` | Yes (full admin) | Do not use for read-only access |
+| Billing Account Viewer | `roles/billing.viewer` | Yes (view-only) | **Recommended** for this source |
+
+`roles/billing.viewer` includes the
+[`billing.budgets.list`](https://cloud.google.com/billing/docs/reference/budget/rest/v1/billingAccounts.budgets/list)
+and
+[`billing.budgets.get`](https://cloud.google.com/billing/docs/reference/budget/rest/v1/billingAccounts.budgets/get)
+permissions this source needs. Write-capable roles such as
+`roles/billing.costsManager` or `roles/billing.admin` are not required for
+read-only queries.
+
+### Troubleshooting `PERMISSION_DENIED`
+
+Before changing IAM roles, confirm:
+
+1. **`billing_account` format** — use the full resource name
+   `billingAccounts/{id}`, not the short ID alone (HTTP 400).
+2. **`GCP_USER_PROJECT`** — `billingbudgets.googleapis.com` enabled and the caller
+   has `serviceusage.services.use` on that project
+   (`roles/serviceusage.serviceUsageConsumer`).
+3. **OAuth scope** — `cloud-billing` or `cloud-platform`; not
+   `cloud-billing.readonly`.
+4. **Billing-account IAM** — `roles/billing.viewer` on the billing account for
+   list/get, or project IAM for single-project budgets (see below).
+5. **Principal match** — the IAM binding `member` matches the authenticated user
+   or service account.
 
 ### Project-level access (single-project budgets)
 
@@ -326,30 +355,22 @@ FROM (
 ORDER BY b.display_name, alert_pct
 ```
 
-### Join across billing account names from another source
+### Query multiple billing accounts
 
-When another installed source exposes billing account resource names as
-`billingAccounts/{id}`, join in Coral SQL. This example uses an inline list as the
-driving side; substitute your own table or subquery:
+Table function arguments must be **string literals**. To list budgets for more
+than one billing account, run one literal call per account and combine with
+`UNION ALL`:
 
 ```sql
-SELECT
-    accounts.billing_account,
-    bud.display_name AS budget,
-    bud.calendar_period,
-    bud.specified_amount_units
-FROM (
-    SELECT unnest(ARRAY[
-        'billingAccounts/012345-567890-ABCDEF',
-        'billingAccounts/FEDCBA-098765-543210'
-    ]) AS billing_account
-) accounts
-JOIN gcp_billing_budgets.budgets(billing_account => accounts.billing_account) bud ON true
-ORDER BY accounts.billing_account, bud.display_name
+SELECT display_name, calendar_period, specified_amount_units
+FROM gcp_billing_budgets.budgets(billing_account => 'billingAccounts/012345-567890-ABCDEF')
+UNION ALL
+SELECT display_name, calendar_period, specified_amount_units
+FROM gcp_billing_budgets.budgets(billing_account => 'billingAccounts/FEDCBA-098765-543210')
+ORDER BY display_name
 ```
 
-This issues one Budgets API call per row on the left side. Pre-filter or `LIMIT` that
-table to control latency.
+Column values and subquery results cannot be used as `billing_account` arguments.
 
 ### Inspect project filters on returned budgets
 
@@ -394,16 +415,19 @@ Replace the billing account resource name with one from the
   `https://www.googleapis.com/auth/cloud-platform`. Readonly `cloud-billing.readonly`
   tokens are rejected. For `gcloud auth print-access-token --scopes`, use
   `cloud-platform` (gcloud does not allow `cloud-billing` in `--scopes`).
-- **Token expiry.** Access tokens expire after 1 hour. Re-run `coral source add --interactive`
-  or re-export a scoped token for paste setup.
+- **Token expiry.** Interactive OAuth: Coral refreshes stored credentials when Google
+  returns a refresh token; Testing-mode refresh tokens expire after 7 days. The
+  authorization URL uses `prompt=consent` so Google issues a fresh token on every
+  reconnect. Pasted `gcloud` tokens expire after ~1 hour; re-export and re-add.
 - **`thresholdPercent` is 0.0–1.0.** Multiply by 100 before displaying as a percentage.
 - **List/get parity.** `budgets` and `get_budget` return the same Budget field values for a
   given budget; prefer list when scanning an account, get when you already have `name`.
 - **Union amount type.** Fixed amounts use `specifiedAmount`; otherwise budgets track last
   calendar period spend (`lastPeriodAmount`). `lastPeriodAmount` cannot combine with
   `filter_custom_period`.
-- **Cross-source joins.** Joining `budgets(billing_account => …)` to another table issues one
-  API call per driving row; filter or limit the driving table first.
+- **Literal table-function args.** `budgets(billing_account => …)` and
+  `get_budget(name => …)` require string literals; use `UNION ALL` across accounts
+  rather than passing column values from joins.
 - **`GCP_USER_PROJECT` (required).** Sets `x-goog-user-project` on every request. Enable
   `billingbudgets.googleapis.com` on that project and grant the caller
   `serviceusage.services.use` there.

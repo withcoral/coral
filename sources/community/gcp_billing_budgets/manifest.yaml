@@ -1,6 +1,6 @@
-dsl_version: 3
 name: gcp_billing_budgets
 version: 0.1.0
+dsl_version: 3
 backend: http
 description: >-
   Query GCP Cloud Billing budgets from the Billing Budgets API (v1). List budgets
@@ -25,8 +25,13 @@ inputs:
       (APIs & Services -> Credentials -> Create credentials -> OAuth client ID ->
       Desktop app). Enable the Cloud Billing Budget API on the same project first:
         gcloud services enable billingbudgets.googleapis.com --project=my-project-id
-      GCP access tokens expire after 1 hour; re-run `coral source add --interactive`
-      to refresh.
+      For Desktop (installed) OAuth clients, Google's token exchange always includes
+      a refresh_token. Coral refreshes stored OAuth credentials automatically when a
+      refresh token is available. The authorization URL uses prompt=consent so Google
+      always shows the consent screen and issues a fresh refresh token on reconnect. Testing-mode
+      consent screens issue refresh tokens that expire after 7 days; publish the app
+      for longer-lived tokens. If no refresh token is stored, re-run
+      `coral source add --interactive`.
 
       Option 2 — Paste token: generate a short-lived token with gcloud (use
       cloud-platform; gcloud's --scopes allowlist does not include cloud-billing):
@@ -44,7 +49,8 @@ inputs:
       resourcemanager.projects.get on the project instead (included in
       roles/viewer, roles/editor, or roles/owner on the project). You still pass
       billing_account in API calls; if billing-account IAM fails, check project
-      IAM before escalating to roles/billing.costsManager.
+      IAM, OAuth scope, GCP_USER_PROJECT / serviceusage.services.use, and
+      billingAccounts/{id} argument format before changing roles.
 
       See https://cloud.google.com/billing/docs/how-to/budget-api-access-control
     credential:
@@ -58,8 +64,10 @@ inputs:
             Credentials). Enter its Client ID and Client secret when prompted.
             Coral requests https://www.googleapis.com/auth/cloud-billing.
             Desktop clients may use loopback redirects; paste the final
-            http://127.0.0.1:... URL if your browser cannot reach Coral's
-            listener (SSH, VM, split browser). Tokens expire after 1 hour.
+            http://127.0.0.1:... URL if your browser cannot reach the OAuth
+            listener (SSH, VM, split browser). The authorization URL uses
+            prompt=consent so Google always shows the consent screen and returns
+            a fresh refresh token. Desktop clients always receive a refresh token.
             See https://cloud.google.com/billing/docs/how-to/budget-api-access-control
           oauth:
             flow:
@@ -68,7 +76,7 @@ inputs:
             redirect_uri: http://127.0.0.1/oauth/callback
             redirect_uri_port_mode: random
             endpoints:
-              authorization_url: https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth?prompt=consent
               token_url: https://oauth2.googleapis.com/token
             client:
               id:
@@ -90,6 +98,7 @@ inputs:
             cloud-billing.readonly). With gcloud, use cloud-platform:
             gcloud auth print-access-token
             --scopes=https://www.googleapis.com/auth/cloud-platform
+            Tokens expire after ~1 hour; re-export and re-add when they expire.
   GCP_USER_PROJECT:
     kind: variable
     hint: |
@@ -173,10 +182,9 @@ functions:
       unnest(json_get_array(filter_projects)) to expand, or pass scope on this
       function to filter at the API.
 
-      Joining with another installed source that exposes billing account resource
-      names (billingAccounts/{id}) works in Coral SQL:
-      budgets(billing_account => a.name). That issues one API call per billing
-      account row — pre-filter or LIMIT the driving table.
+      Table function arguments must be string literals (for example
+      billing_account => 'billingAccounts/012345-567890-ABCDEF'). Column values
+      and subquery results are not accepted as table-function arguments.
 
       Use get_budget(name => ...) to fetch one budget by full resource name.
       List and get return the same Budget columns for a given budget (plus virtual
@@ -316,7 +324,7 @@ functions:
         nullable: true
         description: >-
           JSON array of credit type strings. Populated only when
-          credit_types_treatment is INCLUDE_SPECIFIED_CREDITS; otherwise empty.
+          credit_types_treatment is INCLUDE_SPECIFIED_CREDITS; otherwise NULL or empty.
         expr: {kind: path, path: [budgetFilter, creditTypes]}
       - name: credit_types_treatment
         type: Utf8
@@ -518,7 +526,7 @@ functions:
         nullable: true
         description: >-
           JSON array of credit type strings. Populated only when
-          credit_types_treatment is INCLUDE_SPECIFIED_CREDITS; otherwise empty.
+          credit_types_treatment is INCLUDE_SPECIFIED_CREDITS; otherwise NULL or empty.
         expr: {kind: path, path: [budgetFilter, creditTypes]}
       - name: credit_types_treatment
         type: Utf8
