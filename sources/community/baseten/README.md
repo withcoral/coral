@@ -70,3 +70,7 @@ on key types and how to create one.
   query.
 - `autoscaling_settings` fields are flattened into the `deployments` table as `min_replicas`, `max_replicas`, `target_concurrency` (mapped from Baseten's `min_replica`, `max_replica`, `concurrency_target` fields)
 - Secret values are never returned by the API for security reasons
+- The Management API may return `429 Too Many Requests` if you exceed Baseten's
+  rate limits. If you hit this, back off and retry after a short delay. See
+  [Baseten Rate Limits & Budgets](https://docs.baseten.co/development/model-apis/rate-limits-and-budgets)
+  for current limits and how to request an increase.
