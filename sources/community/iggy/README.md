@@ -45,14 +45,22 @@ Use the resulting JWT as `IGGY_ACCESS_TOKEN` when running `coral source add`.
 # but gets a randomly generated password (printed to the container logs)
 # unless IGGY_ROOT_USERNAME/IGGY_ROOT_PASSWORD are set — set both to "iggy"
 # for the well-known iggy/iggy credentials used below.
+#
+# IGGY_HTTP_ADDRESS/IGGY_TCP_ADDRESS must be set to 0.0.0.0 — by default Iggy
+# binds these to 127.0.0.1 inside the container, so the -p port mappings
+# below would otherwise be unreachable from the host.
 docker run -d \
   --name iggy-server \
   --cap-add SYS_NICE \
+  --security-opt seccomp=unconfined \
+  --ulimit memlock=-1:-1 \
   -p 3000:3000 \
   -p 8090:8090 \
   -p 8080:8080 \
   -e IGGY_ROOT_USERNAME=iggy \
   -e IGGY_ROOT_PASSWORD=iggy \
+  -e IGGY_HTTP_ADDRESS=0.0.0.0:3000 \
+  -e IGGY_TCP_ADDRESS=0.0.0.0:8090 \
   apache/iggy:latest
 
 # Verify it is running (/ping doesn't require auth)
@@ -72,9 +80,14 @@ echo $TOKEN
 ### Create a stream and topic for testing (optional)
 
 ```bash
-iggy -u iggy -p iggy stream create 1 test-stream
-iggy -u iggy -p iggy topic create 1 1 3 none test-topic
-# args: stream_id topic_id partitions compression_algorithm name
+iggy -u iggy -p iggy stream create test-stream
+iggy -u iggy -p iggy topic create test-stream test-topic 3 none
+# stream create: <name>
+# topic create: <stream_id> <name> <partitions> <compression_algorithm>
+# stream_id/topic_id can be a numeric ID or a name. IDs are auto-assigned by
+# the server starting at 0 for the first stream/topic — check iggy.streams
+# and iggy.topics for the assigned numeric ID (the -s/-t flags for explicit
+# IDs are not honored by iggy-cli 0.10.0).
 ```
 
 ## Configuration
@@ -135,15 +148,15 @@ permission (root bypasses) and a valid JWT - `/stats` is not a public endpoint.
 SELECT id, name, topics_count, messages_count
 FROM iggy.streams;
 
--- Topics in a stream
+-- Topics in a stream (0 is the ID of the first stream created above)
 SELECT id, name, partitions_count, messages_count, compression_algorithm
 FROM iggy.topics
-WHERE stream_id = '1';
+WHERE stream_id = '0';
 
--- Consumer groups for a topic
+-- Consumer groups for a topic (0 is the ID of the first stream/topic created above)
 SELECT id, name, members_count, partitions_count
 FROM iggy.consumer_groups
-WHERE stream_id = '1' AND topic_id = '1';
+WHERE stream_id = '0' AND topic_id = '0';
 
 -- Server health overview
 SELECT streams_count, topics_count, messages_count, clients_count,
