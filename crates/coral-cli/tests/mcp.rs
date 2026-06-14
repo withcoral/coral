@@ -289,6 +289,17 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .expect("search_catalog description")
             .contains("3 table(s) and 0 table function(s) are currently visible")
     );
+    let catalog_requests = server.list_catalog_requests();
+    let count_request = catalog_requests
+        .last()
+        .expect("tools/list should request catalog counts");
+    assert_eq!(count_request.kind, 0);
+    let count_pagination = count_request
+        .pagination
+        .as_ref()
+        .expect("count request pagination");
+    assert_eq!(count_pagination.limit, 1);
+    assert_eq!(count_pagination.offset, 0);
 
     let resources = client.list_all_resources().await?;
     assert_eq!(

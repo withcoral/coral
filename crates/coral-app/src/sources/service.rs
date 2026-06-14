@@ -48,6 +48,7 @@ use crate::transport::{
 };
 use crate::workspaces::WorkspaceName;
 use tokio::sync::mpsc;
+use tokio::task;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt as _;
 
@@ -165,11 +166,16 @@ impl SourceServiceApi for SourceService {
                 name: bundled_name,
                 bindings: source_bindings_from_proto(request.variables, request.secrets),
             };
-            let installed = sources
-                .create_bundled_source(&workspace_name, &command)
-                .map_err(app_status)?;
+            let response_workspace_name = workspace_name.clone();
+            let installed = run_blocking_source_operation(move || {
+                sources.create_bundled_source(&workspace_name, &command)
+            })
+            .await?;
             Ok(Response::new(CreateBundledSourceResponse {
-                source: Some(installed_source_to_proto(&workspace_name, installed)),
+                source: Some(installed_source_to_proto(
+                    &response_workspace_name,
+                    installed,
+                )),
             }))
         })
         .await
@@ -231,9 +237,10 @@ impl SourceServiceApi for SourceService {
                     manifest_yaml: request.manifest_yaml,
                     bindings: source_bindings_from_proto(request.variables, request.secrets),
                 };
-                let installed = sources
-                    .import_source(&workspace_name, &command)
-                    .map_err(app_status)?;
+                let installed = run_blocking_source_operation(move || {
+                    sources.import_source(&workspace_name, &command)
+                })
+                .await?;
                 let response = ImportSourceResponse {
                     event: Some(import_source_response::Event::Source(
                         installed_source_to_proto(&response_workspace_name, installed),
@@ -277,9 +284,10 @@ impl SourceServiceApi for SourceService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-            sources
-                .delete_source(&workspace_name, &source_name)
-                .map_err(app_status)?;
+            run_blocking_source_operation(move || {
+                sources.delete_source(&workspace_name, &source_name)
+            })
+            .await?;
             Ok(Response::new(DeleteSourceResponse {}))
         })
         .await
@@ -316,6 +324,18 @@ type CreateBundledSourceWithOAuthResponseStreamBox =
 type ImportSourceResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 type ImportSourceFuture = Pin<Box<dyn Future<Output = Result<InstalledSource, Status>> + Send>>;
+
+async fn run_blocking_source_operation<T, F>(operation: F) -> Result<T, Status>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, AppError> + Send + 'static,
+{
+    let span = tracing::Span::current();
+    task::spawn_blocking(move || span.in_scope(operation))
+        .await
+        .map_err(|error| Status::internal(format!("source operation task failed: {error}")))?
+        .map_err(app_status)
+}
 
 fn import_source_response_stream<F, Fut>(
     response_workspace_name: WorkspaceName,
@@ -543,7 +563,7 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
     SourceInfo {
         name: source.name.as_str().to_string(),
         description: source.description,
-        version: source.version,
+        version: source.version.unwrap_or_default(),
         inputs: source
             .inputs
             .into_iter()
@@ -596,6 +616,7 @@ fn credential_method_to_proto(
     SourceCredentialMethod {
         label: method.label.unwrap_or_default(),
         description: method.description.unwrap_or_default(),
+        hint: method.hint.unwrap_or_default(),
         method: Some(method_body),
     }
 }
@@ -707,6 +728,7 @@ mod tests {
                         kind: ManifestCredentialMethodKind::OAuth,
                         label: Some("Connect".to_string()),
                         description: None,
+                        hint: Some("Authorize in your browser.".to_string()),
                         oauth: Some(ManifestOAuthCredentialSpec {
                             flow: ManifestOAuthFlowSpec {
                                 kind: ManifestOAuthFlowKind::AuthorizationCode,
@@ -733,6 +755,7 @@ mod tests {
                         kind: ManifestCredentialMethodKind::SourceConfig,
                         label: Some("Paste token".to_string()),
                         description: None,
+                        hint: None,
                         oauth: None,
                     },
                 ],
@@ -747,6 +770,14 @@ mod tests {
         };
         let credential = secret.credential.expect("credential");
         assert_eq!(credential.methods.len(), 2);
+        assert_eq!(
+            credential.methods[0].hint, "Authorize in your browser.",
+            "authored method hint should map onto the proto"
+        );
+        assert_eq!(
+            credential.methods[1].hint, "",
+            "absent method hint should map to an empty proto string"
+        );
         match credential.methods[0].method.as_ref().expect("method") {
             ProtoCredentialMethod::Oauth(oauth) => {
                 assert_eq!(oauth.redirect_uri, "http://127.0.0.1:53682/oauth/callback");

@@ -1,7 +1,14 @@
 use std::collections::BTreeMap;
-use std::io::{IsTerminal, stdin, stdout};
-use std::path::Path;
+use std::io::{IsTerminal, Read as _, Write, stdin, stdout};
+use std::net::TcpStream;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::thread::JoinHandle;
+use std::time::Duration;
 
+use anyhow::{Context as _, bail};
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
@@ -13,14 +20,19 @@ use coral_api::v1::{
     import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
+use coral_spec::v4::SurfaceDescriptor;
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
     ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec, ValidatedSourceManifest,
     parse_source_manifest_yaml,
 };
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use dialoguer::console::style;
 use dialoguer::{Input, Password, Select, theme::ColorfulTheme};
+use serde_yaml::Value as YamlValue;
 use tonic::Request;
+use url::{Host, Url};
 
 const MAX_TABLES_PER_SCHEMA: usize = 9;
 
@@ -207,38 +219,58 @@ async fn source_from_bundled_credential_stream(
     mut stream: tonic::Streaming<CreateBundledSourceWithOAuthResponse>,
     oauth_labels: &BTreeMap<String, String>,
 ) -> Result<Source, anyhow::Error> {
-    while let Some(response) = stream
-        .message()
-        .await
-        .map_err(|error| oauth_error("retrieve", &error))?
-    {
+    let mut redirect_prompt = OAuthRedirectPastePrompt::default();
+    loop {
+        let response = match stream.message().await {
+            Ok(Some(response)) => response,
+            Ok(None) => {
+                redirect_prompt.cancel_and_join();
+                return Err(anyhow::anyhow!(
+                    "source credential retrieval stream ended before source installation completed"
+                ));
+            }
+            Err(error) => {
+                redirect_prompt.cancel_and_join();
+                return Err(oauth_error("retrieve", &error));
+            }
+        };
         let event = response.event.map(CredentialStreamEvent::from);
-        if let Some(source) = handle_credential_stream_event(event, oauth_labels) {
+        if let Some(source) =
+            handle_credential_stream_event(event, oauth_labels, &mut redirect_prompt)
+        {
+            redirect_prompt.cancel_and_join();
             return Ok(source);
         }
     }
-    Err(anyhow::anyhow!(
-        "source credential retrieval stream ended before source installation completed"
-    ))
 }
 
 async fn source_from_import_credential_stream(
     mut stream: tonic::Streaming<ImportSourceResponse>,
     oauth_labels: &BTreeMap<String, String>,
 ) -> Result<Source, anyhow::Error> {
-    while let Some(response) = stream
-        .message()
-        .await
-        .map_err(|error| oauth_error("retrieve", &error))?
-    {
+    let mut redirect_prompt = OAuthRedirectPastePrompt::default();
+    loop {
+        let response = match stream.message().await {
+            Ok(Some(response)) => response,
+            Ok(None) => {
+                redirect_prompt.cancel_and_join();
+                return Err(anyhow::anyhow!(
+                    "source credential retrieval stream ended before source import completed"
+                ));
+            }
+            Err(error) => {
+                redirect_prompt.cancel_and_join();
+                return Err(oauth_error("retrieve", &error));
+            }
+        };
         let event = response.event.map(CredentialStreamEvent::from);
-        if let Some(source) = handle_credential_stream_event(event, oauth_labels) {
+        if let Some(source) =
+            handle_credential_stream_event(event, oauth_labels, &mut redirect_prompt)
+        {
+            redirect_prompt.cancel_and_join();
             return Ok(source);
         }
     }
-    Err(anyhow::anyhow!(
-        "source credential retrieval stream ended before source import completed"
-    ))
 }
 
 enum CredentialStreamEvent {
@@ -290,6 +322,7 @@ impl From<import_source_response::Event> for CredentialStreamEvent {
 fn handle_credential_stream_event(
     event: Option<CredentialStreamEvent>,
     oauth_labels: &BTreeMap<String, String>,
+    redirect_prompt: &mut OAuthRedirectPastePrompt,
 ) -> Option<Source> {
     match event {
         Some(CredentialStreamEvent::OAuthAuthorization {
@@ -302,7 +335,11 @@ fn handle_credential_stream_event(
                 .map_or(input_key.as_str(), String::as_str);
             println!("Open this URL to connect {label}:");
             println!("{authorization_url}");
-            if !user_code.is_empty() {
+            redirect_prompt.cancel_and_join();
+            if user_code.is_empty() {
+                redirect_prompt
+                    .replace(spawn_oauth_redirect_paste_prompt(&authorization_url, label));
+            } else {
                 println!("Enter this code when prompted: {user_code}");
             }
             if let Err(err) = crate::browser::open_url(&authorization_url) {
@@ -310,8 +347,15 @@ fn handle_credential_stream_event(
             }
             None
         }
-        Some(CredentialStreamEvent::Source(source)) => Some(source),
-        Some(CredentialStreamEvent::OAuthCompleted) | None => None,
+        Some(CredentialStreamEvent::Source(source)) => {
+            redirect_prompt.cancel_and_join();
+            Some(source)
+        }
+        Some(CredentialStreamEvent::OAuthCompleted) => {
+            redirect_prompt.cancel_and_join();
+            None
+        }
+        None => None,
     }
 }
 
@@ -341,7 +385,120 @@ pub(crate) fn load_validated_manifest_file(
 ) -> Result<(String, ValidatedSourceManifest), anyhow::Error> {
     let manifest_yaml = std::fs::read_to_string(file)?;
     let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
+    let manifest_dir = manifest_file_parent_dir(file)?;
+    let manifest_yaml =
+        durable_manifest_file_yaml(&manifest_yaml, &manifest, manifest_dir.as_path())?;
+    let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
     Ok((manifest_yaml, manifest))
+}
+
+fn manifest_file_parent_dir(file: &Path) -> Result<PathBuf, anyhow::Error> {
+    let parent = file
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    parent.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize manifest directory '{}'",
+            parent.display()
+        )
+    })
+}
+
+fn durable_manifest_file_yaml(
+    manifest_yaml: &str,
+    manifest: &ValidatedSourceManifest,
+    manifest_dir: &Path,
+) -> Result<String, anyhow::Error> {
+    let Some(v4) = manifest.as_v4() else {
+        return Ok(manifest_yaml.to_string());
+    };
+    let mut replacement_files = BTreeMap::new();
+    for surface in &v4.surfaces {
+        let SurfaceDescriptor::File { file } = &surface.descriptor else {
+            continue;
+        };
+        let canonical = canonicalize_manifest_descriptor(file, manifest_dir)?;
+        if canonical != *file {
+            replacement_files.insert(surface.id.as_str(), canonical);
+        }
+    }
+    if replacement_files.is_empty() {
+        return Ok(manifest_yaml.to_string());
+    }
+
+    let mut value: YamlValue = serde_yaml::from_str(manifest_yaml)?;
+    let surfaces_key = YamlValue::String("surfaces".to_string());
+    let id_key = YamlValue::String("id".to_string());
+    let file_key = YamlValue::String("file".to_string());
+    let surfaces = value
+        .as_mapping_mut()
+        .and_then(|mapping| mapping.get_mut(&surfaces_key))
+        .and_then(YamlValue::as_sequence_mut)
+        .ok_or_else(|| anyhow::anyhow!("DSL v4 manifest is missing surfaces"))?;
+    for surface in surfaces {
+        let Some(mapping) = surface.as_mapping_mut() else {
+            continue;
+        };
+        let Some(surface_id) = mapping.get(&id_key).and_then(YamlValue::as_str) else {
+            continue;
+        };
+        let Some(file) = replacement_files.get(surface_id) else {
+            continue;
+        };
+        mapping.insert(
+            file_key.clone(),
+            YamlValue::String(file.display().to_string()),
+        );
+    }
+    serde_yaml::to_string(&value).map_err(Into::into)
+}
+
+fn canonicalize_manifest_descriptor(
+    file: &Path,
+    manifest_dir: &Path,
+) -> Result<PathBuf, anyhow::Error> {
+    let (candidate, relative_base) = if file.is_absolute() {
+        (file.to_path_buf(), None)
+    } else {
+        (manifest_dir.join(file), Some(manifest_dir))
+    };
+    let metadata = std::fs::symlink_metadata(&candidate).with_context(|| {
+        format!(
+            "failed to inspect OpenAPI descriptor '{}' resolved from manifest directory '{}'",
+            file.display(),
+            manifest_dir.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "OpenAPI descriptor '{}' must not be a symlink",
+            file.display()
+        );
+    }
+    if !metadata.file_type().is_file() {
+        bail!(
+            "OpenAPI descriptor '{}' must be a regular file",
+            file.display()
+        );
+    }
+    let canonical = candidate.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize OpenAPI descriptor '{}' resolved from manifest directory '{}'",
+            file.display(),
+            manifest_dir.display()
+        )
+    })?;
+    if let Some(base) = relative_base
+        && !canonical.starts_with(base)
+    {
+        bail!(
+            "relative OpenAPI descriptor '{}' resolves outside manifest directory '{}'",
+            file.display(),
+            base.display()
+        );
+    }
+    Ok(canonical)
 }
 
 pub(crate) async fn print_source_info(
@@ -380,7 +537,9 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
             source_credential_storage_label(source.credential_storage)
         );
     }
-    println!("  Version:     {}", source.version);
+    if !source.version.is_empty() {
+        println!("  Version:     {}", source.version);
+    }
     if !source.description.is_empty() {
         println!("  Description: {}", source.description);
     }
@@ -415,6 +574,14 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
         if verbose && !input.hint.is_empty() {
             println!("      {}", style(&input.hint).dim());
         }
+    }
+}
+
+pub(crate) fn display_version(version: &str) -> String {
+    if version.is_empty() {
+        "-".to_string()
+    } else {
+        version.to_string()
     }
 }
 
@@ -618,11 +785,10 @@ pub(crate) async fn validate_and_print(
     app: &AppClient,
     source_name: &str,
     limit: TableDisplayLimit,
-    severity_mode: ValidationSeverityMode,
 ) -> Result<(), anyhow::Error> {
     let response = validate_source(app, source_name).await?;
     print_validation_pretty(&response, limit)?;
-    match validation_follow_up(&response, severity_mode) {
+    match validation_follow_up(&response, ValidationSeverityMode::WarnOnly) {
         ValidationFollowUp::None => Ok(()),
         ValidationFollowUp::Warn(message) => {
             eprintln!("Warning: {message}");
@@ -637,9 +803,7 @@ pub(crate) async fn validate_and_warn(
     source_name: &str,
     limit: TableDisplayLimit,
 ) -> Result<(), anyhow::Error> {
-    if let Err(err) =
-        validate_and_print(app, source_name, limit, ValidationSeverityMode::WarnOnly).await
-    {
+    if let Err(err) = validate_and_print(app, source_name, limit).await {
         eprintln!("Warning: validation failed: {err}");
     }
     Ok(())
@@ -884,7 +1048,7 @@ fn query_test_counts(response: &ValidateSourceResponse) -> QueryTestCounts {
 
 fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, anyhow::Error> {
     let theme = ColorfulTheme::default();
-    print_input_hint(input);
+    print_prompt_hint(resolve_prompt_hint(input, None));
     let prompt = if input.default_value.is_empty() {
         input.key.clone()
     } else {
@@ -903,9 +1067,12 @@ fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, 
     }))
 }
 
-fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyhow::Error> {
+fn prompt_secret(
+    input: &ManifestInputSpec,
+    method: Option<&ManifestCredentialMethod>,
+) -> Result<Option<SourceSecret>, anyhow::Error> {
     let theme = ColorfulTheme::default();
-    print_input_hint(input);
+    print_prompt_hint(resolve_prompt_hint(input, method));
     let prompt = if input.default_value.is_empty() {
         input.key.clone()
     } else {
@@ -926,6 +1093,7 @@ fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyh
 
 fn prompt_source_config_secret(
     input: &ManifestInputSpec,
+    method: Option<&ManifestCredentialMethod>,
 ) -> Result<Option<SourceSecret>, anyhow::Error> {
     let env_value = read_source_input_env(&input.key).unwrap_or_default();
     if !env_value.is_empty() {
@@ -934,7 +1102,7 @@ fn prompt_source_config_secret(
             value: env_value,
         }));
     }
-    prompt_secret(input)
+    prompt_secret(input, method)
 }
 
 enum SecretInputOutcome {
@@ -951,7 +1119,7 @@ fn prompt_secret_with_methods(
 ) -> Result<SecretInputOutcome, anyhow::Error> {
     let Some(credential) = input.credential.as_ref() else {
         return Ok(SecretInputOutcome::SourceConfig(
-            prompt_source_config_secret(input)?,
+            prompt_source_config_secret(input, None)?,
         ));
     };
     let Some(selected) = select_credential_method(input, credential, prefer_skip)? else {
@@ -961,14 +1129,20 @@ fn prompt_secret_with_methods(
         .methods
         .get(selected)
         .ok_or_else(|| anyhow::anyhow!("credential method index {selected} is out of range"))?;
+    // Inside a credential-method flow the selected method's hint is the
+    // guidance shown; the input-level hint is reserved for inspection
+    // surfaces and is not reprinted here.
     match method.kind {
         ManifestCredentialMethodKind::SourceConfig => Ok(SecretInputOutcome::SourceConfig(
-            prompt_source_config_secret(input)?,
+            prompt_source_config_secret(input, Some(method))?,
         )),
-        ManifestCredentialMethodKind::OAuth => Ok(SecretInputOutcome::OAuth {
-            credential: collect_oauth_credential_method(input, selected, method)?,
-            label: credential_method_label(method),
-        }),
+        ManifestCredentialMethodKind::OAuth => {
+            print_prompt_hint(resolve_prompt_hint(input, Some(method)));
+            Ok(SecretInputOutcome::OAuth {
+                credential: collect_oauth_credential_method(input, selected, method)?,
+                label: credential_method_label(method),
+            })
+        }
     }
 }
 
@@ -1034,6 +1208,347 @@ fn oauth_error(action: &str, error: &tonic::Status) -> anyhow::Error {
     )
 }
 
+#[derive(Default)]
+struct OAuthRedirectPastePrompt {
+    cancel: Option<Arc<AtomicBool>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl OAuthRedirectPastePrompt {
+    fn new(cancel: Arc<AtomicBool>, handle: JoinHandle<()>) -> Self {
+        Self {
+            cancel: Some(cancel),
+            handle: Some(handle),
+        }
+    }
+
+    fn replace(&mut self, next: Option<Self>) {
+        self.cancel_and_join();
+        if let Some(next) = next {
+            *self = next;
+        }
+    }
+
+    fn cancel_and_join(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(handle) = self.handle.take()
+            && handle.join().is_err()
+        {
+            eprintln!("OAuth redirect paste prompt stopped unexpectedly");
+        }
+    }
+}
+
+impl Drop for OAuthRedirectPastePrompt {
+    fn drop(&mut self) {
+        self.cancel_and_join();
+    }
+}
+
+fn spawn_oauth_redirect_paste_prompt(
+    authorization_url: &str,
+    label: &str,
+) -> Option<OAuthRedirectPastePrompt> {
+    if !stdin().is_terminal() || !stdout().is_terminal() {
+        return None;
+    }
+    let (expected_redirect_uri, expected_state) = match expected_oauth_redirect(authorization_url) {
+        Ok(expected) => expected,
+        Err(error) => {
+            println!(
+                "{}",
+                style(format!("Could not enable redirect paste fallback: {error}")).dim()
+            );
+            return None;
+        }
+    };
+    let label = label.to_string();
+    println!(
+        "{}",
+        style(
+            "If the browser cannot reach the localhost callback, paste the final redirect URL below."
+        )
+        .dim()
+    );
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = Arc::clone(&cancel);
+    let handle = thread::spawn(move || {
+        while !worker_cancel.load(Ordering::Relaxed) {
+            print!("Redirect URL: ");
+            if let Err(error) = stdout().flush() {
+                eprintln!("Could not render OAuth redirect prompt: {error}");
+                return;
+            }
+            match read_oauth_redirect_prompt(&worker_cancel) {
+                Ok(Some(value)) if value.trim().is_empty() => {}
+                Ok(Some(value)) => {
+                    match submit_oauth_redirect_url(
+                        value.trim(),
+                        &expected_redirect_uri,
+                        expected_state.as_deref(),
+                    ) {
+                        Ok(()) => {
+                            println!("Submitted OAuth redirect for {label}.");
+                            return;
+                        }
+                        Err(error) => eprintln!("Could not submit OAuth redirect URL: {error}"),
+                    }
+                }
+                Ok(None) => return,
+                Err(error) => {
+                    eprintln!("Could not read OAuth redirect URL: {error}");
+                    return;
+                }
+            }
+        }
+    });
+    Some(OAuthRedirectPastePrompt::new(cancel, handle))
+}
+
+fn expected_oauth_redirect(
+    authorization_url: &str,
+) -> Result<(Url, Option<String>), anyhow::Error> {
+    let authorization_url = Url::parse(authorization_url)?;
+    let redirect_uri = authorization_url
+        .query_pairs()
+        .find_map(|(key, value)| (key == "redirect_uri").then(|| value.into_owned()))
+        .ok_or_else(|| anyhow::anyhow!("authorization URL is missing redirect_uri"))?;
+    let redirect_uri = Url::parse(&redirect_uri)?;
+    validate_loopback_http_redirect(&redirect_uri)?;
+    let state = authorization_url
+        .query_pairs()
+        .find_map(|(key, value)| (key == "state").then(|| value.into_owned()));
+    Ok((redirect_uri, state))
+}
+
+fn submit_oauth_redirect_url(
+    value: &str,
+    expected_redirect_uri: &Url,
+    expected_state: Option<&str>,
+) -> Result<(), anyhow::Error> {
+    let callback_url = Url::parse(value)?;
+    validate_oauth_redirect_url(&callback_url, expected_redirect_uri, expected_state)?;
+    let response = send_loopback_get(&callback_url)?;
+    let status = response.lines().next().unwrap_or_default();
+    if !http_status_is_success(status) {
+        return Err(anyhow::anyhow!(
+            "callback listener returned unexpected response: {status}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_oauth_redirect_url(
+    callback_url: &Url,
+    expected_redirect_uri: &Url,
+    expected_state: Option<&str>,
+) -> Result<(), anyhow::Error> {
+    validate_loopback_http_redirect(callback_url)?;
+    if callback_url.host() != expected_redirect_uri.host()
+        || callback_url.port_or_known_default() != expected_redirect_uri.port_or_known_default()
+        || callback_url.path() != expected_redirect_uri.path()
+    {
+        return Err(anyhow::anyhow!(
+            "redirect URL must match the OAuth redirect URI host, port, and path"
+        ));
+    }
+    if callback_url.query().is_none() {
+        return Err(anyhow::anyhow!("redirect URL is missing query parameters"));
+    }
+    if let Some(expected_state) = expected_state {
+        let callback_state = callback_url
+            .query_pairs()
+            .find_map(|(key, value)| (key == "state").then(|| value.into_owned()));
+        if callback_state.as_deref() != Some(expected_state) {
+            return Err(anyhow::anyhow!(
+                "redirect URL state does not match the active OAuth authorization"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn read_oauth_redirect_prompt(cancel: &AtomicBool) -> Result<Option<String>, anyhow::Error> {
+    let _raw_mode = RawModeGuard::enable()?;
+    let mut output = stdout();
+    let mut value = String::new();
+    while !cancel.load(Ordering::Relaxed) {
+        if !event::poll(Duration::from_millis(100))? {
+            continue;
+        }
+        if let Event::Key(key) = event::read()? {
+            let previous_len = value.len();
+            match apply_redirect_prompt_key(key, &mut value) {
+                RedirectPromptAction::Continue => {}
+                RedirectPromptAction::Submit => {
+                    finish_redirect_prompt_line(&mut output)?;
+                    return Ok(Some(value));
+                }
+                RedirectPromptAction::Cancel => {
+                    finish_redirect_prompt_line(&mut output)?;
+                    return Ok(None);
+                }
+            }
+            render_redirect_prompt_key_echo(&mut output, key, previous_len, value.len())?;
+        }
+    }
+    finish_redirect_prompt_line(&mut output)?;
+    Ok(None)
+}
+
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> Result<Self, anyhow::Error> {
+        enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        if let Err(error) = disable_raw_mode() {
+            eprintln!("Could not restore terminal mode: {error}");
+        }
+    }
+}
+
+fn finish_redirect_prompt_line(output: &mut impl Write) -> Result<(), anyhow::Error> {
+    output.write_all(b"\r\n")?;
+    output.flush()?;
+    Ok(())
+}
+
+fn render_redirect_prompt_key_echo(
+    output: &mut impl Write,
+    key: KeyEvent,
+    previous_len: usize,
+    current_len: usize,
+) -> Result<(), anyhow::Error> {
+    if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return Ok(());
+    }
+    match key.code {
+        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            let mut buf = [0; 4];
+            output.write_all(ch.encode_utf8(&mut buf).as_bytes())?;
+            output.flush()?;
+        }
+        KeyCode::Backspace if current_len < previous_len => {
+            output.write_all(b"\x08 \x08")?;
+            output.flush()?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RedirectPromptAction {
+    Continue,
+    Submit,
+    Cancel,
+}
+
+fn apply_redirect_prompt_key(key: KeyEvent, value: &mut String) -> RedirectPromptAction {
+    if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return RedirectPromptAction::Continue;
+    }
+    match key.code {
+        KeyCode::Enter => RedirectPromptAction::Submit,
+        KeyCode::Esc => RedirectPromptAction::Cancel,
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            RedirectPromptAction::Cancel
+        }
+        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            value.push(ch);
+            RedirectPromptAction::Continue
+        }
+        KeyCode::Backspace => {
+            value.pop();
+            RedirectPromptAction::Continue
+        }
+        _ => RedirectPromptAction::Continue,
+    }
+}
+
+fn validate_loopback_http_redirect(url: &Url) -> Result<(), anyhow::Error> {
+    if url.scheme() != "http" {
+        return Err(anyhow::anyhow!("redirect URL must use http"));
+    }
+    let Some(host) = url.host() else {
+        return Err(anyhow::anyhow!("redirect URL is missing host"));
+    };
+    let is_loopback = match host {
+        Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
+        Host::Ipv4(addr) => addr.is_loopback(),
+        Host::Ipv6(addr) => addr.is_loopback(),
+    };
+    if !is_loopback {
+        return Err(anyhow::anyhow!("redirect URL host must be loopback"));
+    }
+    if url.port_or_known_default().is_none() {
+        return Err(anyhow::anyhow!("redirect URL is missing port"));
+    }
+    Ok(())
+}
+
+fn send_loopback_get(url: &Url) -> Result<String, anyhow::Error> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("redirect URL is missing host"))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("redirect URL is missing port"))?;
+    let mut stream = TcpStream::connect((host, port))?;
+    let timeout = Some(Duration::from_secs(5));
+    stream.set_read_timeout(timeout)?;
+    stream.set_write_timeout(timeout)?;
+    let request = format!(
+        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        request_target(url),
+        host_header(url)?
+    );
+    stream.write_all(request.as_bytes())?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    Ok(response)
+}
+
+fn request_target(url: &Url) -> String {
+    match url.query() {
+        Some(query) => format!("{}?{query}", url.path()),
+        None => url.path().to_string(),
+    }
+}
+
+fn host_header(url: &Url) -> Result<String, anyhow::Error> {
+    let host = url
+        .host()
+        .ok_or_else(|| anyhow::anyhow!("redirect URL is missing host"))?;
+    let mut value = match host {
+        Host::Domain(domain) => domain.to_string(),
+        Host::Ipv4(addr) => addr.to_string(),
+        Host::Ipv6(addr) => format!("[{addr}]"),
+    };
+    if let Some(port) = url.port() {
+        value.push(':');
+        value.push_str(&port.to_string());
+    }
+    Ok(value)
+}
+
+fn http_status_is_success(status: &str) -> bool {
+    status
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .is_some_and(|code| (200..300).contains(&code))
+}
+
 fn prompt_oauth_credential_inputs(
     oauth: &ManifestOAuthCredentialSpec,
 ) -> Result<Vec<OAuthCredentialInput>, anyhow::Error> {
@@ -1095,10 +1610,28 @@ fn prompt_oauth_client_secret(input_key: &str) -> Result<String, anyhow::Error> 
     Ok(value)
 }
 
-fn print_input_hint(input: &ManifestInputSpec) {
-    if let Some(hint) = input.hint.as_deref()
-        && !hint.is_empty()
-    {
+/// Resolve the single hint to show while interactively collecting `input`.
+///
+/// Inside a credential-method flow (`method` is `Some`) the selected method's
+/// hint takes precedence, so the input-level hint — kept concise for
+/// inspection surfaces (`coral source info --verbose`, `coral.inputs`) and the
+/// generated docs — is not reprinted alongside it. When the selected method
+/// has no hint we fall back to the input-level hint rather than show nothing:
+/// a dormant safety net for multi-method secrets that have not authored
+/// per-method hints. For variables and plain secrets (`method` is `None`) the
+/// input-level hint is used directly. Returning a single value makes it
+/// impossible to print both the input-level and method-level hints together.
+fn resolve_prompt_hint<'a>(
+    input: &'a ManifestInputSpec,
+    method: Option<&'a ManifestCredentialMethod>,
+) -> Option<&'a str> {
+    let trimmed = |hint: Option<&'a str>| hint.map(str::trim).filter(|hint| !hint.is_empty());
+    trimmed(method.and_then(|method| method.hint.as_deref()))
+        .or_else(|| trimmed(input.hint.as_deref()))
+}
+
+fn print_prompt_hint(hint: Option<&str>) {
+    if let Some(hint) = hint {
         println!("  {}", style(hint).dim());
     }
 }
@@ -1132,12 +1665,20 @@ mod tests {
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
         ManifestInputKind, ManifestInputSpec,
     };
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use std::collections::HashMap;
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::thread;
+    use url::Url;
 
     use super::{
-        CredentialPromptMode, ValidationFollowUp, ValidationSeverityMode, collect_inputs_with_hint,
-        finalize_input_value, shell_quote_arg, source_name_arg, validation_follow_up,
+        CredentialPromptMode, RedirectPromptAction, ValidationFollowUp, ValidationSeverityMode,
+        apply_redirect_prompt_key, collect_inputs_with_hint, expected_oauth_redirect,
+        finalize_input_value, render_redirect_prompt_key_echo, resolve_prompt_hint,
+        shell_quote_arg, source_name_arg, submit_oauth_redirect_url, validate_oauth_redirect_url,
+        validation_follow_up,
     };
 
     #[test]
@@ -1188,6 +1729,7 @@ mod tests {
                     kind: ManifestCredentialMethodKind::SourceConfig,
                     label: Some("Paste token".to_string()),
                     description: None,
+                    hint: None,
                     oauth: None,
                 }],
             }),
@@ -1195,6 +1737,79 @@ mod tests {
 
         assert!(CredentialPromptMode::EnvFirst.reads_env_before_prompt(&input));
         assert!(!CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&input));
+    }
+
+    fn secret_with_method(
+        input_hint: Option<&str>,
+        method_hint: Option<&str>,
+    ) -> (ManifestInputSpec, ManifestCredentialMethod) {
+        let method = ManifestCredentialMethod {
+            kind: ManifestCredentialMethodKind::SourceConfig,
+            label: Some("Paste token".to_string()),
+            description: None,
+            hint: method_hint.map(ToString::to_string),
+            oauth: None,
+        };
+        let input = ManifestInputSpec {
+            key: "GITHUB_TOKEN".to_string(),
+            kind: ManifestInputKind::Secret,
+            required: true,
+            default_value: String::new(),
+            hint: input_hint.map(ToString::to_string),
+            credential: Some(ManifestCredentialSpec {
+                methods: vec![method.clone()],
+            }),
+        };
+        (input, method)
+    }
+
+    #[test]
+    fn prompt_hint_uses_input_hint_outside_a_credential_method_flow() {
+        let (input, _) = secret_with_method(Some("Input-level summary."), Some("Method guidance."));
+        assert_eq!(
+            resolve_prompt_hint(&input, None),
+            Some("Input-level summary.")
+        );
+    }
+
+    #[test]
+    fn prompt_hint_uses_only_the_method_hint_inside_a_credential_method_flow() {
+        // Once a method is selected, the method hint is the guidance and the
+        // input-level hint is never reprinted (the source_config/"Paste token"
+        // path must not show both).
+        let (input, method) =
+            secret_with_method(Some("Input-level summary."), Some("Method guidance."));
+        assert_eq!(
+            resolve_prompt_hint(&input, Some(&method)),
+            Some("Method guidance.")
+        );
+    }
+
+    #[test]
+    fn prompt_hint_falls_back_to_input_hint_when_method_has_no_hint() {
+        // Dormant safety net: a multi-method secret whose selected method has
+        // no hint still shows the input-level hint rather than nothing.
+        let (input, method) = secret_with_method(Some("Input-level summary."), None);
+        assert_eq!(
+            resolve_prompt_hint(&input, Some(&method)),
+            Some("Input-level summary.")
+        );
+    }
+
+    #[test]
+    fn prompt_hint_shows_nothing_when_neither_method_nor_input_has_a_hint() {
+        let (input, method) = secret_with_method(None, None);
+        assert_eq!(resolve_prompt_hint(&input, Some(&method)), None);
+    }
+
+    #[test]
+    fn prompt_hint_trims_and_drops_blank_hints() {
+        let (input, method) = secret_with_method(Some("   "), Some("  Method guidance.  "));
+        assert_eq!(resolve_prompt_hint(&input, None), None);
+        assert_eq!(
+            resolve_prompt_hint(&input, Some(&method)),
+            Some("Method guidance.")
+        );
     }
 
     #[test]
@@ -1347,6 +1962,182 @@ mod tests {
             "'fixtures/my source.yaml'"
         );
         assert_eq!(shell_quote_arg("it'demo.yaml"), "'it'\\''demo.yaml'");
+    }
+
+    #[test]
+    fn expected_oauth_redirect_reads_authorization_query() {
+        let authorization_url = "https://provider.example.com/oauth/authorize?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%3A53682%2Foauth%2Fcallback&state=xyz";
+
+        let (redirect_uri, state) =
+            expected_oauth_redirect(authorization_url).expect("redirect_uri should parse");
+
+        assert_eq!(
+            redirect_uri.as_str(),
+            "http://localhost:53682/oauth/callback"
+        );
+        assert_eq!(state.as_deref(), Some("xyz"));
+    }
+
+    #[test]
+    fn oauth_redirect_url_must_match_expected_loopback_callback() {
+        let expected = Url::parse("http://localhost:53682/oauth/callback").expect("expected url");
+        let mismatched =
+            Url::parse("http://localhost:53682/other?state=xyz&code=abc").expect("callback url");
+
+        let error = validate_oauth_redirect_url(&mismatched, &expected, None)
+            .expect_err("mismatched callback should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must match the OAuth redirect URI"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn oauth_redirect_url_rejects_non_loopback_hosts() {
+        let expected = Url::parse("http://localhost:53682/oauth/callback").expect("expected url");
+        let callback = Url::parse("http://example.com:53682/oauth/callback?state=xyz&code=abc")
+            .expect("callback url");
+
+        let error = validate_oauth_redirect_url(&callback, &expected, None)
+            .expect_err("non-loopback callback should fail");
+
+        assert!(
+            error.to_string().contains("host must be loopback"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn submit_oauth_redirect_url_sends_get_to_loopback_listener() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind callback listener");
+        let port = listener.local_addr().expect("listener addr").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept callback");
+            let mut buffer = [0_u8; 1024];
+            let read = stream.read(&mut buffer).expect("read callback request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(
+                request.starts_with("GET /oauth/callback?state=xyz&code=test-code HTTP/1.1\r\n"),
+                "unexpected request: {request}"
+            );
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+                .expect("write callback response");
+        });
+        let expected =
+            Url::parse(&format!("http://127.0.0.1:{port}/oauth/callback")).expect("expected url");
+        let callback_url =
+            format!("http://127.0.0.1:{port}/oauth/callback?state=xyz&code=test-code");
+
+        submit_oauth_redirect_url(&callback_url, &expected, Some("xyz"))
+            .expect("submit redirect url");
+        server.join().expect("callback server");
+    }
+
+    #[test]
+    fn oauth_redirect_url_must_match_expected_state_when_present() {
+        let expected = Url::parse("http://localhost:53682/oauth/callback").expect("expected url");
+        let stale = Url::parse("http://localhost:53682/oauth/callback?state=old&code=abc")
+            .expect("callback url");
+
+        let error = validate_oauth_redirect_url(&stale, &expected, Some("xyz"))
+            .expect_err("state mismatch should fail before callback submission");
+
+        assert!(
+            error.to_string().contains("state"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn redirect_prompt_key_events_collect_submit_and_edit_url() {
+        let mut value = String::new();
+
+        for ch in "http://localhost/callback".chars() {
+            assert_eq!(
+                apply_redirect_prompt_key(
+                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                    &mut value
+                ),
+                RedirectPromptAction::Continue
+            );
+        }
+        assert_eq!(
+            apply_redirect_prompt_key(
+                KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+                &mut value
+            ),
+            RedirectPromptAction::Continue
+        );
+        assert_eq!(
+            apply_redirect_prompt_key(
+                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+                &mut value
+            ),
+            RedirectPromptAction::Continue
+        );
+        assert_eq!(
+            apply_redirect_prompt_key(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &mut value
+            ),
+            RedirectPromptAction::Submit
+        );
+
+        assert_eq!(value, "http://localhost/callback");
+    }
+
+    #[test]
+    fn redirect_prompt_key_events_cancel_without_appending_control_input() {
+        let mut value = String::from("http://localhost/callback");
+
+        assert_eq!(
+            apply_redirect_prompt_key(
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+                &mut value
+            ),
+            RedirectPromptAction::Continue
+        );
+        assert_eq!(
+            apply_redirect_prompt_key(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                &mut value
+            ),
+            RedirectPromptAction::Cancel
+        );
+        assert_eq!(value, "http://localhost/callback");
+    }
+
+    #[test]
+    fn redirect_prompt_key_echoes_visible_edits() {
+        let mut output = Vec::new();
+
+        render_redirect_prompt_key_echo(
+            &mut output,
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
+            0,
+            1,
+        )
+        .expect("echo char");
+        render_redirect_prompt_key_echo(
+            &mut output,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            1,
+            0,
+        )
+        .expect("echo backspace");
+        render_redirect_prompt_key_echo(
+            &mut output,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            0,
+            0,
+        )
+        .expect("skip control char");
+
+        assert_eq!(output, b"h\x08 \x08");
     }
 
     #[test]

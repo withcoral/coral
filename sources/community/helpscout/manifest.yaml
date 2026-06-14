@@ -1,0 +1,693 @@
+name: helpscout
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Help Scout mailboxes, conversations, customers, and users from the
+  Mailbox API v2. Join with bundled Stripe, Intercom, and Linear on customer
+  email, and with community Gmail on sender email.
+base_url: https://api.helpscout.net/v2
+inputs:
+  HELPSCOUT_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Help Scout OAuth 2.0 access token (Bearer). Paste the token value
+      itself, without a `Bearer ` prefix.
+
+      For interactive setup, choose "Connect Help Scout" and provide your
+      Help Scout OAuth application ID and secret from Your Profile → My apps.
+      Register the exact loopback redirect URI
+      http://127.0.0.1:8765/oauth/callback in Your Profile → My apps.
+      Help Scout uses the registered redirect URL as-is (it does not accept
+      variable localhost ports like some other OAuth providers).
+      The flow uses Help Scout's authorization-code grant and returns access
+      and refresh tokens. Access tokens expire in about 48 hours
+      (`expires_in: 172800`). The token must belong to an active, invited
+      Help Scout user. Help Scout also supports client-credentials grants for
+      internal use; this source uses authorization code for interactive setup.
+
+      Permissions: Help Scout does not expose granular OAuth scope names in
+      My apps. Authorization-code tokens inherit the signed-in user's Help Scout
+      account access. The connecting user must be active, invited, and able to
+      read mailboxes, conversations, customers, and users via Mailbox API v2,
+      including conversation search.
+
+      Re-run `coral source add` and choose Connect Help Scout when queries
+      fail with HTTP 401.
+      See https://developer.helpscout.com/mailbox-api/overview/authentication/
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Help Scout
+          description: Sign in with a Help Scout user who can read mailboxes, conversations, customers, and users.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: disabled
+            redirect_uri: http://127.0.0.1:8765/oauth/callback
+            redirect_uri_port_mode: fixed
+            endpoints:
+              authorization_url: https://secure.helpscout.net/authentication/authorizeClientApplication
+              token_url: https://api.helpscout.net/v2/oauth2/token
+            client:
+              id:
+                input: HELPSCOUT_OAUTH_CLIENT_ID
+              secret:
+                input: HELPSCOUT_OAUTH_CLIENT_SECRET
+                transport: request_body
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Help Scout OAuth access token.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.HELPSCOUT_ACCESS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/hal+json
+test_queries:
+  - SELECT id, name, email FROM helpscout.mailboxes LIMIT 5
+  - SELECT id, first_name, last_name, email FROM helpscout.customers LIMIT 5
+  - SELECT id, number, subject, status, customer_email FROM helpscout.conversations LIMIT 5
+  - SELECT id, email, first_name, last_name FROM helpscout.users LIMIT 5
+
+functions:
+  - name: search_conversations
+    kind: search
+    description: >
+      Provider-native Help Scout conversation search using the query
+      parameter (for example tag:vip, (number:123), (email:"user@example.com")).
+    fetch_limit_default: 25
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: mailbox
+        bind:
+          arg: mailbox
+      - name: status
+        bind:
+          arg: status
+    request:
+      method: GET
+      path: /conversations
+      query:
+        - name: query
+          from: arg
+          key: query
+        - name: mailbox
+          from: arg
+          key: mailbox
+        - name: status
+          from: arg
+          key: status
+    response:
+      rows_path:
+        - _embedded
+        - conversations
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Help Scout search query passed to the function.
+        expr:
+          kind: from_arg
+          key: query
+      - name: mailbox
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional mailbox (inbox) ID filter.
+        expr:
+          kind: from_arg
+          key: mailbox
+      - name: id
+        type: Int64
+        nullable: false
+        description: Conversation ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: number
+        type: Int64
+        nullable: true
+        description: Human-readable conversation number in the mailbox.
+        expr:
+          kind: path
+          path:
+            - number
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Conversation subject line.
+        expr:
+          kind: path
+          path:
+            - subject
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Conversation status (active, closed, open, pending, spam).
+        expr:
+          kind: path
+          path:
+            - status
+      - name: mailbox_id
+        type: Int64
+        nullable: true
+        description: Mailbox (inbox) ID.
+        expr:
+          kind: path
+          path:
+            - mailboxId
+      - name: customer_id
+        type: Int64
+        nullable: true
+        description: Primary customer ID.
+        expr:
+          kind: path
+          path:
+            - primaryCustomer
+            - id
+      - name: customer_email
+        type: Utf8
+        nullable: true
+        description: Primary customer email (join key for Gmail, Stripe, Intercom).
+        expr:
+          kind: path
+          path:
+            - primaryCustomer
+            - email
+      - name: customer_name
+        type: Utf8
+        nullable: true
+        description: Primary customer first name.
+        expr:
+          kind: path
+          path:
+            - primaryCustomer
+            - first
+      - name: assignee_id
+        type: Int64
+        nullable: true
+        description: Assigned Help Scout user ID.
+        expr:
+          kind: path
+          path:
+            - assignee
+            - id
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last user update timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - userUpdatedAt
+
+tables:
+  - name: mailboxes
+    description: Help Scout mailboxes (shared inboxes).
+    guide: |
+      Start here to discover mailbox IDs for filtering `conversations` and
+      `customers`. Use `id` with the `mailbox` filter on other tables.
+    fetch_limit_default: 50
+    request:
+      method: GET
+      path: /mailboxes
+    response:
+      rows_path:
+        - _embedded
+        - mailboxes
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Mailbox ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Mailbox display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Mailbox slug identifier.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Mailbox email address.
+        expr:
+          kind: path
+          path:
+            - email
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - createdAt
+
+  - name: customers
+    description: Help Scout customers (end users who contact support).
+    guide: |
+      Use `helpscout.conversations.customer_email` as the primary customer
+      email join key for cross-source queries. The `email` column is the first
+      `_embedded.emails[].value` address when Help Scout includes embedded
+      emails on the list row. Prefer mailbox scoping on large accounts.
+    fetch_limit_default: 50
+    filters:
+      - name: mailbox
+        required: false
+      - name: first_name
+        required: false
+      - name: last_name
+        required: false
+      - name: modified_since
+        required: false
+    request:
+      method: GET
+      path: /customers
+      query:
+        - name: mailbox
+          from: filter
+          key: mailbox
+        - name: firstName
+          from: filter
+          key: first_name
+        - name: lastName
+          from: filter
+          key: last_name
+        - name: modifiedSince
+          from: filter
+          key: modified_since
+    response:
+      rows_path:
+        - _embedded
+        - customers
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Customer ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: Customer first name.
+        expr:
+          kind: path
+          path:
+            - firstName
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Customer last name.
+        expr:
+          kind: path
+          path:
+            - lastName
+      - name: email
+        type: Utf8
+        nullable: true
+        description: First customer email from _embedded.emails when returned on the list row.
+        expr:
+          kind: first_array_item_path
+          path:
+            - _embedded
+            - emails
+          item_path:
+            - value
+      - name: organization
+        type: Utf8
+        nullable: true
+        description: Organization name on the customer record.
+        expr:
+          kind: path
+          path:
+            - organization
+      - name: job_title
+        type: Utf8
+        nullable: true
+        description: Customer job title.
+        expr:
+          kind: path
+          path:
+            - jobTitle
+      - name: conversation_count
+        type: Int64
+        nullable: true
+        description: Number of conversations for this customer.
+        expr:
+          kind: path
+          path:
+            - conversationCount
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last modification timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - updatedAt
+
+  - name: conversations
+    description: Help Scout support conversations.
+    guide: |
+      Lists conversations (defaults to active status server-side). Join
+      `customer_email` to Gmail sender email, Stripe customers, and Intercom
+      contacts. Use `mailbox` to scope to one inbox; `status = 'all'` for every
+      status. For provider-native search syntax use `search_conversations`.
+    fetch_limit_default: 50
+    filters:
+      - name: mailbox
+        required: false
+      - name: status
+        required: false
+      - name: tag
+        required: false
+      - name: assigned_to
+        required: false
+      - name: modified_since
+        required: false
+      - name: number
+        required: false
+    request:
+      method: GET
+      path: /conversations
+      query:
+        - name: mailbox
+          from: filter
+          key: mailbox
+        - name: status
+          from: filter
+          key: status
+        - name: tag
+          from: filter
+          key: tag
+        - name: assigned_to
+          from: filter
+          key: assigned_to
+        - name: modifiedSince
+          from: filter
+          key: modified_since
+        - name: number
+          from: filter
+          key: number
+    response:
+      rows_path:
+        - _embedded
+        - conversations
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Conversation ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: number
+        type: Int64
+        nullable: true
+        description: Human-readable conversation number in the mailbox.
+        expr:
+          kind: path
+          path:
+            - number
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Conversation subject line.
+        expr:
+          kind: path
+          path:
+            - subject
+      - name: preview
+        type: Utf8
+        nullable: true
+        description: Short preview of the latest thread.
+        expr:
+          kind: path
+          path:
+            - preview
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Conversation status.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: mailbox_id
+        type: Int64
+        nullable: true
+        description: Mailbox (inbox) ID.
+        expr:
+          kind: path
+          path:
+            - mailboxId
+      - name: folder_id
+        type: Int64
+        nullable: true
+        description: Folder ID within the mailbox.
+        expr:
+          kind: path
+          path:
+            - folderId
+      - name: customer_id
+        type: Int64
+        nullable: true
+        description: Primary customer ID.
+        expr:
+          kind: path
+          path:
+            - primaryCustomer
+            - id
+      - name: customer_email
+        type: Utf8
+        nullable: true
+        description: Primary customer email (join key for Gmail, Stripe, Intercom).
+        expr:
+          kind: path
+          path:
+            - primaryCustomer
+            - email
+      - name: customer_first_name
+        type: Utf8
+        nullable: true
+        description: Primary customer first name.
+        expr:
+          kind: path
+          path:
+            - primaryCustomer
+            - first
+      - name: customer_last_name
+        type: Utf8
+        nullable: true
+        description: Primary customer last name.
+        expr:
+          kind: path
+          path:
+            - primaryCustomer
+            - last
+      - name: assignee_id
+        type: Int64
+        nullable: true
+        description: Assigned Help Scout user ID.
+        expr:
+          kind: path
+          path:
+            - assignee
+            - id
+      - name: assignee_email
+        type: Utf8
+        nullable: true
+        description: Assigned agent email.
+        expr:
+          kind: path
+          path:
+            - assignee
+            - email
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last user update timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - userUpdatedAt
+      - name: closed_at
+        type: Utf8
+        nullable: true
+        description: Close timestamp when the conversation is closed.
+        expr:
+          kind: path
+          path:
+            - closedAt
+
+  - name: users
+    description: Help Scout account users (agents and admins).
+    guide: |
+      Lists users on the account. Join `assignee_id` from `conversations`
+      to `users.id`. Filter by `email` for an exact match lookup.
+    fetch_limit_default: 50
+    filters:
+      - name: email
+        required: false
+      - name: mailbox
+        required: false
+    request:
+      method: GET
+      path: /users
+      query:
+        - name: email
+          from: filter
+          key: email
+        - name: mailbox
+          from: filter
+          key: mailbox
+    response:
+      rows_path:
+        - _embedded
+        - users
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: User ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: User first name.
+        expr:
+          kind: path
+          path:
+            - firstName
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: User last name.
+        expr:
+          kind: path
+          path:
+            - lastName
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+        expr:
+          kind: path
+          path:
+            - email
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Account role (for example owner, admin, user).
+        expr:
+          kind: path
+          path:
+            - role
+      - name: job_title
+        type: Utf8
+        nullable: true
+        description: User job title.
+        expr:
+          kind: path
+          path:
+            - jobTitle
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Last update timestamp (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - updatedAt

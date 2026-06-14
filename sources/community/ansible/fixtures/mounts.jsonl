@@ -1,0 +1,5 @@
+{"hostname":"rhel-control","mount":"/","device":"/dev/vda2","fstype":"xfs","size_total":85899345920,"size_available":64424509440,"options":"rw,relatime,seclabel"}
+{"hostname":"alpine-api","mount":"/","device":"/dev/vda1","fstype":"ext4","size_total":10737418240,"size_available":536870912,"options":"rw,relatime"}
+{"hostname":"arch-observe","mount":"/var/lib","device":"/dev/vdb1","fstype":"ext4","size_total":53687091200,"size_available":21474836480,"options":"rw,relatime"}
+{"hostname":"debian-db","mount":"/var/lib/postgresql","device":"/dev/vdb1","fstype":"ext4","size_total":107374182400,"size_available":8589934592,"options":"rw,relatime"}
+{"hostname":"suse-auth","mount":"/","device":"/dev/vda2","fstype":"btrfs","size_total":42949672960,"size_available":21474836480,"options":"rw,relatime,space_cache"}

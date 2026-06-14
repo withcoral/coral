@@ -2,13 +2,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputResolver};
 use async_trait::async_trait;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SearchLimitsSpec, SourceTableFunctionSpec, TableCommon,
+    SearchLimitsSpec, SourceBackend, SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::catalog::TableFunctionImpl;
@@ -135,16 +135,70 @@ pub(crate) struct BackendCompileRequest<'a> {
     pub(crate) source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 }
 
+/// Shared resources available while registering one batch of compiled sources.
+///
+/// Every backend receives this context. Most backends ignore it today; HTTP uses
+/// it to share default transport setup across sources registered in the same
+/// runtime build.
+#[derive(Default)]
+pub(crate) struct BackendRegistrationContext {
+    default_http_client: OnceLock<Result<reqwest::Client, String>>,
+}
+
+impl BackendRegistrationContext {
+    pub(crate) fn default_http_client(
+        &self,
+        build_client: impl FnOnce() -> Result<reqwest::Client, String>,
+    ) -> Result<reqwest::Client, String> {
+        self.default_http_client
+            .get_or_init(build_client)
+            .as_ref()
+            .cloned()
+            .map_err(Clone::clone)
+    }
+}
+
 #[async_trait]
 pub(crate) trait CompiledBackendSource: Send + Sync {
     fn schema_name(&self) -> &str;
 
     fn source_name(&self) -> &str;
 
+    fn validate_runtime_capabilities(&self) -> datafusion::error::Result<()>;
+
+    /// Register this compiled source into a `DataFusion` session.
+    ///
+    /// The registration context is batch-scoped and backend-agnostic. Backends
+    /// should use it only for resources that are safe to share across sources in
+    /// the same registration pass.
     async fn register(
         &self,
         ctx: &SessionContext,
+        registration: &BackendRegistrationContext,
     ) -> datafusion::error::Result<BackendRegistration>;
+}
+
+pub(crate) fn validate_lookup_key_filter_backend_support(
+    source_name: &str,
+    backend_kind: SourceBackend,
+    has_lookup_key_filters: bool,
+) -> datafusion::error::Result<()> {
+    if !has_lookup_key_filters || matches!(backend_kind, SourceBackend::Http) {
+        return Ok(());
+    }
+
+    Err(DataFusionError::Execution(format!(
+        "source '{source_name}': lookup_key filters are not supported by the current engine for backend '{}'",
+        backend_kind_label(backend_kind)
+    )))
+}
+
+fn backend_kind_label(kind: SourceBackend) -> &'static str {
+    match kind {
+        SourceBackend::Http => "http",
+        SourceBackend::File => "file",
+        SourceBackend::Mcp => "mcp",
+    }
 }
 
 pub(crate) fn required_filter_names(filters: &[FilterSpec]) -> Vec<String> {
@@ -359,4 +413,47 @@ pub(crate) fn schema_from_columns(
         ));
     }
     Ok(Arc::new(Schema::new(fields)))
+}
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    #[test]
+    fn default_http_client_is_shared_only_within_registration_context() {
+        let build_count = AtomicUsize::new(0);
+        let first_context = BackendRegistrationContext::default();
+
+        first_context
+            .default_http_client(|| build_counted_client(&build_count))
+            .expect("first context should build a client");
+        first_context
+            .default_http_client(|| build_counted_client(&build_count))
+            .expect("first context should reuse its client");
+
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            1,
+            "one registration context should build one default HTTP client"
+        );
+
+        let second_context = BackendRegistrationContext::default();
+        second_context
+            .default_http_client(|| build_counted_client(&build_count))
+            .expect("new context should build its own client");
+
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            2,
+            "default HTTP clients should not be process-global"
+        );
+    }
+
+    fn build_counted_client(build_count: &AtomicUsize) -> Result<reqwest::Client, String> {
+        build_count.fetch_add(1, Ordering::SeqCst);
+        reqwest::Client::builder()
+            .build()
+            .map_err(|error| error.to_string())
+    }
 }

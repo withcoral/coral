@@ -156,9 +156,13 @@ async fn list_catalog_does_not_refresh_expired_oauth_access_token() {
     );
 
     let tables = harness.list_tables().await;
+    let refreshed_tables = tables
+        .iter()
+        .filter(|table| table.schema_name == "refreshed_messages")
+        .collect::<Vec<_>>();
 
-    assert_eq!(tables.len(), 1);
-    assert_eq!(tables[0].name, "messages");
+    assert_eq!(refreshed_tables.len(), 1);
+    assert_eq!(refreshed_tables[0].name, "messages");
     assert!(
         fixture.token_forms().is_empty(),
         "passive catalog discovery should not call the token endpoint"
@@ -348,7 +352,7 @@ async fn concurrent_servers_share_one_expired_oauth_refresh() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manual_credential_replacement_waits_for_in_flight_refresh() {
     let fixture = RefreshingHttpFixture::new_blocked_token_response().await;
     let harness = GrpcHarness::new().await;

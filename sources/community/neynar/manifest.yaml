@@ -1,0 +1,155 @@
+name: neynar
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Neynar Farcaster API for searching casts. Uses API key authentication.
+  Returns casts in reverse-chronological order by default, with cast
+  content, author info, and engagement metrics.
+inputs:
+  NEYNAR_API_KEY:
+    kind: secret
+    hint: Neynar API key from neynar.com
+base_url: https://api.neynar.com/v2/farcaster
+auth:
+  type: HeaderAuth
+  headers:
+    - name: x-api-key
+      from: input
+      key: NEYNAR_API_KEY
+test_queries:
+  - SELECT hash, text, author__username FROM neynar.search_casts(q => 'optimism') LIMIT 1
+functions:
+  - name: search_casts
+    kind: search
+    description: >-
+      Search Farcaster casts by keyword. Results are reverse-chronological
+      (sort_type => 'desc_chron') by default; pass sort_type => 'algorithmic'
+      to order by engagement and time. Optional author_fid, channel_id, and mode args
+      narrow the search.
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: author_fid
+        bind:
+          arg: author_fid
+      - name: channel_id
+        bind:
+          arg: channel_id
+      - name: mode
+        values: [literal, semantic, hybrid]
+        bind:
+          arg: mode
+      - name: sort_type
+        values: [desc_chron, chron, algorithmic]
+        bind:
+          arg: sort_type
+    request:
+      method: GET
+      path: /cast/search
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: author_fid
+          from: arg_int
+          key: author_fid
+        - name: channel_id
+          from: arg
+          key: channel_id
+        - name: mode
+          from: arg
+          key: mode
+        - name: sort_type
+          from: arg
+          key: sort_type
+    response:
+      rows_path:
+        - result
+        - casts
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - result
+        - next
+        - cursor
+      page_size:
+        default: 25
+        max: 100
+        query_param: limit
+    columns:
+      - name: hash
+        type: Utf8
+        description: Cast hash identifier.
+      - name: text
+        type: Utf8
+        description: Cast text content.
+      - name: author__username
+        type: Utf8
+        description: Author's Farcaster username.
+        expr:
+          kind: path
+          path:
+            - author
+            - username
+      - name: author__fid
+        type: Int64
+        description: Author's Farcaster ID.
+        expr:
+          kind: path
+          path:
+            - author
+            - fid
+      - name: author__display_name
+        type: Utf8
+        description: Author's display name.
+        expr:
+          kind: path
+          path:
+            - author
+            - display_name
+      - name: reactions__likes_count
+        type: Int64
+        description: Number of likes.
+        expr:
+          kind: path
+          path:
+            - reactions
+            - likes_count
+      - name: reactions__recasts_count
+        type: Int64
+        description: Number of recasts.
+        expr:
+          kind: path
+          path:
+            - reactions
+            - recasts_count
+      - name: replies__count
+        type: Int64
+        description: Number of replies.
+        expr:
+          kind: path
+          path:
+            - replies
+            - count
+      - name: timestamp
+        type: Timestamp
+        description: Cast publication time (ISO 8601 from the API, exposed as a Timestamp).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - timestamp
+      - name: embeds
+        type: Json
+        description: Embedded content (URLs, casts, etc.).

@@ -398,16 +398,12 @@ impl coral_app::RunErrorTelemetry for CliError {
     }
 }
 
-/// Returns whether this CLI invocation should render telemetry logs to stderr.
-///
-/// `MCP` stdio reserves stdout for protocol messages, so stderr is the only
-/// local diagnostics stream that can be safely exposed while the server is
-/// running.
-#[must_use]
-pub fn enables_stderr_logs() -> bool {
-    command_enables_stderr_logs(std::env::args_os())
-}
-
+/// Classifies whether a parsed CLI invocation should render telemetry logs to
+/// stderr. `MCP` stdio reserves stdout for protocol messages, so stderr is the
+/// only local diagnostics stream that can be safely exposed while the server is
+/// running. Exercised only in tests; the live decision uses
+/// `command.enables_stderr_logs()` directly in `run_from_env`.
+#[cfg(test)]
 fn command_enables_stderr_logs<I, T>(args: I) -> bool
 where
     I: IntoIterator<Item = T>,
@@ -508,41 +504,6 @@ async fn run_ui(args: UiArgs) -> Result<(), anyhow::Error> {
     signal?;
     shutdown?;
     Ok(())
-}
-
-/// Parses CLI arguments and runs the shared Coral CLI.
-///
-/// # Errors
-///
-/// Returns an error if argument parsing, command execution, or output
-/// formatting fails.
-pub async fn run(app: AppClient, ctx: coral_app::RunContext) -> Result<(), CliError> {
-    let Cli {
-        feature_overrides,
-        command,
-    } = Cli::parse();
-    let feature_overrides = feature_overrides.into_overrides();
-    let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
-
-    match command.required_runtime() {
-        RequiredRuntime::AppClient if is_mcp_stdio => {
-            run_app_command(app, command, Some(&ctx), &feature_overrides).await
-        }
-        RequiredRuntime::AppClient => {
-            coral_app::run_with_context(
-                &ctx,
-                Box::pin(run_app_command(app, command, None, &feature_overrides)),
-            )
-            .await
-        }
-        RequiredRuntime::None => {
-            coral_app::run_with_context(
-                &ctx,
-                Box::pin(run_no_runtime_command(command, &feature_overrides)),
-            )
-            .await
-        }
-    }
 }
 
 async fn run_no_runtime_command(
@@ -671,7 +632,11 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
                     } else {
                         "available".to_string()
                     };
-                    [source.name, source.version, status]
+                    [
+                        source.name,
+                        source_ops::display_version(&source.version),
+                        status,
+                    ]
                 });
                 print_text_table(["Source", "Version", "Status"], rows);
             }
@@ -684,7 +649,7 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
                 let rows = sources.into_iter().map(|source| {
                     [
                         source.name,
-                        source.version,
+                        source_ops::display_version(&source.version),
                         source_ops::source_origin_label(source.origin).to_string(),
                         source_ops::source_credential_storage_label(source.credential_storage)
                             .to_string(),
