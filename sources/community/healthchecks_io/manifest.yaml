@@ -195,11 +195,11 @@ tables:
         virtual: true
         description: Slug filter value pushed to Healthchecks.io.
         expr: {kind: from_filter, key: slug}
-      - name: tag_filter
+      - name: tag
         type: Utf8
         nullable: true
         virtual: true
-        description: Tag filter value pushed to Healthchecks.io.
+        description: Tag filter value pushed to Healthchecks.io. Use in WHERE to filter checks by tag.
         expr: {kind: from_filter, key: tag}
 
   - name: flips
