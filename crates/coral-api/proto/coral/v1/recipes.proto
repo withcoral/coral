@@ -48,12 +48,22 @@ message RecipeTableFunctionPublish {
   string description = 3;
 }
 
+// MCP tool publication target.
+message RecipeMcpToolPublish {
+  // MCP tool name.
+  string name = 1;
+  // User-facing description.
+  string description = 2;
+}
+
 // One public surface requested by a recipe.
 message RecipePublish {
   // Published target.
   oneof target {
     // SQL table-function publication.
     RecipeTableFunctionPublish table_function = 1;
+    // MCP tool publication.
+    RecipeMcpToolPublish mcp_tool = 2;
   }
 }
 

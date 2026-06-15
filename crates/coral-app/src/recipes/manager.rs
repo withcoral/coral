@@ -544,17 +544,20 @@ fn runtime_implementation(spec: &RecipeImplementationSpec) -> RecipeRuntimeImple
 fn runtime_publish(specs: &[RecipePublishSpec]) -> Vec<RecipeRuntimePublish> {
     specs
         .iter()
-        .filter_map(|spec| match spec {
+        .map(|spec| match spec {
             RecipePublishSpec::TableFunction {
                 schema,
                 name,
                 description,
-            } => Some(RecipeRuntimePublish::TableFunction {
+            } => RecipeRuntimePublish::TableFunction {
                 schema: schema.clone(),
                 name: name.clone(),
                 description: description.clone(),
-            }),
-            RecipePublishSpec::McpTool { .. } => None,
+            },
+            RecipePublishSpec::McpTool { name, description } => RecipeRuntimePublish::McpTool {
+                name: name.clone(),
+                description: description.clone(),
+            },
         })
         .collect()
 }
@@ -569,6 +572,7 @@ fn record_publish_targets(
             RecipeRuntimePublish::TableFunction { schema, name, .. } => {
                 PublishTarget::sql_relation(schema, name)
             }
+            RecipeRuntimePublish::McpTool { .. } => continue,
         };
         if publish_targets.contains(&target) || !recipe_targets.insert(target.clone()) {
             return Err(AppError::FailedPrecondition(format!(

@@ -809,6 +809,7 @@ fn recipe_publish_summary(recipe: &Recipe) -> String {
             recipe_publish::Target::TableFunction(target) => {
                 Some(format!("sql: {}.{}", target.schema, target.name))
             }
+            recipe_publish::Target::McpTool(target) => Some(format!("mcp: {}", target.name)),
         })
         .collect::<Vec<_>>();
     if targets.is_empty() {

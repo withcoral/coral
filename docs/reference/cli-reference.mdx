@@ -197,7 +197,10 @@ implementation:
       and state = 'open'
 publish:
   - table_function: recipes.my_review_queue
+  - mcp_tool: my_review_queue
 ```
+
+Use `table_function` to expose the recipe through SQL. Use `mcp_tool` to expose it as an MCP tool once the MCP server refreshes its tool list.
 
 ### `coral recipe validate --file <PATH>`
 

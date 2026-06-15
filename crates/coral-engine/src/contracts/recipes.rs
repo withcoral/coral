@@ -85,6 +85,13 @@ pub enum RecipeRuntimePublish {
         /// Optional publish-target-specific description.
         description: String,
     },
+    /// Public MCP tool wrapper.
+    McpTool {
+        /// MCP tool name.
+        name: String,
+        /// Optional publish-target-specific description.
+        description: String,
+    },
 }
 
 /// One column returned by a recipe.

@@ -3,9 +3,9 @@
 use coral_api::v1::recipe_service_server::RecipeService as RecipeServiceApi;
 use coral_api::v1::{
     AddRecipeRequest, AddRecipeResponse, ListRecipesRequest, ListRecipesResponse, Recipe,
-    RecipeArgument, RecipeOrigin as ProtoRecipeOrigin, RecipePublish, RecipeResultColumn,
-    RecipeTableFunctionPublish, RemoveRecipeRequest, RemoveRecipeResponse, ValidateRecipeRequest,
-    ValidateRecipeResponse, recipe_publish,
+    RecipeArgument, RecipeMcpToolPublish, RecipeOrigin as ProtoRecipeOrigin, RecipePublish,
+    RecipeResultColumn, RecipeTableFunctionPublish, RemoveRecipeRequest, RemoveRecipeResponse,
+    ValidateRecipeRequest, ValidateRecipeResponse, recipe_publish,
 };
 use coral_engine::{RecipeRuntimeArgumentType, RecipeRuntimeDefinition, RecipeRuntimePublish};
 use tonic::{Request, Response, Status};
@@ -161,6 +161,9 @@ fn recipe_publish_to_proto(publish: RecipeRuntimePublish) -> RecipePublish {
             name,
             description,
         }),
+        RecipeRuntimePublish::McpTool { name, description } => {
+            recipe_publish::Target::McpTool(RecipeMcpToolPublish { name, description })
+        }
     };
     RecipePublish {
         target: Some(target),

@@ -78,7 +78,10 @@ pub(crate) fn published_table_functions(
                 schema,
                 name,
                 description,
-            } = publish;
+            } = publish
+            else {
+                continue;
+            };
             let key = (schema.clone(), name.clone());
             if !seen.insert(key.clone()) {
                 return Err(DataFusionError::Plan(format!(
