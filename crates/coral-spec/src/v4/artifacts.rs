@@ -70,15 +70,23 @@ pub fn validate_materialized_source(
             "DSL v4 materialized importer or generator version mismatch",
         ));
     }
-    for surface in &manifest.surfaces {
-        if !materialized
-            .surfaces
-            .iter()
-            .any(|materialized_surface| materialized_surface.surface_id == surface.id)
-        {
+    if materialized.surfaces.is_empty() {
+        return Err(ManifestError::validation(
+            "DSL v4 materialized source has no surfaces",
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for materialized_surface in &materialized.surfaces {
+        if !seen.insert(materialized_surface.surface_id.as_str()) {
             return Err(ManifestError::validation(format!(
-                "DSL v4 materialized surface '{}' is missing",
-                surface.id
+                "DSL v4 materialized surface '{}' is repeated",
+                materialized_surface.surface_id
+            )));
+        }
+        if manifest.surface(&materialized_surface.surface_id).is_none() {
+            return Err(ManifestError::validation(format!(
+                "DSL v4 materialized surface '{}' is not declared",
+                materialized_surface.surface_id
             )));
         }
     }
