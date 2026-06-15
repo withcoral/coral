@@ -127,7 +127,6 @@ impl AppStateLayout {
         self.identities_root().join("users").join(user_id)
     }
 
-    #[expect(dead_code, reason = "consumed by the identity manager in a later PR")]
     pub(crate) fn user_owned_source_identity_binding_file(
         &self,
         user_id: &str,
@@ -148,10 +147,6 @@ impl AppStateLayout {
         self.user_owned_identities_root(user_id).join(identity_name)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "consumed by the identity manager in a later PR")
-    )]
     pub(crate) fn user_owned_identity_manifest_file(
         &self,
         user_id: &str,
@@ -161,7 +156,6 @@ impl AppStateLayout {
             .join(INSTALLED_IDENTITY_FILE_NAME)
     }
 
-    #[expect(dead_code, reason = "consumed by the identity manager in a later PR")]
     pub(crate) fn user_owned_identity_material_file(
         &self,
         user_id: &str,
@@ -171,7 +165,6 @@ impl AppStateLayout {
             .join(INSTALLED_SECRETS_FILE_NAME)
     }
 
-    #[expect(dead_code, reason = "consumed by the identity manager in a later PR")]
     pub(crate) fn user_owned_identity_refresh_lock_file(
         &self,
         user_id: &str,

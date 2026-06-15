@@ -599,6 +599,15 @@ impl FileCredentialBackend {
         &self,
         set: &CredentialSetRef<'_>,
     ) -> Result<std::path::PathBuf, CredentialsError> {
+        if let Some((owner_key, identity_name)) = set
+            .credential_set_id
+            .user_owned_identity_key()
+            .map_err(|error| CredentialsError::Parse(error.to_string()))?
+        {
+            return Ok(self
+                .layout
+                .user_owned_identity_material_file(&owner_key, &identity_name));
+        }
         if set.credential_set_id.is_identity_spec_backed() {
             let identity_spec_name = set
                 .credential_set_id

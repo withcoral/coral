@@ -61,11 +61,15 @@ pub use bootstrap::{
 pub use coral_engine::{EngineExtensions, QuerySource};
 pub use credentials::oauth::{OAuthProgressEvent, OAuthProgressEventSender};
 pub use identities::{
-    IdentityOwnerKey, UserOwnedIdentityMaterialGuard, UserOwnedIdentityRecord,
-    UserOwnedIdentityStore,
+    CreateFixedTokenIdentityCommand, CreateOAuthIdentityCommand, IdentityCredentialInput,
+    IdentityManagementHandle, IdentityOwnerKey, UserOwnedIdentityMaterialGuard,
+    UserOwnedIdentityRecord, UserOwnedIdentityStore,
 };
+pub use identity::SingleUserPrincipalProvider;
 pub use identity::{
-    SingleUserPrincipalProvider, UserPrincipal, UserPrincipalError, UserPrincipalProvider,
+    RuntimeSourceIdentity, SourceIdentityBinding, SourceIdentityOwner, SourceIdentityProvider,
+    SourceIdentityResolutionRequest, SourceIdentitySelection, SourceIdentitySelectionRequest,
+    SourceIdentitySubject, UserPrincipal, UserPrincipalError, UserPrincipalProvider,
 };
 pub use identity_specs::{
     IdentitySpecManifestMetadata, IdentitySpecRegistry, IdentitySpecRegistryRecord,

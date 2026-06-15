@@ -17,6 +17,7 @@ use axum::response::Response as AxumResponse;
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
 use coral_api::v1::episode_service_server::EpisodeServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
+use coral_api::v1::identity_service_server::IdentityServiceServer;
 use coral_api::v1::identity_spec_service_server::IdentitySpecServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
@@ -50,6 +51,7 @@ use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
+use crate::identities::{IdentityService, UserOwnedIdentityManager};
 use crate::identity_specs::{IdentitySpecManager, IdentitySpecService, IdentitySpecUsageProvider};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
@@ -304,9 +306,14 @@ impl ServerBuilder {
             .with_body_capture_max_bytes(body_capture_max_bytes);
         let identity_spec_manager = IdentitySpecManager::new_with_credential_store(
             layout.clone(),
-            credential_store,
+            credential_store.clone(),
             features.clone(),
             self.identity_spec_usage_providers,
+        );
+        let user_owned_identity_manager = UserOwnedIdentityManager::new(
+            layout.clone(),
+            identity_spec_manager.clone(),
+            credential_store,
         );
 
         let query_manager = QueryManager::new(
@@ -326,6 +333,7 @@ impl ServerBuilder {
             source_manager,
             query_manager,
             identity_spec_manager,
+            user_owned_identity_manager,
             user_principal_provider: self.user_principal_provider,
             management_authorizer: self.management_authorizer,
             feedback_manager,
@@ -411,6 +419,7 @@ struct ServerServices {
     source_manager: SourceManager,
     query_manager: QueryManager,
     identity_spec_manager: IdentitySpecManager,
+    user_owned_identity_manager: UserOwnedIdentityManager,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
     feedback_manager: FeedbackManager,
@@ -424,6 +433,7 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
         source_manager,
         query_manager,
         identity_spec_manager,
+        user_owned_identity_manager,
         user_principal_provider,
         management_authorizer,
         feedback_manager,
@@ -439,6 +449,10 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
     );
     let catalog_service =
         CatalogService::new(query_manager.clone(), Arc::clone(&user_principal_provider));
+    let identity_service = IdentityService::new(
+        user_owned_identity_manager,
+        Arc::clone(&user_principal_provider),
+    );
     let query_service = QueryService::new(query_manager, Arc::clone(&user_principal_provider));
     let identity_spec_service = IdentitySpecService::new(
         identity_spec_manager,
@@ -455,6 +469,9 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
         .add_service(GrpcMethodAnnotatedService::new(
             IdentitySpecServiceServer::new(identity_spec_service),
         ))
+        .add_service(GrpcMethodAnnotatedService::new(IdentityServiceServer::new(
+            identity_service,
+        )))
         .add_service(GrpcMethodAnnotatedService::new(
             CatalogServiceServer::new(catalog_service)
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
@@ -736,6 +753,7 @@ mod tests {
     use crate::episode::store::EpisodeStore;
     use crate::features::{Feature, FeatureOverrides};
     use crate::feedback::manager::FeedbackManager;
+    use crate::identities::UserOwnedIdentityManager;
     use crate::identity_specs::{IdentitySpecManager, IdentitySpecUsageProvider};
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
@@ -871,8 +889,14 @@ enabled = false
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("layout dirs");
         let config_store = ConfigStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store.clone());
         let identity_spec_manager = IdentitySpecManager::new(layout.clone());
+        let user_owned_identity_manager = UserOwnedIdentityManager::new(
+            layout.clone(),
+            identity_spec_manager.clone(),
+            credential_store,
+        );
         let server = start_server(ServerServices {
             source_manager: SourceManager::new(
                 config_store.clone(),
@@ -888,6 +912,7 @@ enabled = false
                 vec![Arc::new(NoopEngineExtensionsProvider)],
             ),
             identity_spec_manager,
+            user_owned_identity_manager,
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             management_authorizer: Arc::new(AllowAllManagementAuthorizer),
             feedback_manager: FeedbackManager::new(layout.clone()),

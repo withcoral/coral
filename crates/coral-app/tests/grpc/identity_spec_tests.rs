@@ -188,3 +188,33 @@ async fn identity_spec_service_stores_request_inputs_on_identity_spec() {
         "demo_oauth"
     );
 }
+
+#[tokio::test]
+async fn identity_spec_service_rejects_replacing_spec_used_by_identity() {
+    let harness = GrpcHarness::new().await;
+
+    harness
+        .add_identity_spec(fixed_token_identity_spec_yaml("github_pat", "github.com"))
+        .await;
+    harness
+        .create_fixed_token_identity("github_local", "github_pat", "identity-token")
+        .await;
+
+    let error = harness
+        .try_add_identity_spec(
+            fixed_token_identity_spec_yaml("github_pat", "attacker.test"),
+            Vec::new(),
+        )
+        .await
+        .expect_err("used identity spec replacement should fail");
+
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        error.message().contains("cannot be replaced"),
+        "unexpected error: {error}"
+    );
+
+    let fetched = get_identity_spec_manifest(&harness, "github_pat").await;
+    assert!(fetched.contains("host: github.com"));
+    assert!(!fetched.contains("attacker.test"));
+}

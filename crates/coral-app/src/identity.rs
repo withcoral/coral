@@ -12,15 +12,15 @@ use serde_json::Value;
 
 use crate::bootstrap::AppError;
 
-/// Collects `(key, value)` inputs into a map, validating each key as a path
-/// segment and rejecting duplicates. `label` names the input kind in errors.
+/// Collects `(key, value)` inputs into a map, validating each key and rejecting
+/// duplicates. `label` names the input kind in errors.
 pub(crate) fn unique_input_map(
     inputs: impl IntoIterator<Item = (String, String)>,
     label: &str,
 ) -> Result<BTreeMap<String, String>, AppError> {
     let mut values = BTreeMap::new();
     for (key, value) in inputs {
-        let key = parse_path_segment(label, &key)?;
+        let key = normalize_input_key(label, &key)?;
         if values.insert(key.clone(), value).is_some() {
             return Err(AppError::InvalidInput(format!(
                 "{label} '{key}' is repeated"
@@ -30,14 +30,37 @@ pub(crate) fn unique_input_map(
     Ok(values)
 }
 
+fn normalize_input_key(label: &str, value: &str) -> Result<String, AppError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::InvalidInput(format!("missing {label} key")));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err(AppError::InvalidInput(format!(
+            "{label} key must not contain '/' or '\\\\'"
+        )));
+    }
+    if trimmed.contains('=') || trimmed.contains('\n') || trimmed.contains('\r') {
+        return Err(AppError::InvalidInput(format!(
+            "{label} key must not contain '=', '\\n', or '\\r'"
+        )));
+    }
+    if trimmed.starts_with('#') {
+        return Err(AppError::InvalidInput(format!(
+            "{label} key must not start with '#'"
+        )));
+    }
+    Ok(trimmed.to_string())
+}
+
 pub(crate) fn parse_path_segment(kind: &str, value: &str) -> Result<String, AppError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(AppError::InvalidInput(format!("missing {kind} name")));
     }
-    if trimmed.contains('/') || trimmed.contains('\\') {
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains(':') {
         return Err(AppError::InvalidInput(format!(
-            "{kind} name must not contain '/' or '\\\\'"
+            "{kind} name must not contain '/', '\\\\', or ':'"
         )));
     }
     if trimmed == "." || trimmed == ".." {
@@ -165,10 +188,6 @@ impl UserPrincipalProvider for SingleUserPrincipalProvider {
 /// Scope that owns configured provider-facing source identity material.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[expect(
-    unreachable_pub,
-    reason = "source identity vocabulary re-exported from lib.rs in a later PR"
-)]
 pub enum SourceIdentityOwner {
     /// Identity material is owned by the current Coral user principal.
     User,
@@ -191,10 +210,6 @@ impl SourceIdentityOwner {
 
 /// Subject used to select provider-facing source identity material.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(
-    unreachable_pub,
-    reason = "source identity vocabulary re-exported from lib.rs in a later PR"
-)]
 pub enum SourceIdentitySubject {
     /// Identity material is owned by the request user principal.
     User(String),
@@ -202,10 +217,12 @@ pub enum SourceIdentitySubject {
     Workspace,
 }
 
-#[expect(
-    dead_code,
-    unreachable_pub,
-    reason = "source identity vocabulary consumed and re-exported in later PRs"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "source identity vocabulary consumed and re-exported in later PRs"
+    )
 )]
 impl SourceIdentitySubject {
     pub(crate) fn for_binding_owner(
@@ -236,10 +253,6 @@ impl SourceIdentitySubject {
 
 /// Workspace config binding from one source-local surface to an identity slot.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[expect(
-    unreachable_pub,
-    reason = "source identity vocabulary re-exported from lib.rs in a later PR"
-)]
 pub struct SourceIdentityBinding {
     /// Whether the identity is user-specific or workspace-owned.
     pub owner: SourceIdentityOwner,
@@ -259,11 +272,6 @@ pub struct SourceIdentityBinding {
     pub accepted_identity: Option<String>,
 }
 
-#[expect(
-    dead_code,
-    unreachable_pub,
-    reason = "source identity vocabulary consumed and re-exported in later PRs"
-)]
 impl SourceIdentityBinding {
     /// Builds one validated user-owned source identity slot.
     #[must_use]
@@ -345,10 +353,6 @@ impl SourceIdentityBinding {
 
 /// Concrete identity selected for one source-local surface.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[expect(
-    unreachable_pub,
-    reason = "source identity vocabulary re-exported from lib.rs in a later PR"
-)]
 pub struct SourceIdentitySelection {
     /// Stable identity reference understood by installed identity providers.
     pub identity: String,
@@ -357,11 +361,6 @@ pub struct SourceIdentitySelection {
     pub accepted_identity: Option<String>,
 }
 
-#[expect(
-    dead_code,
-    unreachable_pub,
-    reason = "source identity vocabulary consumed and re-exported in later PRs"
-)]
 impl SourceIdentitySelection {
     /// Builds one validated source identity selection.
     ///
@@ -400,11 +399,6 @@ impl SourceIdentitySelection {
 
 /// Request to resolve a user-specific source identity selection.
 #[derive(Debug, Clone)]
-#[expect(
-    dead_code,
-    unreachable_pub,
-    reason = "source identity vocabulary consumed and re-exported in later PRs"
-)]
 pub struct SourceIdentitySelectionRequest {
     /// Workspace selected by the request.
     pub workspace_name: String,
@@ -421,11 +415,6 @@ pub struct SourceIdentitySelectionRequest {
 
 /// Request to resolve one configured source identity binding into runtime material.
 #[derive(Debug, Clone)]
-#[expect(
-    dead_code,
-    unreachable_pub,
-    reason = "source identity vocabulary consumed and re-exported in later PRs"
-)]
 pub struct SourceIdentityResolutionRequest {
     /// Workspace selected by the request.
     pub workspace_name: String,
@@ -449,10 +438,6 @@ pub struct SourceIdentityResolutionRequest {
 
 /// Provider that resolves configured Coral identity bindings into runtime material.
 #[tonic::async_trait]
-#[expect(
-    unreachable_pub,
-    reason = "source identity provider seam re-exported from lib.rs in a later PR"
-)]
 pub trait SourceIdentityProvider: Send + Sync + fmt::Debug {
     /// Resolves one user-owned source identity selection.
     ///
@@ -479,11 +464,6 @@ pub trait SourceIdentityProvider: Send + Sync + fmt::Debug {
 
 /// Runtime identity selected by Coral for one source surface.
 #[tonic::async_trait]
-#[expect(
-    dead_code,
-    unreachable_pub,
-    reason = "runtime source identity seam consumed and re-exported in later PRs"
-)]
 pub trait RuntimeSourceIdentity: Send + Sync + fmt::Debug {
     /// Installed identity spec id that describes this identity.
     fn identity_spec_id(&self) -> &str;
@@ -566,7 +546,7 @@ impl fmt::Debug for IdentityManager {
 mod tests {
     use super::{
         LOCAL_MEMBER_ID, SourceIdentityOwner, SourceIdentitySubject, UserPrincipal,
-        parse_path_segment,
+        parse_path_segment, unique_input_map,
     };
 
     #[test]
@@ -581,7 +561,45 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("workspace name must not contain '/' or '\\\\'")
+                .contains("workspace name must not contain '/', '\\\\', or ':'")
+        );
+    }
+
+    #[test]
+    fn rejects_windows_drive_prefixes() {
+        let error = parse_path_segment("identity", "C:foo")
+            .expect_err("windows drive-prefixed segment should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("identity name must not contain '/', '\\\\', or ':'")
+        );
+    }
+
+    #[test]
+    fn input_keys_allow_colons_but_reject_duplicates() {
+        let values = unique_input_map(
+            [("tenant:id".to_string(), "tenant-a".to_string())],
+            "credential input",
+        )
+        .expect("colon input key");
+        assert_eq!(
+            values.get("tenant:id").map(String::as_str),
+            Some("tenant-a")
+        );
+
+        let error = unique_input_map(
+            [
+                ("tenant:id".to_string(), "tenant-a".to_string()),
+                ("tenant:id".to_string(), "tenant-b".to_string()),
+            ],
+            "credential input",
+        )
+        .expect_err("duplicate input should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("credential input 'tenant:id' is repeated")
         );
     }
 

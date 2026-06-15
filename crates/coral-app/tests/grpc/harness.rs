@@ -2,21 +2,25 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::{
-    AddIdentitySpecRequest, AddIdentitySpecResponse, DeleteIdentitySpecRequest,
-    DeleteIdentitySpecResponse, ExecuteSqlRequest, ExecuteSqlResponse, IdentitySpec,
-    IdentitySpecInput, ImportSourceRequest, ListCatalogRequest, ListIdentitySpecsRequest,
-    ListSourcesRequest, PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary,
-    ValidateSourceRequest, ValidateSourceResponse, catalog_item, import_source_response,
+    AddIdentitySpecRequest, AddIdentitySpecResponse, CreateUserOwnedIdentityWithFixedTokenRequest,
+    CreateUserOwnedIdentityWithOAuthRequest, DeleteIdentitySpecRequest, DeleteIdentitySpecResponse,
+    ExecuteSqlRequest, ExecuteSqlResponse, Identity, IdentitySpec, IdentitySpecInput,
+    ImportSourceRequest, ListCatalogRequest, ListIdentitySpecsRequest, ListSourcesRequest,
+    PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, catalog_item, create_user_owned_identity_with_o_auth_response,
+    import_source_response,
 };
 use coral_app::features::FeatureOverrides;
 use coral_client::{
-    AppClient, CatalogClient, IdentitySpecClient, QueryClient, SourceClient, batches_to_json_rows,
-    decode_execute_sql_response, default_workspace,
+    AppClient, CatalogClient, IdentityClient, IdentitySpecClient, QueryClient, SourceClient,
+    batches_to_json_rows, decode_execute_sql_response, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tonic::Request;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 pub(crate) struct GrpcHarness {
     temp_dir: TempDir,
@@ -28,6 +32,10 @@ pub(crate) struct GrpcHarness {
 pub(crate) struct FailingHttpFixture {
     base_url: String,
     task: tokio::task::JoinHandle<()>,
+}
+
+pub(crate) struct OAuthFixture {
+    server: MockServer,
 }
 
 impl GrpcHarness {
@@ -109,6 +117,10 @@ impl GrpcHarness {
 
     pub(crate) fn identity_spec_client(&self) -> IdentitySpecClient {
         self.app.identity_spec_client()
+    }
+
+    pub(crate) fn identity_client(&self) -> IdentityClient {
+        self.app.identity_client()
     }
 
     pub(crate) fn catalog_client(&self) -> CatalogClient {
@@ -234,6 +246,12 @@ impl GrpcHarness {
             .into_inner())
     }
 
+    pub(crate) async fn add_identity_spec(&self, manifest_yaml: String) {
+        self.try_add_identity_spec(manifest_yaml, Vec::new())
+            .await
+            .expect("add identity spec");
+    }
+
     pub(crate) async fn try_add_identity_spec(
         &self,
         manifest_yaml: String,
@@ -270,6 +288,27 @@ impl GrpcHarness {
             .await
             .expect("force remove identity spec")
             .into_inner()
+    }
+
+    pub(crate) async fn create_fixed_token_identity(
+        &self,
+        name: &str,
+        identity_spec: &str,
+        token: &str,
+    ) -> Identity {
+        self.identity_client()
+            .create_user_owned_identity_with_fixed_token(Request::new(
+                CreateUserOwnedIdentityWithFixedTokenRequest {
+                    name: name.to_string(),
+                    identity_spec: identity_spec.to_string(),
+                    token: token.to_string(),
+                },
+            ))
+            .await
+            .expect("create fixed token identity")
+            .into_inner()
+            .identity
+            .expect("identity")
     }
 }
 
@@ -341,6 +380,132 @@ fn write_config_without_dsl_v4(config_dir: &Path) {
         "[features]\ndsl_v4 = false\n\n[credentials]\nstorage = \"file\"\n",
     )
     .expect("write config without dsl_v4");
+}
+
+impl OAuthFixture {
+    pub(crate) async fn start() -> Self {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "device_code": "device-code",
+                "user_code": "ABCD-EFGH",
+                "verification_uri": format!("{}/verify", server.uri()),
+                "expires_in": 600,
+                "interval": 1
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "identity-access-token",
+                "refresh_token": "identity-refresh-token",
+                "token_type": "Bearer",
+                "scope": "repo",
+                "expires_in": 3600
+            })))
+            .mount(&server)
+            .await;
+        Self { server }
+    }
+
+    pub(crate) fn verify_url(&self) -> String {
+        format!("{}/verify", self.server.uri())
+    }
+
+    pub(crate) fn identity_spec_yaml(&self, name: &str) -> String {
+        self.identity_spec_yaml_with_audience_host(name, "github.com")
+    }
+
+    pub(crate) fn identity_spec_yaml_with_audience_host(
+        &self,
+        name: &str,
+        audience_host: &str,
+    ) -> String {
+        format!(
+            r"
+kind: identity
+spec_version: 1
+name: {name}
+version: 0.1.0
+description: GitHub OAuth test identity.
+issuer: github
+type: oauth
+audience:
+  host: {audience_host}
+oauth:
+  method:
+    label: Test device flow
+    flow:
+      type: device_code
+    endpoints:
+      device_authorization_url: {}/device
+      token_url: {}/token
+    client:
+      id:
+        default: test-client
+    scopes:
+      scope:
+        delimiter: space
+        values:
+          - repo
+",
+            self.server.uri(),
+            self.server.uri()
+        )
+    }
+}
+
+pub(crate) async fn create_github_oauth_identity(
+    harness: &GrpcHarness,
+    oauth: &OAuthFixture,
+) -> Identity {
+    let mut stream = harness
+        .identity_client()
+        .create_user_owned_identity_with_o_auth(Request::new(
+            CreateUserOwnedIdentityWithOAuthRequest {
+                name: "github_local".to_string(),
+                identity_spec: "github_oauth".to_string(),
+                credential_inputs: Vec::new(),
+            },
+        ))
+        .await
+        .expect("create identity")
+        .into_inner();
+    let authorization = stream
+        .message()
+        .await
+        .expect("authorization response")
+        .expect("authorization event");
+    match authorization.event.expect("authorization event body") {
+        create_user_owned_identity_with_o_auth_response::Event::OauthAuthorization(
+            authorization,
+        ) => {
+            assert_eq!(authorization.input_key, "github_local");
+            assert_eq!(authorization.user_code, "ABCD-EFGH");
+            assert_eq!(authorization.authorization_url, oauth.verify_url());
+        }
+        other => panic!("unexpected first event: {other:?}"),
+    }
+    let completed = stream
+        .message()
+        .await
+        .expect("completed response")
+        .expect("completed event");
+    assert!(matches!(
+        completed.event,
+        Some(create_user_owned_identity_with_o_auth_response::Event::OauthCompleted(_))
+    ));
+    let created = stream
+        .message()
+        .await
+        .expect("created response")
+        .expect("created event");
+    match created.event.expect("created event body") {
+        create_user_owned_identity_with_o_auth_response::Event::Identity(identity) => identity,
+        other => panic!("unexpected created event: {other:?}"),
+    }
 }
 
 impl FailingHttpFixture {

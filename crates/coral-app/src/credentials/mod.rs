@@ -10,19 +10,17 @@ use std::fmt;
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
 use crate::bootstrap::AppError;
+use crate::identity::parse_path_segment;
 use crate::sources::SourceName;
 use crate::storage::fs::FileLock;
 use crate::workspaces::WorkspaceName;
 
 use self::oauth::{OAuthCredentialService, RefreshOAuthCredentialRequest};
 
-pub(crate) use store::{CredentialStore, CredentialsError};
-#[expect(
-    unused_imports,
-    reason = "re-exports consumed by the identity managers in later PRs"
-)]
+#[cfg(test)]
+pub(crate) use store::parse_env_file;
 pub(crate) use store::{
-    parse_env_file, remove_file_if_exists_unlocked, render_env_file, write_file_unlocked,
+    CredentialStore, CredentialsError, remove_file_if_exists_unlocked, write_file_unlocked,
 };
 
 /// Opaque credential material captured for best-effort rollback.
@@ -110,6 +108,12 @@ impl CredentialSetId {
         Self(format!("identity-spec.{identity_spec_name}"))
     }
 
+    /// Build the user-owned identity credential-set id used for provider token
+    /// material.
+    pub(crate) fn for_user_owned_identity(owner_key: &str, identity_name: &str) -> Self {
+        Self(format!("user-owned-identity/{owner_key}/{identity_name}"))
+    }
+
     pub(crate) fn source_name(&self) -> Result<SourceName, AppError> {
         let Some(source_name) = self.0.strip_prefix("source.") else {
             return Err(AppError::FailedPrecondition(format!(
@@ -127,6 +131,22 @@ impl CredentialSetId {
                 self.0
             ))
         })
+    }
+
+    pub(crate) fn user_owned_identity_key(&self) -> Result<Option<(String, String)>, AppError> {
+        let Some(rest) = self.0.strip_prefix("user-owned-identity/") else {
+            return Ok(None);
+        };
+        let Some((owner_key, identity_name)) = rest.split_once('/') else {
+            return Err(AppError::FailedPrecondition(format!(
+                "credential set '{}' is not a valid user-owned identity credential set",
+                self.0
+            )));
+        };
+        Ok(Some((
+            parse_path_segment("identity owner", owner_key)?,
+            parse_path_segment("identity", identity_name)?,
+        )))
     }
 
     pub(crate) fn is_identity_spec_backed(&self) -> bool {

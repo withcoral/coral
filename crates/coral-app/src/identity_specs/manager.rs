@@ -394,13 +394,6 @@ impl IdentitySpecManager {
         Ok(())
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "consumed by user-owned identity materialization and query-time identity resolution in later PRs"
-        )
-    )]
     pub(crate) fn resolve_identity_spec_inputs(
         &self,
         manifest: &IdentityManifest,
@@ -951,13 +944,6 @@ fn checked_add_identity_count(
 /// The manifest serializes with `serde` (struct fields in declaration order)
 /// and `canonical_json_value` sorts any free-form JSON objects (such as
 /// `audience` values), so semantically equal manifests fingerprint equally.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by user-owned identity creation in a later PR"
-    )
-)]
 pub(crate) fn identity_spec_fingerprint(manifest: &IdentityManifest) -> Result<String, AppError> {
     let encode_error = |error: &dyn std::fmt::Display| {
         AppError::FailedPrecondition(format!(

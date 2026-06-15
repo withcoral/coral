@@ -50,22 +50,7 @@ pub(crate) struct StartOAuthCredentialRequest<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OAuthClientMaterialPersistence {
-    #[expect(
-        dead_code,
-        reason = "constructed by the identity manager in a later PR"
-    )]
-    None,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "constructed by the identity manager in a later PR"
-        )
-    )]
-    ClientCredentials {
-        client_id: bool,
-        client_secret: bool,
-    },
+    PinnedEndpoint { client_secret: bool },
     All,
 }
 
@@ -149,25 +134,23 @@ impl PendingOAuthProgressEvent {
 
 impl OAuthClientMaterialPersistence {
     fn stores_client_id(self) -> bool {
-        matches!(
-            self,
-            Self::All
-                | Self::ClientCredentials {
-                    client_id: true,
-                    ..
-                }
-        )
+        match self {
+            Self::PinnedEndpoint { .. } | Self::All => true,
+        }
     }
 
     fn stores_client_secret(self) -> bool {
         matches!(
             self,
             Self::All
-                | Self::ClientCredentials {
+                | Self::PinnedEndpoint {
                     client_secret: true,
-                    ..
                 }
         )
+    }
+
+    fn stores_token_url(self) -> bool {
+        matches!(self, Self::All | Self::PinnedEndpoint { .. })
     }
 }
 
@@ -195,10 +178,6 @@ impl<'a> RefreshOAuthCredentialRequest<'a> {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "consumed by the identity runtime in a later PR")
-    )]
     pub(crate) fn for_identity(
         identity_name: &str,
         access_token_material_key: &'a str,
@@ -1411,7 +1390,7 @@ fn oauth_credential_material(
     if session.client_material_persistence.stores_client_id() {
         internal_metadata.insert(format!("{prefix}client_id"), session.client_id.clone());
     }
-    if session.client_material_persistence == OAuthClientMaterialPersistence::All {
+    if session.client_material_persistence.stores_token_url() {
         internal_metadata.insert(
             format!("{prefix}token_url"),
             session.endpoints.token_url.clone(),
@@ -1754,7 +1733,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_identity_client_credentials_persistence_omits_token_url() {
+    fn identity_pinned_endpoint_persistence_stores_token_url() {
         let oauth = oauth_spec(
             "https://auth.example.test/token",
             53682,
@@ -1777,7 +1756,7 @@ mod tests {
             &[
                 ("client_id", Some("legacy-client")),
                 ("client_secret", Some("legacy-secret")),
-                ("token_url", None),
+                ("token_url", Some("https://auth.example.test/token")),
             ],
         );
     }
@@ -1810,6 +1789,7 @@ mod tests {
                 ("client_id", Some("legacy-client")),
                 ("client_secret", None),
                 ("client_secret_transport", None),
+                ("token_url", Some(fixture.token_url.as_str())),
             ],
         );
 
@@ -2535,8 +2515,7 @@ mod tests {
                 endpoints,
                 client_id: "legacy-client".to_string(),
                 client_secret: Some(client_secret.to_string()),
-                client_material_persistence: OAuthClientMaterialPersistence::ClientCredentials {
-                    client_id: true,
+                client_material_persistence: OAuthClientMaterialPersistence::PinnedEndpoint {
                     client_secret: store_client_secret,
                 },
             },
