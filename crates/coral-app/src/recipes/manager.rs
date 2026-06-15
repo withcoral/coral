@@ -231,6 +231,56 @@ impl RecipeManager {
         Ok(recipes)
     }
 
+    pub(crate) async fn load_runtime_recipes(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[QuerySource],
+        mut runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
+    ) -> Result<Vec<RecipeRuntimeDefinition>, AppError> {
+        let artifacts = self.load_recipe_artifacts(workspace_name)?;
+        if artifacts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut seen_names = HashSet::new();
+        let mut publish_targets =
+            source_publish_targets(selected_sources, runtime_config()?).await?;
+        let mut runtime_recipes = Vec::new();
+        for artifact in artifacts {
+            if !seen_names.insert(artifact.name.clone()) {
+                skip_recipe(
+                    &artifact,
+                    format_args!("recipe '{}' is installed more than once", artifact.name),
+                );
+                continue;
+            }
+            let spec = match parse_recipe_yaml(&artifact.raw_yaml) {
+                Ok(spec) => spec,
+                Err(error) => {
+                    skip_recipe(&artifact, format_args!("recipe is invalid: {error}"));
+                    continue;
+                }
+            };
+            let runtime_recipe =
+                match infer_runtime_recipe(selected_sources, runtime_config()?, &spec).await {
+                    Ok(runtime_recipe) => runtime_recipe,
+                    Err(error) => {
+                        skip_recipe(
+                            &artifact,
+                            format_args!("recipe failed runtime validation: {error}"),
+                        );
+                        continue;
+                    }
+                };
+            if let Err(error) = record_publish_targets(&runtime_recipe, &mut publish_targets) {
+                skip_recipe(&artifact, format_args!("{error}"));
+                continue;
+            }
+            runtime_recipes.push(runtime_recipe);
+        }
+        Ok(runtime_recipes)
+    }
+
     pub(crate) fn list_user_recipes(
         &self,
         workspace_name: &WorkspaceName,
