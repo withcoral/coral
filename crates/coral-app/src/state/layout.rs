@@ -11,10 +11,6 @@ use crate::storage::fs::ensure_dir;
 use crate::workspaces::WorkspaceName;
 
 pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
-#[allow(
-    dead_code,
-    reason = "recipe lifecycle wiring consumes this path in a later stack branch"
-)]
 pub(crate) const INSTALLED_RECIPE_FILE_NAME: &str = "recipe.yaml";
 pub(crate) const INSTALLED_SECRETS_FILE_NAME: &str = "secrets.env";
 
@@ -92,18 +88,10 @@ impl AppStateLayout {
         self.feedback_dir(workspace_name).join("reports.jsonl")
     }
 
-    #[allow(
-        dead_code,
-        reason = "recipe lifecycle wiring consumes this path in a later stack branch"
-    )]
     pub(crate) fn recipes_root(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.workspace_dir(workspace_name).join("recipes")
     }
 
-    #[allow(
-        dead_code,
-        reason = "recipe lifecycle wiring consumes this path in a later stack branch"
-    )]
     pub(crate) fn recipe_dir(
         &self,
         workspace_name: &WorkspaceName,
@@ -112,10 +100,6 @@ impl AppStateLayout {
         self.recipes_root(workspace_name).join(recipe_name.as_str())
     }
 
-    #[allow(
-        dead_code,
-        reason = "recipe lifecycle wiring consumes this path in a later stack branch"
-    )]
     pub(crate) fn recipe_file(
         &self,
         workspace_name: &WorkspaceName,
