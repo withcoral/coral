@@ -1151,8 +1151,10 @@ paths:
             .set_body_json(Value::Object(body))
     }
 
-    fn json_rpc_request_id(body: &Value) -> Value {
-        body.get("id").cloned().unwrap_or(Value::Null)
+    fn json_rpc_request_id(body: &Value) -> std::result::Result<Value, ResponseTemplate> {
+        body.get("id").cloned().ok_or_else(|| {
+            ResponseTemplate::new(400).set_body_string("JSON-RPC request is missing id")
+        })
     }
 
     async fn mount_mcp_materialization_server(server: &MockServer) {
@@ -1160,57 +1162,75 @@ paths:
             .respond_with(|request: &wiremock::Request| {
                 let body: Value = request.body_json().expect("JSON-RPC request body");
                 match body.get("method").and_then(Value::as_str) {
-                    Some("initialize") => json_rpc_result_response(
-                        json_rpc_request_id(&body),
-                        json!({
-                            "protocolVersion": "2025-03-26",
-                            "capabilities": { "tools": {} },
-                            "serverInfo": { "name": "test-mcp", "version": "1.0.0" }
-                        }),
-                    ),
+                    Some("initialize") => json_rpc_request_id(&body)
+                        .map(|id| {
+                            json_rpc_result_response(
+                                id,
+                                json!({
+                                    "protocolVersion": "2025-03-26",
+                                    "capabilities": { "tools": {} },
+                                    "serverInfo": { "name": "test-mcp", "version": "1.0.0" }
+                                }),
+                            )
+                        })
+                        .unwrap_or_else(|response| response),
                     Some("notifications/initialized") => ResponseTemplate::new(202),
-                    Some("tools/list") => json_rpc_result_response(
-                        json_rpc_request_id(&body),
-                        json!({
-                            "tools": [{
-                                "name": "list_items",
-                                "description": "List items",
-                                "inputSchema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "cursor": { "type": "string" }
-                                    }
-                                },
-                                "outputSchema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "items": {
-                                            "type": "array",
-                                            "items": {
-                                                "type": "object",
-                                                "properties": {
-                                                    "id": { "type": "string" }
+                    Some("tools/list") => json_rpc_request_id(&body)
+                        .map(|id| {
+                            json_rpc_result_response(
+                                id,
+                                json!({
+                                    "tools": [{
+                                        "name": "list_items",
+                                        "description": "List items",
+                                        "inputSchema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "cursor": { "type": "string" }
+                                            }
+                                        },
+                                        "outputSchema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "items": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "id": { "type": "string" }
+                                                        }
+                                                    }
+                                                },
+                                                "meta": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "nextCursor": { "type": ["string", "null"] }
+                                                    }
                                                 }
                                             }
                                         },
-                                        "meta": {
-                                            "type": "object",
-                                            "properties": {
-                                                "nextCursor": { "type": ["string", "null"] }
-                                            }
-                                        }
-                                    }
-                                },
-                                "annotations": { "readOnlyHint": true }
-                            }]
-                        }),
-                    ),
+                                        "annotations": { "readOnlyHint": true }
+                                    }]
+                                }),
+                            )
+                        })
+                        .unwrap_or_else(|response| response),
                     other => ResponseTemplate::new(404)
                         .set_body_string(format!("unexpected MCP method {other:?}")),
                 }
             })
             .mount(server)
             .await;
+    }
+
+    #[test]
+    fn json_rpc_request_id_rejects_missing_request_id() {
+        let result = json_rpc_request_id(&json!({
+            "jsonrpc": "2.0",
+            "method": "tools/list"
+        }));
+
+        assert!(result.is_err(), "request methods must include an id");
     }
 
     fn setup_materialization() -> (TempDir, TempDir, AppStateLayout, String, V4SourceManifest) {
