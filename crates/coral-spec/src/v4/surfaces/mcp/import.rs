@@ -76,8 +76,10 @@ impl<'a> McpImporter<'a> {
                     operation_id
                 )));
             }
-            operations.push(self.import_tool(tool, &operation_id));
-            operation_ids.insert(operation_id, tool.name.as_str());
+            if let Some(operation) = self.import_tool(tool, &operation_id) {
+                operations.push(operation);
+                operation_ids.insert(operation_id, tool.name.as_str());
+            }
         }
         Ok(SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
@@ -91,18 +93,19 @@ impl<'a> McpImporter<'a> {
         })
     }
 
-    fn import_tool(&mut self, tool: &McpToolDescriptor, operation_id: &str) -> IrOperation {
+    fn import_tool(&mut self, tool: &McpToolDescriptor, operation_id: &str) -> Option<IrOperation> {
         let mut diagnostics = Vec::new();
-        let inputs = self.import_inputs(tool, operation_id, &mut diagnostics);
-        let input_schema_complete = diagnostics.iter().all(|diagnostic| {
-            diagnostic.code != "MCP_INPUT_SCHEMA_REF_UNSUPPORTED"
-                && diagnostic.code != "MCP_INPUT_SCHEMA_REF_NOT_FOUND"
-                && diagnostic.code != "MCP_INPUT_SCHEMA_COMPOSITION_UNSUPPORTED"
-                && diagnostic.code != "MCP_INPUT_SCHEMA_CONFLICT"
-        });
+        let imported_inputs = self.import_inputs(tool, operation_id, &mut diagnostics);
+        let input_schema_complete = imported_inputs.schema_complete;
+        if !input_schema_complete {
+            self.diagnostics.extend(diagnostics);
+            return None;
+        }
+
+        let inputs = imported_inputs.inputs;
         let output = self.import_output(operation_id, tool.output_schema.as_ref());
         let pagination = infer_mcp_pagination(&inputs, &output, tool.output_schema.as_ref());
-        IrOperation {
+        Some(IrOperation {
             id: operation_id.to_string(),
             method_name: "tools/call".to_string(),
             description: tool
@@ -111,7 +114,7 @@ impl<'a> McpImporter<'a> {
                 .or_else(|| tool.title.clone())
                 .unwrap_or_default(),
             deprecated: false,
-            read_only: tool.read_only_hint.unwrap_or(false) && input_schema_complete,
+            read_only: tool.read_only_hint.unwrap_or(false),
             inputs,
             output,
             entity: Some(IrEntityCandidate {
@@ -124,7 +127,7 @@ impl<'a> McpImporter<'a> {
                 pagination,
             }),
             diagnostics,
-        }
+        })
     }
 
     fn import_inputs(
@@ -132,8 +135,9 @@ impl<'a> McpImporter<'a> {
         tool: &McpToolDescriptor,
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
-    ) -> Vec<IrOperationInput> {
+    ) -> ImportedInputs {
         let mut resolving_refs = BTreeSet::new();
+        let mut schema_complete = true;
         let Some(shape) = input_object_shape(
             &tool.input_schema,
             &tool.input_schema,
@@ -141,10 +145,14 @@ impl<'a> McpImporter<'a> {
             operation_id,
             &mut resolving_refs,
             diagnostics,
+            &mut schema_complete,
         ) else {
-            return Vec::new();
+            return ImportedInputs {
+                inputs: Vec::new(),
+                schema_complete: false,
+            };
         };
-        shape
+        let inputs = shape
             .properties
             .iter()
             .map(|(name, property)| {
@@ -159,7 +167,11 @@ impl<'a> McpImporter<'a> {
                     description: schema_description(property),
                 }
             })
-            .collect()
+            .collect();
+        ImportedInputs {
+            inputs,
+            schema_complete,
+        }
     }
 
     fn import_output(
@@ -311,6 +323,11 @@ struct InputObjectShape {
     required: BTreeSet<String>,
 }
 
+struct ImportedInputs {
+    inputs: Vec<IrOperationInput>,
+    schema_complete: bool,
+}
+
 fn input_object_shape(
     root: &Value,
     schema: &Value,
@@ -318,6 +335,7 @@ fn input_object_shape(
     operation_id: &str,
     resolving_refs: &mut BTreeSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
+    schema_complete: &mut bool,
 ) -> Option<InputObjectShape> {
     let schema = resolve_input_schema_ref(
         root,
@@ -326,9 +344,11 @@ fn input_object_shape(
         operation_id,
         resolving_refs,
         diagnostics,
+        schema_complete,
     )?;
 
     if schema.get("anyOf").is_some() || schema.get("oneOf").is_some() {
+        *schema_complete = false;
         diagnostics.push(Diagnostic::warning(
             "MCP_INPUT_SCHEMA_COMPOSITION_UNSUPPORTED",
             "MCP input schema uses anyOf/oneOf, which cannot be safely imported as SQL inputs",
@@ -348,6 +368,7 @@ fn input_object_shape(
                 operation_id,
                 resolving_refs,
                 diagnostics,
+                schema_complete,
             )?;
             if !merge_input_object_shape(
                 &mut shape,
@@ -355,6 +376,7 @@ fn input_object_shape(
                 surface_id,
                 operation_id,
                 diagnostics,
+                schema_complete,
             ) {
                 return None;
             }
@@ -370,11 +392,13 @@ fn resolve_input_schema_ref<'a>(
     operation_id: &str,
     resolving_refs: &mut BTreeSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
+    schema_complete: &mut bool,
 ) -> Option<&'a Value> {
     let Some(reference) = schema.get("$ref").and_then(Value::as_str) else {
         return Some(schema);
     };
     if !reference.starts_with("#/") {
+        *schema_complete = false;
         diagnostics.push(Diagnostic::warning(
             "MCP_INPUT_SCHEMA_REF_UNSUPPORTED",
             format!("MCP input schema external reference '{reference}' is unsupported"),
@@ -384,6 +408,7 @@ fn resolve_input_schema_ref<'a>(
         return None;
     }
     if !resolving_refs.insert(reference.to_string()) {
+        *schema_complete = false;
         diagnostics.push(Diagnostic::warning(
             "MCP_INPUT_SCHEMA_REF_UNSUPPORTED",
             format!("MCP input schema reference cycle includes '{reference}'"),
@@ -398,6 +423,7 @@ fn resolve_input_schema_ref<'a>(
     if let Some(resolved) = resolved {
         Some(resolved)
     } else {
+        *schema_complete = false;
         diagnostics.push(Diagnostic::warning(
             "MCP_INPUT_SCHEMA_REF_NOT_FOUND",
             format!("MCP input schema reference '{reference}' was not found"),
@@ -445,6 +471,7 @@ fn merge_input_object_shape(
     surface_id: &str,
     operation_id: &str,
     diagnostics: &mut Vec<Diagnostic>,
+    schema_complete: &mut bool,
 ) -> bool {
     for (name, property) in source.properties {
         if target
@@ -452,6 +479,7 @@ fn merge_input_object_shape(
             .get(&name)
             .is_some_and(|existing| existing != &property)
         {
+            *schema_complete = false;
             diagnostics.push(Diagnostic::warning(
                 "MCP_INPUT_SCHEMA_CONFLICT",
                 format!("MCP input schema defines conflicting property '{name}'"),
@@ -768,10 +796,34 @@ surfaces:
     }
 
     #[test]
+    fn unresolved_input_schema_refs_means_tool_is_not_exposed() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "$ref": "#/$defs/MissingInputSchema"
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        assert!(ir.operations.is_empty());
+        assert!(
+            ir.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_REF_NOT_FOUND")
+        );
+
+        let projections =
+            generate_projection_catalog(manifest().as_v4().expect("v4"), std::slice::from_ref(&ir))
+                .expect("projections");
+        assert_eq!(projections.projections.len(), 0);
+    }
+
+    #[test]
     fn hides_tools_with_unsupported_composed_input_schemas() {
-        let manifest = manifest();
-        let v4 = manifest.as_v4().expect("v4");
-        let surface = v4.surfaces.first().expect("surface");
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(
                 "search-items",
@@ -797,21 +849,18 @@ surfaces:
                 Some(true),
             )],
         };
-
-        let ir = import_mcp_surface(v4, surface, &catalog).expect("import");
-        let operation = operation(&ir, "search_items");
-        assert!(!operation.read_only);
+        let ir = import_catalog(&catalog);
+        assert!(ir.operations.is_empty());
         assert!(
-            operation
-                .diagnostics
+            ir.diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_COMPOSITION_UNSUPPORTED")
         );
 
         let projections =
-            generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("projections");
-        let projection = projections.projections.first().expect("projection");
-        assert_eq!(projection.visibility, ProjectionVisibility::Hidden);
+            generate_projection_catalog(manifest().as_v4().expect("v4"), std::slice::from_ref(&ir))
+                .expect("projections");
+        assert_eq!(projections.projections.len(), 0);
     }
 
     #[test]
