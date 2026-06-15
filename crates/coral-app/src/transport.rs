@@ -3,7 +3,7 @@
 use std::future::Future;
 
 use coral_api::{
-    CORAL_ERROR_DOMAIN, grpc_response_status_code,
+    CORAL_EPISODE_ID_METADATA_KEY, CORAL_ERROR_DOMAIN, grpc_response_status_code,
     v1::{
         CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
         ColumnSearchResult as ProtoColumnSearchResult,
@@ -26,6 +26,7 @@ use crate::catalog::discovery::{
     CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
     ColumnSearchResult, DescribeTableResult,
 };
+use crate::episode::EpisodeId;
 use crate::query::manager::QueryManagerError;
 use crate::workspaces::WorkspaceName;
 
@@ -251,6 +252,24 @@ pub(crate) fn workspace_to_proto(workspace_name: &WorkspaceName) -> Workspace {
     }
 }
 
+/// Extracts and validates the originating episode from request metadata.
+///
+/// Episode attribution is best-effort: a missing `coral-episode-id` yields
+/// `None`, and a present-but-malformed value is ignored (debug-logged) rather
+/// than failing the call — the query is valid regardless of its trajectory tag.
+pub(crate) fn episode_id_from_metadata(
+    metadata: &tonic::metadata::MetadataMap,
+) -> Option<EpisodeId> {
+    let value = metadata.get(CORAL_EPISODE_ID_METADATA_KEY)?.to_str().ok()?;
+    match EpisodeId::parse(value) {
+        Ok(episode_id) => Some(episode_id),
+        Err(error) => {
+            tracing::debug!(%error, "ignoring malformed coral-episode-id metadata");
+            None
+        }
+    }
+}
+
 pub(crate) fn table_to_proto(
     workspace_name: &WorkspaceName,
     table: coral_engine::TableInfo,
@@ -471,7 +490,7 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        GrpcMethodMetadata, GrpcServerMethod, grpc_method, query_status,
+        GrpcMethodMetadata, GrpcServerMethod, episode_id_from_metadata, grpc_method, query_status,
         query_test_result_to_proto, table_summary_to_proto, table_to_proto,
         workspace_name_from_proto, workspace_to_proto,
     };
@@ -559,6 +578,35 @@ mod tests {
             workspace_name_from_proto(Some(&workspace)).expect("workspace should parse");
 
         assert_eq!(workspace_name.as_str(), "default");
+    }
+
+    #[test]
+    fn episode_id_from_metadata_extracts_valid_id() {
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        metadata.insert("coral-episode-id", "ep_123".parse().expect("ascii value"));
+
+        let episode_id = episode_id_from_metadata(&metadata).expect("valid id is extracted");
+
+        assert_eq!(episode_id.as_str(), "ep_123");
+    }
+
+    #[test]
+    fn episode_id_from_metadata_ignores_absent_and_malformed() {
+        let absent = tonic::metadata::MetadataMap::new();
+        assert!(
+            episode_id_from_metadata(&absent).is_none(),
+            "a missing coral-episode-id yields no attribution"
+        );
+
+        let mut malformed = tonic::metadata::MetadataMap::new();
+        malformed.insert(
+            "coral-episode-id",
+            "has space".parse().expect("ascii value"),
+        );
+        assert!(
+            episode_id_from_metadata(&malformed).is_none(),
+            "a malformed id is ignored, not surfaced"
+        );
     }
 
     #[test]

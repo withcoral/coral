@@ -17,6 +17,8 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
+use crate::episode::EpisodeId;
+use crate::query::QueryAttribution;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
@@ -133,11 +135,13 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         sql: &str,
+        attribution: &QueryAttribution,
     ) -> Result<QueryExecution, QueryManagerError> {
         run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
             sql,
+            attribution.episode_id.as_ref(),
             async {
                 let config = self
                     .config_store
@@ -162,11 +166,13 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         sql: &str,
+        attribution: &QueryAttribution,
     ) -> Result<QueryPlan, QueryManagerError> {
         run_query_operation(
             QueryOperation::ExplainSql,
             workspace_name,
             sql,
+            attribution.episode_id.as_ref(),
             async {
                 let config = self
                     .config_store
@@ -376,6 +382,7 @@ async fn run_query_operation<T, Fut, RowCount>(
     operation: QueryOperation,
     workspace_name: &WorkspaceName,
     sql: &str,
+    episode_id: Option<&EpisodeId>,
     query: Fut,
     row_count: RowCount,
 ) -> Result<T, QueryManagerError>
@@ -384,7 +391,7 @@ where
     RowCount: FnOnce(&T) -> Option<u64>,
 {
     let started_at = Instant::now();
-    let query_span = create_query_span(operation, workspace_name, sql);
+    let query_span = create_query_span(operation, workspace_name, sql, episode_id);
     let result = query.instrument(query_span.clone()).await;
 
     let metrics = crate::telemetry::metrics::metrics();
@@ -420,20 +427,29 @@ fn create_query_span(
     operation: QueryOperation,
     workspace_name: &WorkspaceName,
     sql: &str,
+    episode_id: Option<&EpisodeId>,
 ) -> tracing::Span {
     let operation = operation.as_str();
-    tracing::info_span!(
+    let span = tracing::info_span!(
         "coral.query",
         otel.name = "coral.query",
         operation = operation,
         workspace = %workspace_name.as_str(),
         sql = %sql,
+        // Trajectory-memory attribution: present only when the caller tagged the
+        // call with a valid `coral-episode-id`. Joins to the intent registered by
+        // `OpenEpisode`; never carries the intent text itself.
+        episode.id = tracing::field::Empty,
         row_count = tracing::field::Empty,
         status = tracing::field::Empty,
         error.kind = tracing::field::Empty,
         error.type = tracing::field::Empty,
         exception.message = tracing::field::Empty,
-    )
+    );
+    if let Some(episode_id) = episode_id {
+        span.record("episode.id", episode_id.as_str());
+    }
+    span
 }
 
 fn query_error_kind(error: &QueryManagerError) -> &'static str {
@@ -569,6 +585,60 @@ mod tests {
             _temp: temp,
             manager,
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn execute_sql_stamps_episode_id_on_query_span() {
+        use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
+        use coral_api::v1::{ExecuteSqlRequest, Workspace};
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tonic::Request;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        use crate::query::service::QueryService;
+
+        // Capture finished spans into memory via a scoped subscriber so the
+        // assertion exercises the real metadata -> manager -> span path end to end.
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("episode-attribution-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let service = QueryService::new(fixture.manager.clone());
+
+        let mut request = Request::new(ExecuteSqlRequest {
+            workspace: Some(Workspace {
+                name: WorkspaceName::default().as_str().to_string(),
+            }),
+            sql: "SELECT 1".to_string(),
+        });
+        request.metadata_mut().insert(
+            "coral-episode-id",
+            "ep_trace_1".parse().expect("ascii value"),
+        );
+
+        // The query may fail (the fixture has no installed sources); the
+        // `coral.query` span is created and stamped before execution regardless.
+        let _result = service.execute_sql(request).await;
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let query_span = spans
+            .iter()
+            .find(|span| span.name == "coral.query")
+            .expect("coral.query span recorded");
+        let episode_attr = query_span
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key.as_str() == "episode.id")
+            .expect("episode.id attribute present");
+        assert_eq!(episode_attr.value.as_str(), "ep_trace_1");
     }
 
     fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {
@@ -761,6 +831,7 @@ surfaces:
             .execute_sql(
                 &workspace_name,
                 "SELECT id, title FROM github_v4_query.issues",
+                &QueryAttribution::default(),
             )
             .await
             .expect("query executes");
