@@ -351,6 +351,11 @@ impl SourceManager {
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
+        self.validate_runtime_schema_names_available(
+            workspace_name,
+            &candidate.name,
+            materialization_manifest_yaml,
+        )?;
         let stored_material = self.source_stored_material_for_validation(
             workspace_name,
             candidate,
@@ -407,6 +412,11 @@ impl SourceManager {
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
+        self.validate_runtime_schema_names_available(
+            workspace_name,
+            &candidate.name,
+            materialization_manifest_yaml,
+        )?;
         let oauth_input_keys = oauth_credential_retrievals
             .iter()
             .map(|credential| credential.input_key.clone())
@@ -739,6 +749,35 @@ impl SourceManager {
             &new_materialization_suffix(suffix_prefix),
         )
         .map(Some)
+    }
+
+    fn validate_runtime_schema_names_available(
+        &self,
+        workspace_name: &WorkspaceName,
+        candidate_name: &SourceName,
+        manifest_yaml: &str,
+    ) -> Result<(), AppError> {
+        let candidate_manifest = parse_source_manifest_yaml(manifest_yaml)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        let candidate_schema_names = runtime_schema_names(&candidate_manifest);
+        for installed in self.config_store.list_workspace_sources(workspace_name)? {
+            if installed.name == *candidate_name {
+                continue;
+            }
+            let installed_manifest =
+                resolve_installed_manifest(workspace_name, &installed, &self.layout)?;
+            let installed_schema_names = runtime_schema_names(&installed_manifest.source_spec);
+            if let Some(schema_name) = candidate_schema_names
+                .intersection(&installed_schema_names)
+                .next()
+            {
+                return Err(AppError::InvalidInput(format!(
+                    "source '{candidate_name}' runtime schema name '{schema_name}' conflicts with installed source '{}'",
+                    installed.name
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn source_exists(
@@ -1341,6 +1380,17 @@ fn normalize_binding_key(label: &str, value: &str) -> Result<String, AppError> {
     Ok(trimmed.to_string())
 }
 
+fn runtime_schema_names(manifest: &ValidatedSourceManifest) -> BTreeSet<String> {
+    if let Some(v4) = manifest.as_v4() {
+        return v4
+            .surfaces
+            .iter()
+            .map(|surface| surface.relation_namespace.clone())
+            .collect();
+    }
+    BTreeSet::from([manifest.schema_name().to_string()])
+}
+
 fn durable_import_manifest_yaml(
     manifest_yaml: &str,
     manifest: &ValidatedSourceManifest,
@@ -1575,6 +1625,30 @@ name: github_v4_test
 dsl_version: 4
 surfaces:
   - id: rest
+    type: openapi
+    file: {}
+    inputs:
+      API_BASE:
+        kind: variable
+        default: http://127.0.0.1:1
+    base_url: "{{{{input.API_BASE}}}}"
+"#,
+            openapi_file.display()
+        )
+    }
+
+    fn manifest_v4_with_surface_namespace(
+        openapi_file: &std::path::Path,
+        source_name: &str,
+        namespace_suffix: &str,
+    ) -> String {
+        format!(
+            r#"
+name: {source_name}
+dsl_version: 4
+surfaces:
+  - id: rest
+    namespace_suffix: {namespace_suffix}
     type: openapi
     file: {}
     inputs:
@@ -1833,6 +1907,64 @@ tables:
             .get_source_info(&default_workspace(), &source_name)
             .expect("installed v4 source should be usable");
         assert_eq!(info.name.as_str(), "github_v4_test");
+    }
+
+    #[test]
+    fn import_v4_source_rejects_runtime_schema_collision_before_persistence() {
+        let temp = TempDir::new().expect("temp dir");
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
+        let manager = SourceManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout.clone(),
+        );
+
+        manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_without_secrets()
+                        .replace("public_messages", "github_v4_rest"),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("install existing source");
+
+        let error = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_v4_with_surface_namespace(
+                        &openapi_file,
+                        "github_v4",
+                        "rest",
+                    ),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect_err("surface namespace should collide with installed source schema");
+
+        let message = error.to_string();
+        assert!(message.contains("runtime schema name 'github_v4_rest'"));
+        assert!(message.contains("conflicts with installed source 'github_v4_rest'"));
+        let rejected_source = SourceName::parse("github_v4").expect("source");
+        assert!(
+            manager
+                .get_source(&default_workspace(), &rejected_source)
+                .is_err(),
+            "rejected source should not be persisted"
+        );
+        assert!(
+            !layout
+                .v4_materialized_dir(&default_workspace(), &rejected_source)
+                .exists(),
+            "rejected source should not materialize artifacts"
+        );
     }
 
     #[test]
