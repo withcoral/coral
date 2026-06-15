@@ -80,18 +80,37 @@ wrapper:
 ```json
 {
   "ok": true,
-  "complete": true,
-  "partial": false,
-  "errors": [],
-  "source_status": [],
   "value": {},
+  "partial": false,
+  "complete": true,
   "error": null,
+  "errors": [],
+  "source_status": [
+    {
+      "source_id": "src_demo",
+      "source_key": "demo",
+      "capability_id": "source/src_demo/interface/rest/operation/list_items",
+      "binding_ref": "typescript:demo.rest.items.listItems",
+      "full_path": "tools.demo.rest.items.listItems",
+      "ok": true,
+      "complete": true,
+      "partial": false,
+      "error": null
+    }
+  ],
   "envelope": {}
 }
 ```
 
-Provider or validation failures print the wrapper with `ok: false` and exit
-non-zero. Query, mutation, and action capabilities are callable by default.
+`value` is the provider value. `envelope` carries provider response metadata
+and, for compatibility with existing CLI consumers, may include the provider
+payload fields such as REST `body`, GraphQL `data`, or MCP
+`structured_content`. `complete`, `errors`, and `source_status` are kept
+for compatibility with existing structured-output consumers, and
+`source_status` carries the invoked binding provenance plus per-source
+ok/complete/partial/error status. Provider or validation failures print the wrapper
+with `ok: false` and exit non-zero. Query, mutation, and action capabilities
+are callable by default.
 
 ## `coral source`
 
@@ -294,8 +313,8 @@ This server exposes:
 | ---- | ---------- | -------------------------------------------------- |
 | Tool | `search`   | Search current workspace exports and capabilities  |
 | Tool | `describe` | Describe refs with JSON input/output schemas       |
-| Tool | `exec`     | Run Code Mode and return `{ run, result, events }` |
-| Tool | `wait`     | Wait for Code Mode events, or terminate a run      |
+| Tool | `exec`     | Run Code Mode and return `{ run, result, output, cursor }` |
+| Tool | `wait`     | Wait for new Code Mode output by cursor, or terminate a run |
 | Tool | `feedback` | Blocked-agent feedback tool                        |
 
 SQL remains available through the CLI `coral sql` command and, for MCP agents,

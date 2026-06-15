@@ -11,8 +11,8 @@ use coral_capabilities::{
     CapabilityKind, Diagnostic, DiagnosticSeverity, DiagnosticStage, EffectKind, SupportStatus,
 };
 use coral_exports::{
-    Binding, CapabilityExport, ExportKind, SqlBinding, SqlBindingKind, SqlColumn, SqlInput,
-    SqlRowShape, TypescriptBinding,
+    Binding, CapabilityExport, ExportKind, SearchIntent, SqlBinding, SqlBindingKind, SqlColumn,
+    SqlInput, SqlRowShape, TypescriptBinding,
 };
 use tonic::{Request, Response, Status};
 
@@ -128,6 +128,7 @@ fn search_filter_from_proto(
         allowed_kinds: export_kinds_from_proto(&request.allowed_kinds)?,
         capability_kind: optional_capability_kind(&request.capability_kind)?,
         effect: optional_effect(&request.effect)?,
+        intent: optional_intent(&request.intent)?,
     })
 }
 
@@ -139,6 +140,7 @@ fn search_item_to_proto(item: coral_exports::SearchResult) -> SearchExportItem {
     SearchExportItem {
         alias: item.alias.unwrap_or_default(),
         full_path: item.full_path.unwrap_or_default(),
+        signature: item.signature.unwrap_or_default(),
         capability_id: item.capability_id.to_string(),
         refs: item.refs,
         display_name: item.display_name,
@@ -371,14 +373,14 @@ fn sql_binding_kind_to_proto(kind: SqlBindingKind) -> ExportBindingKind {
     }
 }
 
-fn sql_row_shape_to_text(shape: SqlRowShape) -> &'static str {
+pub(crate) fn sql_row_shape_to_text(shape: SqlRowShape) -> &'static str {
     match shape {
         SqlRowShape::Collection => "collection",
         SqlRowShape::Singleton => "singleton",
     }
 }
 
-fn diagnostic_severity_to_text(severity: DiagnosticSeverity) -> &'static str {
+pub(crate) fn diagnostic_severity_to_text(severity: DiagnosticSeverity) -> &'static str {
     match severity {
         DiagnosticSeverity::Info => "info",
         DiagnosticSeverity::Warning => "warning",
@@ -386,7 +388,7 @@ fn diagnostic_severity_to_text(severity: DiagnosticSeverity) -> &'static str {
     }
 }
 
-fn diagnostic_stage_to_text(stage: DiagnosticStage) -> &'static str {
+pub(crate) fn diagnostic_stage_to_text(stage: DiagnosticStage) -> &'static str {
     match stage {
         DiagnosticStage::SourceSpec => "source_spec",
         DiagnosticStage::ProviderImport => "provider_import",
@@ -423,7 +425,19 @@ fn optional_effect(value: &str) -> Result<Option<EffectKind>, Status> {
     }
 }
 
-fn capability_kind_to_text(kind: CapabilityKind) -> &'static str {
+fn optional_intent(value: &str) -> Result<Option<SearchIntent>, Status> {
+    match value.trim() {
+        "" => Ok(None),
+        "read" => Ok(Some(SearchIntent::Read)),
+        "write" => Ok(Some(SearchIntent::Write)),
+        "any" => Ok(Some(SearchIntent::Any)),
+        other => Err(app_status(AppError::InvalidInput(format!(
+            "unsupported intent '{other}'"
+        )))),
+    }
+}
+
+pub(crate) fn capability_kind_to_text(kind: CapabilityKind) -> &'static str {
     match kind {
         CapabilityKind::Query => "query",
         CapabilityKind::Mutation => "mutation",
@@ -431,7 +445,7 @@ fn capability_kind_to_text(kind: CapabilityKind) -> &'static str {
     }
 }
 
-fn effect_to_text(effect: EffectKind) -> &'static str {
+pub(crate) fn effect_to_text(effect: EffectKind) -> &'static str {
     match effect {
         EffectKind::Read => "read",
         EffectKind::Write => "write",
@@ -440,7 +454,7 @@ fn effect_to_text(effect: EffectKind) -> &'static str {
     }
 }
 
-fn support_status_to_text(status: SupportStatus) -> &'static str {
+pub(crate) fn support_status_to_text(status: SupportStatus) -> &'static str {
     match status {
         SupportStatus::Generated => "generated",
         SupportStatus::GeneratedPartial => "generated_partial",
@@ -489,6 +503,7 @@ mod tests {
         let search = search_item_to_proto(SearchResult {
             alias: None,
             full_path: None,
+            signature: None,
             capability_id: entry.capability_id.clone(),
             refs: Vec::new(),
             source_id: entry.source_id.clone(),
@@ -509,6 +524,7 @@ mod tests {
         });
         assert!(search.deprecated);
         assert_eq!(search.support_status, "deprecated");
+        assert_eq!(search.signature, "");
 
         let candidate = candidate_to_proto(&entry);
         assert!(candidate.deprecated);
@@ -521,5 +537,62 @@ mod tests {
         .expect("description");
         assert!(description.deprecated);
         assert_eq!(description.support_status, "deprecated");
+    }
+
+    #[test]
+    fn search_item_proto_round_trips_signature() {
+        let entry = deprecated_export();
+        let signature = "tools.demo.graph.query.old({ first?: integer }) -> value: object";
+        let search = search_item_to_proto(SearchResult {
+            alias: Some("demo.graph.query.old".to_string()),
+            full_path: Some("tools.demo.graph.query.old".to_string()),
+            signature: Some(signature.to_string()),
+            capability_id: entry.capability_id.clone(),
+            refs: Vec::new(),
+            source_id: entry.source_id.clone(),
+            display_name: entry.display_name.clone(),
+            source_key: entry.source_key.as_str().to_string(),
+            capability_kind: entry.effect_profile.capability_kind,
+            effects: entry.effect_profile.effects.clone(),
+            title: entry.title.clone(),
+            description: entry.description.clone(),
+            deprecated: false,
+            support_status: SupportStatus::Generated,
+            available_bindings: Vec::new(),
+            diagnostic_count: 0,
+            score: 1,
+            matched_fields: Vec::new(),
+            matched_terms: Vec::new(),
+            rank_reason: "test".to_string(),
+        });
+
+        assert_eq!(search.signature, signature);
+    }
+
+    #[test]
+    fn search_filter_intent_parses_known_values_and_rejects_unknown() {
+        use coral_api::v1::SearchExportsRequest;
+
+        for (raw, expected) in [
+            ("", None),
+            ("read", Some(SearchIntent::Read)),
+            ("write", Some(SearchIntent::Write)),
+            ("any", Some(SearchIntent::Any)),
+        ] {
+            let filter = search_filter_from_proto(&SearchExportsRequest {
+                intent: raw.to_string(),
+                ..Default::default()
+            })
+            .expect("parse search filter");
+            assert_eq!(filter.intent, expected, "intent {raw:?}");
+        }
+
+        let error = search_filter_from_proto(&SearchExportsRequest {
+            intent: "destroy".to_string(),
+            ..Default::default()
+        })
+        .expect_err("unknown intent must be rejected");
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        assert!(error.message().contains("unsupported intent 'destroy'"));
     }
 }

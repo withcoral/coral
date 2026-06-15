@@ -221,6 +221,7 @@ pub struct CodeModeNestedToolCall {
     pub tool_kind: CodeModeToolKind,
     pub input: Option<JsonValue>,
     pub allow_error_result: bool,
+    pub envelope: bool,
 }
 
 #[derive(Debug)]
@@ -230,9 +231,18 @@ pub(crate) enum TurnMessage {
 
 #[derive(Debug)]
 pub(crate) enum RuntimeCommand {
-    ToolResponse { id: String, result: JsonValue },
-    ToolError { id: String, error_text: String },
-    TimeoutFired { id: u64 },
+    ToolResponse {
+        id: String,
+        result: JsonValue,
+    },
+    ToolError {
+        id: String,
+        error_text: String,
+        fatal: bool,
+    },
+    TimeoutFired {
+        id: u64,
+    },
     Terminate,
 }
 
@@ -260,6 +270,7 @@ pub(crate) enum RuntimeEvent {
         kind: CodeModeToolKind,
         input: Option<JsonValue>,
         allow_error_result: bool,
+        envelope: bool,
     },
     Result {
         stored_values: HashMap<String, JsonValue>,
@@ -594,7 +605,6 @@ pub(super) struct RuntimeState {
 
 pub(super) struct PendingToolCall {
     resolver: v8::Global<v8::PromiseResolver>,
-    allow_error_result: bool,
 }
 
 #[derive(Clone)]
@@ -812,10 +822,16 @@ fn run_runtime(
                     return;
                 }
             }
-            RuntimeCommand::ToolError { id, error_text } => {
-                if let Err(runtime_error) =
-                    module_loader::resolve_tool_response(scope, &id, Err(error_text))
-                {
+            RuntimeCommand::ToolError {
+                id,
+                error_text,
+                fatal,
+            } => {
+                if let Err(runtime_error) = module_loader::resolve_tool_response(
+                    scope,
+                    &id,
+                    Err(module_loader::ToolResponseError { error_text, fatal }),
+                ) {
                     capture_scope_send_error(
                         scope,
                         &event_tx,

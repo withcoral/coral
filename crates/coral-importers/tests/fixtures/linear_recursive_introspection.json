@@ -1,0 +1,3138 @@
+{
+  "data": {
+    "__schema": {
+      "queryType": {
+        "name": "Query"
+      },
+      "mutationType": {
+        "name": "Mutation"
+      },
+      "types": [
+        {
+          "kind": "OBJECT",
+          "name": "Query",
+          "fields": [
+            {
+              "name": "issues",
+              "args": [
+                {
+                  "name": "filter",
+                  "type": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "IssueFilter"
+                  }
+                },
+                {
+                  "name": "first",
+                  "type": {
+                    "kind": "SCALAR",
+                    "name": "Int"
+                  }
+                },
+                {
+                  "name": "after",
+                  "type": {
+                    "kind": "SCALAR",
+                    "name": "String"
+                  }
+                },
+                {
+                  "name": "orderBy",
+                  "type": {
+                    "kind": "ENUM",
+                    "name": "PaginationOrderBy"
+                  }
+                }
+              ],
+              "type": {
+                "kind": "NON_NULL",
+                "ofType": {
+                  "kind": "OBJECT",
+                  "name": "IssueConnection"
+                }
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            }
+          ]
+        },
+        {
+          "kind": "OBJECT",
+          "name": "Mutation",
+          "fields": [
+            {
+              "name": "issueUpdate",
+              "args": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "NON_NULL",
+                    "ofType": {
+                      "kind": "SCALAR",
+                      "name": "String"
+                    }
+                  }
+                },
+                {
+                  "name": "input",
+                  "type": {
+                    "kind": "NON_NULL",
+                    "ofType": {
+                      "kind": "INPUT_OBJECT",
+                      "name": "IssueUpdateInput"
+                    }
+                  }
+                }
+              ],
+              "type": {
+                "kind": "NON_NULL",
+                "ofType": {
+                  "kind": "OBJECT",
+                  "name": "IssuePayload"
+                }
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            }
+          ]
+        },
+        {
+          "kind": "OBJECT",
+          "name": "IssueConnection",
+          "fields": [
+            {
+              "name": "nodes",
+              "args": [],
+              "type": {
+                "kind": "NON_NULL",
+                "ofType": {
+                  "kind": "LIST",
+                  "ofType": {
+                    "kind": "NON_NULL",
+                    "ofType": {
+                      "kind": "OBJECT",
+                      "name": "Issue"
+                    }
+                  }
+                }
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "pageInfo",
+              "args": [],
+              "type": {
+                "kind": "NON_NULL",
+                "ofType": {
+                  "kind": "OBJECT",
+                  "name": "PageInfo"
+                }
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            }
+          ]
+        },
+        {
+          "kind": "OBJECT",
+          "name": "Issue",
+          "fields": [
+            {
+              "name": "id",
+              "args": [],
+              "type": {
+                "kind": "NON_NULL",
+                "ofType": {
+                  "kind": "SCALAR",
+                  "name": "ID"
+                }
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "identifier",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "number",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "title",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "url",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "branchName",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "priority",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "estimate",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "createdAt",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "updatedAt",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "dueDate",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "TimelessDate"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "customerTicketCount",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "Int"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "state",
+              "args": [],
+              "type": {
+                "kind": "OBJECT",
+                "name": "WorkflowState"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "assignee",
+              "args": [],
+              "type": {
+                "kind": "OBJECT",
+                "name": "User"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "team",
+              "args": [],
+              "type": {
+                "kind": "OBJECT",
+                "name": "Team"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            }
+          ]
+        },
+        {
+          "kind": "OBJECT",
+          "name": "WorkflowState",
+          "fields": [
+            {
+              "name": "id",
+              "args": [],
+              "type": {
+                "kind": "NON_NULL",
+                "ofType": {
+                  "kind": "SCALAR",
+                  "name": "ID"
+                }
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "name",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "type",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "color",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "position",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            }
+          ]
+        },
+        {
+          "kind": "OBJECT",
+          "name": "User",
+          "fields": [
+            {
+              "name": "id",
+              "args": [],
+              "type": {
+                "kind": "NON_NULL",
+                "ofType": {
+                  "kind": "SCALAR",
+                  "name": "ID"
+                }
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "name",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "displayName",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "email",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "active",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            }
+          ]
+        },
+        {
+          "kind": "OBJECT",
+          "name": "Team",
+          "fields": [
+            {
+              "name": "id",
+              "args": [],
+              "type": {
+                "kind": "NON_NULL",
+                "ofType": {
+                  "kind": "SCALAR",
+                  "name": "ID"
+                }
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "name",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "key",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            }
+          ]
+        },
+        {
+          "kind": "OBJECT",
+          "name": "PageInfo",
+          "fields": [
+            {
+              "name": "hasPreviousPage",
+              "args": [],
+              "type": {
+                "kind": "NON_NULL",
+                "ofType": {
+                  "kind": "SCALAR",
+                  "name": "Boolean"
+                }
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "hasNextPage",
+              "args": [],
+              "type": {
+                "kind": "NON_NULL",
+                "ofType": {
+                  "kind": "SCALAR",
+                  "name": "Boolean"
+                }
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "startCursor",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "endCursor",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            }
+          ]
+        },
+        {
+          "kind": "OBJECT",
+          "name": "IssuePayload",
+          "fields": [
+            {
+              "name": "success",
+              "args": [],
+              "type": {
+                "kind": "NON_NULL",
+                "ofType": {
+                  "kind": "SCALAR",
+                  "name": "Boolean"
+                }
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "lastSyncId",
+              "args": [],
+              "type": {
+                "kind": "NON_NULL",
+                "ofType": {
+                  "kind": "SCALAR",
+                  "name": "Float"
+                }
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            },
+            {
+              "name": "issue",
+              "args": [],
+              "type": {
+                "kind": "OBJECT",
+                "name": "Issue"
+              },
+              "isDeprecated": false,
+              "deprecationReason": null
+            }
+          ]
+        },
+        {
+          "kind": "ENUM",
+          "name": "PaginationOrderBy",
+          "enumValues": [
+            {
+              "name": "createdAt"
+            },
+            {
+              "name": "updatedAt"
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "IssueFilter",
+          "inputFields": [
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "IssueFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "IssueFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IDComparator"
+              }
+            },
+            {
+              "name": "number",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NumberComparator"
+              }
+            },
+            {
+              "name": "title",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "description",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableStringComparator"
+              }
+            },
+            {
+              "name": "priority",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableNumberComparator"
+              }
+            },
+            {
+              "name": "estimate",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "EstimateComparator"
+              }
+            },
+            {
+              "name": "createdAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "updatedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "startedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableDateComparator"
+              }
+            },
+            {
+              "name": "completedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableDateComparator"
+              }
+            },
+            {
+              "name": "canceledAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableDateComparator"
+              }
+            },
+            {
+              "name": "dueDate",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "TimelessDateComparator"
+              }
+            },
+            {
+              "name": "assignee",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableUserFilter"
+              }
+            },
+            {
+              "name": "creator",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableUserFilter"
+              }
+            },
+            {
+              "name": "snoozedBy",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableUserFilter"
+              }
+            },
+            {
+              "name": "team",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "TeamFilter"
+              }
+            },
+            {
+              "name": "state",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "WorkflowStateFilter"
+              }
+            },
+            {
+              "name": "project",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableProjectFilter"
+              }
+            },
+            {
+              "name": "cycle",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableCycleFilter"
+              }
+            },
+            {
+              "name": "parent",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableIssueFilter"
+              }
+            },
+            {
+              "name": "projectMilestone",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableProjectMilestoneFilter"
+              }
+            },
+            {
+              "name": "labels",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IssueLabelCollectionFilter"
+              }
+            },
+            {
+              "name": "subscribers",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "UserCollectionFilter"
+              }
+            },
+            {
+              "name": "children",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IssueCollectionFilter"
+              }
+            },
+            {
+              "name": "comments",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "CommentCollectionFilter"
+              }
+            },
+            {
+              "name": "attachments",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "AttachmentCollectionFilter"
+              }
+            },
+            {
+              "name": "searchableContent",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "ContentComparator"
+              }
+            },
+            {
+              "name": "hasBlockedByRelations",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "RelationExistsComparator"
+              }
+            },
+            {
+              "name": "hasDuplicateRelations",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "RelationExistsComparator"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "NullableIssueFilter",
+          "inputFields": [
+            {
+              "name": "null",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean"
+              }
+            },
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "NullableIssueFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "NullableIssueFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IDComparator"
+              }
+            },
+            {
+              "name": "number",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NumberComparator"
+              }
+            },
+            {
+              "name": "title",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "description",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableStringComparator"
+              }
+            },
+            {
+              "name": "priority",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableNumberComparator"
+              }
+            },
+            {
+              "name": "estimate",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "EstimateComparator"
+              }
+            },
+            {
+              "name": "createdAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "updatedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "startedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableDateComparator"
+              }
+            },
+            {
+              "name": "completedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableDateComparator"
+              }
+            },
+            {
+              "name": "canceledAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableDateComparator"
+              }
+            },
+            {
+              "name": "dueDate",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "TimelessDateComparator"
+              }
+            },
+            {
+              "name": "assignee",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableUserFilter"
+              }
+            },
+            {
+              "name": "creator",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableUserFilter"
+              }
+            },
+            {
+              "name": "snoozedBy",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableUserFilter"
+              }
+            },
+            {
+              "name": "team",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "TeamFilter"
+              }
+            },
+            {
+              "name": "state",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "WorkflowStateFilter"
+              }
+            },
+            {
+              "name": "project",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableProjectFilter"
+              }
+            },
+            {
+              "name": "cycle",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableCycleFilter"
+              }
+            },
+            {
+              "name": "parent",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableIssueFilter"
+              }
+            },
+            {
+              "name": "projectMilestone",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableProjectMilestoneFilter"
+              }
+            },
+            {
+              "name": "labels",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IssueLabelCollectionFilter"
+              }
+            },
+            {
+              "name": "subscribers",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "UserCollectionFilter"
+              }
+            },
+            {
+              "name": "children",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IssueCollectionFilter"
+              }
+            },
+            {
+              "name": "comments",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "CommentCollectionFilter"
+              }
+            },
+            {
+              "name": "attachments",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "AttachmentCollectionFilter"
+              }
+            },
+            {
+              "name": "searchableContent",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "ContentComparator"
+              }
+            },
+            {
+              "name": "hasBlockedByRelations",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "RelationExistsComparator"
+              }
+            },
+            {
+              "name": "hasDuplicateRelations",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "RelationExistsComparator"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "IssueCollectionFilter",
+          "inputFields": [
+            {
+              "name": "every",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IssueFilter"
+              }
+            },
+            {
+              "name": "some",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IssueFilter"
+              }
+            },
+            {
+              "name": "none",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IssueFilter"
+              }
+            },
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "IssueCollectionFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "IssueCollectionFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "length",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NumberComparator"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "UserFilter",
+          "inputFields": [
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "UserFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "UserFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IDComparator"
+              }
+            },
+            {
+              "name": "createdAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "updatedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "name",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "displayName",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "email",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "active",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "BooleanComparator"
+              }
+            },
+            {
+              "name": "admin",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "BooleanComparator"
+              }
+            },
+            {
+              "name": "isMe",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "BooleanComparator"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "NullableUserFilter",
+          "inputFields": [
+            {
+              "name": "null",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean"
+              }
+            },
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "NullableUserFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "NullableUserFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IDComparator"
+              }
+            },
+            {
+              "name": "createdAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "updatedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "name",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "displayName",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "email",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "active",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "BooleanComparator"
+              }
+            },
+            {
+              "name": "admin",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "BooleanComparator"
+              }
+            },
+            {
+              "name": "isMe",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "BooleanComparator"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "UserCollectionFilter",
+          "inputFields": [
+            {
+              "name": "every",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "UserFilter"
+              }
+            },
+            {
+              "name": "some",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "UserFilter"
+              }
+            },
+            {
+              "name": "none",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "UserFilter"
+              }
+            },
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "UserCollectionFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "UserCollectionFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "length",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NumberComparator"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "TeamFilter",
+          "inputFields": [
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "TeamFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "TeamFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IDComparator"
+              }
+            },
+            {
+              "name": "createdAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "updatedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "name",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "key",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "description",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableStringComparator"
+              }
+            },
+            {
+              "name": "issues",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IssueCollectionFilter"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "WorkflowStateFilter",
+          "inputFields": [
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "WorkflowStateFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "WorkflowStateFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IDComparator"
+              }
+            },
+            {
+              "name": "createdAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "updatedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "name",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "description",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "position",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NumberComparator"
+              }
+            },
+            {
+              "name": "type",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "issues",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IssueCollectionFilter"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "NullableProjectFilter",
+          "inputFields": [
+            {
+              "name": "null",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean"
+              }
+            },
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "NullableProjectFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "NullableProjectFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IDComparator"
+              }
+            },
+            {
+              "name": "createdAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "updatedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "name",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "slugId",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "state",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "creator",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "UserFilter"
+              }
+            },
+            {
+              "name": "lead",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableUserFilter"
+              }
+            },
+            {
+              "name": "members",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "UserCollectionFilter"
+              }
+            },
+            {
+              "name": "issues",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IssueCollectionFilter"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "NullableCycleFilter",
+          "inputFields": [
+            {
+              "name": "null",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean"
+              }
+            },
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "NullableCycleFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "NullableCycleFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IDComparator"
+              }
+            },
+            {
+              "name": "number",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NumberComparator"
+              }
+            },
+            {
+              "name": "name",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "startsAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "endsAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "completedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableDateComparator"
+              }
+            },
+            {
+              "name": "isActive",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "BooleanComparator"
+              }
+            },
+            {
+              "name": "issues",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IssueCollectionFilter"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "NullableProjectMilestoneFilter",
+          "inputFields": [
+            {
+              "name": "null",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean"
+              }
+            },
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "NullableProjectMilestoneFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "NullableProjectMilestoneFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IDComparator"
+              }
+            },
+            {
+              "name": "createdAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "updatedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "name",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "targetDate",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableDateComparator"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "IssueLabelFilter",
+          "inputFields": [
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "IssueLabelFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "IssueLabelFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IDComparator"
+              }
+            },
+            {
+              "name": "createdAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "updatedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "name",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "creator",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableUserFilter"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "IssueLabelCollectionFilter",
+          "inputFields": [
+            {
+              "name": "every",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IssueLabelFilter"
+              }
+            },
+            {
+              "name": "some",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IssueLabelFilter"
+              }
+            },
+            {
+              "name": "none",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IssueLabelFilter"
+              }
+            },
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "IssueLabelCollectionFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "IssueLabelCollectionFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "length",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NumberComparator"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "CommentFilter",
+          "inputFields": [
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "CommentFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "CommentFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IDComparator"
+              }
+            },
+            {
+              "name": "createdAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "updatedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "body",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "user",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "UserFilter"
+              }
+            },
+            {
+              "name": "issue",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableIssueFilter"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "CommentCollectionFilter",
+          "inputFields": [
+            {
+              "name": "every",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "CommentFilter"
+              }
+            },
+            {
+              "name": "some",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "CommentFilter"
+              }
+            },
+            {
+              "name": "none",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "CommentFilter"
+              }
+            },
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "CommentCollectionFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "CommentCollectionFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "length",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NumberComparator"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "AttachmentFilter",
+          "inputFields": [
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "AttachmentFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "AttachmentFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "IDComparator"
+              }
+            },
+            {
+              "name": "createdAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "updatedAt",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "DateComparator"
+              }
+            },
+            {
+              "name": "title",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "subtitle",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableStringComparator"
+              }
+            },
+            {
+              "name": "url",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "StringComparator"
+              }
+            },
+            {
+              "name": "creator",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NullableUserFilter"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "AttachmentCollectionFilter",
+          "inputFields": [
+            {
+              "name": "every",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "AttachmentFilter"
+              }
+            },
+            {
+              "name": "some",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "AttachmentFilter"
+              }
+            },
+            {
+              "name": "none",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "AttachmentFilter"
+              }
+            },
+            {
+              "name": "and",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "AttachmentCollectionFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "or",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "AttachmentCollectionFilter"
+                  }
+                }
+              }
+            },
+            {
+              "name": "length",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "NumberComparator"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "IDComparator",
+          "inputFields": [
+            {
+              "name": "eq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "ID"
+              }
+            },
+            {
+              "name": "neq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "ID"
+              }
+            },
+            {
+              "name": "in",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "ID"
+                  }
+                }
+              }
+            },
+            {
+              "name": "nin",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "ID"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "StringComparator",
+          "inputFields": [
+            {
+              "name": "eq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "neq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "eqIgnoreCase",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "neqIgnoreCase",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "startsWith",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "notStartsWith",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "endsWith",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "notEndsWith",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "contains",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "notContains",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "containsIgnoreCase",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "notContainsIgnoreCase",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "in",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "String"
+                  }
+                }
+              }
+            },
+            {
+              "name": "nin",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "String"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "NullableStringComparator",
+          "inputFields": [
+            {
+              "name": "null",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean"
+              }
+            },
+            {
+              "name": "eq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "neq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "eqIgnoreCase",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "neqIgnoreCase",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "startsWith",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "notStartsWith",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "endsWith",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "notEndsWith",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "contains",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "notContains",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "containsIgnoreCase",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "notContainsIgnoreCase",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "in",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "String"
+                  }
+                }
+              }
+            },
+            {
+              "name": "nin",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "String"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "NumberComparator",
+          "inputFields": [
+            {
+              "name": "eq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              }
+            },
+            {
+              "name": "neq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              }
+            },
+            {
+              "name": "lt",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              }
+            },
+            {
+              "name": "lte",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              }
+            },
+            {
+              "name": "gt",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              }
+            },
+            {
+              "name": "gte",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              }
+            },
+            {
+              "name": "in",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "Float"
+                  }
+                }
+              }
+            },
+            {
+              "name": "nin",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "Float"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "NullableNumberComparator",
+          "inputFields": [
+            {
+              "name": "null",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean"
+              }
+            },
+            {
+              "name": "eq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              }
+            },
+            {
+              "name": "neq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              }
+            },
+            {
+              "name": "lt",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              }
+            },
+            {
+              "name": "lte",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              }
+            },
+            {
+              "name": "gt",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              }
+            },
+            {
+              "name": "gte",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              }
+            },
+            {
+              "name": "in",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "Float"
+                  }
+                }
+              }
+            },
+            {
+              "name": "nin",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "Float"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "DateComparator",
+          "inputFields": [
+            {
+              "name": "eq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              }
+            },
+            {
+              "name": "neq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              }
+            },
+            {
+              "name": "lt",
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              }
+            },
+            {
+              "name": "lte",
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              }
+            },
+            {
+              "name": "gt",
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              }
+            },
+            {
+              "name": "gte",
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              }
+            },
+            {
+              "name": "in",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "DateTime"
+                  }
+                }
+              }
+            },
+            {
+              "name": "nin",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "DateTime"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "NullableDateComparator",
+          "inputFields": [
+            {
+              "name": "null",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean"
+              }
+            },
+            {
+              "name": "eq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              }
+            },
+            {
+              "name": "neq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              }
+            },
+            {
+              "name": "lt",
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              }
+            },
+            {
+              "name": "lte",
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              }
+            },
+            {
+              "name": "gt",
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              }
+            },
+            {
+              "name": "gte",
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              }
+            },
+            {
+              "name": "in",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "DateTime"
+                  }
+                }
+              }
+            },
+            {
+              "name": "nin",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "DateTime"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "TimelessDateComparator",
+          "inputFields": [
+            {
+              "name": "eq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "TimelessDate"
+              }
+            },
+            {
+              "name": "neq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "TimelessDate"
+              }
+            },
+            {
+              "name": "lt",
+              "type": {
+                "kind": "SCALAR",
+                "name": "TimelessDate"
+              }
+            },
+            {
+              "name": "lte",
+              "type": {
+                "kind": "SCALAR",
+                "name": "TimelessDate"
+              }
+            },
+            {
+              "name": "gt",
+              "type": {
+                "kind": "SCALAR",
+                "name": "TimelessDate"
+              }
+            },
+            {
+              "name": "gte",
+              "type": {
+                "kind": "SCALAR",
+                "name": "TimelessDate"
+              }
+            },
+            {
+              "name": "in",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "TimelessDate"
+                  }
+                }
+              }
+            },
+            {
+              "name": "nin",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "TimelessDate"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "EstimateComparator",
+          "inputFields": [
+            {
+              "name": "eq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Int"
+              }
+            },
+            {
+              "name": "neq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Int"
+              }
+            },
+            {
+              "name": "lt",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Int"
+              }
+            },
+            {
+              "name": "lte",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Int"
+              }
+            },
+            {
+              "name": "gt",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Int"
+              }
+            },
+            {
+              "name": "gte",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Int"
+              }
+            },
+            {
+              "name": "in",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "Int"
+                  }
+                }
+              }
+            },
+            {
+              "name": "nin",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "Int"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "BooleanComparator",
+          "inputFields": [
+            {
+              "name": "eq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean"
+              }
+            },
+            {
+              "name": "neq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "ContentComparator",
+          "inputFields": [
+            {
+              "name": "contains",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "notContains",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "RelationExistsComparator",
+          "inputFields": [
+            {
+              "name": "eq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean"
+              }
+            },
+            {
+              "name": "neq",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "IssueUpdateInput",
+          "inputFields": [
+            {
+              "name": "title",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "description",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String"
+              }
+            },
+            {
+              "name": "stateId",
+              "type": {
+                "kind": "SCALAR",
+                "name": "ID"
+              }
+            },
+            {
+              "name": "assigneeId",
+              "type": {
+                "kind": "SCALAR",
+                "name": "ID"
+              }
+            },
+            {
+              "name": "priority",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              }
+            },
+            {
+              "name": "estimate",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Int"
+              }
+            },
+            {
+              "name": "teamId",
+              "type": {
+                "kind": "SCALAR",
+                "name": "ID"
+              }
+            },
+            {
+              "name": "projectId",
+              "type": {
+                "kind": "SCALAR",
+                "name": "ID"
+              }
+            },
+            {
+              "name": "cycleId",
+              "type": {
+                "kind": "SCALAR",
+                "name": "ID"
+              }
+            },
+            {
+              "name": "labelIds",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "ID"
+                  }
+                }
+              }
+            },
+            {
+              "name": "subscriberIds",
+              "type": {
+                "kind": "LIST",
+                "ofType": {
+                  "kind": "NON_NULL",
+                  "ofType": {
+                    "kind": "SCALAR",
+                    "name": "ID"
+                  }
+                }
+              }
+            },
+            {
+              "name": "parentId",
+              "type": {
+                "kind": "SCALAR",
+                "name": "ID"
+              }
+            },
+            {
+              "name": "dueDate",
+              "type": {
+                "kind": "SCALAR",
+                "name": "TimelessDate"
+              }
+            },
+            {
+              "name": "sortOrder",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float"
+              }
+            },
+            {
+              "name": "snoozedUntilAt",
+              "type": {
+                "kind": "SCALAR",
+                "name": "DateTime"
+              }
+            },
+            {
+              "name": "trashed",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

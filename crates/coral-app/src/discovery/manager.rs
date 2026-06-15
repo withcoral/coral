@@ -7,11 +7,12 @@ use std::path::PathBuf;
 use coral_capabilities::{
     Capability, CapabilityKind, Diagnostic, DiagnosticSeverity, DiagnosticStage, EffectKind,
     SOURCE_CAPABILITY_GENERATOR_VERSION, SourceCapabilitySet, SourceId, UpstreamBinding,
+    code_mode_call_signature,
 };
 use coral_exports::{
     Binding, CapabilityExport, DescribeResolution, ExportKind, SOURCE_EXPORTS_GENERATOR_VERSION,
-    SearchFilter, SearchResult, SourceExports, WorkspaceExports, compose_workspace_exports,
-    describe_export, search_exports_page,
+    SearchFilter, SearchIntent, SearchResult, SourceExports, WorkspaceExports,
+    compose_workspace_exports, describe_export, search_exports_page,
 };
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -73,8 +74,20 @@ impl DiscoveryManager {
         );
         let total = page.total;
         let end = pagination.offset.saturating_add(page.items.len());
+        let mut items = page.items;
+        // coral-exports has no Capability access, so the one-line generated
+        // call signature is enriched here from the already-loaded capability
+        // artifacts. SQL-only entries carry no `full_path` and stay bare.
+        for item in &mut items {
+            let Some(full_path) = item.full_path.as_deref() else {
+                continue;
+            };
+            if let Some(capability) = workspace.capability_by_id.get(&item.capability_id) {
+                item.signature = Some(code_mode_call_signature(capability, full_path));
+            }
+        }
         Ok(DiscoverySearchPage {
-            items: page.items,
+            items,
             total,
             limit: pagination.limit,
             offset: pagination.offset,
@@ -448,6 +461,8 @@ pub(crate) struct DiscoverySearchFilter {
     pub(crate) allowed_kinds: Vec<ExportKind>,
     pub(crate) capability_kind: Option<CapabilityKind>,
     pub(crate) effect: Option<EffectKind>,
+    /// Soft ranking hint; never gates results or activates filtering.
+    pub(crate) intent: Option<SearchIntent>,
 }
 
 impl DiscoverySearchFilter {
@@ -473,6 +488,7 @@ impl DiscoverySearchFilter {
             allowed_kinds: self.allowed_kinds,
             capability_kind: self.capability_kind,
             effect: self.effect,
+            intent: self.intent,
         }
     }
 }
@@ -815,6 +831,42 @@ mod tests {
                 && diagnostic.source_ref.as_deref() == Some("codex")),
             "expected stale source diagnostic: {:#?}",
             page.diagnostics
+        );
+    }
+
+    #[test]
+    fn search_items_carry_generated_call_signatures() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("layout dirs");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace_name = WorkspaceName::default();
+        let source = installed_source("github");
+        config_store
+            .upsert_source(&workspace_name, source.clone())
+            .expect("source config");
+        write_source_artifacts(
+            &layout.source_materialized_dir(&workspace_name, &source.name),
+            &source,
+        );
+
+        let manager = DiscoveryManager::new(config_store, layout);
+        let page = manager
+            .search(
+                &workspace_name,
+                "search issues",
+                &super::DiscoverySearchFilter::default(),
+                super::DiscoveryPagination::new(10, 0),
+            )
+            .expect("search");
+
+        let item = page.items.first().expect("search hit");
+        // The fixture capability has no parameters and an unknown output
+        // contract, so the enriched signature is the bare call form.
+        assert_eq!(
+            item.signature.as_deref(),
+            Some("tools.github.rest.search.issuesAndPullRequests()")
         );
     }
 

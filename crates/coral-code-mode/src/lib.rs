@@ -77,6 +77,8 @@ pub use runtime::WaitToPendingRequest;
 #[cfg(feature = "code-mode")]
 pub use service::CodeModeService;
 #[cfg(feature = "code-mode")]
+pub use service::CodeModeToolError;
+#[cfg(feature = "code-mode")]
 pub use service::CodeModeTurnHost;
 #[cfg(feature = "code-mode")]
 pub use service::CodeModeTurnWorker;

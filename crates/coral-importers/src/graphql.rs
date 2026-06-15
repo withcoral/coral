@@ -1,9 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use coral_capabilities::{
     Capability, EffectProfile, GraphqlOperationBinding, GraphqlOperationKind,
     GraphqlVariableBinding, InvocationSchema, OutputContract, ProviderOrigin, ProviderOriginKind,
-    ShapeHints, SourceId, SupportStatus, UpstreamBinding,
+    SCHEMA_TRUNCATION_KEY, ShapeHints, SourceId, SupportStatus, UpstreamBinding,
 };
 use coral_spec::{GraphqlInterface, GraphqlSchemaDescriptor, SourceSpec};
 use serde_json::{Map, Value};
@@ -835,16 +835,33 @@ fn graphql_field_is_argless_scalar(field: &GraphqlTypeField) -> bool {
     field.args.is_empty() && field.type_ref.return_kind() == GraphqlReturnKind::Scalar
 }
 
+/// Maximum number of named `INPUT_OBJECT` definitions hoisted into one
+/// operation's input-schema `$defs` block. Types reached beyond this cap are
+/// replaced with permissive truncation stubs at their reference sites.
+pub(super) const REACHABLE_INPUT_DEFS_LIMIT: usize = 64;
+
+/// Builds the operation input schema using named-type `$defs`/`$ref` instead
+/// of inlining `INPUT_OBJECT` types.
+///
+/// Phase A walks the argument type refs breadth-first collecting every
+/// reachable named `INPUT_OBJECT` type (capped at
+/// [`REACHABLE_INPUT_DEFS_LIMIT`]). Phase B emits each argument as a `$ref`
+/// into the root `$defs` block, where every reachable type is defined exactly
+/// once. Cycles (for example `IssueFilter.and: [IssueFilter!]`) become plain
+/// self-`$ref`s, so define-once bounds total schema size with full field
+/// fidelity. Scalar and `ENUM` schemas stay inline.
 fn graphql_input_schema(
     args: &[GraphqlArg],
     schema_index: &GraphqlSchemaIndex,
 ) -> InvocationSchema {
+    let defs_order = reachable_input_object_types(args, schema_index);
+    let included_defs = defs_order.iter().cloned().collect::<BTreeSet<_>>();
     let properties = args
         .iter()
         .map(|arg| {
             (
                 arg.name.clone(),
-                graphql_json_schema_for_type(&arg.type_ref, schema_index),
+                graphql_input_json_schema_for_type(&arg.type_ref, schema_index, &included_defs),
             )
         })
         .collect::<Map<_, _>>();
@@ -858,12 +875,144 @@ fn graphql_input_schema(
         "properties": properties,
         "additionalProperties": false
     });
-    if !required.is_empty()
-        && let Some(object) = schema.as_object_mut()
-    {
-        object.insert("required".to_string(), serde_json::json!(required));
+    if let Some(object) = schema.as_object_mut() {
+        if !required.is_empty() {
+            object.insert("required".to_string(), serde_json::json!(required));
+        }
+        if !defs_order.is_empty() {
+            object.insert(
+                "$defs".to_string(),
+                Value::Object(graphql_input_defs(
+                    &defs_order,
+                    schema_index,
+                    &included_defs,
+                )),
+            );
+        }
     }
     InvocationSchema::new(schema)
+}
+
+/// Collects named `INPUT_OBJECT` types reachable from `args` in breadth-first
+/// order, capped at [`REACHABLE_INPUT_DEFS_LIMIT`].
+fn reachable_input_object_types(
+    args: &[GraphqlArg],
+    schema_index: &GraphqlSchemaIndex,
+) -> Vec<String> {
+    let mut order = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut queue = VecDeque::new();
+    for arg in args {
+        if let Some(name) = input_object_type_name(&arg.type_ref, schema_index)
+            && seen.insert(name.to_string())
+        {
+            queue.push_back(name.to_string());
+        }
+    }
+    while let Some(name) = queue.pop_front() {
+        if order.len() >= REACHABLE_INPUT_DEFS_LIMIT {
+            break;
+        }
+        if let Some(type_info) = schema_index.types.get(&name) {
+            for field_type in type_info.input_fields.values() {
+                if let Some(nested) = input_object_type_name(field_type, schema_index)
+                    && seen.insert(nested.to_string())
+                {
+                    queue.push_back(nested.to_string());
+                }
+            }
+        }
+        order.push(name);
+    }
+    order
+}
+
+/// Returns the named type when `type_ref` resolves to an `INPUT_OBJECT` in the
+/// schema index, looking through list wrappers.
+fn input_object_type_name<'a>(
+    type_ref: &'a GraphqlTypeRef,
+    schema_index: &GraphqlSchemaIndex,
+) -> Option<&'a str> {
+    let name = type_ref.named_type.as_deref()?;
+    let type_info = schema_index.types.get(name)?;
+    (type_info.kind == "INPUT_OBJECT").then_some(name)
+}
+
+/// Emits one `$defs` entry per reachable `INPUT_OBJECT` type, in breadth-first
+/// reachability order. Nested `INPUT_OBJECT` fields are `$ref`s to their defs
+/// while scalar and `ENUM` fields stay inline.
+fn graphql_input_defs(
+    defs_order: &[String],
+    schema_index: &GraphqlSchemaIndex,
+    included_defs: &BTreeSet<String>,
+) -> Map<String, Value> {
+    defs_order
+        .iter()
+        .map(|name| {
+            let properties = schema_index
+                .types
+                .get(name)
+                .map(|type_info| {
+                    type_info
+                        .input_fields
+                        .iter()
+                        .map(|(field_name, field_type)| {
+                            (
+                                field_name.clone(),
+                                graphql_input_json_schema_for_type(
+                                    field_type,
+                                    schema_index,
+                                    included_defs,
+                                ),
+                            )
+                        })
+                        .collect::<Map<_, _>>()
+                })
+                .unwrap_or_default();
+            (
+                name.clone(),
+                serde_json::json!({
+                    "title": name,
+                    "type": "object",
+                    "properties": properties,
+                    "additionalProperties": true
+                }),
+            )
+        })
+        .collect()
+}
+
+/// Input-side schema for one GraphQL type ref: `INPUT_OBJECT` types become
+/// `$ref`s into the operation's `$defs` block (or a truncation stub beyond
+/// [`REACHABLE_INPUT_DEFS_LIMIT`]); everything else stays inline.
+fn graphql_input_json_schema_for_type(
+    type_ref: &GraphqlTypeRef,
+    schema_index: &GraphqlSchemaIndex,
+    included_defs: &BTreeSet<String>,
+) -> Value {
+    if type_ref.is_list {
+        let mut item_type = type_ref.clone();
+        item_type.is_list = false;
+        return serde_json::json!({
+            "type": "array",
+            "items": graphql_input_json_schema_for_type(&item_type, schema_index, included_defs)
+        });
+    }
+    if let Some(name) = input_object_type_name(type_ref, schema_index) {
+        if included_defs.contains(name) {
+            return serde_json::json!({ "$ref": format!("#/$defs/{name}") });
+        }
+        let mut stub = Map::new();
+        stub.insert("type".to_string(), Value::String("object".to_string()));
+        stub.insert("additionalProperties".to_string(), Value::Bool(true));
+        stub.insert(
+            "description".to_string(),
+            Value::String(format!("type {name} omitted")),
+        );
+        stub.insert(SCHEMA_TRUNCATION_KEY.to_string(), Value::Bool(true));
+        return Value::Object(stub);
+    }
+    graphql_json_schema_for_type(type_ref, schema_index)
 }
 
 fn graphql_output_schema(
@@ -1048,30 +1197,22 @@ fn graphql_typename_schema() -> Value {
     })
 }
 
+/// Inline JSON Schema for scalar, `ENUM`, and list-wrapped GraphQL type refs.
+///
+/// Named composite types fall back to the permissive any-schema: input-side
+/// `INPUT_OBJECT` references become `$defs` refs via
+/// `graphql_input_json_schema_for_type` instead of being inlined here, and the
+/// output side only requests scalar/enum field schemas.
 fn graphql_json_schema_for_type(
     type_ref: &GraphqlTypeRef,
     schema_index: &GraphqlSchemaIndex,
-) -> Value {
-    graphql_json_schema_for_type_inner(type_ref, schema_index, 0, &mut BTreeSet::new())
-}
-
-fn graphql_json_schema_for_type_inner(
-    type_ref: &GraphqlTypeRef,
-    schema_index: &GraphqlSchemaIndex,
-    depth: usize,
-    seen: &mut BTreeSet<String>,
 ) -> Value {
     if type_ref.is_list {
         let mut item_type = type_ref.clone();
         item_type.is_list = false;
         return serde_json::json!({
             "type": "array",
-            "items": graphql_json_schema_for_type_inner(
-                &item_type,
-                schema_index,
-                depth,
-                seen
-            )
+            "items": graphql_json_schema_for_type(&item_type, schema_index)
         });
     }
     let Some(name) = type_ref.named_type.as_deref() else {
@@ -1083,72 +1224,7 @@ fn graphql_json_schema_for_type_inner(
     if let Some(schema) = graphql_enum_json_schema(name, schema_index) {
         return schema;
     }
-    match schema_index
-        .types
-        .get(name)
-        .map(|type_info| type_info.kind.as_str())
-    {
-        Some("INPUT_OBJECT") => {
-            if depth >= 2 || !seen.insert(name.to_string()) {
-                return serde_json::json!({ "type": "object", "additionalProperties": true });
-            }
-            let Some(type_info) = schema_index.types.get(name) else {
-                return serde_json::json!({ "type": "object", "additionalProperties": true });
-            };
-            let properties = type_info
-                .input_fields
-                .iter()
-                .map(|(field_name, field_type)| {
-                    (
-                        field_name.clone(),
-                        graphql_json_schema_for_type_inner(
-                            field_type,
-                            schema_index,
-                            depth + 1,
-                            seen,
-                        ),
-                    )
-                })
-                .collect::<Map<_, _>>();
-            seen.remove(name);
-            serde_json::json!({
-                "type": "object",
-                "properties": properties,
-                "additionalProperties": true
-            })
-        }
-        Some("OBJECT" | "INTERFACE" | "UNION") => {
-            if depth >= 3 || !seen.insert(name.to_string()) {
-                return serde_json::json!({ "type": "object", "additionalProperties": true });
-            }
-            let Some(type_info) = schema_index.types.get(name) else {
-                return serde_json::json!({ "type": "object", "additionalProperties": true });
-            };
-            let properties = type_info
-                .fields
-                .iter()
-                .filter(|(_, field)| field.args.is_empty())
-                .map(|(field_name, field)| {
-                    (
-                        field_name.clone(),
-                        graphql_json_schema_for_type_inner(
-                            &field.type_ref,
-                            schema_index,
-                            depth + 1,
-                            seen,
-                        ),
-                    )
-                })
-                .collect::<Map<_, _>>();
-            seen.remove(name);
-            serde_json::json!({
-                "type": "object",
-                "properties": properties,
-                "additionalProperties": true
-            })
-        }
-        _ => graphql_any_json_schema(),
-    }
+    graphql_any_json_schema()
 }
 
 fn graphql_builtin_json_schema(name: &str) -> Option<Value> {

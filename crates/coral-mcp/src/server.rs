@@ -10,7 +10,12 @@ use coral_api::v1::{
     SearchExportsRequest, SearchExportsResponse, SubmitFeedbackRequest, TerminateCodeModeRequest,
     WaitCodeModeRequest, WaitCodeModeResponse, code_mode_run_event,
 };
-use coral_capabilities::{Capability, code_mode_tool_input_schema, generated_tool_output_schema};
+use coral_capabilities::{
+    Capability, CompactEntryFacts, CompactSqlBindingFacts, CompactSqlColumnFacts,
+    CompactSqlInputFacts, SchemaRenderMode, code_mode_tool_input_schema, compact_candidate_value,
+    compact_entry_path_value, compact_entry_value, preferred_ref, preferred_sql_ref,
+    provider_value_schema,
+};
 use coral_client::{
     AppClient, CodeModeClient, DiscoveryClient, FeedbackClient, SourceClient, default_workspace,
 };
@@ -45,8 +50,6 @@ enum ToolCallOutcome {
     },
 }
 
-const COMPACT_SQL_COLUMN_LIMIT: usize = 24;
-
 #[derive(Serialize)]
 struct FeedbackStoredValue {
     feedback_id: String,
@@ -61,38 +64,37 @@ fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
 fn exec_code_mode_tool_value(response: ExecCodeModeResponse) -> Value {
     let ExecCodeModeResponse {
         run_id,
-        cell_id,
+        cell_id: _,
         status,
         events,
     } = response;
-    code_mode_response_tool_value(run_id.as_str(), cell_id.as_str(), status, events, 0)
+    code_mode_response_tool_value(run_id.as_str(), status, events, 0)
 }
 
 fn wait_code_mode_tool_value(response: WaitCodeModeResponse, initial_cursor: u64) -> Value {
     let WaitCodeModeResponse {
         run_id,
-        cell_id,
+        cell_id: _,
         status,
         events,
     } = response;
-    code_mode_response_tool_value(
-        run_id.as_str(),
-        cell_id.as_str(),
-        status,
-        events,
-        initial_cursor,
-    )
+    code_mode_response_tool_value(run_id.as_str(), status, events, initial_cursor)
 }
 
+/// Renders the slim exec/wait envelope:
+/// `{ run: { id, status }, result, result_truncated, output, output_truncated,
+/// events, error, cursor, tool_calls }`. Console text joins into one `output`
+/// string, `result` is the script's return value directly, `cursor` appears
+/// only while the run is still running (pass it back to `wait`), and every
+/// other field is omitted when empty.
 fn code_mode_response_tool_value(
     run_id: &str,
-    cell_id: &str,
     status: i32,
     events: Vec<CodeModeRunEvent>,
     initial_cursor: u64,
 ) -> Value {
     let mut summary = CodeModeSummary {
-        last_event_id: initial_cursor,
+        cursor: initial_cursor,
         ..CodeModeSummary::default()
     };
     for event in events {
@@ -100,50 +102,54 @@ fn code_mode_response_tool_value(
     }
 
     let status_label = code_mode_status_label(status);
-    let include_calls = status_label == "running"
+    let running = status_label == "running";
+    let include_calls = running
         || summary.error.is_some()
         || summary
             .calls
             .values()
             .any(|call| call.get("status").and_then(Value::as_str) == Some("failed"));
-    let mut run = Map::from_iter([
-        ("id".to_string(), json!(run_id)),
-        ("status".to_string(), json!(status_label)),
-    ]);
-    if !cell_id.is_empty() {
-        run.insert("cell_id".to_string(), json!(cell_id));
-    }
 
-    let mut events = Map::from_iter([
-        ("last_event_id".to_string(), json!(summary.last_event_id)),
-        (
-            "next_after_event_id".to_string(),
-            json!(summary.last_event_id),
-        ),
-        ("has_more".to_string(), json!(status_label == "running")),
-        ("items".to_string(), Value::Array(summary.events)),
-    ]);
+    let mut value = Map::from_iter([(
+        "run".to_string(),
+        json!({ "id": run_id, "status": status_label }),
+    )]);
+    if let Some(result) = summary.result {
+        let (result, result_truncated) = split_code_mode_result(result);
+        value.insert("result".to_string(), result);
+        if let Some(result_truncated) = result_truncated {
+            value.insert("result_truncated".to_string(), result_truncated);
+        }
+    }
+    if !summary.output_lines.is_empty() {
+        value.insert("output".to_string(), json!(summary.output_lines.join("\n")));
+    }
+    if let Some(output_truncated) = summary.output_truncated {
+        value.insert("output_truncated".to_string(), output_truncated);
+    }
+    if !summary.events.is_empty() {
+        value.insert("events".to_string(), Value::Array(summary.events));
+    }
+    if let Some(error) = summary.error {
+        value.insert("error".to_string(), error);
+    }
+    if running {
+        value.insert("cursor".to_string(), json!(summary.cursor));
+    }
     if include_calls && !summary.calls.is_empty() {
-        events.insert(
+        value.insert(
             "tool_calls".to_string(),
             Value::Array(summary.calls.into_values().map(Value::Object).collect()),
         );
-    }
-
-    let mut value = Map::from_iter([
-        ("run".to_string(), Value::Object(run)),
-        ("result".to_string(), code_mode_result_value(summary.result)),
-        ("events".to_string(), Value::Object(events)),
-    ]);
-    if let Some(error) = summary.error {
-        value.insert("error".to_string(), error);
     }
     Value::Object(value)
 }
 
 #[derive(Default)]
 struct CodeModeSummary {
-    last_event_id: u64,
+    cursor: u64,
+    output_lines: Vec<String>,
+    output_truncated: Option<Value>,
     events: Vec<Value>,
     result: Option<Value>,
     error: Option<Value>,
@@ -178,16 +184,14 @@ fn code_mode_error_cause_label(cause: i32) -> &'static str {
 
 fn summarize_code_mode_event(event: CodeModeRunEvent, summary: &mut CodeModeSummary) {
     let event_id = event.id;
-    summary.last_event_id = summary.last_event_id.max(event_id);
+    summary.cursor = summary.cursor.max(event_id);
     let Some(payload) = event.event else {
         return;
     };
     match payload {
         code_mode_run_event::Event::ContentItem(payload) => {
             let value = payload.item.map_or(Value::Null, Value::from);
-            summary
-                .events
-                .push(code_mode_content_event(event_id, value));
+            summarize_content_item(event_id, value, summary);
         }
         code_mode_run_event::Event::ResultItem(payload) => {
             summary.result = Some(payload.item.map_or(Value::Null, Value::from));
@@ -236,84 +240,83 @@ fn summarize_code_mode_event(event: CodeModeRunEvent, summary: &mut CodeModeSumm
     }
 }
 
-fn code_mode_content_event(event_id: u64, value: Value) -> Value {
+/// Folds one content item into the summary. Console text (plain strings or
+/// `{ type: "text", text }` items) joins the `output` string, output-shaping
+/// metadata becomes the `output_truncated` field, and anything else (for
+/// example images) stays an `events` entry keyed by its underlying event id.
+fn summarize_content_item(event_id: u64, value: Value, summary: &mut CodeModeSummary) {
     match value {
-        Value::String(text) => json!({
-            "id": event_id,
-            "type": "stdout",
-            "text": text,
-        }),
+        Value::String(text) => summary.output_lines.push(text),
         Value::Object(object)
+            if object.get("type").and_then(Value::as_str) == Some("text")
+                && object.get("text").is_some_and(Value::is_string) =>
+        {
+            if let Some(Value::String(text)) = object.get("text") {
+                summary.output_lines.push(text.clone());
+            }
+        }
+        Value::Object(mut object)
             if object.get("type").and_then(Value::as_str) == Some("output_shaping") =>
         {
-            json!({
-                "id": event_id,
-                "type": "output_shaping",
-                "metadata": object,
-            })
+            object.remove("type");
+            summary.output_truncated = Some(Value::Object(object));
         }
-        value => json!({
+        value => summary.events.push(json!({
             "id": event_id,
-            "type": "content",
             "value": value,
-        }),
+        })),
     }
 }
 
-fn code_mode_result_value(result: Option<Value>) -> Value {
-    let Some(result) = result else {
-        return Value::Null;
+/// Splits a Code Mode result into the value the agent should read plus the
+/// `result_truncated` metadata when the runtime had to truncate it. Untruncated
+/// results pass through unchanged; truncated results resolve to the parsed
+/// preview (falling back to the raw preview text) with
+/// `{ original_bytes, estimated_tokens, artifact: { path, bytes } }` alongside.
+fn split_code_mode_result(result: Value) -> (Value, Option<Value>) {
+    let truncated_result = result
+        .as_object()
+        .filter(|object| {
+            object.get("type").and_then(Value::as_str) == Some("code_mode_truncated_result")
+        })
+        .cloned();
+    let Some(object) = truncated_result else {
+        return (result, None);
     };
-    if let Some(value) = truncated_code_mode_result_value(&result) {
-        return value;
-    }
-    json!({
-        "status": "available",
-        "format": "json",
-        "truncated": false,
-        "preview": result,
-    })
-}
-
-fn truncated_code_mode_result_value(result: &Value) -> Option<Value> {
-    let object = result.as_object()?;
-    if object.get("type").and_then(Value::as_str) != Some("code_mode_truncated_result") {
-        return None;
-    }
     let preview = object.get("preview").cloned().unwrap_or(Value::Null);
     let preview = preview
         .as_str()
         .and_then(|text| serde_json::from_str::<Value>(text).ok())
         .unwrap_or(preview);
     let truncation = object.get("truncation").cloned().unwrap_or(Value::Null);
-    let mut value = Map::from_iter([
-        ("status".to_string(), json!("available")),
-        ("format".to_string(), json!("json")),
-        ("truncated".to_string(), json!(true)),
-        ("preview".to_string(), preview),
-        ("truncation".to_string(), truncation.clone()),
-    ]);
+    let mut truncated = Map::new();
+    if let Some(original_bytes) = truncation
+        .pointer("/original_bytes")
+        .and_then(Value::as_u64)
+    {
+        truncated.insert("original_bytes".to_string(), json!(original_bytes));
+    }
+    if let Some(estimated_tokens) = truncation
+        .pointer("/estimated_tokens")
+        .and_then(Value::as_u64)
+    {
+        truncated.insert("estimated_tokens".to_string(), json!(estimated_tokens));
+    }
     if let Some(path) = truncation
         .pointer("/full_output_path")
         .and_then(Value::as_str)
         .filter(|path| !path.is_empty())
     {
-        let mut artifact = Map::from_iter([
-            ("kind".to_string(), json!("json")),
-            ("path".to_string(), json!(path)),
-        ]);
+        let mut artifact = Map::from_iter([("path".to_string(), json!(path))]);
         if let Some(bytes) = truncation
             .pointer("/original_bytes")
             .and_then(Value::as_u64)
         {
             artifact.insert("bytes".to_string(), json!(bytes));
         }
-        value.insert("artifact".to_string(), Value::Object(artifact));
+        truncated.insert("artifact".to_string(), Value::Object(artifact));
     }
-    if let Some(output_shaping) = object.get("output_shaping") {
-        value.insert("output_shaping".to_string(), output_shaping.clone());
-    }
-    Some(Value::Object(value))
+    (preview, Some(Value::Object(truncated)))
 }
 
 fn summarize_tool_call(
@@ -459,6 +462,7 @@ impl CoralMcpServer {
                     limit: 1,
                     offset: 0,
                 }),
+                intent: String::new(),
             }))
             .await
         {
@@ -529,7 +533,7 @@ impl CoralMcpServer {
         } else {
             Vec::new()
         };
-        let result = discovery_client
+        let result = match discovery_client
             .search(Request::new(SearchExportsRequest {
                 workspace: Some(default_workspace()),
                 query: arguments.query,
@@ -543,15 +547,69 @@ impl CoralMcpServer {
                     limit: arguments.pagination.limit,
                     offset: arguments.pagination.offset,
                 }),
+                intent: arguments.intent,
             }))
             .await
-            .map(|response| {
+        {
+            Ok(response) => {
                 let mut response = response.into_inner();
                 prune_search_response_for_runtime(&mut response, self.options.runtime_exposure);
-                search_tool_value(&response)
-            })
-            .and_then(std::convert::identity);
+                match search_tool_value(&response) {
+                    Ok(mut value) => {
+                        if let Some(top) = self
+                            .expanded_top_entry_value(&response, arguments.expand_top)
+                            .await
+                            && let Some(object) = value.as_object_mut()
+                        {
+                            object.insert("top".to_string(), top);
+                        }
+                        Ok(value)
+                    }
+                    Err(status) => Err(status),
+                }
+            }
+            Err(status) => Err(status),
+        };
         Ok(ToolCallOutcome::from_value_result("Search", result))
+    }
+
+    /// Embeds the compact describe entry for the page's top hit when the
+    /// caller asked for it (`expand_top: true`) or the hit is an
+    /// exact-reference match, saving the describe round trip the agent would
+    /// otherwise make. Best effort: ambiguous, hidden, missing, or failed
+    /// describes simply omit the entry.
+    async fn expanded_top_entry_value(
+        &self,
+        response: &SearchExportsResponse,
+        expand_top: bool,
+    ) -> Option<Value> {
+        let top = response.items.first()?;
+        if !expand_top && !top.rank_reason.starts_with("exact ") {
+            return None;
+        }
+        let reference = if top.capability_id.is_empty() {
+            preferred_ref(&top.refs).to_string()
+        } else {
+            top.capability_id.clone()
+        };
+        if reference.is_empty() {
+            return None;
+        }
+        let mut discovery_client = self.discovery.clone();
+        let response = discovery_client
+            .describe(Request::new(DescribeExportRequest {
+                workspace: Some(default_workspace()),
+                reference,
+            }))
+            .await
+            .ok()?;
+        let mut response = response.into_inner();
+        prune_describe_response_for_runtime(&mut response, self.options.runtime_exposure);
+        if !response.found {
+            return None;
+        }
+        let entry = response.entry.as_ref()?;
+        compact_entry_tool_value(entry, None, SchemaRenderMode::Bounded).ok()
     }
 
     async fn describe_tool_result(
@@ -572,7 +630,7 @@ impl CoralMcpServer {
             workspace: Some(default_workspace()),
             reference: arguments.reference,
         });
-        let result = if arguments.view == DescribeView::Detailed {
+        let result = if arguments.view == DescribeView::Detailed && arguments.path.is_none() {
             let mut discovery_client = self.discovery.clone();
             let describe = discovery_client.describe(describe_request);
             let runtime = self.runtime_metadata_value();
@@ -584,7 +642,7 @@ impl CoralMcpServer {
                         &mut response,
                         self.options.runtime_exposure,
                     );
-                    describe_tool_value(&response, arguments.view, &runtime)
+                    detailed_describe_tool_value(&response, &runtime)
                 })
                 .and_then(std::convert::identity)
         } else {
@@ -598,7 +656,11 @@ impl CoralMcpServer {
                         &mut response,
                         self.options.runtime_exposure,
                     );
-                    describe_tool_value(&response, arguments.view, &Value::Null)
+                    compact_describe_tool_value(
+                        &response,
+                        arguments.path.as_deref(),
+                        arguments.schemas,
+                    )
                 })
                 .and_then(std::convert::identity)
         };
@@ -647,12 +709,10 @@ impl CoralMcpServer {
                 .wait(Request::new(WaitCodeModeRequest {
                     workspace,
                     run_id: arguments.run_id,
-                    after_event_id: arguments.after_event_id,
+                    after_event_id: arguments.cursor,
                 }))
                 .await
-                .map(|response| {
-                    wait_code_mode_tool_value(response.into_inner(), arguments.after_event_id)
-                })
+                .map(|response| wait_code_mode_tool_value(response.into_inner(), arguments.cursor))
         };
         Ok(ToolCallOutcome::from_value_result("Code Mode wait", result))
     }
@@ -734,6 +794,7 @@ fn compact_search_item_value(item: &SearchExportItem, max_score: u32) -> Value {
     let mut value = Map::new();
     insert_nonempty(&mut value, "ref", preferred_ref(&item.refs));
     insert_nonempty(&mut value, "call", &item.full_path);
+    insert_nonempty(&mut value, "signature", &item.signature);
     insert_nonempty(&mut value, "sql", preferred_sql_ref(&item.refs));
     insert_nonempty(&mut value, "source_key", &item.source_key);
     insert_nonempty(&mut value, "capability_kind", &item.capability_kind);
@@ -795,21 +856,6 @@ fn insert_effect_fields(value: &mut Map<String, Value>, effects: &[String]) {
     }
 }
 
-fn preferred_ref(refs: &[String]) -> &str {
-    refs.iter()
-        .find(|ref_| ref_.starts_with("typescript:"))
-        .or_else(|| refs.iter().find(|ref_| ref_.starts_with("sql_table:")))
-        .or_else(|| refs.iter().find(|ref_| ref_.starts_with("sql_function:")))
-        .or_else(|| refs.first())
-        .map_or("", String::as_str)
-}
-
-fn preferred_sql_ref(refs: &[String]) -> &str {
-    refs.iter()
-        .find(|ref_| ref_.starts_with("sql_table:") || ref_.starts_with("sql_function:"))
-        .map_or("", String::as_str)
-}
-
 fn insert_nonempty(value: &mut Map<String, Value>, key: &str, entry: impl AsRef<str>) {
     let entry = entry.as_ref();
     if !entry.is_empty() {
@@ -853,6 +899,7 @@ fn prune_search_item_for_runtime(item: &mut SearchExportItem, exposure: McpRunti
     if !exposure.typescript_enabled {
         item.full_path.clear();
         item.alias.clear();
+        item.signature.clear();
     }
 }
 
@@ -959,14 +1006,10 @@ fn binding_kind_is_visible(kind: ExportBindingKind, exposure: McpRuntimeExposure
     }
 }
 
-fn describe_tool_value(
+fn detailed_describe_tool_value(
     response: &DescribeExportResponse,
-    view: DescribeView,
     runtime: &Value,
 ) -> Result<Value, tonic::Status> {
-    if view == DescribeView::Compact {
-        return compact_describe_tool_value(response, runtime);
-    }
     let mut value = serialize_tool_value(response)?;
     normalize_diagnostics_field(&mut value, &response.diagnostics);
     normalize_describe_tool_value(&mut value, response);
@@ -982,11 +1025,12 @@ fn insert_runtime_metadata(value: &mut Value, runtime: &Value) {
 
 fn compact_describe_tool_value(
     response: &DescribeExportResponse,
-    _runtime: &Value,
+    path: Option<&str>,
+    schemas: SchemaRenderMode,
 ) -> Result<Value, tonic::Status> {
     if response.found {
         if let Some(entry) = response.entry.as_ref() {
-            return compact_entry_value(entry);
+            return compact_entry_tool_value(entry, path, schemas);
         }
         return Ok(json!({ "status": "not_found" }));
     }
@@ -1000,7 +1044,14 @@ fn compact_describe_tool_value(
                 response
                     .candidates
                     .iter()
-                    .map(compact_candidate_value)
+                    .map(|candidate| {
+                        compact_candidate_value(
+                            &candidate.refs,
+                            &candidate.full_path,
+                            candidate.deprecated,
+                            &candidate.support_status,
+                        )
+                    })
                     .collect(),
             ),
         );
@@ -1016,152 +1067,83 @@ fn compact_describe_tool_value(
     Ok(Value::Object(value))
 }
 
-fn compact_entry_value(description: &ExportDescription) -> Result<Value, tonic::Status> {
-    let capability_value = description
+fn compact_entry_tool_value(
+    description: &ExportDescription,
+    path: Option<&str>,
+    schemas: SchemaRenderMode,
+) -> Result<Value, tonic::Status> {
+    let facts = compact_entry_facts(description)?;
+    let capability = description_capability(description);
+    if let Some(path) = path {
+        return compact_entry_path_value(&facts, capability.as_ref(), path, schemas)
+            .map_err(tonic::Status::invalid_argument);
+    }
+    Ok(compact_entry_value(&facts, capability.as_ref(), schemas))
+}
+
+fn description_capability(description: &ExportDescription) -> Option<Capability> {
+    description
         .capability
         .clone()
-        .map_or(Value::Null, Value::from);
-    let code_mode_input_schema = serde_json::from_value::<Capability>(capability_value.clone())
-        .map(|capability| code_mode_tool_input_schema(&capability))
-        .or_else(|_| {
-            Ok::<_, tonic::Status>(
-                capability_value
-                    .pointer("/input_schema/schema")
-                    .cloned()
-                    .unwrap_or(Value::Null),
-            )
-        })?;
-    let code_mode_output_schema = serde_json::from_value::<Capability>(capability_value)
-        .map_or(Value::Null, |capability| {
-            generated_tool_output_schema(&capability)
-        });
-    let mut value = Map::new();
-    insert_nonempty(&mut value, "ref", preferred_ref(&description.refs));
-    insert_nonempty(&mut value, "call", &description.full_path);
-    insert_nonempty(&mut value, "sql", preferred_sql_ref(&description.refs));
-    insert_nonempty(&mut value, "source_key", &description.source_key);
-    insert_nonempty(&mut value, "capability_kind", &description.capability_kind);
-    insert_effect_fields(&mut value, &description.effects);
-    insert_nonempty(&mut value, "title", &description.title);
-    insert_nonempty(&mut value, "description", &description.description);
-    value.insert("input_schema".to_string(), code_mode_input_schema.clone());
-    if !code_mode_output_schema.is_null() {
-        value.insert("output_schema".to_string(), code_mode_output_schema);
-    }
-    if let Some(example) = compact_call_example(description, &code_mode_input_schema) {
-        value.insert("examples".to_string(), Value::Array(vec![example]));
-    }
-    let sql = description
-        .sql_bindings
-        .iter()
-        .map(compact_sql_binding_value)
-        .collect::<Vec<_>>();
-    if !sql.is_empty() {
-        value.insert("sql_bindings".to_string(), Value::Array(sql));
-    }
-    if description.deprecated {
-        value.insert("deprecated".to_string(), Value::Bool(true));
-    }
-    if description.support_status != "generated" && !description.support_status.is_empty() {
-        value.insert("support".to_string(), json!(&description.support_status));
-    }
-    if !description.diagnostics.is_empty() {
-        value.insert(
-            "diagnostics".to_string(),
-            diagnostics_value(&description.diagnostics)?,
-        );
-    }
-    Ok(Value::Object(value))
+        .map(Value::from)
+        .and_then(|value| serde_json::from_value(value).ok())
 }
 
-fn compact_call_example(description: &ExportDescription, input_schema: &Value) -> Option<Value> {
-    let call = (!description.full_path.is_empty()).then_some(description.full_path.as_str())?;
-    let args = example_args_from_schema(input_schema);
-    let args_text = serde_json::to_string(&args).ok()?;
-    Some(json!({
-        "call": call,
-        "args": args,
-        "javascript": format!("await {call}({args_text});"),
-    }))
-}
-
-fn example_args_from_schema(schema: &Value) -> Value {
-    let required = schema
-        .as_object()
-        .and_then(|object| object.get("required"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(|name| (name.to_string(), example_value_for_property(schema, name)))
-        .collect::<Map<_, _>>();
-    Value::Object(required)
-}
-
-fn example_value_for_property(schema: &Value, name: &str) -> Value {
-    let Some(property_schema) = schema.pointer(&format!("/properties/{name}")) else {
-        return Value::String(format!("<{name}>"));
+fn compact_entry_facts(
+    description: &ExportDescription,
+) -> Result<CompactEntryFacts, tonic::Status> {
+    let diagnostics = if description.diagnostics.is_empty() {
+        Vec::new()
+    } else {
+        match diagnostics_value(&description.diagnostics)? {
+            Value::Array(values) => values,
+            other => vec![other],
+        }
     };
-    if let Some(default) = property_schema.get("default") {
-        return default.clone();
-    }
-    if let Some(values) = property_schema.get("enum").and_then(Value::as_array)
-        && let Some(value) = values.first()
-    {
-        return value.clone();
-    }
-    match property_schema.get("type").and_then(Value::as_str) {
-        Some("integer" | "number") => json!(0),
-        Some("boolean") => json!(false),
-        Some("array") => Value::Array(Vec::new()),
-        Some("object") => Value::Object(Map::new()),
-        _ => Value::String(format!("<{name}>")),
-    }
+    Ok(CompactEntryFacts {
+        refs: description.refs.clone(),
+        call: description.full_path.clone(),
+        source_key: description.source_key.clone(),
+        capability_kind: description.capability_kind.clone(),
+        effects: description.effects.clone(),
+        title: description.title.clone(),
+        description: description.description.clone(),
+        sql_bindings: description
+            .sql_bindings
+            .iter()
+            .map(compact_sql_binding_facts)
+            .collect(),
+        deprecated: description.deprecated,
+        support_status: description.support_status.clone(),
+        diagnostics,
+    })
 }
 
-fn compact_candidate_value(candidate: &DescribeExportCandidate) -> Value {
-    let mut value = Map::new();
-    insert_nonempty(&mut value, "ref", preferred_ref(&candidate.refs));
-    insert_nonempty(&mut value, "call", &candidate.full_path);
-    insert_nonempty(&mut value, "sql", preferred_sql_ref(&candidate.refs));
-    if candidate.deprecated {
-        value.insert("deprecated".to_string(), Value::Bool(true));
+fn compact_sql_binding_facts(
+    binding: &coral_api::v1::SqlBindingDescription,
+) -> CompactSqlBindingFacts {
+    CompactSqlBindingFacts {
+        reference: binding.r#ref.clone(),
+        sql_reference: binding.sql_reference.clone(),
+        row_shape: binding.row_shape.clone(),
+        columns: binding
+            .columns
+            .iter()
+            .map(|column| CompactSqlColumnFacts {
+                name: column.name.clone(),
+                data_type: column.data_type.clone(),
+            })
+            .collect(),
+        inputs: binding
+            .inputs
+            .iter()
+            .map(|input| CompactSqlInputFacts {
+                name: input.name.clone(),
+                required: input.required,
+                data_type: input.data_type.clone(),
+            })
+            .collect(),
     }
-    if candidate.support_status != "generated" && !candidate.support_status.is_empty() {
-        value.insert("support".to_string(), json!(&candidate.support_status));
-    }
-    Value::Object(value)
-}
-
-fn compact_sql_binding_value(binding: &coral_api::v1::SqlBindingDescription) -> Value {
-    let mut value = Map::new();
-    insert_nonempty(&mut value, "ref", &binding.r#ref);
-    insert_nonempty(&mut value, "sql", &binding.sql_reference);
-    insert_nonempty(&mut value, "shape", &binding.row_shape);
-    if binding.columns.len() > COMPACT_SQL_COLUMN_LIMIT {
-        value.insert("column_count".to_string(), json!(binding.columns.len()));
-    }
-    let columns = binding
-        .columns
-        .iter()
-        .take(COMPACT_SQL_COLUMN_LIMIT)
-        .map(|column| format!("{}:{}", column.name, column.data_type))
-        .collect::<Vec<_>>();
-    if !columns.is_empty() {
-        value.insert("columns".to_string(), json!(columns));
-    }
-    let inputs = binding
-        .inputs
-        .iter()
-        .map(|input| {
-            let required = if input.required { "*" } else { "" };
-            format!("{}{required}:{}", input.name, input.data_type)
-        })
-        .collect::<Vec<_>>();
-    if !inputs.is_empty() {
-        value.insert("inputs".to_string(), json!(inputs));
-    }
-    Value::Object(value)
 }
 
 /// Hydrates each serialized diagnostic object with its provider `details`,
@@ -1217,10 +1199,11 @@ fn insert_code_mode_output_schema(description: &mut Map<String, Value>) {
     let Ok(capability) = serde_json::from_value::<Capability>(capability_value) else {
         return;
     };
-    description.insert(
-        "code_mode_output_schema".to_string(),
-        generated_tool_output_schema(&capability),
-    );
+    // Generated `tools.*` calls resolve directly to the provider value, so the
+    // output schema IS the bare provider value schema.
+    if let Some(value_schema) = provider_value_schema(&capability.output_contract) {
+        description.insert("code_mode_output_schema".to_string(), value_schema);
+    }
     description.insert(
         "code_mode_input_schema".to_string(),
         code_mode_tool_input_schema(&capability),
@@ -1298,5 +1281,309 @@ fn binding_kind_from_tool(kind: &str) -> ExportBindingKind {
         "sql_table" => ExportBindingKind::SqlTable,
         "sql_function" => ExportBindingKind::SqlFunction,
         _ => ExportBindingKind::Unspecified,
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code: assertion-style indexing is idiomatic in tests"
+)]
+mod tests {
+    use coral_api::v1::{
+        CodeModeContentItem, CodeModeJsonArray, CodeModeJsonNull, CodeModeJsonObject,
+        CodeModeJsonValue, CodeModeResultItem, CodeModeRunCompleted, CodeModeRunError,
+        CodeModeRunEvent, CodeModeRunFailed, CodeModeRunStarted, CodeModeRunStatus,
+        CodeModeToolFailed, code_mode_json_value, code_mode_run_event,
+    };
+    use serde_json::{Value, json};
+
+    use super::code_mode_response_tool_value;
+
+    fn proto_json(value: &Value) -> CodeModeJsonValue {
+        let kind = match value {
+            Value::Null => code_mode_json_value::Kind::NullValue(CodeModeJsonNull {}),
+            Value::Bool(value) => code_mode_json_value::Kind::BoolValue(*value),
+            Value::Number(number) => {
+                if let Some(value) = number.as_i64() {
+                    code_mode_json_value::Kind::IntegerValue(value)
+                } else if let Some(value) = number.as_u64() {
+                    code_mode_json_value::Kind::UnsignedIntegerValue(value)
+                } else {
+                    code_mode_json_value::Kind::DoubleValue(number.as_f64().unwrap_or_default())
+                }
+            }
+            Value::String(value) => code_mode_json_value::Kind::StringValue(value.clone()),
+            Value::Array(values) => code_mode_json_value::Kind::ArrayValue(CodeModeJsonArray {
+                values: values.iter().map(proto_json).collect(),
+            }),
+            Value::Object(fields) => code_mode_json_value::Kind::ObjectValue(CodeModeJsonObject {
+                fields: fields
+                    .iter()
+                    .map(|(key, value)| (key.clone(), proto_json(value)))
+                    .collect(),
+            }),
+        };
+        CodeModeJsonValue { kind: Some(kind) }
+    }
+
+    fn content_event(id: u64, item: &Value) -> CodeModeRunEvent {
+        CodeModeRunEvent {
+            id,
+            event: Some(code_mode_run_event::Event::ContentItem(
+                CodeModeContentItem {
+                    cell_id: "cell_1".to_string(),
+                    item: Some(proto_json(item)),
+                },
+            )),
+        }
+    }
+
+    fn result_event(id: u64, item: &Value) -> CodeModeRunEvent {
+        CodeModeRunEvent {
+            id,
+            event: Some(code_mode_run_event::Event::ResultItem(CodeModeResultItem {
+                cell_id: "cell_1".to_string(),
+                item: Some(proto_json(item)),
+            })),
+        }
+    }
+
+    fn run_started_event(id: u64) -> CodeModeRunEvent {
+        CodeModeRunEvent {
+            id,
+            event: Some(code_mode_run_event::Event::RunStarted(CodeModeRunStarted {
+                run_id: "run_1".to_string(),
+            })),
+        }
+    }
+
+    fn run_completed_event(id: u64) -> CodeModeRunEvent {
+        CodeModeRunEvent {
+            id,
+            event: Some(code_mode_run_event::Event::RunCompleted(
+                CodeModeRunCompleted {
+                    run_id: "run_1".to_string(),
+                },
+            )),
+        }
+    }
+
+    /// The completed envelope is exactly `{ run, result, output }`: the result
+    /// is the script's return value directly, console text joins into one
+    /// string, and every empty field (`cursor`, `events`, `error`,
+    /// `tool_calls`, `run.cell_id`) is omitted.
+    #[test]
+    fn completed_run_returns_result_directly_and_joins_output() {
+        let value = code_mode_response_tool_value(
+            "run_1",
+            CodeModeRunStatus::Completed as i32,
+            vec![
+                run_started_event(1),
+                content_event(2, &json!({ "type": "text", "text": "line1" })),
+                content_event(3, &json!({ "type": "text", "text": "line2" })),
+                result_event(4, &json!({ "count": 2 })),
+                run_completed_event(5),
+            ],
+            0,
+        );
+        assert_eq!(
+            value,
+            json!({
+                "run": { "id": "run_1", "status": "completed" },
+                "result": { "count": 2 },
+                "output": "line1\nline2",
+            })
+        );
+    }
+
+    #[test]
+    fn completed_run_preserves_explicit_null_result() {
+        let value = code_mode_response_tool_value(
+            "run_1",
+            CodeModeRunStatus::Completed as i32,
+            vec![
+                run_started_event(1),
+                result_event(2, &Value::Null),
+                run_completed_event(3),
+            ],
+            0,
+        );
+        assert_eq!(
+            value,
+            json!({
+                "run": { "id": "run_1", "status": "completed" },
+                "result": null,
+            })
+        );
+    }
+
+    /// `cursor` appears only while the run is running and advances by the
+    /// underlying event id, so a resumed `wait { run_id, cursor }` never
+    /// re-delivers or skips output even though stdout lines are joined.
+    #[test]
+    fn running_run_carries_cursor_and_resume_delivers_only_new_output() {
+        let first = code_mode_response_tool_value(
+            "run_1",
+            CodeModeRunStatus::Running as i32,
+            vec![
+                run_started_event(1),
+                content_event(2, &json!({ "type": "text", "text": "a" })),
+                content_event(3, &json!("b")),
+            ],
+            0,
+        );
+        assert_eq!(first["output"], "a\nb");
+        assert_eq!(first["cursor"], 3);
+        assert!(first.get("result").is_none());
+
+        let resumed = code_mode_response_tool_value(
+            "run_1",
+            CodeModeRunStatus::Completed as i32,
+            vec![
+                content_event(4, &json!({ "type": "text", "text": "c" })),
+                result_event(5, &json!("done")),
+                run_completed_event(6),
+            ],
+            3,
+        );
+        assert_eq!(resumed["output"], "c");
+        assert_eq!(resumed["result"], "done");
+        assert!(resumed.get("cursor").is_none());
+
+        let idle = code_mode_response_tool_value(
+            "run_1",
+            CodeModeRunStatus::Running as i32,
+            Vec::new(),
+            3,
+        );
+        assert_eq!(idle["cursor"], 3, "an idle wait must not rewind the cursor");
+        assert!(idle.get("output").is_none());
+    }
+
+    #[test]
+    fn truncated_result_resolves_preview_with_truncation_metadata() {
+        let value = code_mode_response_tool_value(
+            "run_1",
+            CodeModeRunStatus::Completed as i32,
+            vec![
+                result_event(
+                    1,
+                    &json!({
+                        "type": "code_mode_truncated_result",
+                        "truncated": true,
+                        "complete": false,
+                        "preview_format": "json",
+                        "preview": "{\"rows\":[1,2]}",
+                        "output_shaping": { "channel": "result" },
+                        "truncation": {
+                            "reason": "max_output_tokens",
+                            "max_output_tokens": 100,
+                            "estimated_tokens": 1200,
+                            "original_bytes": 4096,
+                            "preview_bytes": 64,
+                            "max_spill_bytes": 1_048_576,
+                            "full_output_path": "/tmp/run_1.json",
+                        },
+                    }),
+                ),
+                run_completed_event(2),
+            ],
+            0,
+        );
+        assert_eq!(value["result"], json!({ "rows": [1, 2] }));
+        assert_eq!(
+            value["result_truncated"],
+            json!({
+                "original_bytes": 4096,
+                "estimated_tokens": 1200,
+                "artifact": { "path": "/tmp/run_1.json", "bytes": 4096 },
+            })
+        );
+    }
+
+    /// Non-text content items (for example images) stay in `events`;
+    /// output-shaping metadata folds into `output_truncated`.
+    #[test]
+    fn non_text_content_stays_in_events_and_shaping_folds_into_output_truncated() {
+        let value = code_mode_response_tool_value(
+            "run_1",
+            CodeModeRunStatus::Completed as i32,
+            vec![
+                content_event(
+                    1,
+                    &json!({ "type": "input_image", "image_url": "data:image/png;base64,AA==" }),
+                ),
+                content_event(
+                    2,
+                    &json!({
+                        "type": "output_shaping",
+                        "channel": "console",
+                        "limit_name": "max_output_content_items",
+                        "truncated": false,
+                        "spilled": false,
+                        "dropped_items": 68,
+                        "observed_items": 100,
+                        "observed_bytes": 900,
+                        "dropped_bytes": 600,
+                    }),
+                ),
+                run_completed_event(3),
+            ],
+            0,
+        );
+        assert!(value.get("output").is_none());
+        assert_eq!(
+            value["events"],
+            json!([{
+                "id": 1,
+                "value": { "type": "input_image", "image_url": "data:image/png;base64,AA==" },
+            }])
+        );
+        let output_truncated = &value["output_truncated"];
+        assert!(output_truncated.get("type").is_none());
+        assert_eq!(output_truncated["limit_name"], "max_output_content_items");
+        assert_eq!(output_truncated["dropped_items"], 68);
+    }
+
+    #[test]
+    fn failed_run_carries_error_and_failed_tool_calls() {
+        let value = code_mode_response_tool_value(
+            "run_1",
+            CodeModeRunStatus::Failed as i32,
+            vec![
+                CodeModeRunEvent {
+                    id: 1,
+                    event: Some(code_mode_run_event::Event::ToolFailed(CodeModeToolFailed {
+                        cell_id: "cell_1".to_string(),
+                        tool_call_id: "call_1".to_string(),
+                        tool_name: "tools.github.rest.issues.list".to_string(),
+                        error: Some(CodeModeRunError {
+                            cause: coral_api::v1::CodeModeRunErrorCause::NestedToolFailed as i32,
+                            message: "boom".to_string(),
+                            correlation_id: String::new(),
+                        }),
+                    })),
+                },
+                CodeModeRunEvent {
+                    id: 2,
+                    event: Some(code_mode_run_event::Event::RunFailed(CodeModeRunFailed {
+                        run_id: "run_1".to_string(),
+                        error: Some(CodeModeRunError {
+                            cause: coral_api::v1::CodeModeRunErrorCause::NestedToolFailed as i32,
+                            message: "nested tool failed: boom".to_string(),
+                            correlation_id: String::new(),
+                        }),
+                    })),
+                },
+            ],
+            0,
+        );
+        assert_eq!(value["run"]["status"], "failed");
+        assert_eq!(value["error"]["cause"], "nested_tool_failed");
+        assert_eq!(value["error"]["message"], "nested tool failed: boom");
+        assert!(value.get("cursor").is_none());
+        assert_eq!(value["tool_calls"][0]["status"], "failed");
+        assert_eq!(value["tool_calls"][0]["error"]["message"], "boom");
     }
 }

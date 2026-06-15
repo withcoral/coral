@@ -1807,6 +1807,7 @@ fn fenced_json_body(text: &str) -> Option<&str> {
     Some(rest)
 }
 
+/// Renders the public provider transport envelope.
 fn public_upstream_envelope(envelope: &UpstreamResponseEnvelope) -> JsonValue {
     match envelope {
         UpstreamResponseEnvelope::Http(response) => json!({
@@ -2449,11 +2450,13 @@ mod tests {
                 "pagination_info": "next cursor"
             })
         );
+        let public_envelope = public_upstream_envelope(&envelope);
         assert_json_pointer(
-            &public_upstream_envelope(&envelope),
+            &public_envelope,
             "/content/0/text",
             &json!(r##"{"results":"# Search Results","pagination_info":"next cursor"}"##),
         );
+        assert!(public_envelope.pointer("/structured_content").is_some());
     }
 
     #[test]
@@ -4020,6 +4023,7 @@ interfaces:
         let envelope = response_envelope(&response);
         assert_json_pointer(&envelope, "/kind", &json!("rest"));
         assert_json_pointer(&envelope, "/provider/status", &json!(200));
+        assert_json_pointer(&envelope, "/provider/body/name", &json!("answer"));
         assert_rest_response_headers_are_exposed(&envelope);
     }
 
@@ -4591,6 +4595,7 @@ interfaces:
         let envelope = response_envelope(&response);
         assert_json_pointer(&envelope, "/kind", &json!("graphql"));
         assert_json_pointer(&envelope, "/provider/http_status", &json!(200));
+        assert_json_pointer(&envelope, "/provider/data/rateLimit", &json!(42));
         assert!(!envelope.to_string().contains("graphql-session=secret"));
     }
 

@@ -18,14 +18,18 @@ use coral_api::v1::{
     InitializeCodeModeResponse, TerminateCodeModeRequest, WaitCodeModeRequest,
     WaitCodeModeResponse,
 };
-use coral_capabilities::{Capability, code_mode_tool_input_schema, generated_tool_output_schema};
+use coral_capabilities::{
+    Capability, CompactEntryFacts, CompactSqlBindingFacts, CompactSqlColumnFacts,
+    CompactSqlInputFacts, Diagnostic, SchemaRenderMode, code_mode_tool_input_schema,
+    compact_candidate_value, compact_entry_path_value, compact_entry_value, provider_value_schema,
+};
 use coral_client::batches_to_json_rows_json_safe_numbers;
 use coral_code_mode::{
-    CodeModeNestedToolCall, CodeModeService as V8CodeModeService, CodeModeToolKind,
-    CodeModeTurnHost, CodeModeTurnWorker, ExecuteRequest, RuntimeResponse, ToolDefinition,
-    ToolName, WaitOutcome, WaitRequest, parse_exec_source,
+    CodeModeNestedToolCall, CodeModeService as V8CodeModeService, CodeModeToolError,
+    CodeModeToolKind, CodeModeTurnHost, CodeModeTurnWorker, ExecuteRequest, RuntimeResponse,
+    ToolDefinition, ToolName, WaitOutcome, WaitRequest, parse_exec_source,
 };
-use coral_exports::{Binding, CapabilityExport};
+use coral_exports::{Binding, CapabilityExport, SearchIntent};
 use coral_sql::ColumnInfo;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use tokio::sync::{Mutex, Notify, oneshot};
@@ -35,7 +39,13 @@ use uuid::Uuid;
 
 use crate::RuntimeExposureMode;
 use crate::capability::service::{CapabilityInvocationRequest, CapabilityInvoker};
-use crate::discovery::manager::{DiscoveryManager, DiscoveryPagination, DiscoverySearchFilter};
+use crate::discovery::manager::{
+    DiscoveryManager, DiscoveryPagination, DiscoverySearchFilter, binding_refs,
+};
+use crate::discovery::service::{
+    capability_kind_to_text, diagnostic_severity_to_text, diagnostic_stage_to_text, effect_to_text,
+    sql_row_shape_to_text, support_status_to_text,
+};
 use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::transport::{grpc_span, instrument_grpc, workspace_name_from_proto};
 use crate::workspaces::WorkspaceName;
@@ -562,7 +572,8 @@ impl AppCodeModeHost {
                 description: entry.description.clone(),
                 kind: CodeModeToolKind::Function,
                 input_schema,
-                output_schema: capability.map(generated_tool_output_schema),
+                output_schema: capability
+                    .and_then(|capability| provider_value_schema(&capability.output_contract)),
             });
         }
         Ok(definitions)
@@ -575,12 +586,16 @@ impl AppCodeModeHost {
             .ok_or_else(|| "coral.search requires a string query".to_string())?;
         let limit = optional_u32_argument(input, "limit")?.unwrap_or(0);
         let offset = optional_u32_argument(input, "offset")?.unwrap_or(0);
+        let filter = DiscoverySearchFilter {
+            intent: optional_search_intent(input)?,
+            ..Default::default()
+        };
         let page = self
             .discovery
             .search(
                 &context.workspace_name,
                 query,
-                &DiscoverySearchFilter::default(),
+                &filter,
                 DiscoveryPagination::new(limit, offset),
             )
             .map_err(|error| error.to_string())?;
@@ -605,14 +620,32 @@ impl AppCodeModeHost {
             .get("reference")
             .and_then(JsonValue::as_str)
             .ok_or_else(|| "coral.describe requires a string reference".to_string())?;
+        let path = input
+            .get("path")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty());
+        let schemas = describe_schema_mode(input)?;
         match self
             .discovery
             .describe(&context.workspace_name, reference)
             .map_err(|error| error.to_string())?
         {
             crate::discovery::manager::DiscoveryDescribeResult::Found(description) => {
-                let entry =
-                    describe_entry_value(&description.entry, description.capability.as_ref())?;
+                let entry = if let Some(path) = path {
+                    describe_entry_path_value(
+                        &description.entry,
+                        description.capability.as_ref(),
+                        path,
+                        schemas,
+                    )?
+                } else {
+                    describe_entry_value(
+                        &description.entry,
+                        description.capability.as_ref(),
+                        schemas,
+                    )?
+                };
                 Ok(json!({
                     "status": "found",
                     "found": true,
@@ -624,8 +657,19 @@ impl AppCodeModeHost {
             crate::discovery::manager::DiscoveryDescribeResult::Ambiguous(candidates) => {
                 let candidates = candidates
                     .iter()
-                    .map(|candidate| describe_entry_value(candidate, None))
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .map(|candidate| {
+                        compact_candidate_value(
+                            &binding_refs(candidate),
+                            &candidate
+                                .bindings
+                                .iter()
+                                .find_map(Binding::full_path)
+                                .unwrap_or_default(),
+                            candidate.deprecated,
+                            support_status_to_text(candidate.support_status),
+                        )
+                    })
+                    .collect::<Vec<_>>();
                 Ok(json!({
                     "status": "ambiguous",
                     "found": false,
@@ -683,38 +727,45 @@ impl AppCodeModeHost {
         context: &CellContext,
         full_path: &str,
         args: JsonValue,
-        _allow_error_result: bool,
-    ) -> Result<JsonValue, String> {
+        options: GeneratedToolCallOptions,
+    ) -> Result<JsonValue, CodeModeToolError> {
         if !self.runtime_exposure.exposes_typescript() {
-            return Err(
+            return Err(CodeModeToolError::fatal(
                 "TypeScript invocation is disabled by the active runtime exposure".to_string(),
-            );
+            ));
         }
         let loaded = self
             .discovery
             .load_workspace_exports_best_effort(&context.workspace_name)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| CodeModeToolError::fatal(error.to_string()))?;
         let entry = match coral_exports::describe_export(&loaded.exports, full_path) {
             coral_exports::DescribeResolution::Found { entry } => entry,
             coral_exports::DescribeResolution::Ambiguous { .. } => {
-                return Err("generated tool path resolved ambiguously".to_string());
+                return Err(CodeModeToolError::fatal(
+                    "generated tool path resolved ambiguously".to_string(),
+                ));
             }
             coral_exports::DescribeResolution::NotFound => {
-                return Err(format!("generated tool path '{full_path}' was not found"));
+                return Err(CodeModeToolError::fatal(format!(
+                    "generated tool path '{full_path}' was not found"
+                )));
             }
         };
-        let binding_ref = typescript_ref(&entry)?;
-        let response = Box::pin(self.capability_invoker.invoke(
-            &context.workspace_name,
-            CapabilityInvocationRequest {
-                capability_id: entry.capability_id.to_string(),
-                binding_ref: binding_ref.clone(),
-                binding_path: Vec::new(),
-                args_json: serde_json::to_string(&args).map_err(|error| error.to_string())?,
-            },
-        ))
+        let binding_ref = typescript_ref(&entry).map_err(CodeModeToolError::fatal)?;
+        let response = Box::pin(
+            self.capability_invoker.invoke(
+                &context.workspace_name,
+                CapabilityInvocationRequest {
+                    capability_id: entry.capability_id.to_string(),
+                    binding_ref: binding_ref.clone(),
+                    binding_path: Vec::new(),
+                    args_json: serde_json::to_string(&args)
+                        .map_err(|error| CodeModeToolError::fatal(error.to_string()))?,
+                },
+            ),
+        )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| CodeModeToolError::fatal(error.to_string()))?;
         let ok = response.ok;
         let error_value = response.error.map_or(JsonValue::Null, |error| {
             json!({
@@ -723,36 +774,60 @@ impl AppCodeModeHost {
                 "details": error.details.map_or(JsonValue::Null, JsonValue::from),
             })
         });
-        let partial = !ok && provider_error_has_partial_data(&error_value);
-        let errors = if ok {
-            Vec::new()
-        } else {
-            vec![error_value.clone()]
-        };
-        let value = json!({
-            "ok": ok,
-            "complete": ok && !partial,
-            "partial": partial,
-            "errors": errors,
-            "source_status": [{
-                "source_id": entry.source_id.as_str(),
-                "capability_id": entry.capability_id.as_str(),
-                "binding_ref": binding_ref,
-                "full_path": full_path,
-                "ok": ok,
-                "complete": ok && !partial,
-                "partial": partial,
-                "error": if ok { JsonValue::Null } else { error_value.clone() },
-            }],
-            "value": response.value.map_or(JsonValue::Null, JsonValue::from),
-            "error": error_value,
-            "envelope": response.envelope.map_or(JsonValue::Null, JsonValue::from),
+        let value = response.value.map_or(JsonValue::Null, JsonValue::from);
+        let envelope_json = options.envelope.then(|| {
+            code_mode_transport_envelope(response.envelope.map_or(JsonValue::Null, JsonValue::from))
         });
-        if !ok && !generated_tool_provider_error_result(&value) {
-            return Err(generated_tool_failure_text(full_path, &value));
+        if ok {
+            // The bare-value invariant: without options a resolved generated
+            // tool call IS the provider value.
+            if !options.allow_error_result && !options.envelope {
+                return Ok(value);
+            }
+            let mut result = JsonMap::new();
+            result.insert("ok".to_string(), json!(true));
+            result.insert("value".to_string(), value);
+            if options.allow_error_result {
+                result.insert("partial".to_string(), json!(false));
+            }
+            result.insert("error".to_string(), JsonValue::Null);
+            if let Some(envelope) = envelope_json {
+                result.insert("envelope".to_string(), envelope);
+            }
+            return Ok(JsonValue::Object(result));
         }
-        Ok(value)
+        if !provider_error_value(&error_value) {
+            // Non-provider failures (invalid args, stale bindings, missing
+            // artifacts) stay fatal host errors regardless of call options.
+            return Err(CodeModeToolError::fatal(generated_tool_failure_text(
+                full_path,
+                &error_value,
+            )));
+        }
+        if !options.allow_error_result {
+            return Err(CodeModeToolError::recoverable(generated_tool_failure_text(
+                full_path,
+                &error_value,
+            )));
+        }
+        let partial = provider_error_has_partial_data(&error_value);
+        let mut result = JsonMap::new();
+        result.insert("ok".to_string(), json!(false));
+        result.insert("value".to_string(), value);
+        result.insert("partial".to_string(), json!(partial));
+        result.insert("error".to_string(), error_value);
+        if let Some(envelope) = envelope_json {
+            result.insert("envelope".to_string(), envelope);
+        }
+        Ok(JsonValue::Object(result))
     }
+}
+
+/// Per-call options for one generated `tools.*` invocation.
+#[derive(Clone, Copy, Debug, Default)]
+struct GeneratedToolCallOptions {
+    allow_error_result: bool,
+    envelope: bool,
 }
 
 #[async_trait::async_trait]
@@ -761,15 +836,23 @@ impl CodeModeTurnHost for AppCodeModeHost {
         &self,
         invocation: CodeModeNestedToolCall,
         cancellation_token: CancellationToken,
-    ) -> Result<JsonValue, String> {
+    ) -> Result<JsonValue, CodeModeToolError> {
         if invocation.tool_kind != CodeModeToolKind::Function {
-            return Err("Coral Code Mode only supports function tools".to_string());
+            return Err(CodeModeToolError::fatal(
+                "Coral Code Mode only supports function tools".to_string(),
+            ));
         }
-        let context = self.cell_context(&invocation.cell_id).await?;
+        let context = self
+            .cell_context(&invocation.cell_id)
+            .await
+            .map_err(CodeModeToolError::fatal)?;
         let cell_id = invocation.cell_id;
         let tool_call_id = invocation.runtime_tool_call_id;
         let tool_name = invocation.tool_name.name;
-        let allow_error_result = invocation.allow_error_result;
+        let options = GeneratedToolCallOptions {
+            allow_error_result: invocation.allow_error_result,
+            envelope: invocation.envelope,
+        };
         let input = invocation
             .input
             .unwrap_or_else(|| JsonValue::Object(JsonMap::new()));
@@ -784,54 +867,35 @@ impl CodeModeTurnHost for AppCodeModeHost {
         .await;
         let result = tokio::select! {
             biased;
-            () = cancellation_token.cancelled() => Err(format!(
+            () = cancellation_token.cancelled() => Err(CodeModeToolError::fatal(format!(
                 "code mode cell {cell_id} was terminated before {tool_name} completed"
-            )),
+            ))),
             result = async {
                 match tool_name.as_str() {
-                    SEARCH_TOOL_NAME => self.invoke_search(&context, &input),
-                    DESCRIBE_TOOL_NAME => self.invoke_describe(&context, &input),
-                    SQL_QUERY_TOOL_NAME => self.invoke_sql(&context, &input).await,
+                    SEARCH_TOOL_NAME => self.invoke_search(&context, &input).map_err(CodeModeToolError::fatal),
+                    DESCRIBE_TOOL_NAME => self.invoke_describe(&context, &input).map_err(CodeModeToolError::fatal),
+                    SQL_QUERY_TOOL_NAME => self.invoke_sql(&context, &input).await.map_err(CodeModeToolError::fatal),
                     full_path if full_path.starts_with("tools.") => {
-                        Box::pin(self.invoke_generated_tool(
-                            &context,
-                            full_path,
-                            input,
-                            allow_error_result,
-                        ))
-                        .await
+                        Box::pin(self.invoke_generated_tool(&context, full_path, input, options))
+                            .await
                     }
-                    other => Err(format!("Code Mode tool '{other}' is not available")),
+                    other => Err(CodeModeToolError::fatal(format!(
+                        "Code Mode tool '{other}' is not available"
+                    ))),
                 }
             } => result,
         };
         match result {
             Ok(value) => {
-                if !allow_error_result && generated_tool_error_result(&value) {
-                    self.push_run_event(
-                        &context,
-                        CodeModeRunEventKind::ToolFailed {
-                            cell_id,
-                            tool_call_id,
-                            tool_name: tool_name.clone(),
-                            error: tool_call_error(
-                                &tool_name,
-                                generated_tool_failure_text(&tool_name, &value),
-                            ),
-                        },
-                    )
-                    .await;
-                } else {
-                    self.push_run_event(
-                        &context,
-                        CodeModeRunEventKind::ToolCompleted {
-                            cell_id,
-                            tool_call_id,
-                            tool_name,
-                        },
-                    )
-                    .await;
-                }
+                self.push_run_event(
+                    &context,
+                    CodeModeRunEventKind::ToolCompleted {
+                        cell_id,
+                        tool_call_id,
+                        tool_name,
+                    },
+                )
+                .await;
                 Ok(value)
             }
             Err(error) => {
@@ -841,7 +905,7 @@ impl CodeModeTurnHost for AppCodeModeHost {
                         cell_id,
                         tool_call_id,
                         tool_name: tool_name.clone(),
-                        error: tool_call_error(&tool_name, error.clone()),
+                        error: tool_call_error(&tool_name, error.message.clone()),
                     },
                 )
                 .await;
@@ -870,6 +934,11 @@ fn search_tool_definition() -> ToolDefinition {
                     "type": "integer",
                     "minimum": 0,
                     "description": "Zero-based result offset for pagination."
+                },
+                "intent": {
+                    "type": "string",
+                    "enum": ["read", "write", "any"],
+                    "description": "Optional ranking intent. Use read for lookup/list/get/search tasks, write for create/update/delete tasks, or any to disable intent bias."
                 }
             },
             "required": ["query"],
@@ -889,7 +958,17 @@ fn describe_tool_definition() -> ToolDefinition {
         input_schema: Some(json!({
             "type": "object",
             "properties": {
-                "reference": { "type": "string" }
+                "reference": { "type": "string" },
+                "path": {
+                    "type": "string",
+                    "description": "Dot path into the input schema, e.g. \"filter\" or \"filter.team\"; prefix \"output.\" to address the value schema. Returns only that subtree."
+                },
+                "schemas": {
+                    "type": "string",
+                    "enum": ["bounded", "full"],
+                    "default": "bounded",
+                    "description": "bounded caps rendered input/value schemas and marks elided subtrees with x-coral-truncated; full skips renderer-size bounding but cannot recover source/importer-level stubs."
+                }
             },
             "required": ["reference"],
             "additionalProperties": false
@@ -932,15 +1011,13 @@ fn typescript_ref(entry: &CapabilityExport) -> Result<String, String> {
         })
 }
 
-fn generated_tool_failure_text(full_path: &str, value: &JsonValue) -> String {
-    let message = value
-        .get("error")
-        .and_then(JsonValue::as_object)
-        .and_then(|error| error.get("message"))
+fn generated_tool_failure_text(full_path: &str, error_value: &JsonValue) -> String {
+    let message = error_value
+        .get("message")
         .and_then(JsonValue::as_str)
         .filter(|message| !message.trim().is_empty())
-        .unwrap_or("capability invocation returned ok=false");
-    let Some(details) = value.pointer("/error/details") else {
+        .unwrap_or("capability invocation returned an error");
+    let Some(details) = error_value.get("details") else {
         return format!("generated tool `{full_path}` failed: {message}");
     };
     if details.is_null() {
@@ -953,24 +1030,11 @@ fn generated_tool_failure_text(full_path: &str, value: &JsonValue) -> String {
     format!("generated tool `{full_path}` failed: {message}; details: {details}")
 }
 
-fn generated_tool_error_result(value: &JsonValue) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    object.get("ok").and_then(JsonValue::as_bool) == Some(false)
-        && object.get("error").is_some_and(JsonValue::is_object)
-        && ((object.contains_key("value") && object.contains_key("envelope"))
-            || (object.contains_key("complete")
-                && object.contains_key("partial")
-                && object.contains_key("source_status")))
-}
-
-fn generated_tool_provider_error_result(value: &JsonValue) -> bool {
-    generated_tool_error_result(value)
-        && value
-            .pointer("/error/kind")
-            .and_then(JsonValue::as_str)
-            .is_some_and(|kind| kind == "provider_error")
+fn provider_error_value(error_value: &JsonValue) -> bool {
+    error_value
+        .get("kind")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|kind| kind == "provider_error")
 }
 
 const MAX_GENERATED_TOOL_ERROR_DETAIL_CHARS: usize = 8192;
@@ -991,6 +1055,28 @@ fn truncate_error_detail_text(value: &str) -> String {
         value.get(..end).unwrap_or_default(),
         value.len().saturating_sub(end)
     )
+}
+
+fn code_mode_transport_envelope(mut envelope: JsonValue) -> JsonValue {
+    let Some(provider) = envelope
+        .get_mut("provider")
+        .and_then(JsonValue::as_object_mut)
+    else {
+        return envelope;
+    };
+    match provider.get("kind").and_then(JsonValue::as_str) {
+        Some("http") => {
+            provider.remove("body");
+        }
+        Some("graphql") => {
+            provider.remove("data");
+        }
+        Some("mcp") => {
+            provider.remove("structured_content");
+        }
+        _ => {}
+    }
+    envelope
 }
 
 fn provider_error_has_partial_data(error_value: &JsonValue) -> bool {
@@ -1016,6 +1102,23 @@ fn provider_error_has_partial_data(error_value: &JsonValue) -> bool {
         .ok()
         .and_then(|value| value.get("partial_data").cloned())
         .is_some_and(|value| !value.is_null())
+}
+
+fn optional_search_intent(input: &JsonValue) -> Result<Option<SearchIntent>, String> {
+    let Some(value) = input.get("intent") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    match value.as_str() {
+        Some("read") => Ok(Some(SearchIntent::Read)),
+        Some("write") => Ok(Some(SearchIntent::Write)),
+        Some("any") => Ok(Some(SearchIntent::Any)),
+        _ => Err(format!(
+            "coral.search intent must be \"read\", \"write\", or \"any\", got {value}"
+        )),
+    }
 }
 
 fn optional_u32_argument(input: &JsonValue, name: &str) -> Result<Option<u32>, String> {
@@ -1547,50 +1650,111 @@ fn code_mode_sql_columns(schema: &[ColumnInfo]) -> Vec<JsonValue> {
         .collect()
 }
 
+/// Renders the same compact describe entry as the MCP `describe` tool.
 fn describe_entry_value(
     entry: &CapabilityExport,
     capability: Option<&Capability>,
+    schemas: SchemaRenderMode,
 ) -> Result<JsonValue, String> {
-    let mut value = serde_json::to_value(entry).map_err(|error| error.to_string())?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| "serialized capability export was not an object".to_string())?;
-    if let Some(full_path) = entry.bindings.iter().find_map(Binding::full_path) {
-        object.insert("full_path".to_string(), JsonValue::String(full_path));
+    let facts = describe_entry_facts(entry)?;
+    Ok(compact_entry_value(&facts, capability, schemas))
+}
+
+/// Renders the same `{ ref, call, path, schema, elided }` drill-down response
+/// as the MCP `describe` tool's `path` parameter.
+fn describe_entry_path_value(
+    entry: &CapabilityExport,
+    capability: Option<&Capability>,
+    path: &str,
+    schemas: SchemaRenderMode,
+) -> Result<JsonValue, String> {
+    let facts = describe_entry_facts(entry)?;
+    compact_entry_path_value(&facts, capability, path, schemas)
+}
+
+fn describe_entry_facts(entry: &CapabilityExport) -> Result<CompactEntryFacts, String> {
+    let diagnostics = entry
+        .diagnostics
+        .iter()
+        .map(compact_diagnostic_value)
+        .collect();
+    Ok(CompactEntryFacts {
+        refs: binding_refs(entry),
+        call: entry
+            .bindings
+            .iter()
+            .find_map(Binding::full_path)
+            .unwrap_or_default(),
+        source_key: entry.source_key.as_str().to_string(),
+        capability_kind: capability_kind_to_text(entry.effect_profile.capability_kind).to_string(),
+        effects: entry
+            .effect_profile
+            .effects
+            .iter()
+            .map(|effect| effect_to_text(*effect).to_string())
+            .collect(),
+        title: entry.title.clone(),
+        description: entry.description.clone(),
+        sql_bindings: entry
+            .bindings
+            .iter()
+            .filter_map(|binding| match binding {
+                Binding::Sql(binding) => Some(describe_sql_binding_facts(binding)),
+                Binding::Typescript(_) => None,
+            })
+            .collect(),
+        deprecated: entry.deprecated,
+        support_status: support_status_to_text(entry.support_status).to_string(),
+        diagnostics,
+    })
+}
+
+fn compact_diagnostic_value(diagnostic: &Diagnostic) -> JsonValue {
+    json!({
+        "code": &diagnostic.code,
+        "severity": diagnostic_severity_to_text(diagnostic.severity),
+        "stage": diagnostic_stage_to_text(diagnostic.stage),
+        "message": &diagnostic.message,
+        "source_ref": diagnostic.source_ref.as_deref().unwrap_or_default(),
+        "details": diagnostic.details.clone(),
+    })
+}
+
+fn describe_sql_binding_facts(binding: &coral_exports::SqlBinding) -> CompactSqlBindingFacts {
+    CompactSqlBindingFacts {
+        reference: binding.ref_.value.clone(),
+        sql_reference: binding.sql_reference.clone(),
+        row_shape: sql_row_shape_to_text(binding.projection.row_shape).to_string(),
+        columns: binding
+            .projection
+            .columns
+            .iter()
+            .map(|column| CompactSqlColumnFacts {
+                name: column.name.clone(),
+                data_type: column.data_type.clone(),
+            })
+            .collect(),
+        inputs: binding
+            .projection
+            .inputs
+            .iter()
+            .map(|input| CompactSqlInputFacts {
+                name: input.name.clone(),
+                required: input.required,
+                data_type: input.data_type.clone(),
+            })
+            .collect(),
     }
-    object.insert(
-        "refs".to_string(),
-        JsonValue::Array(
-            entry
-                .bindings
-                .iter()
-                .map(|binding| JsonValue::String(binding.ref_().value.clone()))
-                .collect(),
-        ),
-    );
-    if let Some(capability) = capability {
-        object.insert(
-            "input_schema".to_string(),
-            capability.input_schema.schema.clone(),
-        );
-        object.insert(
-            "code_mode_input_schema".to_string(),
-            code_mode_tool_input_schema(capability),
-        );
-        object.insert(
-            "output_contract".to_string(),
-            serde_json::to_value(&capability.output_contract).map_err(|error| error.to_string())?,
-        );
-        object.insert(
-            "code_mode_output_schema".to_string(),
-            generated_tool_output_schema(capability),
-        );
-        object.insert(
-            "capability".to_string(),
-            serde_json::to_value(capability).map_err(|error| error.to_string())?,
-        );
+}
+
+fn describe_schema_mode(input: &JsonValue) -> Result<SchemaRenderMode, String> {
+    match input.get("schemas") {
+        None | Some(JsonValue::Null) => Ok(SchemaRenderMode::default()),
+        Some(JsonValue::String(value)) => SchemaRenderMode::parse(value).ok_or_else(|| {
+            format!("coral.describe schemas must be \"bounded\" or \"full\", got '{value}'")
+        }),
+        Some(_) => Err("coral.describe schemas must be a string".to_string()),
     }
-    Ok(value)
 }
 
 #[cfg(test)]
@@ -1605,15 +1769,15 @@ mod tests {
         WaitCodeModeResponse, Workspace,
     };
     use coral_sql::ColumnInfo;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use tempfile::TempDir;
     use tonic::{Code, Request};
 
     use coral_capabilities::{
-        Capability, EffectProfile, FileArtifactRef, FileFormatDescriptor, FileScanBinding,
-        HttpMethod, InvocationSchema, OutputContract, ProviderOrigin, ProviderOriginKind,
-        RestOutputVariant, RestUpstreamBinding, SourceCapabilitySet, SourceId, StatusRange,
-        UpstreamBinding,
+        Capability, CapabilityId, Diagnostic, DiagnosticSeverity, DiagnosticStage, EffectProfile,
+        FileArtifactRef, FileFormatDescriptor, FileScanBinding, HttpMethod, InvocationSchema,
+        OutputContract, ProviderOrigin, ProviderOriginKind, RestOutputVariant, RestUpstreamBinding,
+        SchemaRenderMode, SourceCapabilitySet, SourceId, StatusRange, UpstreamBinding,
     };
     use coral_exports::{
         BindingBuildContext, SourceKey, TypescriptBindingContributor, build_source_exports,
@@ -1622,8 +1786,9 @@ mod tests {
     use super::{
         CodeModeRunErrorCause as InternalRunErrorCause, CodeModeService,
         MAX_LIVE_RUNS_PER_WORKSPACE, MAX_TERMINAL_RUN_HISTORY, classify_run_error,
-        code_mode_sql_columns, code_mode_tool_input_schema, describe_entry_value,
-        generated_tool_failure_text, generated_tool_output_schema, provider_error_has_partial_data,
+        code_mode_sql_columns, code_mode_tool_input_schema, code_mode_transport_envelope,
+        describe_entry_path_value, describe_entry_value, generated_tool_failure_text,
+        provider_error_has_partial_data, provider_value_schema, search_tool_definition,
         sql_tool_definition,
     };
     use crate::RuntimeExposureMode;
@@ -1653,7 +1818,7 @@ mod tests {
     fn generated_tool_failure_classifies_as_nested_tool_failure() {
         let message = generated_tool_failure_text(
             "tools.example.sql_query",
-            &json!({ "error": { "message": "provider SQL rejected the request" } }),
+            &json!({ "message": "provider SQL rejected the request" }),
         );
 
         assert_eq!(
@@ -1694,7 +1859,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_tool_output_schema_wraps_provider_result() {
+    fn generated_tool_output_schema_is_bare_provider_value_schema() {
         let mut capability = test_capability();
         capability.output_contract = OutputContract::RestResponseVariants {
             variants: vec![RestOutputVariant {
@@ -1710,46 +1875,21 @@ mod tests {
             }],
         };
 
-        let schema = generated_tool_output_schema(&capability);
+        let schema =
+            provider_value_schema(&capability.output_contract).expect("provider value schema");
 
+        // The generated tool resolves to the provider value, so the output
+        // schema is the bare provider value schema without a result envelope.
         assert_eq!(
             schema
-                .pointer("/properties/ok/type")
-                .and_then(|value| value.as_str()),
-            Some("boolean")
-        );
-        assert_eq!(
-            schema
-                .pointer("/properties/value/anyOf/0/properties/items/type")
+                .pointer("/properties/items/type")
                 .and_then(|value| value.as_str()),
             Some("array")
         );
-        assert_eq!(
-            schema
-                .pointer("/properties/error/anyOf/0/properties/message/type")
-                .and_then(|value| value.as_str()),
-            Some("string")
-        );
-        assert_eq!(
-            schema
-                .pointer("/properties/complete/type")
-                .and_then(|value| value.as_str()),
-            Some("boolean")
-        );
-        assert_eq!(
-            schema
-                .pointer("/properties/source_status/items/properties/source_id/type")
-                .and_then(|value| value.as_str()),
-            Some("string")
-        );
-        assert_eq!(
-            schema
-                .pointer(
-                    "/properties/envelope/anyOf/0/properties/provider/properties/headers/additionalProperties/type"
-                )
-                .and_then(|value| value.as_str()),
-            Some("string")
-        );
+        assert!(schema.pointer("/properties/ok").is_none());
+        assert!(schema.pointer("/properties/complete").is_none());
+        assert!(schema.pointer("/properties/source_status").is_none());
+        assert!(schema.pointer("/properties/envelope").is_none());
     }
 
     #[test]
@@ -1789,7 +1929,63 @@ mod tests {
     }
 
     #[test]
-    fn describe_entry_value_includes_runtime_schema_and_full_path() {
+    fn code_mode_transport_envelope_removes_duplicate_provider_payload_fields() {
+        let envelope = code_mode_transport_envelope(json!({
+            "kind": "rest",
+            "provider": {
+                "kind": "http",
+                "status": 200,
+                "body": { "id": 1 }
+            }
+        }));
+        assert!(envelope.pointer("/provider/status").is_some());
+        assert!(envelope.pointer("/provider/body").is_none());
+
+        let envelope = code_mode_transport_envelope(json!({
+            "kind": "graphql",
+            "provider": {
+                "kind": "graphql",
+                "http_status": 200,
+                "data": { "viewer": { "id": "U1" } }
+            }
+        }));
+        assert!(envelope.pointer("/provider/http_status").is_some());
+        assert!(envelope.pointer("/provider/data").is_none());
+
+        let envelope = code_mode_transport_envelope(json!({
+            "kind": "mcp_tool",
+            "provider": {
+                "kind": "mcp",
+                "structured_content": { "ok": true },
+                "content": []
+            }
+        }));
+        assert!(envelope.pointer("/provider/content").is_some());
+        assert!(envelope.pointer("/provider/structured_content").is_none());
+    }
+
+    #[test]
+    fn search_tool_definition_advertises_intent_argument() {
+        let schema = search_tool_definition()
+            .input_schema
+            .expect("search input schema");
+
+        assert_eq!(
+            schema.pointer("/properties/intent/enum"),
+            Some(&json!(["read", "write", "any"]))
+        );
+        let compiled = jsonschema::JSONSchema::compile(&schema).expect("input schema compiles");
+        assert!(compiled.is_valid(&json!({
+            "query": "issues",
+            "intent": "read"
+        })));
+        assert!(!compiled.is_valid(&json!({
+            "query": "issues",
+            "intent": "destroy"
+        })));
+    }
+
+    fn described_test_entry() -> (coral_exports::CapabilityExport, Capability) {
         let mut capability = test_capability();
         capability.input_schema = InvocationSchema::new(json!({
             "type": "object",
@@ -1806,6 +2002,19 @@ mod tests {
                 }
             }
         }));
+        capability.effect_profile = HttpMethod::Get.default_effect_profile();
+        capability.output_contract = OutputContract::Single {
+            schema: InvocationSchema::new(json!({
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "integer" },
+                        "state": { "type": "string" }
+                    }
+                }
+            })),
+        };
         let ctx = coral_exports::BindingBuildContext {
             source_id: capability.source_id.clone(),
             display_name: "GitHub".to_string(),
@@ -1830,31 +2039,55 @@ mod tests {
                 result_type_name: "GithubRestPullsListReviewsResult".to_string(),
             },
         ));
+        (entry, capability)
+    }
 
-        let value = describe_entry_value(&entry, Some(&capability)).expect("describe value");
+    #[test]
+    fn describe_entry_value_returns_compact_entry_with_runtime_and_value_schemas() {
+        let (entry, capability) = described_test_entry();
+
+        let value = describe_entry_value(&entry, Some(&capability), SchemaRenderMode::default())
+            .expect("describe value");
 
         assert_eq!(
-            value.pointer("/full_path").and_then(|value| value.as_str()),
+            value.pointer("/ref").and_then(|value| value.as_str()),
+            Some("typescript:github.rest.pulls.listReviews")
+        );
+        assert_eq!(
+            value.pointer("/call").and_then(|value| value.as_str()),
             Some("tools.github.rest.pulls.listReviews")
         );
         assert_eq!(
             value
-                .pointer("/input_schema/properties/path/properties/pull_number/type")
+                .pointer("/source_key")
                 .and_then(|value| value.as_str()),
-            Some("integer")
+            Some("github")
         );
         assert_eq!(
             value
-                .pointer("/code_mode_input_schema/properties/pull_number/type")
+                .pointer("/capability_kind")
+                .and_then(|value| value.as_str()),
+            Some("query")
+        );
+        // The compact entry carries exactly two schemas: the executable Code
+        // Mode input schema and the bare provider value schema.
+        assert!(value.get("capability").is_none());
+        assert!(value.get("output_contract").is_none());
+        assert!(value.get("code_mode_input_schema").is_none());
+        assert!(value.get("code_mode_output_schema").is_none());
+        assert!(value.get("output_schema").is_none());
+        assert!(value.get("input_schema_truncated").is_none());
+        assert!(value.get("value_schema_truncated").is_none());
+        assert!(value.get("schema_note").is_none());
+        assert_eq!(
+            value
+                .pointer("/input_schema/properties/pull_number/type")
                 .and_then(|value| value.as_str()),
             Some("integer")
         );
-        let compiled = jsonschema::JSONSchema::compile(
-            value
-                .get("code_mode_input_schema")
-                .expect("code mode input schema"),
-        )
-        .expect("code mode schema compiles");
+        let compiled =
+            jsonschema::JSONSchema::compile(value.get("input_schema").expect("input schema"))
+                .expect("input schema compiles");
         assert!(compiled.is_valid(&json!({
             "path": {
                 "owner": "withcoral",
@@ -1862,11 +2095,122 @@ mod tests {
             },
             "pull_number": 42
         })));
-        assert!(
+        assert_eq!(
             value
-                .pointer("/code_mode_output_schema/properties/value")
-                .is_some()
+                .pointer("/value_schema/items/properties/state/type")
+                .and_then(|value| value.as_str()),
+            Some("string")
         );
+        assert!(value.pointer("/value_schema/properties/ok").is_none());
+        assert_eq!(
+            value
+                .pointer("/examples/0/call")
+                .and_then(|value| value.as_str()),
+            Some("tools.github.rest.pulls.listReviews")
+        );
+    }
+
+    #[test]
+    fn describe_entry_value_normalizes_diagnostics_for_compact_renderer() {
+        let (mut entry, capability) = described_test_entry();
+        let mut diagnostic = Diagnostic::new(
+            "SQL_OUTPUT_SCHEMA_MISSING",
+            DiagnosticSeverity::Warning,
+            DiagnosticStage::SqlProjection,
+            "SQL projection is missing an output schema",
+        );
+        diagnostic.source_id = Some(SourceId("src_github".to_string()));
+        diagnostic.interface_id = Some("rest".to_string());
+        diagnostic.capability_id = Some(CapabilityId(entry.capability_id.to_string()));
+        diagnostic.source_ref = Some("sources/github.yaml#/interfaces/rest".to_string());
+        diagnostic.details = json!({ "binding_kind": "sql_table" });
+        entry.diagnostics.push(diagnostic);
+
+        let value = describe_entry_value(&entry, Some(&capability), SchemaRenderMode::default())
+            .expect("describe value");
+
+        let diagnostic = value
+            .pointer("/diagnostics/0")
+            .and_then(Value::as_object)
+            .expect("compact diagnostic");
+        assert_eq!(
+            diagnostic.get("code").and_then(Value::as_str),
+            Some("SQL_OUTPUT_SCHEMA_MISSING")
+        );
+        assert_eq!(
+            diagnostic.get("severity").and_then(Value::as_str),
+            Some("warning")
+        );
+        assert_eq!(
+            diagnostic.get("stage").and_then(Value::as_str),
+            Some("sql_projection")
+        );
+        assert_eq!(
+            diagnostic.get("source_ref").and_then(Value::as_str),
+            Some("sources/github.yaml#/interfaces/rest")
+        );
+        assert_eq!(
+            diagnostic
+                .get("details")
+                .and_then(|details| details.get("binding_kind"))
+                .and_then(Value::as_str),
+            Some("sql_table")
+        );
+        assert!(!diagnostic.contains_key("source_id"));
+        assert!(!diagnostic.contains_key("interface_id"));
+        assert!(!diagnostic.contains_key("capability_id"));
+    }
+
+    #[test]
+    fn describe_entry_path_value_returns_subtree_with_elided_list() {
+        let (entry, capability) = described_test_entry();
+
+        let value = describe_entry_path_value(
+            &entry,
+            Some(&capability),
+            "path",
+            SchemaRenderMode::default(),
+        )
+        .expect("path value");
+
+        assert_eq!(
+            value.pointer("/path").and_then(|value| value.as_str()),
+            Some("path")
+        );
+        assert_eq!(
+            value
+                .pointer("/schema/properties/pull_number/type")
+                .and_then(|value| value.as_str()),
+            Some("integer")
+        );
+        assert_eq!(value.pointer("/elided"), Some(&json!([])));
+
+        // `output.` addresses the value schema; array `items` auto-descend, so
+        // `state` resolves through the array element type.
+        let output = describe_entry_path_value(
+            &entry,
+            Some(&capability),
+            "output.state",
+            SchemaRenderMode::default(),
+        )
+        .expect("output path value");
+        assert_eq!(
+            output
+                .pointer("/schema/type")
+                .and_then(|value| value.as_str()),
+            Some("string")
+        );
+
+        let invalid = describe_entry_path_value(
+            &entry,
+            Some(&capability),
+            "path.missing",
+            SchemaRenderMode::default(),
+        )
+        .expect_err("invalid segment must fail");
+        assert!(invalid.contains("'missing'"));
+        assert!(invalid.contains("owner"));
+        assert!(invalid.contains("pull_number"));
     }
 
     #[test]
@@ -2263,6 +2607,219 @@ try {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn generated_tool_success_resolves_to_bare_provider_value() {
+        let (temp, service) = test_service();
+        install_search_fixture_source(temp.path());
+        initialize_workspace(&service, "default").await;
+
+        let completed = service
+            .exec(Request::new(ExecCodeModeRequest {
+                workspace: Some(workspace("default")),
+                source: r"
+const value = await tools.searchFixture.files.beta({});
+return {
+  value,
+  is_array: Array.isArray(value),
+};
+"
+                .to_string(),
+            }))
+            .await
+            .expect("exec")
+            .into_inner();
+
+        assert_eq!(completed.status, status(CodeModeRunStatus::Completed));
+        assert_eq!(
+            last_output_item_from_events(&completed.events),
+            Some(json!({
+                "value": [],
+                "is_array": true,
+            }))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn generated_tool_allow_error_result_returns_slim_diagnostics() {
+        let (temp, service) = test_service();
+        install_search_fixture_source(temp.path());
+        initialize_workspace(&service, "default").await;
+
+        let completed = service
+            .exec(Request::new(ExecCodeModeRequest {
+                workspace: Some(workspace("default")),
+                source: r#"
+const result = await tools.searchFixture.files.alpha(
+  { file_id: "bad" },
+  { allowErrorResult: true }
+);
+return {
+  keys: Object.keys(result),
+  ok: result.ok,
+  partial: result.partial,
+  error_kind: result.error.kind,
+};
+"#
+                .to_string(),
+            }))
+            .await
+            .expect("exec")
+            .into_inner();
+
+        assert_eq!(completed.status, status(CodeModeRunStatus::Completed));
+        assert_eq!(
+            last_output_item_from_events(&completed.events),
+            Some(json!({
+                "keys": ["ok", "value", "partial", "error"],
+                "ok": false,
+                "partial": false,
+                "error_kind": "provider_error",
+            }))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn generated_tool_envelope_option_returns_transport_envelope() {
+        let (temp, service) = test_service();
+        install_search_fixture_source(temp.path());
+        initialize_workspace(&service, "default").await;
+
+        let completed = service
+            .exec(Request::new(ExecCodeModeRequest {
+                workspace: Some(workspace("default")),
+                source: r"
+const result = await tools.searchFixture.files.beta({}, { envelope: true });
+return {
+  keys: Object.keys(result),
+  ok: result.ok,
+  value: result.value,
+  error: result.error,
+  envelope_kind: result.envelope.kind,
+  envelope_row_count: result.envelope.row_count,
+};
+"
+                .to_string(),
+            }))
+            .await
+            .expect("exec")
+            .into_inner();
+
+        assert_eq!(completed.status, status(CodeModeRunStatus::Completed));
+        assert_eq!(
+            last_output_item_from_events(&completed.events),
+            Some(json!({
+                "keys": ["ok", "value", "error", "envelope"],
+                "ok": true,
+                "value": [],
+                "error": null,
+                "envelope_kind": "file_read",
+                "envelope_row_count": 0,
+            }))
+        );
+    }
+
+    /// Payload regression gate (fix pipeline gate 4): a default `tools.*`
+    /// success IS the provider value. The exact serialized form is pinned so
+    /// any reintroduced wrapper key (`ok`, `complete`, `envelope`,
+    /// `source_status`, ...) fails this gate byte-for-byte.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn payload_gate_generated_tool_default_success_is_exactly_the_provider_value() {
+        let (temp, service) = test_service();
+        install_search_fixture_source(temp.path());
+        initialize_workspace(&service, "default").await;
+
+        let completed = service
+            .exec(Request::new(ExecCodeModeRequest {
+                workspace: Some(workspace("default")),
+                source: r"
+const value = await tools.searchFixture.files.gamma({});
+return {
+  value,
+  serialized: JSON.stringify(value),
+};
+"
+                .to_string(),
+            }))
+            .await
+            .expect("exec")
+            .into_inner();
+
+        assert_eq!(completed.status, status(CodeModeRunStatus::Completed));
+        assert_eq!(
+            last_output_item_from_events(&completed.events),
+            Some(json!({
+                "value": [{ "title": "First" }, { "title": "Second" }],
+                "serialized": r#"[{"title":"First"},{"title":"Second"}]"#,
+            }))
+        );
+    }
+
+    /// Payload regression gate (fix pipeline gate 4): the `allowErrorResult`
+    /// slim wrapper carries exactly `{ ok, value, partial, error }` on success
+    /// too — no `complete`, `errors`, `source_status`, or `envelope` keys.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn payload_gate_allow_error_result_success_has_exactly_the_slim_keys() {
+        let (temp, service) = test_service();
+        install_search_fixture_source(temp.path());
+        initialize_workspace(&service, "default").await;
+
+        let completed = service
+            .exec(Request::new(ExecCodeModeRequest {
+                workspace: Some(workspace("default")),
+                source: r"
+const result = await tools.searchFixture.files.gamma({}, { allowErrorResult: true });
+return {
+  keys: Object.keys(result),
+  ok: result.ok,
+  partial: result.partial,
+  error: result.error,
+  titles: result.value.map((row) => row.title),
+};
+"
+                .to_string(),
+            }))
+            .await
+            .expect("exec")
+            .into_inner();
+
+        assert_eq!(completed.status, status(CodeModeRunStatus::Completed));
+        assert_eq!(
+            last_output_item_from_events(&completed.events),
+            Some(json!({
+                "keys": ["ok", "value", "partial", "error"],
+                "ok": true,
+                "partial": false,
+                "error": null,
+                "titles": ["First", "Second"],
+            }))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unawaited_generated_tool_provider_error_fails_run_closed() {
+        let (temp, service) = test_service();
+        install_search_fixture_source(temp.path());
+        initialize_workspace(&service, "default").await;
+
+        let failed = service
+            .exec(Request::new(ExecCodeModeRequest {
+                workspace: Some(workspace("default")),
+                source: r#"
+tools.searchFixture.files.alpha({ file_id: "bad" });
+return "unexpected";
+"#
+                .to_string(),
+            }))
+            .await
+            .expect("exec")
+            .into_inner();
+
+        assert_eq!(failed.status, status(CodeModeRunStatus::Failed));
+        assert!(last_output_item_from_events(&failed.events).is_none());
+        let error_text = run_failed_error_text(&failed.events).expect("run error");
+        assert!(error_text.contains("invalid_response"), "{error_text}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn coral_search_honors_limit_and_offset() {
         let (temp, service) = test_service();
         install_search_fixture_source(temp.path());
@@ -2299,6 +2856,52 @@ return {
                 "has_more": false,
                 "next_offset": null,
             }))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn coral_search_items_carry_signature_and_accept_intent() {
+        let (temp, service) = test_service();
+        install_search_fixture_source(temp.path());
+        initialize_workspace(&service, "default").await;
+
+        let completed = service
+            .exec(Request::new(ExecCodeModeRequest {
+                workspace: Some(workspace("default")),
+                source: r#"
+const page = await coral.search({ query: "pageable", intent: "read" });
+const item = page.items[0];
+return {
+  signature_matches_call: item.signature.startsWith(`${item.full_path}(`)
+};
+"#
+                .to_string(),
+            }))
+            .await
+            .expect("exec")
+            .into_inner();
+
+        assert_eq!(completed.status, status(CodeModeRunStatus::Completed));
+        assert_eq!(
+            last_output_item_from_events(&completed.events),
+            Some(json!({ "signature_matches_call": true }))
+        );
+
+        let failed = service
+            .exec(Request::new(ExecCodeModeRequest {
+                workspace: Some(workspace("default")),
+                source: r#"return await coral.search({ query: "pageable", intent: "destroy" });"#
+                    .to_string(),
+            }))
+            .await
+            .expect("exec")
+            .into_inner();
+
+        assert_eq!(failed.status, status(CodeModeRunStatus::Failed));
+        let error_text = run_failed_error_text(&failed.events).expect("run error");
+        assert!(
+            error_text.contains("intent must be \"read\", \"write\", or \"any\""),
+            "{error_text}"
         );
     }
 
@@ -2593,6 +3196,10 @@ return "ran";
             .expect("initialize");
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "fixture installer keeps the full provider/file layout for alpha/beta/gamma capabilities in one place"
+    )]
     fn install_search_fixture_source(root: &std::path::Path) {
         let layout = AppStateLayout::discover(Some(root.join("coral-config"))).expect("layout");
         layout.ensure().expect("layout dirs");
@@ -2615,9 +3222,24 @@ return "ran";
             .expect("source config");
 
         let source_id = SourceId(source.source_id.clone());
+        let fixture_file_ref = |operation_id: &str| -> Option<FileArtifactRef> {
+            match operation_id {
+                "alpha" => Some(FileArtifactRef {
+                    id: "bad".to_string(),
+                    source_local_path: "interfaces/files/files/bad.jsonl".to_string(),
+                    display_name: Some("bad.jsonl".to_string()),
+                }),
+                "gamma" => Some(FileArtifactRef {
+                    id: "rows".to_string(),
+                    source_local_path: "interfaces/files/files/rows.jsonl".to_string(),
+                    display_name: Some("rows.jsonl".to_string()),
+                }),
+                _ => None,
+            }
+        };
         let capabilities = SourceCapabilitySet::new(
             source_id.clone(),
-            ["alpha", "beta"]
+            ["alpha", "beta", "gamma"]
                 .into_iter()
                 .map(|operation_id| {
                     let mut capability = Capability::new(
@@ -2633,21 +3255,19 @@ return "ran";
                             tags: Vec::new(),
                         },
                         UpstreamBinding::FileRead(FileScanBinding {
-                            file_refs: (operation_id == "alpha")
-                                .then(|| FileArtifactRef {
-                                    id: "bad".to_string(),
-                                    source_local_path: "interfaces/files/files/bad.jsonl"
-                                        .to_string(),
-                                    display_name: Some("bad.jsonl".to_string()),
-                                })
-                                .into_iter()
-                                .collect(),
+                            file_refs: fixture_file_ref(operation_id).into_iter().collect(),
                             format: FileFormatDescriptor::Jsonl,
                             schema_ref: None,
                         }),
                     );
                     capability.effect_profile = EffectProfile::read();
-                    capability.display.title = format!("Pageable {operation_id}");
+                    // `gamma` stays out of the "pageable" search corpus so the
+                    // pagination tests keep an exact two-item total.
+                    capability.display.title = if operation_id == "gamma" {
+                        "Fixture rows".to_string()
+                    } else {
+                        format!("Pageable {operation_id}")
+                    };
                     capability
                 })
                 .collect(),
@@ -2671,6 +3291,11 @@ return "ran";
             b"{not-json}\n",
         )
         .expect("write bad provider data");
+        std::fs::write(
+            materialized_dir.join("interfaces/files/files/rows.jsonl"),
+            b"{\"title\":\"First\"}\n{\"title\":\"Second\"}\n",
+        )
+        .expect("write rows provider data");
         std::fs::write(
             materialized_dir.join("exports/source-exports.yaml"),
             serde_yaml::to_string(&exports).expect("exports yaml"),
@@ -2765,6 +3390,15 @@ return "ran";
                 Some(code_mode_run_event::Event::ToolCompleted(completed))
                     if completed.tool_name == tool_name
             )
+        })
+    }
+
+    fn run_failed_error_text(events: &[CodeModeRunEvent]) -> Option<String> {
+        events.iter().find_map(|event| {
+            let code_mode_run_event::Event::RunFailed(failed) = event.event.as_ref()? else {
+                return None;
+            };
+            failed.error.as_ref().map(|error| error.message.clone())
         })
     }
 

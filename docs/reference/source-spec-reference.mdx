@@ -508,8 +508,8 @@ handling without changing capability identity.
 
 Upstream MCP provider failures are returned as structured provider errors.
 Generated Code Mode methods reject by default, and callers can use
-`allowErrorResult` to collect the raw `{ ok: false }` envelope. Common reasons
-include:
+`allowErrorResult` to collect slim `{ ok: false, value, partial, error }`
+diagnostics. Common reasons include:
 
 | Reason | Meaning |
 | --- | --- |
@@ -520,13 +520,14 @@ include:
 | `transport_error` | Coral could not reach or communicate with the upstream MCP server. |
 | `unsupported` | The imported capability exists, but this runtime cannot invoke that transport or shape yet. |
 
-Provider output is untrusted. Coral preserves structured content and content
-blocks in the raw invocation envelope, but it does not follow resource links or
-embedded resources automatically. For the successful invocation `value`, Coral
-uses MCP `structuredContent` when present. If the provider omits
-`structuredContent` and returns a single text content block containing exact
-JSON, or one `json` fenced code block containing JSON, Coral parses that JSON
-into `value`; otherwise the text content stays text. Provider error details are
+Provider output is untrusted. Coral preserves raw content blocks in the
+opt-in transport envelope (`{ envelope: true }`), but it does not follow
+resource links or embedded resources automatically. For the successful
+invocation value, Coral uses MCP `structuredContent` when present. If the
+provider omits `structuredContent` and returns a single text content block
+containing exact JSON, or one `json` fenced code block containing JSON, Coral
+parses that JSON into the resolved value; otherwise the text content stays
+text. Provider error details are
 bounded before they leave the provider runtime;
 HTTP failures include status and a body preview when available, and MCP failures
 include JSON-RPC or tool-result details when available.

@@ -604,6 +604,10 @@ async fn assert_search_tool(
         search["items"][0]["call"],
         "tools.github.rest.issues.listIssues"
     );
+    assert_eq!(
+        search["items"][0]["signature"],
+        "tools.github.rest.issues.listIssues({ owner: string, repo: string }) -> value: array"
+    );
     assert_eq!(search["items"][0]["source_key"], "github");
     assert_eq!(search["items"][0]["capability_kind"], "query");
     assert_eq!(search["items"][0]["effect"], "read");
@@ -687,8 +691,13 @@ async fn assert_exec_and_wait_tools(
     .await?;
     assert_eq!(exec["run"]["status"], "completed");
     assert_eq!(exec["run"]["id"], "run_1");
-    assert_eq!(exec["events"]["last_event_id"], 3);
-    assert_eq!(exec["events"]["has_more"], false);
+    assert!(exec["run"].get("cell_id").is_none());
+    // The mock emits only lifecycle events, so the slim envelope omits every
+    // empty field: no result, output, events, error, or cursor.
+    assert_eq!(
+        exec,
+        json!({ "run": { "id": "run_1", "status": "completed" } })
+    );
     assert_eq!(server.initialize_code_mode_requests().len(), 1);
     let exec_requests = server.exec_code_mode_requests();
     let exec_request = exec_requests.last().expect("exec code mode request");
@@ -698,14 +707,13 @@ async fn assert_exec_and_wait_tools(
         client,
         CallToolRequestParams::new("wait").with_arguments(json_object(&json!({
             "run_id": "run_1",
-            "after_event_id": 1
+            "cursor": 1
         }))),
     )
     .await?;
     assert_eq!(wait["run"]["id"], "run_1");
     assert_eq!(wait["run"]["status"], "completed");
-    assert_eq!(wait["events"]["last_event_id"], 1);
-    assert_eq!(wait["events"]["has_more"], false);
+    assert!(wait.get("cursor").is_none());
     let wait_requests = server.wait_code_mode_requests();
     let wait_request = wait_requests.last().expect("wait code mode request");
     assert_eq!(wait_request.run_id, "run_1");
@@ -721,7 +729,7 @@ async fn assert_exec_and_wait_tools(
     .await?;
     assert_eq!(terminated["run"]["id"], "run_1");
     assert_eq!(terminated["run"]["status"], "terminated");
-    assert_eq!(terminated["events"]["last_event_id"], 0);
+    assert!(terminated.get("cursor").is_none());
     let terminate_requests = server.terminate_code_mode_requests();
     let terminate_request = terminate_requests
         .last()

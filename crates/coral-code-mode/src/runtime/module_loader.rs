@@ -9,8 +9,10 @@ use super::value::structured_result_to_json;
 use super::value::value_to_error_text;
 use crate::input::CODE_MODE_RESULT_SLOT;
 
-const MAX_NESTED_ERROR_DETAIL_BYTES: usize = 8192;
-const NESTED_ERROR_DETAIL_TRUNCATED: &str = "...[truncated]";
+pub(super) struct ToolResponseError {
+    pub(super) error_text: String,
+    pub(super) fatal: bool,
+}
 
 pub(super) fn evaluate_main_module(
     scope: &mut v8::PinScope<'_, '_>,
@@ -72,7 +74,7 @@ pub(super) fn is_exit_exception(
 pub(super) fn resolve_tool_response(
     scope: &mut v8::PinScope<'_, '_>,
     id: &str,
-    response: Result<JsonValue, String>,
+    response: Result<JsonValue, ToolResponseError>,
 ) -> Result<(), String> {
     let pending_call = {
         let state = scope
@@ -87,26 +89,15 @@ pub(super) fn resolve_tool_response(
     let resolver = v8::Local::new(&tc, &pending_call.resolver);
     match response {
         Ok(result) => {
-            if !pending_call.allow_error_result
-                && let Some(error_text) = nested_error_result_text(&result)
-            {
-                let value = v8::String::new(&tc, &error_text)
-                    .ok_or_else(|| "failed to allocate tool error".to_string())?;
-                resolver.reject(&tc, value.into());
-                if tc.has_caught() {
-                    return Err(tc
-                        .exception()
-                        .map(|exception| value_to_error_text(&mut tc, exception))
-                        .unwrap_or_else(|| "unknown code mode exception".to_string()));
-                }
-                return Ok(());
-            }
             let value = json_to_v8(&mut tc, &result)
                 .ok_or_else(|| "failed to serialize tool response".to_string())?;
             resolver.resolve(&tc, value);
         }
-        Err(error_text) => {
-            mark_fatal_error(&mut tc, &error_text);
+        Err(error) => {
+            if error.fatal {
+                mark_fatal_error(&mut tc, &error.error_text);
+            }
+            let error_text = error.error_text;
             let value = v8::String::new(&tc, &error_text)
                 .ok_or_else(|| "failed to allocate tool error".to_string())?;
             resolver.reject(&tc, value.into());
@@ -127,62 +118,6 @@ fn mark_fatal_error(scope: &mut v8::PinScope<'_, '_>, error_text: &str) {
     {
         state.fatal_error_text = Some(error_text.to_string());
     }
-}
-
-fn nested_error_result_text(result: &JsonValue) -> Option<String> {
-    let object = result.as_object()?;
-    if object.get("isError").and_then(JsonValue::as_bool) == Some(true) {
-        return Some("nested tool returned isError=true".to_string());
-    }
-    if object.get("ok").and_then(JsonValue::as_bool) != Some(false) {
-        return None;
-    }
-    if !is_coral_error_result(object) {
-        return None;
-    }
-    let message = object
-        .get("error")
-        .and_then(JsonValue::as_object)
-        .and_then(|error| error.get("message"))
-        .and_then(JsonValue::as_str)
-        .filter(|message| !message.trim().is_empty())
-        .unwrap_or("nested tool returned ok=false");
-    let details = object
-        .get("error")
-        .and_then(JsonValue::as_object)
-        .and_then(|error| error.get("details"))
-        .filter(|details| !details.is_null())
-        .and_then(|details| serde_json::to_string(details).ok())
-        .map(truncate_nested_error_detail);
-    match details {
-        Some(details) => Some(format!(
-            "nested tool returned ok=false: {message}; details: {details}"
-        )),
-        None => Some(format!("nested tool returned ok=false: {message}")),
-    }
-}
-
-fn truncate_nested_error_detail(mut detail: String) -> String {
-    if detail.len() <= MAX_NESTED_ERROR_DETAIL_BYTES {
-        return detail;
-    }
-    let mut end = MAX_NESTED_ERROR_DETAIL_BYTES.saturating_sub(NESTED_ERROR_DETAIL_TRUNCATED.len());
-    while !detail.is_char_boundary(end) {
-        end -= 1;
-    }
-    detail.truncate(end);
-    detail.push_str(NESTED_ERROR_DETAIL_TRUNCATED);
-    detail
-}
-
-fn is_coral_error_result(object: &serde_json::Map<String, JsonValue>) -> bool {
-    if !object.get("error").is_some_and(JsonValue::is_object) {
-        return false;
-    }
-    (object.contains_key("value") && object.contains_key("envelope"))
-        || (object.contains_key("complete")
-            && object.contains_key("partial")
-            && object.contains_key("source_status"))
 }
 
 pub(super) fn completion_state(

@@ -31,7 +31,7 @@ use clap_complete::{Shell, generate};
 use coral_api::v1::{
     DescribeExportRequest, ExecuteSqlRequest, ExportDescription, InvokeCapabilityError,
     InvokeCapabilityRequest, InvokeCapabilityResponse, JsonValue as ProtoJsonValue,
-    json_value as proto_json_value,
+    TypeScriptBindingDescription, json_value as proto_json_value,
 };
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
@@ -748,6 +748,7 @@ async fn run_invoke(app: &AppClient, args: InvokeArgs) -> Result<(), CliError> {
     let typescript_binding = entry.typescript_binding.as_ref().ok_or_else(|| {
         anyhow::anyhow!("'{}' has no TypeScript invocation binding", args.reference)
     })?;
+    let source_status = invoke_source_status_to_json(&entry, typescript_binding);
 
     let mut capability_client = app.capability_client();
     let response = capability_client
@@ -770,13 +771,8 @@ async fn run_invoke(app: &AppClient, args: InvokeArgs) -> Result<(), CliError> {
         .unwrap_or_else(|| "capability invocation failed".to_string());
     println!(
         "{}",
-        serde_json::to_string_pretty(&invoke_response_to_json(
-            response,
-            &entry,
-            &typescript_binding.r#ref,
-            &typescript_binding.full_path,
-        ))
-        .map_err(anyhow::Error::from)?
+        serde_json::to_string_pretty(&invoke_response_to_json(response, vec![source_status]))
+            .map_err(anyhow::Error::from)?
     );
     if ok {
         Ok(())
@@ -785,54 +781,66 @@ async fn run_invoke(app: &AppClient, args: InvokeArgs) -> Result<(), CliError> {
     }
 }
 
-/// Extracts the immutable source id from a capability id of the form
-/// `source/<source_id>/interface/...`. Returns an empty string when the id does
-/// not follow that shape.
-fn source_id_from_capability_id(capability_id: &str) -> &str {
-    capability_id
-        .strip_prefix("source/")
-        .and_then(|rest| rest.split_once("/interface/"))
-        .map_or("", |(source_id, _)| source_id)
-}
-
 fn invoke_response_to_json(
     response: InvokeCapabilityResponse,
-    entry: &ExportDescription,
-    binding_ref: &str,
-    full_path: &str,
+    mut source_status: Vec<Value>,
 ) -> Value {
+    let ok = response.ok;
     let error = response.error.map_or(Value::Null, invoke_error_to_json);
-    let partial = !response.ok && provider_error_has_partial_data(&error);
-    let complete = response.ok && !partial;
-    let errors = if response.ok {
-        Vec::new()
-    } else if error.is_null() {
-        vec![json!({
+    let error = if !ok && error.is_null() {
+        json!({
             "kind": "unknown",
             "message": "capability invocation failed",
             "details": null,
-        })]
+        })
+    } else {
+        error
+    };
+    let partial = !ok && provider_error_has_partial_data(&error);
+    let errors = if error.is_null() {
+        Vec::new()
     } else {
         vec![error.clone()]
     };
+    for status in &mut source_status {
+        if let Value::Object(object) = status {
+            object.insert("ok".to_string(), Value::Bool(ok));
+            object.insert("complete".to_string(), Value::Bool(ok && !partial));
+            object.insert("partial".to_string(), Value::Bool(partial));
+            object.insert("error".to_string(), error.clone());
+        }
+    }
     json!({
-        "ok": response.ok,
-        "complete": complete,
-        "partial": partial,
-        "errors": errors,
-        "source_status": [{
-            "source_id": source_id_from_capability_id(entry.capability_id.as_str()),
-            "capability_id": entry.capability_id.as_str(),
-            "binding_ref": binding_ref,
-            "full_path": full_path,
-            "ok": response.ok,
-            "complete": complete,
-            "partial": partial,
-            "error": if response.ok { Value::Null } else { error.clone() },
-        }],
+        "ok": ok,
         "value": response.value.map_or(Value::Null, proto_json_value_to_json),
+        "partial": partial,
+        "complete": ok && !partial,
         "error": error,
+        "errors": errors,
+        "source_status": source_status,
         "envelope": response.envelope.map_or(Value::Null, proto_json_value_to_json),
+    })
+}
+
+fn invoke_source_status_to_json(
+    entry: &ExportDescription,
+    binding: &TypeScriptBindingDescription,
+) -> Value {
+    let capability = entry
+        .capability
+        .clone()
+        .map(proto_json_value_to_json)
+        .unwrap_or(Value::Null);
+    let source_id = capability
+        .pointer("/source_id")
+        .and_then(Value::as_str)
+        .unwrap_or(entry.source_key.as_str());
+    json!({
+        "source_id": source_id,
+        "source_key": &entry.source_key,
+        "capability_id": &entry.capability_id,
+        "binding_ref": &binding.r#ref,
+        "full_path": &entry.full_path,
     })
 }
 
@@ -1177,7 +1185,7 @@ mod tests {
     use clap::{CommandFactory, Parser};
     use coral_api::v1::{
         ExportDescription, InvokeCapabilityError, InvokeCapabilityResponse, JsonArray, JsonNull,
-        JsonObject,
+        JsonObject, TypeScriptBindingDescription,
     };
     use serde_json::{Value, json};
 
@@ -1251,11 +1259,7 @@ mod tests {
     }
 
     #[test]
-    fn invoke_response_wrapper_preserves_partial_provider_metadata() {
-        let entry = ExportDescription {
-            capability_id: "source/src_github/interface/rest/operation/search_issues".to_string(),
-            ..ExportDescription::default()
-        };
+    fn invoke_response_wrapper_preserves_partial_and_compatibility_metadata() {
         let response = InvokeCapabilityResponse {
             ok: false,
             value: None,
@@ -1273,45 +1277,69 @@ mod tests {
             envelope: None,
         };
 
-        let wrapped = super::invoke_response_to_json(
-            response,
-            &entry,
-            "typescript:github.rest.search.issues",
-            "tools.github.rest.search.issues",
-        );
+        let entry = ExportDescription {
+            capability_id: "source/src_demo/interface/rest/operation/list_items".to_string(),
+            source_key: "demo".to_string(),
+            full_path: "tools.demo.rest.items.listItems".to_string(),
+            capability: Some(json_to_proto_value(json!({
+                "source_id": "src_demo"
+            }))),
+            ..Default::default()
+        };
+        let binding = TypeScriptBindingDescription {
+            r#ref: "typescript:demo.rest.items.listItems".to_string(),
+            full_path: "tools.demo.rest.items.listItems".to_string(),
+            ..Default::default()
+        };
+        let source_status = super::invoke_source_status_to_json(&entry, &binding);
+        let wrapped = super::invoke_response_to_json(response, vec![source_status]);
 
         assert_eq!(wrapped.pointer("/ok").and_then(Value::as_bool), Some(false));
-        assert_eq!(
-            wrapped.pointer("/complete").and_then(Value::as_bool),
-            Some(false)
-        );
         assert_eq!(
             wrapped.pointer("/partial").and_then(Value::as_bool),
             Some(true)
         );
         assert_eq!(
+            wrapped.pointer("/complete").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            wrapped.pointer("/error/kind").and_then(Value::as_str),
+            Some("graphql_error")
+        );
+        assert_eq!(
+            wrapped.pointer("/errors/0/kind").and_then(Value::as_str),
+            Some("graphql_error")
+        );
+        assert_eq!(
             wrapped
                 .pointer("/source_status/0/source_id")
                 .and_then(Value::as_str),
-            Some("src_github")
+            Some("src_demo")
         );
         assert_eq!(
             wrapped
                 .pointer("/source_status/0/capability_id")
                 .and_then(Value::as_str),
-            Some("source/src_github/interface/rest/operation/search_issues")
+            Some("source/src_demo/interface/rest/operation/list_items")
         );
         assert_eq!(
             wrapped
                 .pointer("/source_status/0/binding_ref")
                 .and_then(Value::as_str),
-            Some("typescript:github.rest.search.issues")
+            Some("typescript:demo.rest.items.listItems")
         );
         assert_eq!(
             wrapped
                 .pointer("/source_status/0/full_path")
                 .and_then(Value::as_str),
-            Some("tools.github.rest.search.issues")
+            Some("tools.demo.rest.items.listItems")
+        );
+        assert_eq!(
+            wrapped
+                .pointer("/source_status/0/ok")
+                .and_then(Value::as_bool),
+            Some(false)
         );
         assert_eq!(
             wrapped
@@ -1326,8 +1354,30 @@ mod tests {
             Some(true)
         );
         assert_eq!(
-            wrapped.pointer("/errors/0/kind").and_then(Value::as_str),
+            wrapped
+                .pointer("/source_status/0/error/kind")
+                .and_then(Value::as_str),
             Some("graphql_error")
+        );
+        assert_eq!(
+            wrapped
+                .pointer("/error/details/provider_error/partial_data/viewer")
+                .map(Value::is_null),
+            Some(true)
+        );
+        let object = wrapped.as_object().expect("wrapper object");
+        assert_eq!(
+            object.keys().collect::<Vec<_>>(),
+            [
+                "ok",
+                "value",
+                "partial",
+                "complete",
+                "error",
+                "errors",
+                "source_status",
+                "envelope"
+            ]
         );
     }
 

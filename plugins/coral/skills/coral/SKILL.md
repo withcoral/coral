@@ -32,12 +32,26 @@ answering from assumptions or changing code when live external state matters.
 
 1. Identify the needed source, entity, and scope from the user request.
 2. Use `search` to find relevant generated exports. Prefer typed refs in the
-   result, such as `typescript:*`, `sql_table:*`, and `sql_function:*`.
+   result, such as `typescript:*`, `sql_table:*`, and `sql_function:*`. Hits
+   include a one-line call `signature`; when its parameters are enough,
+   skip ahead. Exact-reference queries inline the top hit's compact describe
+   entry as `top` (force it with `expand_top: true`), and
+   `intent: "read"|"write"|"any"` overrides write-verb ranking detection.
 3. Use `describe` on the typed ref or capability id before invoking anything.
-   Read the returned JSON `input_schema`/`output_schema`; if an untyped alias is
-   ambiguous, retry with a typed ref from the candidates.
-4. Execute work through Code Mode with `exec`; call `wait` while
-   `events.has_more` is true, using `events.next_after_event_id`.
+   Read the returned JSON `input_schema`/`value_schema`; both may be
+   size-bounded, with elided subtrees marked `x-coral-truncated`. Expand one
+   renderer-elided subtree with `path` (for example `path: "filter.team"`, or
+   an `output.` prefix for the value schema), or pass `schemas: "full"` to skip
+   renderer-size bounding. Source/importer-level truncation stubs are final in
+   the current artifact. If an untyped alias is ambiguous, retry with a typed
+   ref from the candidates.
+4. Execute work through Code Mode with `exec`. It returns
+   `{ run, result, output, cursor }`: `result` is the script's return value
+   directly and `output` is the joined console text. While `run.status` is
+   `"running"`, call `wait` with `{ run_id, cursor }` using the returned
+   `cursor`. Oversized results resolve to a truncated preview with sibling
+   `result_truncated` metadata (including a spilled `artifact.path` when
+   available).
 5. For SQL bindings, call `coral.sql.query(...)` inside Code Mode.
 6. For callable TypeScript bindings, use generated methods from `call`,
    such as `tools.github.rest.search.issuesAndPullRequests(...)`, inside Code
@@ -55,12 +69,14 @@ answering from assumptions or changing code when live external state matters.
 - Use generated methods, for example
   `await tools.github.rest.issues.list({ owner, repo })`, when `describe` shows a
   TypeScript binding path.
-- Generated methods throw on provider or transport failure by default. On
-  success, or when raw error results are explicitly allowed, they return
-  `{ ok, complete, partial, errors, source_status, value, error, envelope }`;
-  read provider data from `value` only when `ok` and `complete` are true.
-  REST calls expose transport details such as `envelope.provider.status` and
-  lowercase response headers at `envelope.provider.headers`.
+- Generated methods resolve directly to the provider value on success and
+  throw on provider or transport failure (catchable with `try`/`catch`). Pass
+  `{ allowErrorResult: true }` as the second argument to instead resolve slim
+  `{ ok, value, partial, error }` diagnostics, or `{ envelope: true }` to
+  resolve `{ ok, value, error, envelope }` where `envelope` carries transport
+  metadata such as `envelope.provider.status` and lowercase REST response
+  headers at `envelope.provider.headers`. The provider payload is only in
+  `value`; the envelope never duplicates it.
 - Do not invent raw provider tool names, direct provider URLs, or `coral.call`.
   The public execution path is Code Mode through generated bindings discovered
   with `search` and `describe`.

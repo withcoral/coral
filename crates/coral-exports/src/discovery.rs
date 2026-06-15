@@ -9,6 +9,21 @@ use crate::exports::{Binding, CapabilityExport, ExportKind, WorkspaceExports};
 
 const SEARCH_DESCRIPTION_PREVIEW_CHARS: usize = 320;
 
+/// Explicit read-vs-write ranking intent for one search query.
+///
+/// A soft ordering hint consumed only by the read-vs-write sort tier (see
+/// `rank_tier`) — it never filters results and never counts as an active
+/// filter constraint. `Read` keeps reads-first tiering active even when the
+/// query contains a write verb; `Write` and `Any` collapse every entry into
+/// one neutral tier ordered by content score. When absent, intent falls back
+/// to write-verb detection over the query tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchIntent {
+    Read,
+    Write,
+    Any,
+}
+
 /// Search filter.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchFilter {
@@ -18,6 +33,8 @@ pub struct SearchFilter {
     pub allowed_kinds: Vec<ExportKind>,
     pub capability_kind: Option<CapabilityKind>,
     pub effect: Option<EffectKind>,
+    /// Soft ranking hint; never gates results or activates filtering.
+    pub intent: Option<SearchIntent>,
 }
 
 /// Compact search result item.
@@ -25,6 +42,13 @@ pub struct SearchFilter {
 pub struct SearchResult {
     pub alias: Option<String>,
     pub full_path: Option<String>,
+    /// One-line generated-call signature for `full_path`, e.g.
+    /// `tools.slack.conversations.history({ channel: string, …+4 }) -> value:
+    /// object`. Left `None` here: filling it needs `Capability` access, which
+    /// this crate does not have, so capability-aware callers (coral-app's
+    /// discovery manager) enrich it after scoring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
     pub capability_id: CapabilityId,
     pub refs: Vec<String>,
     pub source_id: SourceId,
@@ -94,7 +118,7 @@ pub fn search_exports_page(
         if filter_has_active_constraints(filter) {
             candidates
                 .into_iter()
-                .map(|entry| (empty_query_score(), entry))
+                .map(|entry| (empty_query_score(entry, filter.intent), entry))
                 .collect::<Vec<_>>()
         } else {
             Vec::new()
@@ -108,13 +132,16 @@ pub fn search_exports_page(
         let idf = compute_idf(&candidates, &query_tokens);
         candidates
             .into_iter()
-            .filter_map(|entry| score_entry(entry, query, &idf).map(|score| (score, entry)))
+            .filter_map(|entry| {
+                score_entry(entry, query, &idf, filter.intent).map(|score| (score, entry))
+            })
             .collect::<Vec<_>>()
     };
     scored.sort_by(|(left_score, left), (right_score, right)| {
-        right_score
-            .value
-            .cmp(&left_score.value)
+        left_score
+            .tier
+            .cmp(&right_score.tier)
+            .then_with(|| right_score.value.cmp(&left_score.value))
             .then_with(|| left.capability_id.cmp(&right.capability_id))
     });
     let total = scored.len();
@@ -129,12 +156,29 @@ pub fn search_exports_page(
     SearchResultsPage { items, total }
 }
 
-fn empty_query_score() -> SearchScore {
+fn empty_query_score(entry: &CapabilityExport, intent: Option<SearchIntent>) -> SearchScore {
+    // An empty query carries no write-intent tokens, so filtered browsing
+    // lists reads before mutations unless an explicit intent says otherwise.
     SearchScore {
         value: 0,
+        tier: rank_tier(entry, neutral_tier_ordering(intent, &BTreeSet::new())),
         matched_fields: Vec::new(),
         matched_terms: Vec::new(),
         rank_reason: "matched active filters".to_string(),
+    }
+}
+
+/// Resolves whether tiering goes neutral (every entry tier 0) for one query.
+///
+/// An explicit [`SearchIntent`] always overrides token detection: `Read`
+/// keeps reads-first tiering even for write-verb queries, while `Write` and
+/// `Any` order every entry by content score alone. Absent intent falls back
+/// to write-verb detection over the stemmed query tokens.
+fn neutral_tier_ordering(intent: Option<SearchIntent>, query_tokens: &BTreeSet<String>) -> bool {
+    match intent {
+        Some(SearchIntent::Read) => false,
+        Some(SearchIntent::Write | SearchIntent::Any) => true,
+        None => query_tokens.iter().any(|token| is_write_intent(token)),
     }
 }
 
@@ -231,6 +275,12 @@ fn matches_filter(entry: &CapabilityExport, filter: &SearchFilter) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SearchScore {
     value: u32,
+    /// Read-vs-write sort tier (lower sorts first). Content scores accumulate
+    /// per matched field, so a parameter-heavy mutation can out-accumulate a
+    /// concise read endpoint by thousands of points; the tier makes effect
+    /// intent a hard ordering boundary instead of an additive nudge that
+    /// content volume can swamp. See [`rank_tier`].
+    tier: u8,
     matched_fields: Vec<String>,
     matched_terms: Vec<String>,
     rank_reason: String,
@@ -255,6 +305,7 @@ fn score_entry(
     entry: &CapabilityExport,
     query: &str,
     idf: &BTreeMap<String, u32>,
+    intent: Option<SearchIntent>,
 ) -> Option<SearchScore> {
     if query.is_empty() {
         return None;
@@ -278,8 +329,12 @@ fn score_entry(
     if score.matched_tokens.is_empty() && !score.phrase_matched {
         return None;
     }
-    apply_rank_boosts(entry, &query_tokens, &mut score);
-    Some(search_score(score, query_tokens.len()))
+    apply_rank_boosts(entry, &mut score, intent);
+    Some(search_score(
+        score,
+        query_tokens.len(),
+        rank_tier(entry, neutral_tier_ordering(intent, &query_tokens)),
+    ))
 }
 
 fn exact_match_score(entry: &CapabilityExport, query: &str) -> Option<SearchScore> {
@@ -428,34 +483,68 @@ fn idf_bucket(document_frequency: usize, total: usize) -> u32 {
 
 fn apply_rank_boosts(
     entry: &CapabilityExport,
-    query_tokens: &BTreeSet<String>,
     score: &mut FieldScore,
+    intent: Option<SearchIntent>,
 ) {
-    // Effect is a soft, transparent signal — a small tie-breaker the LLM can
-    // also see and filter on — never a cliff that can bury a content match.
+    if matches!(intent, Some(SearchIntent::Write | SearchIntent::Any)) {
+        return;
+    }
+    // Read-vs-write ordering is owned by the sort tier (see `rank_tier`); these
+    // small boosts only order entries WITHIN a tier, e.g. under write intent
+    // (where every entry is tier 0) or between Read-effect and Query-kind
+    // entries that landed in the same tier. The old -25 mutation penalty is
+    // gone: it was redundant next to the tier and too small to matter anyway.
     if entry.effect_profile.effects.contains(&EffectKind::Read) {
         score.value = score.value.saturating_add(100);
     }
     if entry.effect_profile.capability_kind == CapabilityKind::Query {
         score.value = score.value.saturating_add(50);
     }
-    let mutates = entry
-        .effect_profile
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, EffectKind::Write | EffectKind::Delete));
-    if mutates && !query_tokens.iter().any(|token| is_write_intent(token)) {
-        score.value = score.value.saturating_sub(25);
-    }
 }
 
-fn search_score(score: FieldScore, query_token_count: usize) -> SearchScore {
+/// Read-vs-write sort tier for one entry under the query's intent.
+///
+/// Under read intent (no write-intent token in the query), reads sort ahead of
+/// everything else as a hard boundary: entries with any Write/Delete effect are
+/// tier 2 (the most write-ish effect wins — a capability that CAN write is a
+/// mutation for ranking purposes), Read-effect or Query-kind entries are
+/// tier 0, and Unknown/other entries sit between at tier 1.
+///
+/// Under write intent every entry is tier 0: write tasks still need read
+/// lookups, so the ordering goes neutral rather than inverting. An explicit
+/// [`SearchIntent`] on the filter overrides token detection entirely (see
+/// [`neutral_tier_ordering`]).
+///
+/// Exact matches (typed ref, capability id, generated tool path, alias) never
+/// consult this — the agent named the thing, so they are always tier 0.
+fn rank_tier(entry: &CapabilityExport, write_intent: bool) -> u8 {
+    if write_intent {
+        return 0;
+    }
+    let profile = &entry.effect_profile;
+    if profile
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, EffectKind::Write | EffectKind::Delete))
+    {
+        return 2;
+    }
+    if profile.effects.contains(&EffectKind::Read)
+        || profile.capability_kind == CapabilityKind::Query
+    {
+        return 0;
+    }
+    1
+}
+
+fn search_score(score: FieldScore, query_token_count: usize, tier: u8) -> SearchScore {
     let matched_token_count = score.matched_tokens.len();
     let mut matched_fields = score.matched_fields.into_iter().collect::<Vec<_>>();
     matched_fields.sort();
     let matched_terms = score.matched_tokens.into_iter().collect::<Vec<_>>();
     SearchScore {
         value: score.value,
+        tier,
         rank_reason: format!(
             "matched {} of {} token(s) in {}",
             matched_token_count,
@@ -470,6 +559,9 @@ fn search_score(score: FieldScore, query_token_count: usize) -> SearchScore {
 fn exact_score(value: u32, field: &str, reason: &str) -> SearchScore {
     SearchScore {
         value,
+        // The agent named the thing; an exact match is never reordered by
+        // read-vs-write tiering, even for a mutation under a read-intent query.
+        tier: 0,
         matched_fields: vec![field.to_string()],
         matched_terms: Vec::new(),
         rank_reason: reason.to_string(),
@@ -636,25 +728,53 @@ fn is_query_stopword(token: &str) -> bool {
     )
 }
 
+/// Unambiguous write-intent verbs, stored in STEMMED form — the same [`stem`]
+/// applied to query tokens — so membership compares like with like (e.g. the
+/// query token `dismiss` stems to `dismis`, and so must the entry here; a unit
+/// test asserts this list equals the stems of the natural verb forms, so a
+/// future entry stored unstemmed fails loudly). Ambiguous nouns such as
+/// `comment` and `open` are deliberately excluded: they appear in far more
+/// read queries than write ones.
+const WRITE_INTENT_STEMS: &[&str] = &[
+    "add",
+    "approve",
+    "archive",
+    "assign",
+    "cancel",
+    "close",
+    "create",
+    "delete",
+    "dismis",
+    "edit",
+    "invite",
+    "lock",
+    "merge",
+    "move",
+    "mutate",
+    "mutation",
+    "pin",
+    "post",
+    "publish",
+    "remove",
+    "rename",
+    "reopen",
+    "resolve",
+    "schedule",
+    "send",
+    "set",
+    "submit",
+    "transfer",
+    "unarchive",
+    "unassign",
+    "unlock",
+    "unpin",
+    "update",
+    "upload",
+    "write",
+];
+
 fn is_write_intent(token: &str) -> bool {
-    matches!(
-        token,
-        "add"
-            | "approve"
-            | "create"
-            | "delete"
-            | "edit"
-            | "mutate"
-            | "mutation"
-            | "post"
-            | "remove"
-            | "schedule"
-            | "send"
-            | "set"
-            | "update"
-            | "upload"
-            | "write"
-    )
+    WRITE_INTENT_STEMS.contains(&token)
 }
 
 fn search_result(entry: &CapabilityExport, score: SearchScore) -> SearchResult {
@@ -673,6 +793,7 @@ fn search_result(entry: &CapabilityExport, score: SearchScore) -> SearchResult {
     SearchResult {
         alias: entry.bindings.first().map(Binding::alias),
         full_path: entry.bindings.iter().find_map(Binding::full_path),
+        signature: None,
         capability_id: entry.capability_id.clone(),
         refs,
         source_id: entry.source_id.clone(),
@@ -727,8 +848,8 @@ mod tests {
     use crate::package::SourceKey;
 
     use super::{
-        DescribeResolution, SEARCH_DESCRIPTION_PREVIEW_CHARS, SearchFilter, describe_export,
-        search_exports, search_exports_page,
+        DescribeResolution, SEARCH_DESCRIPTION_PREVIEW_CHARS, SearchFilter, SearchIntent,
+        describe_export, search_exports, search_exports_page,
     };
 
     fn workspace() -> crate::WorkspaceExports {
@@ -835,6 +956,24 @@ mod tests {
                 "List reviews for a pull request",
                 "List reviews for a GitHub pull request",
                 EffectProfile::read(),
+            ),
+            github_rest_capability(
+                source_id,
+                "pullsMerge",
+                "pulls",
+                "Merge a pull request",
+                "Merge a GitHub pull request",
+                EffectProfile::write(),
+            ),
+            // A mutation whose identifier and prose contain no write-intent
+            // verbs, so exact-ref queries for it read as read-intent.
+            github_rest_capability(
+                source_id,
+                "reposDeployPages",
+                "repos",
+                "Deploy a GitHub Pages site",
+                "Deploy a GitHub Pages site build",
+                EffectProfile::write(),
             ),
             github_rest_capability(
                 source_id,
@@ -1045,20 +1184,285 @@ mod tests {
         );
     }
 
+    fn is_mutation_hit(hit: &super::SearchResult) -> bool {
+        hit.effects
+            .iter()
+            .any(|effect| matches!(effect, EffectKind::Write | EffectKind::Delete))
+    }
+
+    /// Asserts the read-vs-write tier: under a read-intent query, EVERY read
+    /// hit must rank before EVERY mutation hit, no matter how much content
+    /// score the mutation accumulated.
+    fn assert_reads_before_mutations(hits: &[super::SearchResult]) {
+        let first_mutation = hits.iter().position(is_mutation_hit);
+        let last_read = hits.iter().rposition(|hit| !is_mutation_hit(hit));
+        if let (Some(first_mutation), Some(last_read)) = (first_mutation, last_read) {
+            assert!(
+                last_read < first_mutation,
+                "every read hit must rank before every mutation hit: {hits:#?}"
+            );
+        }
+    }
+
     #[test]
     fn broad_pull_request_search_prefers_read_capabilities_over_write_actions() {
         let workspace = github_workspace();
         let hits = search_exports(&workspace, "pull request", &SearchFilter::default(), 10);
 
         let first = hits.first().expect("first hit");
-        assert!(
-            !first
-                .capability_id
-                .as_str()
-                .contains("operation/actionsApproveWorkflowRun")
-        );
         assert!(first.effects.contains(&EffectKind::Read));
         assert!(first.matched_fields.contains(&"title".to_string()));
+        assert!(
+            hits.iter().any(is_mutation_hit),
+            "mutations must still be returned for read-intent queries, just last: {hits:#?}"
+        );
+        assert_reads_before_mutations(&hits);
+    }
+
+    #[test]
+    fn slack_read_intent_query_ranks_every_read_before_the_mutation() {
+        let workspace = slack_workspace();
+        let hits = search_exports(&workspace, "slack messages", &SearchFilter::default(), 10);
+
+        assert!(
+            hits.iter().any(|hit| hit
+                .capability_id
+                .as_str()
+                .contains("operation/slack_schedule_message")),
+            "the schedule mutation must still match: {hits:#?}"
+        );
+        assert_reads_before_mutations(&hits);
+    }
+
+    #[test]
+    fn write_intent_query_surfaces_the_mutation_first() {
+        // "merge" is a write-intent verb, so every entry sits in tier 0 and the
+        // merge mutation wins on content score instead of being tier-buried.
+        let workspace = github_workspace();
+        let hits = search_exports(
+            &workspace,
+            "merge pull request",
+            &SearchFilter::default(),
+            10,
+        );
+
+        let first = hits.first().expect("first hit");
+        assert!(
+            first
+                .capability_id
+                .as_str()
+                .contains("operation/pullsMerge"),
+            "write-intent query must surface the merge mutation first: {hits:#?}"
+        );
+        assert!(is_mutation_hit(first));
+    }
+
+    #[test]
+    fn exact_ref_for_a_mutation_ranks_first_despite_read_intent() {
+        let workspace = github_workspace();
+        let reference = workspace
+            .entries
+            .iter()
+            .find(|entry| {
+                entry
+                    .capability_id
+                    .as_str()
+                    .contains("operation/reposDeployPages")
+            })
+            .and_then(|entry| entry.bindings.first())
+            .map(|binding| binding.ref_().value.clone())
+            .expect("deploy pages typed ref");
+        // None of the ref's tokens (typescript, github, rest, repo, deploy,
+        // page) are write-intent verbs, so without the exact-match exemption
+        // this mutation would be tiered behind every read hit.
+        assert!(
+            !super::query_tokens(&reference)
+                .iter()
+                .any(|token| super::is_write_intent(token)),
+            "fixture ref must stay free of write-intent tokens: {reference}"
+        );
+
+        let hits = search_exports(&workspace, &reference, &SearchFilter::default(), 10);
+
+        let first = hits.first().expect("first hit");
+        assert!(
+            first
+                .capability_id
+                .as_str()
+                .contains("operation/reposDeployPages"),
+            "exact ref must rank the named mutation first: {hits:#?}"
+        );
+        assert!(is_mutation_hit(first));
+        assert_eq!(first.rank_reason, "exact typed ref");
+        assert!(
+            hits.iter().skip(1).any(|hit| !is_mutation_hit(hit)),
+            "read hits matching the ref's tokens should still trail the exact match: {hits:#?}"
+        );
+    }
+
+    #[test]
+    fn explicit_write_intent_overrides_token_detection() {
+        // None of the query tokens (deploy, github, page, site, build) is a
+        // write-intent verb, so token detection tiers the reposDeployPages
+        // mutation behind every read hit that shares the "github" token.
+        let workspace = github_workspace();
+        let query = "deploy a github pages site build";
+        let default_hits = search_exports(&workspace, query, &SearchFilter::default(), 10);
+        assert!(
+            default_hits.iter().any(|hit| hit
+                .capability_id
+                .as_str()
+                .contains("operation/reposDeployPages")),
+            "the deploy mutation must still match: {default_hits:#?}"
+        );
+        assert!(
+            default_hits.iter().any(|hit| !is_mutation_hit(hit)),
+            "reads sharing the github token must match so the tier is observable: {default_hits:#?}"
+        );
+        assert_reads_before_mutations(&default_hits);
+
+        // An explicit write (or any) intent collapses the tiers, so the
+        // mutation wins on content score despite the read-intent tokens.
+        for intent in [SearchIntent::Write, SearchIntent::Any] {
+            let hits = search_exports(
+                &workspace,
+                query,
+                &SearchFilter {
+                    intent: Some(intent),
+                    ..Default::default()
+                },
+                10,
+            );
+            let first = hits.first().expect("first hit");
+            assert!(
+                first
+                    .capability_id
+                    .as_str()
+                    .contains("operation/reposDeployPages"),
+                "intent {intent:?} must lift the mutation demotion: {hits:#?}"
+            );
+            assert!(is_mutation_hit(first));
+        }
+    }
+
+    #[test]
+    fn explicit_neutral_intents_skip_read_query_boosts() {
+        let workspace = github_workspace();
+        let read_entry = workspace
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.effect_profile.effects.contains(&EffectKind::Read)
+                    && entry.effect_profile.capability_kind
+                        == coral_capabilities::CapabilityKind::Query
+            })
+            .expect("read query entry");
+        let mut score = super::FieldScore {
+            value: 1000,
+            ..Default::default()
+        };
+
+        for intent in [SearchIntent::Write, SearchIntent::Any] {
+            score.value = 1000;
+            super::apply_rank_boosts(read_entry, &mut score, Some(intent));
+            assert_eq!(score.value, 1000, "intent {intent:?} must be neutral");
+        }
+
+        super::apply_rank_boosts(read_entry, &mut score, Some(SearchIntent::Read));
+        assert_eq!(score.value, 1150);
+    }
+
+    #[test]
+    fn explicit_read_intent_demotes_write_verb_queries() {
+        // "merge" is a write-intent verb, so token detection would order
+        // neutrally; an explicit read intent overrides it and keeps every
+        // read ahead of the merge mutation.
+        let workspace = github_workspace();
+        let hits = search_exports(
+            &workspace,
+            "merge pull request",
+            &SearchFilter {
+                intent: Some(SearchIntent::Read),
+                ..Default::default()
+            },
+            10,
+        );
+
+        assert!(
+            hits.iter()
+                .any(|hit| hit.capability_id.as_str().contains("operation/pullsMerge")),
+            "intent never filters; the merge mutation must still be returned: {hits:#?}"
+        );
+        assert_reads_before_mutations(&hits);
+    }
+
+    #[test]
+    fn write_intent_stems_are_stored_in_stemmed_form() {
+        // The natural verb forms an agent would type. `is_write_intent` sees
+        // ALREADY-STEMMED query tokens, so the production list must hold
+        // exactly the stems of these verbs — not the verbs themselves. `stem`
+        // is not idempotent (stem("dismiss") == "dismis", but stem("dismis")
+        // == "dismi"), so the invariant is set equality against the stems of
+        // this table: a future entry stored unstemmed (e.g. "dismiss") or a
+        // stem added without its natural form fails loudly here.
+        let natural_forms = [
+            "add",
+            "approve",
+            "archive",
+            "assign",
+            "cancel",
+            "close",
+            "create",
+            "delete",
+            "dismiss",
+            "edit",
+            "invite",
+            "lock",
+            "merge",
+            "move",
+            "mutate",
+            "mutation",
+            "pin",
+            "post",
+            "publish",
+            "remove",
+            "rename",
+            "reopen",
+            "resolve",
+            "schedule",
+            "send",
+            "set",
+            "submit",
+            "transfer",
+            "unarchive",
+            "unassign",
+            "unlock",
+            "unpin",
+            "update",
+            "upload",
+            "write",
+        ];
+        let mut expected = natural_forms
+            .iter()
+            .map(|verb| super::stem(verb))
+            .collect::<Vec<_>>();
+        expected.sort();
+        expected.dedup();
+        let mut stored = super::WRITE_INTENT_STEMS
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        stored.sort();
+        assert_eq!(
+            stored, expected,
+            "WRITE_INTENT_STEMS must be exactly the stemmed query forms of the natural verb list"
+        );
+        for verb in natural_forms {
+            assert!(
+                super::is_write_intent(&super::stem(verb)),
+                "query verb {verb:?} must be detected as write intent after stemming"
+            );
+        }
     }
 
     fn slack_workspace() -> crate::WorkspaceExports {

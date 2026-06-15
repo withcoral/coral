@@ -21,8 +21,8 @@ pub mod paths;
 
 pub use contributors::{TypescriptBindingContributor, typescript_type_name};
 pub use discovery::{
-    DescribeResolution, SearchFilter, SearchResult, SearchResultsPage, describe_export,
-    search_exports, search_exports_page,
+    DescribeResolution, SearchFilter, SearchIntent, SearchResult, SearchResultsPage,
+    describe_export, search_exports, search_exports_page,
 };
 pub use exports::{
     Binding, BindingBuildContext, BindingContribution, BindingContributor, BindingDiagnostic,

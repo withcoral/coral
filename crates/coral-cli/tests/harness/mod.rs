@@ -181,6 +181,9 @@ fn mock_search_exports_response(request: &SearchExportsRequest) -> SearchExports
         vec![SearchExportItem {
             alias: "github.rest.issues.listIssues".to_string(),
             full_path: "tools.github.rest.issues.listIssues".to_string(),
+            signature:
+                "tools.github.rest.issues.listIssues({ owner: string, repo: string }) -> value: array"
+                    .to_string(),
             capability_id: "src_github.rest.list_issues".to_string(),
             refs: vec![
                 "typescript:github.rest.issues.listIssues".to_string(),

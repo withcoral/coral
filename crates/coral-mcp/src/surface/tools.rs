@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use coral_capabilities::SchemaRenderMode;
 use rmcp::{
     ErrorData,
     model::{CallToolResult, Tool, ToolAnnotations},
@@ -14,6 +15,7 @@ pub(crate) struct Pagination {
     pub(crate) offset: u32,
 }
 
+#[derive(Debug)]
 pub(crate) struct SearchArguments {
     pub(crate) query: String,
     pub(crate) source_key: String,
@@ -21,12 +23,17 @@ pub(crate) struct SearchArguments {
     pub(crate) kind: String,
     pub(crate) capability_kind: String,
     pub(crate) effect: String,
+    pub(crate) intent: String,
+    pub(crate) expand_top: bool,
     pub(crate) pagination: Pagination,
 }
 
+#[derive(Debug)]
 pub(crate) struct DescribeArguments {
     pub(crate) reference: String,
     pub(crate) view: DescribeView,
+    pub(crate) path: Option<String>,
+    pub(crate) schemas: SchemaRenderMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +48,7 @@ pub(crate) struct ExecArguments {
 
 pub(crate) struct WaitArguments {
     pub(crate) run_id: String,
-    pub(crate) after_event_id: u64,
+    pub(crate) cursor: u64,
     pub(crate) terminate: bool,
 }
 
@@ -93,6 +100,16 @@ pub(crate) fn search_tool(exposure: McpRuntimeExposure) -> Tool {
                     "type": "string",
                     "enum": ["read", "write", "delete", "unknown"]
                 },
+                "intent": {
+                    "type": "string",
+                    "enum": ["read", "write", "any"],
+                    "description": "Explicit ranking intent. read orders read capabilities first (the default when the query has no write verbs); write disables that demotion; any forces neutral ordering. Never filters results."
+                },
+                "expand_top": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Embed the top hit's compact describe entry as `top`. Exact-reference matches embed it automatically."
+                },
                 "limit": {
                     "type": "integer",
                     "minimum": 1,
@@ -143,7 +160,17 @@ pub(crate) fn describe_tool(exposure: McpRuntimeExposure) -> Tool {
                     "type": "string",
                     "enum": ["compact", "detailed"],
                     "default": "compact",
-                    "description": "compact returns refs plus JSON input/output schemas; detailed returns full generated provider artifacts."
+                    "description": "compact returns refs plus size-bounded JSON input/value schemas; detailed returns full generated provider artifacts."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Dot path into the input schema, e.g. \"filter\" or \"filter.team\"; prefix \"output.\" to address the value schema. Returns only that subtree, fully expanded one level with deeper levels boundable."
+                },
+                "schemas": {
+                    "type": "string",
+                    "enum": ["bounded", "full"],
+                    "default": "bounded",
+                    "description": "bounded caps rendered input/value schemas and marks elided subtrees with x-coral-truncated; full skips renderer-size bounding but cannot recover source/importer-level stubs."
                 }
             }
         })),
@@ -169,7 +196,7 @@ fn search_kind_enum(exposure: McpRuntimeExposure) -> Value {
 pub(crate) fn exec_tool() -> Tool {
     Tool::new(
         "exec",
-        "Run Code Mode source, waiting briefly for fast completion before returning { run, result, events }.",
+        "Run Code Mode source, waiting briefly for fast completion before returning { run, result, output, cursor }: result is the script's return value, output is joined console text, and cursor appears only while run.status is \"running\" — resume with wait { run_id, cursor }. Optional first line `// @exec: {\"yield_time_ms\": 10000, \"max_output_tokens\": 10000}` tunes how long exec waits before returning a running run and the result-size budget before truncation (truncated results carry result_truncated with the spilled artifact path).",
         json_object_schema(&json!({
             "type": "object",
             "required": ["source"],
@@ -193,21 +220,28 @@ pub(crate) fn exec_tool() -> Tool {
 pub(crate) fn wait_tool() -> Tool {
     Tool::new(
         "wait",
-        "Wait for a Code Mode run by run id, returning the same { run, result, events } envelope or terminating the run.",
+        "Wait for a Code Mode run by run id, returning the same { run, result, output, cursor } shape as exec or terminating the run. While run.status is \"running\", call wait again with the returned cursor.",
         json_object_schema(&json!({
             "type": "object",
             "required": ["run_id"],
             "properties": {
                 "run_id": { "type": "string" },
+                "cursor": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "Resume cursor from the previous exec/wait response; only newer output is returned."
+                },
                 "after_event_id": {
                     "type": "integer",
                     "minimum": 0,
-                    "default": 0
+                    "deprecated": true,
+                    "description": "Deprecated alias for cursor."
                 },
                 "terminate": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Terminate the run instead of waiting for more events."
+                    "description": "Terminate the run instead of waiting for more output."
                 }
             }
         })),
@@ -274,6 +308,9 @@ pub(crate) fn search_arguments(
             &["read", "write", "delete", "unknown"],
         )?
         .unwrap_or_default(),
+        intent: optional_enum_argument(arguments, "intent", &["read", "write", "any"])?
+            .unwrap_or_default(),
+        expand_top: optional_bool_argument(arguments, "expand_top", false)?,
         pagination: parse_pagination_with_limits(arguments, 20, 100)?,
     })
 }
@@ -283,6 +320,10 @@ pub(crate) fn describe_arguments(
 ) -> Result<DescribeArguments, ErrorData> {
     let view = optional_enum_argument(arguments, "view", &["compact", "detailed"])?
         .unwrap_or_else(|| "compact".to_string());
+    let schemas = optional_enum_argument(arguments, "schemas", &["bounded", "full"])?
+        .as_deref()
+        .and_then(SchemaRenderMode::parse)
+        .unwrap_or_default();
     Ok(DescribeArguments {
         reference: required_string_argument(arguments, "reference")?,
         view: match view.as_str() {
@@ -290,6 +331,8 @@ pub(crate) fn describe_arguments(
             "detailed" => DescribeView::Detailed,
             _ => unreachable!("optional_enum_argument validates describe view"),
         },
+        path: optional_string_argument(arguments, "path")?,
+        schemas,
     })
 }
 
@@ -306,9 +349,26 @@ pub(crate) fn wait_arguments(
 ) -> Result<WaitArguments, ErrorData> {
     Ok(WaitArguments {
         run_id: required_string_argument(arguments, "run_id")?,
-        after_event_id: optional_u64_argument(arguments, "after_event_id", 0)?,
+        cursor: wait_cursor_argument(arguments)?,
         terminate: optional_bool_argument(arguments, "terminate", false)?,
     })
+}
+
+fn wait_cursor_argument(arguments: Option<&Map<String, Value>>) -> Result<u64, ErrorData> {
+    let cursor = optional_u64_argument_value(arguments, "cursor")?;
+    let after_event_id = optional_u64_argument_value(arguments, "after_event_id")?;
+    match (cursor, after_event_id) {
+        (Some(cursor), Some(after_event_id)) if cursor != after_event_id => {
+            Err(ErrorData::invalid_params(
+                "arguments 'cursor' and 'after_event_id' must match when both are provided"
+                    .to_string(),
+                None,
+            ))
+        }
+        (Some(cursor), _) => Ok(cursor),
+        (None, Some(after_event_id)) => Ok(after_event_id),
+        (None, None) => Ok(0),
+    }
 }
 
 pub(crate) fn required_string_argument(
@@ -371,20 +431,22 @@ fn optional_enum_argument(
     }
 }
 
-fn optional_u64_argument(
+fn optional_u64_argument_value(
     arguments: Option<&Map<String, Value>>,
     key: &str,
-    default: u64,
-) -> Result<u64, ErrorData> {
+) -> Result<Option<u64>, ErrorData> {
     let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
-        return Ok(default);
+        return Ok(None);
     };
-    value.as_u64().ok_or_else(|| {
-        ErrorData::invalid_params(
-            format!("argument '{key}' must be a non-negative integer"),
-            None,
-        )
-    })
+    value
+        .as_u64()
+        .ok_or_else(|| {
+            ErrorData::invalid_params(
+                format!("argument '{key}' must be a non-negative integer"),
+                None,
+            )
+        })
+        .map(Some)
 }
 
 fn parse_pagination_with_limits(
@@ -449,11 +511,12 @@ fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
 
 #[cfg(test)]
 mod tests {
+    use coral_capabilities::SchemaRenderMode;
     use serde_json::json;
 
     use super::{
         DescribeView, build_tool_result, describe_arguments, describe_tool, exec_tool,
-        search_arguments, search_tool,
+        search_arguments, search_tool, wait_arguments, wait_tool,
     };
     use crate::McpRuntimeExposure;
 
@@ -489,13 +552,15 @@ mod tests {
     }
 
     #[test]
-    fn describe_arguments_default_to_compact_view() {
+    fn describe_arguments_default_to_compact_bounded_view() {
         let value = json!({ "reference": "tools.github.rest.search.issues" });
         let arguments = value.as_object().expect("object");
         let parsed = describe_arguments(Some(arguments)).expect("parse describe args");
 
         assert_eq!(parsed.reference, "tools.github.rest.search.issues");
         assert_eq!(parsed.view, DescribeView::Compact);
+        assert_eq!(parsed.path, None);
+        assert_eq!(parsed.schemas, SchemaRenderMode::Bounded);
     }
 
     #[test]
@@ -511,12 +576,69 @@ mod tests {
     }
 
     #[test]
+    fn describe_arguments_accept_path_and_full_schemas() {
+        let value = json!({
+            "reference": "tools.github.rest.search.issues",
+            "path": "filter.team",
+            "schemas": "full"
+        });
+        let arguments = value.as_object().expect("object");
+        let parsed = describe_arguments(Some(arguments)).expect("parse describe args");
+
+        assert_eq!(parsed.path.as_deref(), Some("filter.team"));
+        assert_eq!(parsed.schemas, SchemaRenderMode::Full);
+    }
+
+    #[test]
+    fn describe_arguments_reject_unknown_schemas_value() {
+        let value = json!({
+            "reference": "tools.github.rest.search.issues",
+            "schemas": "everything"
+        });
+        let arguments = value.as_object().expect("object");
+        let error = describe_arguments(Some(arguments)).expect_err("invalid schemas value");
+
+        assert!(error.to_string().contains("schemas"));
+    }
+
+    #[test]
     fn exec_tool_schema_accepts_javascript_source_only() {
         let tool = exec_tool();
         let rendered = serde_json::to_string(&tool).expect("serialize tool");
 
         assert!(rendered.contains("JavaScript Code Mode source"));
         assert!(!rendered.contains("JavaScript or TypeScript"));
+    }
+
+    #[test]
+    fn wait_tool_schema_mentions_after_event_id_alias() {
+        let tool = wait_tool();
+        let rendered = serde_json::to_string(&tool).expect("serialize tool");
+
+        assert!(rendered.contains("after_event_id"));
+        assert!(rendered.contains("Deprecated alias for cursor"));
+    }
+
+    #[test]
+    fn wait_arguments_accept_after_event_id_alias() {
+        let value = json!({ "run_id": "run-1", "after_event_id": 12 });
+        let arguments = value.as_object().expect("object");
+        let parsed = wait_arguments(Some(arguments)).expect("parse wait args");
+
+        assert_eq!(parsed.run_id, "run-1");
+        assert_eq!(parsed.cursor, 12);
+    }
+
+    #[test]
+    fn wait_arguments_reject_conflicting_cursor_aliases() {
+        let value = json!({ "run_id": "run-1", "cursor": 11, "after_event_id": 12 });
+        let arguments = value.as_object().expect("object");
+        let error = wait_arguments(Some(arguments))
+            .err()
+            .expect("conflicting cursors");
+
+        assert!(error.to_string().contains("cursor"));
+        assert!(error.to_string().contains("after_event_id"));
     }
 
     #[test]
@@ -552,5 +674,34 @@ mod tests {
         let parsed = search_arguments(Some(arguments)).expect("parse search args");
 
         assert_eq!(parsed.kind, "sql_function");
+    }
+
+    #[test]
+    fn search_arguments_default_to_no_intent_and_no_expand_top() {
+        let value = json!({ "query": "issues" });
+        let arguments = value.as_object().expect("object");
+        let parsed = search_arguments(Some(arguments)).expect("parse search args");
+
+        assert_eq!(parsed.intent, "");
+        assert!(!parsed.expand_top);
+    }
+
+    #[test]
+    fn search_arguments_accept_intent_and_expand_top() {
+        let value = json!({ "query": "issues", "intent": "write", "expand_top": true });
+        let arguments = value.as_object().expect("object");
+        let parsed = search_arguments(Some(arguments)).expect("parse search args");
+
+        assert_eq!(parsed.intent, "write");
+        assert!(parsed.expand_top);
+    }
+
+    #[test]
+    fn search_arguments_reject_unknown_intent() {
+        let value = json!({ "query": "issues", "intent": "destroy" });
+        let arguments = value.as_object().expect("object");
+        let error = search_arguments(Some(arguments)).expect_err("invalid intent");
+
+        assert!(error.to_string().contains("intent"));
     }
 }

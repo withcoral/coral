@@ -171,12 +171,12 @@ fn invoke_tool(
             return;
         }
     };
-    let allow_error_result = match if args.length() < 2 || tagged_template_call {
-        Ok(false)
+    let options = match if args.length() < 2 || tagged_template_call {
+        Ok(ToolCallOptions::default())
     } else {
-        allow_error_result_option(scope, args.get(1))
+        tool_call_options(scope, args.get(1))
     } {
-        Ok(allow_error_result) => allow_error_result,
+        Ok(options) => options,
         Err(error_text) => {
             throw_type_error(scope, &error_text);
             return;
@@ -258,44 +258,48 @@ fn invoke_tool(
     state.nested_tool_call_count = observed_total;
     state.nested_tool_input_bytes = state.nested_tool_input_bytes.saturating_add(input_bytes);
     let event_tx = state.event_tx.clone();
-    state.pending_tool_calls.insert(
-        id.clone(),
-        PendingToolCall {
-            resolver,
-            allow_error_result,
-        },
-    );
+    state
+        .pending_tool_calls
+        .insert(id.clone(), PendingToolCall { resolver });
     let _ = event_tx.send(RuntimeEvent::ToolCall {
         id,
         name: tool_name,
         kind: tool_kind,
         input,
-        allow_error_result,
+        allow_error_result: options.allow_error_result,
+        envelope: options.envelope,
     });
     retval.set(promise.into());
 }
 
-fn allow_error_result_option(
+#[derive(Clone, Copy, Default)]
+struct ToolCallOptions {
+    allow_error_result: bool,
+    envelope: bool,
+}
+
+fn tool_call_options(
     scope: &mut v8::PinScope<'_, '_>,
     option: v8::Local<'_, v8::Value>,
-) -> Result<bool, String> {
+) -> Result<ToolCallOptions, String> {
     let Some(value) = v8_value_to_json(scope, option)? else {
-        return Ok(false);
+        return Ok(ToolCallOptions::default());
     };
     let JsonValue::Object(options) = value else {
         return Err("tool options must be an object when provided".to_string());
     };
-    for key in options.keys() {
-        if key != "allowErrorResult" {
-            return Err(format!("unsupported tool option `{key}`"));
-        }
+    let mut parsed = ToolCallOptions::default();
+    for (key, value) in &options {
+        let target = match key.as_str() {
+            "allowErrorResult" => &mut parsed.allow_error_result,
+            "envelope" => &mut parsed.envelope,
+            _ => return Err(format!("unsupported tool option `{key}`")),
+        };
+        *target = value
+            .as_bool()
+            .ok_or_else(|| format!("tool option `{key}` must be a boolean"))?;
     }
-    let Some(value) = options.get("allowErrorResult") else {
-        return Ok(false);
-    };
-    value
-        .as_bool()
-        .ok_or_else(|| "tool option `allowErrorResult` must be a boolean".to_string())
+    Ok(parsed)
 }
 
 pub(super) fn image_callback(

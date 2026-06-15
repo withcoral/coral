@@ -31,13 +31,37 @@ use crate::runtime::WaitToPendingRequest;
 use crate::runtime::nested_tool_budget_exceeded_error;
 use crate::runtime::spawn_runtime;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodeModeToolError {
+    pub message: String,
+    pub fatal: bool,
+}
+
+impl CodeModeToolError {
+    #[must_use]
+    pub fn fatal(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            fatal: true,
+        }
+    }
+
+    #[must_use]
+    pub fn recoverable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            fatal: false,
+        }
+    }
+}
+
 #[async_trait]
 pub trait CodeModeTurnHost: Send + Sync {
     async fn invoke_tool(
         &self,
         invocation: CodeModeNestedToolCall,
         cancellation_token: CancellationToken,
-    ) -> Result<JsonValue, String>;
+    ) -> Result<JsonValue, CodeModeToolError>;
 }
 
 #[derive(Clone)]
@@ -361,9 +385,10 @@ impl CodeModeService {
                                     id: runtime_tool_call_id,
                                     result,
                                 },
-                                Err(error_text) => RuntimeCommand::ToolError {
+                                Err(error) => RuntimeCommand::ToolError {
                                     id: runtime_tool_call_id,
-                                    error_text,
+                                    error_text: error.message,
+                                    fatal: error.fatal,
                                 },
                             };
                             let _ = runtime_tx.send(command);
@@ -713,11 +738,16 @@ async fn run_session_control(
                         kind,
                         input,
                         allow_error_result,
+                        envelope,
                     } => {
                         if let Err(error_text) =
                             increment_nested_call_count(&inner, &cell_id, &name.name).await
                         {
-                            let _ = runtime_tx.send(RuntimeCommand::ToolError { id, error_text });
+                            let _ = runtime_tx.send(RuntimeCommand::ToolError {
+                                id,
+                                error_text,
+                                fatal: true,
+                            });
                             continue;
                         }
                         if pending_mode == PendingRuntimeMode::PauseUntilResumed {
@@ -730,6 +760,7 @@ async fn run_session_control(
                             tool_kind: kind,
                             input,
                             allow_error_result,
+                            envelope,
                         };
                         let _ = inner
                             .turn_message_tx
@@ -986,6 +1017,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::CodeModeService;
+    use super::CodeModeToolError;
     use super::CodeModeTurnHost;
     use super::Inner;
     use super::PendingRuntimeMode;
@@ -1053,7 +1085,7 @@ mod tests {
             &self,
             _invocation: CodeModeNestedToolCall,
             cancellation_token: CancellationToken,
-        ) -> Result<JsonValue, String> {
+        ) -> Result<JsonValue, CodeModeToolError> {
             if let Some(token_tx) = self.token_tx.lock().await.take() {
                 let _ = token_tx.send(cancellation_token.clone());
             }
@@ -1061,7 +1093,7 @@ mod tests {
             if let Some(cancelled_tx) = self.cancelled_tx.lock().await.take() {
                 let _ = cancelled_tx.send(());
             }
-            Err("cancelled".to_string())
+            Err(CodeModeToolError::fatal("cancelled"))
         }
     }
 
@@ -1073,7 +1105,7 @@ mod tests {
             &self,
             invocation: CodeModeNestedToolCall,
             _cancellation_token: CancellationToken,
-        ) -> Result<JsonValue, String> {
+        ) -> Result<JsonValue, CodeModeToolError> {
             Ok(invocation.input.unwrap_or(JsonValue::Null))
         }
     }
@@ -1086,8 +1118,23 @@ mod tests {
             &self,
             _invocation: CodeModeNestedToolCall,
             _cancellation_token: CancellationToken,
-        ) -> Result<JsonValue, String> {
-            Err("host transport failed".to_string())
+        ) -> Result<JsonValue, CodeModeToolError> {
+            Err(CodeModeToolError::fatal("host transport failed"))
+        }
+    }
+
+    struct RecoverableFailingHost;
+
+    #[async_trait]
+    impl CodeModeTurnHost for RecoverableFailingHost {
+        async fn invoke_tool(
+            &self,
+            _invocation: CodeModeNestedToolCall,
+            _cancellation_token: CancellationToken,
+        ) -> Result<JsonValue, CodeModeToolError> {
+            Err(CodeModeToolError::recoverable(
+                "provider failed; details: {\"provider_error\":{\"detail\":{\"http_status\":400}}}",
+            ))
         }
     }
 
@@ -1099,7 +1146,7 @@ mod tests {
             &self,
             invocation: CodeModeNestedToolCall,
             _cancellation_token: CancellationToken,
-        ) -> Result<JsonValue, String> {
+        ) -> Result<JsonValue, CodeModeToolError> {
             match invocation.tool_name.name.as_str() {
                 "coral.search" => Ok(json!({
                     "items": [{
@@ -1291,7 +1338,7 @@ return {
     }
 
     #[tokio::test]
-    async fn nested_mcp_error_result_rejects_by_default() {
+    async fn bare_is_error_tool_output_is_returned_as_data() {
         let service = CodeModeService::new();
         let _worker = service.start_turn_worker(Arc::new(EchoHost));
 
@@ -1299,8 +1346,8 @@ return {
             .execute(ExecuteRequest {
                 enabled_tools: vec![function_tool("echo")],
                 source: r#"
-await tools.echo({ isError: true, content: [{ type: "text", text: "failed" }] });
-return "unexpected";
+const result = await tools.echo({ isError: true, content: [{ type: "text", text: "domain data" }] });
+return result;
 "#
                 .to_string(),
                 yield_time_ms: Some(60_000),
@@ -1309,19 +1356,24 @@ return "unexpected";
             .await
             .unwrap();
 
-        let RuntimeResponse::Result {
-            result: None,
-            error_text: Some(error_text),
-            ..
-        } = response
-        else {
-            panic!("expected nested MCP error result failure");
-        };
-        assert!(error_text.contains("isError=true"), "{error_text}");
+        assert_eq!(
+            response,
+            RuntimeResponse::Result {
+                cell_id: "1".to_string(),
+                content_items: Vec::new(),
+                stored_values: HashMap::new(),
+                stored_value_updates: HashMap::new(),
+                result: Some(json!({
+                    "isError": true,
+                    "content": [{ "type": "text", "text": "domain data" }],
+                })),
+                error_text: None,
+            }
+        );
     }
 
     #[tokio::test]
-    async fn nested_coral_error_result_rejects_by_default() {
+    async fn bare_coral_error_key_tool_output_is_returned_as_data() {
         let service = CodeModeService::new();
         let _worker = service.start_turn_worker(Arc::new(EchoHost));
 
@@ -1329,12 +1381,42 @@ return "unexpected";
             .execute(ExecuteRequest {
                 enabled_tools: vec![function_tool("echo")],
                 source: r#"
-await tools.echo({
-  ok: false,
-  value: null,
+const result = await tools.echo({
+  "$coral_error": true,
   error: { kind: "provider_error", message: "provider failed", details: null },
-  envelope: null,
 });
+return result.error.kind;
+"#
+                .to_string(),
+                yield_time_ms: Some(60_000),
+                ..execute_request("")
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response,
+            RuntimeResponse::Result {
+                cell_id: "1".to_string(),
+                content_items: Vec::new(),
+                stored_values: HashMap::new(),
+                stored_value_updates: HashMap::new(),
+                result: Some(json!("provider_error")),
+                error_text: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn recoverable_tool_error_rejects_by_default() {
+        let service = CodeModeService::new();
+        let _worker = service.start_turn_worker(Arc::new(RecoverableFailingHost));
+
+        let response = service
+            .execute(ExecuteRequest {
+                enabled_tools: vec![function_tool("fail")],
+                source: r#"
+await tools.fail({});
 return "unexpected";
 "#
                 .to_string(),
@@ -1350,32 +1432,22 @@ return "unexpected";
             ..
         } = response
         else {
-            panic!("expected nested Coral error result failure");
+            panic!("expected nested tool error failure");
         };
-        assert!(error_text.contains("ok=false"), "{error_text}");
         assert!(error_text.contains("provider failed"), "{error_text}");
     }
 
     #[tokio::test]
-    async fn nested_coral_error_result_can_be_caught() {
+    async fn recoverable_tool_error_can_be_caught() {
         let service = CodeModeService::new();
-        let _worker = service.start_turn_worker(Arc::new(EchoHost));
+        let _worker = service.start_turn_worker(Arc::new(RecoverableFailingHost));
 
         let response = service
             .execute(ExecuteRequest {
-                enabled_tools: vec![function_tool("echo")],
+                enabled_tools: vec![function_tool("fail")],
                 source: r#"
 try {
-  await tools.echo({
-    ok: false,
-    value: null,
-    error: {
-      kind: "provider_error",
-      message: "provider failed",
-      details: { provider_error: { detail: { http_status: 400 } } },
-    },
-    envelope: null,
-  });
+  await tools.fail({});
   return "unexpected";
 } catch (error) {
   return {
@@ -1412,24 +1484,15 @@ try {
     }
 
     #[tokio::test]
-    async fn unawaited_nested_coral_error_result_fails_closed() {
+    async fn unawaited_recoverable_tool_error_fails_closed() {
         let service = CodeModeService::new();
-        let _worker = service.start_turn_worker(Arc::new(EchoHost));
+        let _worker = service.start_turn_worker(Arc::new(RecoverableFailingHost));
 
         let response = service
             .execute(ExecuteRequest {
-                enabled_tools: vec![function_tool("echo")],
+                enabled_tools: vec![function_tool("fail")],
                 source: r#"
-tools.echo({
-  ok: false,
-  value: null,
-  error: {
-    kind: "provider_error",
-    message: "provider failed",
-    details: { provider_error: { detail: { http_status: 400 } } },
-  },
-  envelope: null,
-});
+tools.fail({});
 return "unexpected";
 "#
                 .to_string(),
@@ -1452,20 +1515,15 @@ return "unexpected";
     }
 
     #[tokio::test]
-    async fn unawaited_nested_coral_error_result_fails_while_main_promise_is_pending() {
+    async fn unawaited_recoverable_tool_error_fails_while_main_promise_is_pending() {
         let service = CodeModeService::new();
-        let _worker = service.start_turn_worker(Arc::new(EchoHost));
+        let _worker = service.start_turn_worker(Arc::new(RecoverableFailingHost));
 
         let response = service
             .execute(ExecuteRequest {
-                enabled_tools: vec![function_tool("echo")],
+                enabled_tools: vec![function_tool("fail")],
                 source: r#"
-tools.echo({
-  ok: false,
-  value: null,
-  error: { kind: "provider_error", message: "provider failed" },
-  envelope: null,
-});
+tools.fail({});
 await new Promise(() => {});
 "#
                 .to_string(),
@@ -1487,20 +1545,15 @@ await new Promise(() => {});
     }
 
     #[tokio::test]
-    async fn propagated_nested_coral_error_result_fails_closed() {
+    async fn propagated_recoverable_tool_error_fails_closed() {
         let service = CodeModeService::new();
-        let _worker = service.start_turn_worker(Arc::new(EchoHost));
+        let _worker = service.start_turn_worker(Arc::new(RecoverableFailingHost));
 
         let response = service
             .execute(ExecuteRequest {
-                enabled_tools: vec![function_tool("echo")],
+                enabled_tools: vec![function_tool("fail")],
                 source: r#"
-tools.echo({
-  ok: false,
-  value: null,
-  error: { kind: "provider_error", message: "provider failed" },
-  envelope: null,
-}).then(() => "ignored");
+tools.fail({}).then(() => "ignored");
 return "unexpected";
 "#
                 .to_string(),
@@ -1533,8 +1586,8 @@ return "unexpected";
 const result = await tools.echo({
   ok: false,
   value: null,
+  partial: false,
   error: { kind: "provider_error", message: "provider failed", details: { id: 1 } },
-  envelope: null,
 }, { allowErrorResult: true });
 return result;
 "#
@@ -1555,15 +1608,141 @@ return result;
                 result: Some(json!({
                     "ok": false,
                     "value": null,
+                    "partial": false,
                     "error": {
                         "kind": "provider_error",
                         "message": "provider failed",
                         "details": { "id": 1 },
                     },
-                    "envelope": null,
                 })),
                 error_text: None,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn unmarked_error_shaped_tool_output_is_returned_as_data() {
+        let service = CodeModeService::new();
+        let _worker = service.start_turn_worker(Arc::new(EchoHost));
+
+        // Provider data that happens to carry ok/error/value/envelope keys is
+        // never shape-sniffed into a failure.
+        let response = service
+            .execute(ExecuteRequest {
+                enabled_tools: vec![function_tool("echo")],
+                source: r#"
+const result = await tools.echo({
+  ok: false,
+  value: null,
+  error: { kind: "provider_error", message: "domain data, not a coral error" },
+  envelope: null,
+});
+return result.error.message;
+"#
+                .to_string(),
+                yield_time_ms: Some(60_000),
+                ..execute_request("")
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response,
+            RuntimeResponse::Result {
+                cell_id: "1".to_string(),
+                content_items: Vec::new(),
+                stored_values: HashMap::new(),
+                stored_value_updates: HashMap::new(),
+                result: Some(json!("domain data, not a coral error")),
+                error_text: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn envelope_option_is_plumbed_to_the_host() {
+        struct OptionRecordingHost;
+
+        #[async_trait]
+        impl CodeModeTurnHost for OptionRecordingHost {
+            async fn invoke_tool(
+                &self,
+                invocation: CodeModeNestedToolCall,
+                _cancellation_token: CancellationToken,
+            ) -> Result<JsonValue, CodeModeToolError> {
+                Ok(json!({
+                    "allow_error_result": invocation.allow_error_result,
+                    "envelope": invocation.envelope,
+                }))
+            }
+        }
+
+        let service = CodeModeService::new();
+        let _worker = service.start_turn_worker(Arc::new(OptionRecordingHost));
+
+        let response = service
+            .execute(ExecuteRequest {
+                enabled_tools: vec![function_tool("echo")],
+                source: r#"
+const with_envelope = await tools.echo({}, { envelope: true });
+const with_both = await tools.echo({}, { allowErrorResult: true, envelope: true });
+const plain = await tools.echo({});
+return { with_envelope, with_both, plain };
+"#
+                .to_string(),
+                yield_time_ms: Some(60_000),
+                ..execute_request("")
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response,
+            RuntimeResponse::Result {
+                cell_id: "1".to_string(),
+                content_items: Vec::new(),
+                stored_values: HashMap::new(),
+                stored_value_updates: HashMap::new(),
+                result: Some(json!({
+                    "with_envelope": { "allow_error_result": false, "envelope": true },
+                    "with_both": { "allow_error_result": true, "envelope": true },
+                    "plain": { "allow_error_result": false, "envelope": false },
+                })),
+                error_text: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_tool_option_is_rejected() {
+        let service = CodeModeService::new();
+        let _worker = service.start_turn_worker(Arc::new(EchoHost));
+
+        let response = service
+            .execute(ExecuteRequest {
+                enabled_tools: vec![function_tool("echo")],
+                source: r#"
+await tools.echo({}, { rawEnvelope: true });
+return "unexpected";
+"#
+                .to_string(),
+                yield_time_ms: Some(60_000),
+                ..execute_request("")
+            })
+            .await
+            .unwrap();
+
+        let RuntimeResponse::Result {
+            result: None,
+            error_text: Some(error_text),
+            ..
+        } = response
+        else {
+            panic!("expected unsupported tool option failure");
+        };
+        assert!(
+            error_text.contains("unsupported tool option `rawEnvelope`"),
+            "{error_text}"
         );
     }
 
@@ -4815,6 +4994,7 @@ await new Promise(() => {});
                 kind: CodeModeToolKind::Function,
                 input: None,
                 allow_error_result: false,
+                envelope: false,
             })
             .unwrap();
         event_tx.send(RuntimeEvent::Pending).unwrap();
@@ -4899,6 +5079,7 @@ await new Promise(() => {});
                 kind: CodeModeToolKind::Function,
                 input: None,
                 allow_error_result: false,
+                envelope: false,
             })
             .unwrap();
         event_tx.send(RuntimeEvent::Pending).unwrap();

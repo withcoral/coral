@@ -36,6 +36,10 @@ message SearchExportsRequest {
   PaginationRequest pagination = 9;
   // Optional allowed binding kinds for surfaces that expose a subset of runtime bindings.
   repeated ExportBindingKind allowed_kinds = 10;
+  // Optional explicit ranking intent: "read", "write", or "any". A soft
+  // ordering hint that overrides write-verb detection on the query; it never
+  // filters results. Empty derives intent from the query tokens.
+  string intent = 11;
 }
 
 // Compact generated-export search item.
@@ -76,6 +80,9 @@ message SearchExportItem {
   string support_status = 18;
   // Query terms that contributed to the rank.
   repeated string matched_terms = 19;
+  // One-line generated call signature for `full_path`, when invokable, such as
+  // tools.github.rest.issues.list({ owner: string, repo: string, …+3 }) -> value: array.
+  string signature = 20;
 }
 
 // Generated-export search response.
