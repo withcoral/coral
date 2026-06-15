@@ -1,6 +1,6 @@
 //! Typed query inputs and results.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -108,19 +108,12 @@ impl QuerySource {
                 "runtime source package source_name must not be empty".to_string(),
             ));
         }
-        let mut component_schema_names = BTreeSet::new();
         for component in &package.components {
             let schema_name = component.source_name();
             if schema_name.trim().is_empty() {
                 return Err(crate::CoreError::InvalidInput(format!(
                     "runtime source package '{}' has a component with an empty schema name",
                     package.source_name
-                )));
-            }
-            if !component_schema_names.insert(schema_name.to_string()) {
-                return Err(crate::CoreError::InvalidInput(format!(
-                    "runtime source package '{}' has duplicate component schema name '{}'",
-                    package.source_name, schema_name
                 )));
             }
         }
@@ -224,61 +217,6 @@ fn components_from_manifest(source_spec: &ValidatedSourceManifest) -> Vec<Runtim
         return vec![RuntimeSourceComponent::Mcp(mcp.clone())];
     }
     Vec::new()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use coral_spec::parse_source_manifest_yaml;
-
-    fn file_component(schema_name: &str) -> RuntimeSourceComponent {
-        let manifest = parse_source_manifest_yaml(&format!(
-            r"
-name: {schema_name}
-version: 1.0.0
-dsl_version: 3
-backend: file
-tables:
-  - name: rows
-    description: Demo rows
-    format: jsonl
-    source:
-      location: file:///tmp/demo/
-    columns:
-      - name: id
-        type: Utf8
-"
-        ))
-        .expect("manifest should parse");
-        RuntimeSourceComponent::File(manifest.as_file().expect("file manifest").clone())
-    }
-
-    #[test]
-    fn runtime_components_reject_duplicate_schema_names() {
-        let error = QuerySource::from_runtime_components(
-            RuntimeSourcePackage {
-                source_name: "github_v4".to_string(),
-                authored_version: None,
-                description: String::new(),
-                declared_inputs: Vec::new(),
-                test_queries: Vec::new(),
-                components: vec![
-                    file_component("github_v4_rest"),
-                    file_component("github_v4_rest"),
-                ],
-            },
-            BTreeMap::new(),
-            BTreeMap::new(),
-        )
-        .expect_err("duplicate component schemas should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("duplicate component schema name 'github_v4_rest'"),
-            "unexpected error: {error}"
-        );
-    }
 }
 
 /// One source-spec validation query executed during source validation.

@@ -1,5 +1,6 @@
 //! Registers compiled backend sources into a shared `DataFusion` session.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
@@ -103,6 +104,7 @@ async fn register_sources_inner(
         .iter()
         .map(|selected| selected.source().clone())
         .collect::<Vec<_>>();
+    validate_selected_source_schema_names(&selected_sources)?;
     prepare_source_decorators(source_decorators, &selected_sources)?;
 
     let mut result = SourceRegistrationResult::default();
@@ -170,6 +172,25 @@ async fn register_sources_inner(
     finish_source_decorators(source_decorators)?;
 
     Ok(result)
+}
+
+fn validate_selected_source_schema_names(
+    sources: &[QuerySource],
+) -> std::result::Result<(), CoreError> {
+    let mut owner_by_schema = HashMap::new();
+    for source in sources {
+        for schema_name in source.schema_names() {
+            if let Some(existing_source) =
+                owner_by_schema.insert(schema_name.to_string(), source.source_name().to_string())
+            {
+                return Err(CoreError::InvalidInput(format!(
+                    "source '{}' runtime schema name '{schema_name}' conflicts with selected source '{existing_source}'",
+                    source.source_name()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

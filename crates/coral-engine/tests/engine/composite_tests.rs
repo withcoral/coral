@@ -153,6 +153,58 @@ async fn multi_component_source_can_register_multiple_schemas() {
 }
 
 #[tokio::test]
+async fn selected_sources_reject_runtime_schema_collisions() {
+    let server = MockServer::start().await;
+    let first = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github_v4".to_string(),
+            authored_version: None,
+            description: "Composite GitHub runtime package".to_string(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            components: vec![RuntimeSourceComponent::Http(http_component(
+                &server.uri(),
+                "github_v4_rest",
+                "issues",
+                "/issues",
+            ))],
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("first runtime package");
+    let second = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github_v4_rest".to_string(),
+            authored_version: None,
+            description: "Conflicting runtime package".to_string(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            components: vec![RuntimeSourceComponent::Http(http_component(
+                &server.uri(),
+                "github_v4_rest",
+                "pulls",
+                "/pulls",
+            ))],
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("second runtime package");
+
+    let error = CoralQuery::list_catalog(&[first, second], test_runtime(), None)
+        .await
+        .expect_err("duplicate selected schemas should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("runtime schema name 'github_v4_rest' conflicts"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
 async fn validate_source_reports_only_component_schemas_for_multi_schema_source() {
     let server = MockServer::start().await;
     let issues = http_component(&server.uri(), "github_rest", "issues", "/issues");
