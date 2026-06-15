@@ -10,7 +10,7 @@ use coral_api::{CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_INTENT_MAX_CHARS};
 
 use super::{Pagination, parse_pagination, parse_pagination_with_limits};
 
-const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by create_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
+const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by open_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
 const EPISODE_ID_JSON_SCHEMA_PATTERN: &str = "^[!-~]+$";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,7 +85,7 @@ pub(crate) struct ListColumnsArguments {
     pub(crate) pagination: Pagination,
 }
 
-pub(crate) struct CreateEpisodeArguments {
+pub(crate) struct OpenEpisodeArguments {
     pub(crate) intent: String,
     pub(crate) parent_episode_id: Option<String>,
 }
@@ -358,10 +358,10 @@ pub(crate) fn feedback_tool() -> Tool {
     )
 }
 
-pub(crate) fn create_episode_tool() -> Tool {
+pub(crate) fn open_episode_tool() -> Tool {
     Tool::new(
-        "create_episode",
-        "Create a Coral episode for the current task. Call this once at the start of a task, then pass the returned episode_id on subsequent Coral tool calls for that task.",
+        "open_episode",
+        "Open a Coral episode for the current task. Call this once at the start of a task, then pass the returned episode_id on subsequent Coral tool calls for that task.",
         json_object_schema(&json!({
             "type": "object",
             "required": ["intent"],
@@ -378,9 +378,9 @@ pub(crate) fn create_episode_tool() -> Tool {
             }
         })),
     )
-    .with_raw_output_schema(create_episode_output_schema())
+    .with_raw_output_schema(open_episode_output_schema())
     .with_annotations(
-        ToolAnnotations::with_title("Create Episode")
+        ToolAnnotations::with_title("Open Episode")
             .read_only(false)
             .destructive(false)
             .idempotent(false)
@@ -403,10 +403,10 @@ pub(crate) fn required_string_argument(
     Ok(value.to_string())
 }
 
-pub(crate) fn create_episode_arguments(
+pub(crate) fn open_episode_arguments(
     arguments: Option<&Map<String, Value>>,
-) -> Result<CreateEpisodeArguments, ErrorData> {
-    Ok(CreateEpisodeArguments {
+) -> Result<OpenEpisodeArguments, ErrorData> {
+    Ok(OpenEpisodeArguments {
         intent: required_string_argument(arguments, "intent")?,
         parent_episode_id: optional_episode_id_argument(arguments, "parent_episode_id")?,
     })
@@ -594,7 +594,7 @@ fn episode_id_string_schema() -> Value {
     })
 }
 
-fn create_episode_output_schema() -> Arc<Map<String, Value>> {
+fn open_episode_output_schema() -> Arc<Map<String, Value>> {
     json_object_schema(&json!({
         "type": "object",
         "required": ["episode_id", "parent_episode_id", "message", "instructions"],

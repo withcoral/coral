@@ -372,7 +372,7 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_enable_episodes_flag_lists_create_episode_tool()
+async fn mcp_stdio_enable_episodes_flag_lists_open_episode_tool()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     let client = start_mcp_client_with_args(&server, &["--enable-episodes"]).await?;
@@ -389,12 +389,12 @@ async fn mcp_stdio_enable_episodes_flag_lists_create_episode_tool()
             "search_catalog",
             "describe_table",
             "list_columns",
-            "create_episode"
+            "open_episode"
         ]
     );
     for tool in tools
         .iter()
-        .filter(|tool| tool.name.as_ref() != "create_episode")
+        .filter(|tool| tool.name.as_ref() != "open_episode")
     {
         assert!(
             tool_input_properties(tool).contains_key("episode_id"),
@@ -402,13 +402,13 @@ async fn mcp_stdio_enable_episodes_flag_lists_create_episode_tool()
             tool.name
         );
     }
-    let create_episode = tools
+    let open_episode = tools
         .iter()
-        .find(|tool| tool.name.as_ref() == "create_episode")
-        .expect("create_episode tool should be listed");
+        .find(|tool| tool.name.as_ref() == "open_episode")
+        .expect("open_episode tool should be listed");
     assert!(
-        tool_input_properties(create_episode).contains_key("parent_episode_id"),
-        "create_episode should accept an optional parent_episode_id"
+        tool_input_properties(open_episode).contains_key("parent_episode_id"),
+        "open_episode should accept an optional parent_episode_id"
     );
 
     client.cancel().await?;
@@ -441,7 +441,7 @@ feedback = true
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_feature_config_enables_create_episode_tool()
+async fn mcp_stdio_feature_config_enables_open_episode_tool()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     write_config(
@@ -457,8 +457,8 @@ episodes = true
     assert!(
         tools
             .iter()
-            .any(|tool| tool.name.as_ref() == "create_episode"),
-        "create_episode tool should be listed when [features].episodes is true"
+            .any(|tool| tool.name.as_ref() == "open_episode"),
+        "open_episode tool should be listed when [features].episodes is true"
     );
 
     client.cancel().await?;

@@ -353,7 +353,7 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
             "search_catalog",
             "describe_table",
             "list_columns",
-            "create_episode"
+            "open_episode"
         ]
     );
     for name in [
@@ -365,39 +365,39 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
     ] {
         assert_tool_advertises_episode_id(tool_by_name(&tools, name));
     }
-    let create_episode_tool = tool_by_name(&tools, "create_episode");
-    assert!(!tool_input_properties(create_episode_tool).contains_key("episode_id"));
-    let parent_episode_id_schema = tool_input_properties(create_episode_tool)
+    let open_episode_tool = tool_by_name(&tools, "open_episode");
+    assert!(!tool_input_properties(open_episode_tool).contains_key("episode_id"));
+    let parent_episode_id_schema = tool_input_properties(open_episode_tool)
         .get("parent_episode_id")
-        .expect("create_episode should accept an optional parent_episode_id");
-    assert_nullable_episode_id_schema(parent_episode_id_schema, "create_episode parent_episode_id");
-    let create_annotations = create_episode_tool
+        .expect("open_episode should accept an optional parent_episode_id");
+    assert_nullable_episode_id_schema(parent_episode_id_schema, "open_episode parent_episode_id");
+    let open_annotations = open_episode_tool
         .annotations
         .as_ref()
-        .expect("create episode annotations");
-    assert_eq!(create_annotations.read_only_hint, Some(false));
-    assert_eq!(create_annotations.destructive_hint, Some(false));
-    assert_eq!(create_annotations.idempotent_hint, Some(false));
-    assert_eq!(create_annotations.open_world_hint, Some(false));
+        .expect("open episode annotations");
+    assert_eq!(open_annotations.read_only_hint, Some(false));
+    assert_eq!(open_annotations.destructive_hint, Some(false));
+    assert_eq!(open_annotations.idempotent_hint, Some(false));
+    assert_eq!(open_annotations.open_world_hint, Some(false));
 
     let root = client
         .call_tool(
-            CallToolRequestParams::new("create_episode").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("open_episode").with_arguments(json_object(&json!({
                 "intent": "Investigate customer renewal risk"
             }))),
         )
         .await
-        .expect("create root episode");
+        .expect("open root episode");
     assert_eq!(root.is_error, Some(false));
     let root = root.structured_content.expect("root structured content");
-    assert_matches_output_schema(create_episode_tool, &root);
+    assert_matches_output_schema(open_episode_tool, &root);
     let root_episode_id = root["episode_id"]
         .as_str()
         .expect("root episode id")
         .to_string();
     assert!(root_episode_id.starts_with("ep_"));
     assert_eq!(root["parent_episode_id"], Value::Null);
-    assert_eq!(root["message"], "Episode created.");
+    assert_eq!(root["message"], "Episode opened.");
     assert!(
         root["instructions"]
             .as_str()
@@ -407,16 +407,16 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
 
     let child = client
         .call_tool(
-            CallToolRequestParams::new("create_episode").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("open_episode").with_arguments(json_object(&json!({
                 "intent": "Check renewal table columns",
                 "parent_episode_id": root_episode_id
             }))),
         )
         .await
-        .expect("create child episode");
+        .expect("open child episode");
     assert_eq!(child.is_error, Some(false));
     let child = child.structured_content.expect("child structured content");
-    assert_matches_output_schema(create_episode_tool, &child);
+    assert_matches_output_schema(open_episode_tool, &child);
     let child_episode_id = child["episode_id"]
         .as_str()
         .expect("child episode id")
@@ -480,7 +480,7 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
 
     let blank_intent = client
         .call_tool(
-            CallToolRequestParams::new("create_episode").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("open_episode").with_arguments(json_object(&json!({
                 "intent": " "
             }))),
         )
@@ -507,25 +507,25 @@ async fn mcp_episode_tool_is_disabled_by_default() {
     assert!(
         tools
             .iter()
-            .all(|tool| tool.name.as_ref() != "create_episode"),
-        "create_episode should not be listed by default"
+            .all(|tool| tool.name.as_ref() != "open_episode"),
+        "open_episode should not be listed by default"
     );
     for tool in &tools {
         assert_tool_omits_episode_id(tool);
     }
 
-    let create_episode = client
+    let open_episode = client
         .call_tool(
-            CallToolRequestParams::new("create_episode").with_arguments(json_object(&json!({
+            CallToolRequestParams::new("open_episode").with_arguments(json_object(&json!({
                 "intent": "Investigate customer renewal risk"
             }))),
         )
         .await
-        .expect_err("create_episode should not be exposed by default");
+        .expect_err("open_episode should not be exposed by default");
     assert!(
-        create_episode
+        open_episode
             .to_string()
-            .contains("tool 'create_episode' not found")
+            .contains("tool 'open_episode' not found")
     );
     assert!(
         !temp

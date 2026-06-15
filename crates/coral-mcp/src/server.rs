@@ -32,11 +32,11 @@ use tonic::{
 use crate::{
     McpOptions,
     surface::{
-        CatalogToolKind, ToolDescriptionContext, build_tool_result, create_episode_arguments,
-        create_episode_tool, describe_table_arguments, describe_table_tool, describe_table_value,
-        feedback_tool, guide_resource, guide_resource_content, initial_instructions,
-        list_catalog_arguments, list_catalog_tool, list_catalog_value, list_columns_arguments,
-        list_columns_tool, list_columns_value, optional_episode_id_argument,
+        CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
+        describe_table_tool, describe_table_value, feedback_tool, guide_resource,
+        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_tool,
+        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
+        open_episode_arguments, open_episode_tool, optional_episode_id_argument,
         required_string_argument, search_catalog_arguments, search_catalog_tool,
         search_catalog_value, sql_tool, status_to_error_data, tables_resource,
         tables_resource_content, tool_error_from_status, tool_error_result,
@@ -71,7 +71,7 @@ struct FeedbackStoredValue {
 }
 
 #[derive(Serialize)]
-struct EpisodeCreatedValue {
+struct EpisodeOpenedValue {
     episode_id: String,
     parent_episode_id: Option<String>,
     message: &'static str,
@@ -303,11 +303,11 @@ impl CoralMcpServer {
         })
     }
 
-    async fn create_episode(
+    async fn open_episode(
         &self,
         intent: &str,
         parent_episode_id: Option<&str>,
-    ) -> Result<EpisodeCreatedValue, tonic::Status> {
+    ) -> Result<EpisodeOpenedValue, tonic::Status> {
         let episode_id = format!("ep_{}", uuid::Uuid::new_v4().simple());
         let mut episode_client = self.episode.clone();
         episode_client
@@ -318,10 +318,10 @@ impl CoralMcpServer {
                 parent_episode_id: parent_episode_id.unwrap_or_default().to_string(),
             }))
             .await?;
-        Ok(EpisodeCreatedValue {
+        Ok(EpisodeOpenedValue {
             episode_id,
             parent_episode_id: parent_episode_id.map(str::to_string),
-            message: "Episode created.",
+            message: "Episode opened.",
             instructions: "Pass this episode_id as episode_id on subsequent Coral MCP tool calls for this work.",
         })
     }
@@ -466,10 +466,10 @@ impl CoralMcpServer {
                 self.list_columns_tool_result(request.arguments.as_ref(), episode_tag)
                     .await
             }
-            "create_episode" if self.options.episodes_enabled => {
-                let arguments = create_episode_arguments(request.arguments.as_ref())?;
+            "open_episode" if self.options.episodes_enabled => {
+                let arguments = open_episode_arguments(request.arguments.as_ref())?;
                 match self
-                    .create_episode(&arguments.intent, arguments.parent_episode_id.as_deref())
+                    .open_episode(&arguments.intent, arguments.parent_episode_id.as_deref())
                     .await
                     .and_then(|episode| {
                         telemetry::record_episode_id(span, &episode.episode_id);
@@ -480,7 +480,7 @@ impl CoralMcpServer {
                         Err(status_to_error_data(&status))
                     }
                     Err(status) => Ok(ToolCallOutcome::ToolError {
-                        operation: "Episode creation",
+                        operation: "Episode opening",
                         status,
                     }),
                 }
@@ -604,7 +604,7 @@ impl ServerHandler for CoralMcpServer {
                 list_columns_tool(&tool_context),
             ];
             if self.options.episodes_enabled {
-                tools.push(create_episode_tool());
+                tools.push(open_episode_tool());
             }
             if self.options.feedback_enabled {
                 tools.push(feedback_tool());
