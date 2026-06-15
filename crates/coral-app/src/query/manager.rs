@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
-    SourceValidationReport, StatusCode, TableInfo,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RecipeRuntimeDefinition,
+    RuntimeSourcePackage, SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::{KeyValue, trace::Status as OtelStatus};
@@ -22,6 +22,7 @@ use crate::query::QueryAttribution;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
+use crate::recipes::manager::RecipeManager;
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{
@@ -47,6 +48,7 @@ pub(crate) struct ValidatedSource {
 pub(crate) struct QueryManager {
     config_store: ConfigStore,
     credential_manager: CredentialManager,
+    recipe_manager: RecipeManager,
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
@@ -60,9 +62,11 @@ impl QueryManager {
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
+        let recipe_manager = RecipeManager::new(config_store.clone(), layout.clone());
         Self {
             config_store,
             credential_manager,
+            recipe_manager,
             runtime_context,
             layout,
             engine_extensions_providers,
@@ -83,8 +87,8 @@ impl QueryManager {
             .load_query_sources(workspace_name, &config)
             .map_err(QueryManagerError::App)?;
         let runtime = self
-            .runtime_config(workspace_name, &sources, &config)
-            .map_err(QueryManagerError::App)?;
+            .runtime_config_with_recipes(workspace_name, &sources, &config)
+            .await?;
         CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
             .await
             .map_err(QueryManagerError::Core)
@@ -103,8 +107,8 @@ impl QueryManager {
             .load_query_sources(workspace_name, &config)
             .map_err(QueryManagerError::App)?;
         let runtime = self
-            .runtime_config(workspace_name, &sources, &config)
-            .map_err(QueryManagerError::App)?;
+            .runtime_config_with_recipes(workspace_name, &sources, &config)
+            .await?;
         CoralQuery::list_catalog(&sources, runtime, schema_filter)
             .await
             .map_err(QueryManagerError::Core)
@@ -124,8 +128,8 @@ impl QueryManager {
             .load_query_sources(workspace_name, &config)
             .map_err(QueryManagerError::App)?;
         let runtime = self
-            .runtime_config(workspace_name, &sources, &config)
-            .map_err(QueryManagerError::App)?;
+            .runtime_config_with_recipes(workspace_name, &sources, &config)
+            .await?;
         CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
             .await
             .map_err(QueryManagerError::Core)
@@ -151,8 +155,8 @@ impl QueryManager {
                     .load_query_sources(workspace_name, &config)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config(workspace_name, &sources, &config)
-                    .map_err(QueryManagerError::App)?;
+                    .runtime_config_with_recipes(workspace_name, &sources, &config)
+                    .await?;
                 CoralQuery::execute_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -182,8 +186,8 @@ impl QueryManager {
                     .load_query_sources(workspace_name, &config)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config(workspace_name, &sources, &config)
-                    .map_err(QueryManagerError::App)?;
+                    .runtime_config_with_recipes(workspace_name, &sources, &config)
+                    .await?;
                 CoralQuery::explain_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -360,6 +364,70 @@ impl QueryManager {
             .collect::<Vec<_>>();
         runtime.dependent_join = config.dependent_join_config(&selected_source_names)?;
         Ok(runtime)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "used by the recipe lifecycle API in a later stack branch"
+        )
+    )]
+    pub(crate) fn list_recipes(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<RecipeRuntimeDefinition>, QueryManagerError> {
+        self.recipe_manager
+            .list_recipes(workspace_name)
+            .map_err(QueryManagerError::App)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "used by the recipe lifecycle API in a later stack branch"
+        )
+    )]
+    pub(crate) async fn validate_recipe_yaml(
+        &self,
+        workspace_name: &WorkspaceName,
+        raw_yaml: &str,
+    ) -> Result<RecipeRuntimeDefinition, QueryManagerError> {
+        let config = self
+            .config_store
+            .load_config()
+            .map_err(QueryManagerError::App)?;
+        let sources = self
+            .load_query_sources(workspace_name, &config)
+            .map_err(QueryManagerError::App)?;
+        self.recipe_manager
+            .validate_user_recipe_yaml(
+                workspace_name,
+                &sources,
+                || self.runtime_config(workspace_name, &sources, &config),
+                raw_yaml,
+            )
+            .await
+            .map_err(QueryManagerError::App)
+    }
+
+    async fn runtime_config_with_recipes(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[QuerySource],
+        config: &AppConfig,
+    ) -> Result<QueryRuntimeConfig, QueryManagerError> {
+        let recipes = self
+            .recipe_manager
+            .load_runtime_recipes(workspace_name, selected_sources, || {
+                self.runtime_config(workspace_name, selected_sources, config)
+            })
+            .await
+            .map_err(QueryManagerError::App)?;
+        self.runtime_config(workspace_name, selected_sources, config)
+            .map(|runtime| runtime.with_recipes(recipes))
+            .map_err(QueryManagerError::App)
     }
 }
 
@@ -839,6 +907,129 @@ surfaces:
         assert_eq!(
             execution_to_rows(&execution),
             vec![json!({"id": 1, "title": "Generated runtime package"})]
+        );
+    }
+
+    #[tokio::test]
+    async fn user_recipe_publishes_table_function_and_executes_against_installed_source() {
+        let fake_home = tempfile::tempdir().expect("fake home");
+        let data_dir = fake_home.path().join("fixture-data");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        std::fs::write(
+            data_dir.join("messages.jsonl"),
+            r#"{"type":"user","text":"hello"}
+{"type":"assistant","text":"world"}
+"#,
+        )
+        .expect("write fixture");
+
+        let fixture = query_manager_with(
+            QueryRuntimeContext {
+                home_dir: Some(fake_home.path().to_path_buf()),
+                ..QueryRuntimeContext::default()
+            },
+            Vec::new(),
+        );
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_manager = SourceManager::new(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+        );
+        source_manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: r#"
+name: recipe_demo
+version: 0.1.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Fixture messages
+    format: jsonl
+    source:
+      location: file://~/fixture-data/
+      glob: "**/*.jsonl"
+    columns:
+      - name: type
+        type: Utf8
+      - name: text
+        type: Utf8
+"#
+                    .to_string(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import source");
+
+        let recipe_yaml = r"
+kind: recipe
+name: messages_by_type
+description: Messages filtered by sender type
+inputs:
+  kind:
+    type: string
+    required: true
+implementation:
+  kind: coral_sql
+  query: |
+    select text
+    from recipe_demo.messages
+    where type = $kind
+publish:
+  - table_function: recipes.messages_by_type
+";
+        let validated_recipe = fixture
+            .manager
+            .validate_recipe_yaml(&workspace_name, recipe_yaml)
+            .await
+            .expect("validate recipe");
+        fixture
+            .manager
+            .recipe_manager
+            .install_validated_user_recipe(&workspace_name, recipe_yaml, &validated_recipe)
+            .expect("install recipe");
+
+        let catalog = fixture
+            .manager
+            .list_catalog(&workspace_name, Some("recipes"))
+            .await
+            .expect("catalog");
+        let recipe_function = catalog.table_functions.first().expect("recipe function");
+        assert_eq!(recipe_function.function_name, "messages_by_type");
+        assert_eq!(
+            recipe_function
+                .result_columns
+                .first()
+                .expect("text result column")
+                .name,
+            "text"
+        );
+
+        let recipes = fixture
+            .manager
+            .list_recipes(&workspace_name)
+            .expect("recipes");
+        assert_eq!(recipes.len(), 1);
+        let recipe = recipes.first().expect("recipe");
+        let column = recipe.result_columns.first().expect("text result column");
+        assert_eq!(column.name, "text");
+
+        let execution = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                "select text from recipes.messages_by_type(kind => 'user')",
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("recipe query");
+        assert_eq!(
+            execution_to_rows(&execution),
+            vec![json!({"text": "hello"})]
         );
     }
 
