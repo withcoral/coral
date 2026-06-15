@@ -2,8 +2,10 @@ use std::collections::BTreeMap;
 
 use arrow::datatypes::DataType;
 use coral_engine::{
-    CoralQuery, RecipeRuntimeArgument, RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue,
-    RecipeRuntimeCall, RecipeRuntimeDefinition, RecipeRuntimeImplementation,
+    CoralQuery, QueryParameterValue, QueryParameters, RecipeRuntimeArgument,
+    RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue, RecipeRuntimeCall,
+    RecipeRuntimeDefinition, RecipeRuntimeImplementation, RecipeRuntimePublish,
+    RecipeRuntimeResultColumn,
 };
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
@@ -78,6 +80,30 @@ fn review_queue_recipe(source_name: &str) -> RecipeRuntimeDefinition {
         publish: Vec::new(),
         result_columns: Vec::new(),
     }
+}
+
+fn published_review_queue_recipe(source_name: &str) -> RecipeRuntimeDefinition {
+    let mut recipe = review_queue_recipe(source_name);
+    recipe.publish = vec![RecipeRuntimePublish::TableFunction {
+        schema: "recipes".to_string(),
+        name: "review_queue".to_string(),
+        description: String::new(),
+    }];
+    recipe.result_columns = vec![
+        RecipeRuntimeResultColumn {
+            name: "title".to_string(),
+            data_type: "Utf8".to_string(),
+            nullable: true,
+            description: String::new(),
+        },
+        RecipeRuntimeResultColumn {
+            name: "score".to_string(),
+            data_type: "Float64".to_string(),
+            nullable: true,
+            description: String::new(),
+        },
+    ];
+    recipe
 }
 
 #[tokio::test]
@@ -242,4 +268,132 @@ async fn infer_recipe_schema_uses_param_bound_coral_sql() {
     assert_eq!(title.data_type(), &DataType::Utf8);
     assert_eq!(score.name(), "score");
     assert_eq!(score.data_type(), &DataType::Float64);
+}
+
+#[tokio::test]
+async fn published_recipe_table_function_executes_recipe_sql() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "repo:withcoral/coral review"))
+        .and(query_param("search_type", "hybrid"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Review needed",
+                "score": 7.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest(
+        "published_recipe_search",
+        &server.uri(),
+    ));
+    let runtime = test_runtime().with_recipes(vec![published_review_queue_recipe(
+        "published_recipe_search",
+    )]);
+
+    let execution = CoralQuery::execute_sql(
+        &[source],
+        runtime,
+        "select title, score from recipes.review_queue(query => 'repo:withcoral/coral review', mode => 'hybrid')",
+    )
+    .await
+    .expect("published recipe table function should execute");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({
+            "title": "Review needed",
+            "score": 7.5
+        })]
+    );
+}
+
+#[tokio::test]
+async fn published_recipe_table_function_accepts_query_params() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "repo:withcoral/coral review"))
+        .and(query_param("search_type", "semantic"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Param review",
+                "score": 8.25
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest(
+        "published_param_recipe_search",
+        &server.uri(),
+    ));
+    let runtime = test_runtime().with_recipes(vec![published_review_queue_recipe(
+        "published_param_recipe_search",
+    )]);
+
+    let execution = CoralQuery::execute_sql_with_params(
+        &[source],
+        runtime,
+        "select title, score from recipes.review_queue(query => $query, mode => $mode)",
+        QueryParameters::from([
+            (
+                "query".to_string(),
+                QueryParameterValue::String("repo:withcoral/coral review".to_string()),
+            ),
+            (
+                "mode".to_string(),
+                QueryParameterValue::String("semantic".to_string()),
+            ),
+        ]),
+    )
+    .await
+    .expect("published recipe table function should accept params");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({
+            "title": "Param review",
+            "score": 8.25
+        })]
+    );
+}
+
+#[tokio::test]
+async fn published_recipe_table_function_is_cataloged() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest(
+        "catalog_recipe_search",
+        &server.uri(),
+    ));
+    let runtime =
+        test_runtime().with_recipes(vec![published_review_queue_recipe("catalog_recipe_search")]);
+
+    let catalog = CoralQuery::list_catalog(&[source], runtime, Some("recipes"))
+        .await
+        .expect("catalog should include recipe function");
+
+    assert!(catalog.tables.is_empty());
+    assert_eq!(catalog.table_functions.len(), 1);
+    let function = catalog
+        .table_functions
+        .first()
+        .expect("recipe table function");
+    assert_eq!(function.schema_name, "recipes");
+    assert_eq!(function.function_name, "review_queue");
+    assert_eq!(function.arguments.len(), 2);
+    assert_eq!(function.result_columns.len(), 2);
+    assert_eq!(
+        function
+            .result_columns
+            .first()
+            .expect("title result column")
+            .name,
+        "title"
+    );
 }
