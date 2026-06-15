@@ -24,7 +24,8 @@ use crate::backends::shared::filter_expr::{
 };
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
 use crate::backends::shared::mapping::{
-    convert_items, expr_reflects_filter_value, filter_items_by_column_values,
+    convert_items, expr_references_response_data, expr_reflects_filter_value,
+    filter_items_by_column_values,
 };
 use coral_spec::backends::http::HttpTableSpec;
 
@@ -304,18 +305,14 @@ impl TableProvider for HttpSourceTableProvider {
                 FilterExtraction::Contradiction => HashMap::new(),
             };
 
-        // A filter the selected request does not consume can only be enforced
-        // locally through a column carrying response data. A column whose
-        // expression renders from that same filter's value — `from_filter`,
-        // but also templates over `{{filter.x}}` or wrappers like coalesce or
-        // replace around either — reflects the filter value itself, so every
-        // row would "match" and the result set would be silently mislabeled.
-        // References to other filters are fine: consumed ones were applied by
-        // the request, and unconsumed active ones are enforced (or rejected)
-        // through their own columns. Filters no route ever consumes are
-        // deliberate client-side annotations and stay allowed; filters some
-        // other route consumes have real request semantics, so failing to
-        // route there must error instead of echoing.
+        // A routable filter the selected request does not consume can only be
+        // enforced locally through a column carrying response data. Columns
+        // backed only by query inputs, literals, or the filter being enforced
+        // are annotations, not backend evidence, so they can make every row
+        // appear to match and silently mislabel the result set. Filters no
+        // route ever consumes are deliberate client-side annotations and stay
+        // allowed; filters some route consumes have real request semantics, so
+        // failing to route there must error instead of echoing.
         if !local_filter_values.is_empty() {
             let mut routable_filters = self.backend.request_filter_names(&self.table.request);
             for route in &self.table.requests {
@@ -326,15 +323,17 @@ impl TableProvider for HttpSourceTableProvider {
                 if !routable_filters.contains(filter_name) {
                     continue;
                 }
-                let echoes_filter = self
+                let unenforceable_filter_column = self
                     .table
                     .columns()
                     .iter()
                     .find(|column| column.name == *filter_name)
                     .is_some_and(|column| {
-                        expr_reflects_filter_value(&column.resolved_expr(), filter_name)
+                        let expr = column.resolved_expr();
+                        expr_reflects_filter_value(&expr, filter_name)
+                            || !expr_references_response_data(&expr)
                     });
-                if echoes_filter {
+                if unenforceable_filter_column {
                     return Err(DataFusionError::External(Box::new(
                         ProviderQueryError::UnenforceableFilter {
                             schema: self.source_schema.clone(),

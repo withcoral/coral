@@ -281,6 +281,32 @@ pub(crate) fn expr_reflects_filter_value(expr: &ExprSpec, filter: &str) -> bool 
     }
 }
 
+/// Whether evaluating `expr` can read data from the backend response row.
+/// Pure filter, arg, literal, and null expressions are annotations over query
+/// inputs, not evidence that a row returned by the backend matches a value.
+pub(crate) fn expr_references_response_data(expr: &ExprSpec) -> bool {
+    match expr {
+        ExprSpec::Path { .. }
+        | ExprSpec::JoinArray { .. }
+        | ExprSpec::JoinArrayPath { .. }
+        | ExprSpec::TagValue { .. }
+        | ExprSpec::JoinTagValues { .. }
+        | ExprSpec::FirstArrayItemPath { .. }
+        | ExprSpec::ObjectFilterPath { .. }
+        | ExprSpec::CurrentRow => true,
+        ExprSpec::Coalesce { exprs } => exprs.iter().any(expr_references_response_data),
+        ExprSpec::IfPresent { check, .. }
+        | ExprSpec::FormatTimestamp { expr: check, .. }
+        | ExprSpec::Base64Decode { expr: check }
+        | ExprSpec::Replace { expr: check, .. } => expr_references_response_data(check),
+        ExprSpec::Template { values, .. } => values.values().any(expr_references_response_data),
+        ExprSpec::FromFilter { .. }
+        | ExprSpec::FromArg { .. }
+        | ExprSpec::Literal { .. }
+        | ExprSpec::Null => false,
+    }
+}
+
 /// Evaluate a `FormatTimestamp` expression, returning epoch **microseconds** as
 /// a `Value::Number` suitable for an Arrow `TimestampMicrosecondArray`.
 fn eval_format_timestamp(
@@ -515,8 +541,8 @@ fn to_bool(value: Option<Value>) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        convert_items, eval_template, expr_reflects_filter_value, filter_items_by_column_values,
-        parse_iso8601_micros,
+        convert_items, eval_template, expr_references_response_data, expr_reflects_filter_value,
+        filter_items_by_column_values, parse_iso8601_micros,
     };
     use crate::backends::schema_from_columns;
     use coral_spec::backends::http::HttpTableSpec;
@@ -744,6 +770,40 @@ mod tests {
             },
             "metric",
         ));
+    }
+
+    #[test]
+    fn expr_references_response_data_distinguishes_row_values_from_annotations() {
+        let from_filter = ExprSpec::FromFilter {
+            key: "owner".into(),
+        };
+        let path = ExprSpec::Path {
+            path: vec!["name".into()],
+        };
+
+        assert!(!expr_references_response_data(&from_filter));
+        assert!(!expr_references_response_data(&ExprSpec::Literal {
+            value: json!("open"),
+        }));
+        assert!(!expr_references_response_data(&ExprSpec::Template {
+            template: ParsedTemplate::parse("{{filter.owner}}").expect("template"),
+            values: HashMap::new(),
+        }));
+        assert!(expr_references_response_data(&path));
+        assert!(expr_references_response_data(&ExprSpec::ObjectFilterPath {
+            path: vec!["metrics".into()],
+            filter_key: "metric".into(),
+            item_path: vec![],
+        }));
+        assert!(expr_references_response_data(&ExprSpec::Replace {
+            expr: Box::new(path.clone()),
+            from: "-".into(),
+            to: "_".into(),
+        }));
+        assert!(expr_references_response_data(&ExprSpec::Template {
+            template: ParsedTemplate::parse("{{filter.owner}}/{{expr.name}}").expect("template"),
+            values: HashMap::from([("name".to_string(), path)]),
+        }));
     }
 
     #[test]
