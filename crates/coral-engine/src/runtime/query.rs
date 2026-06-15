@@ -15,8 +15,8 @@ use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
 use tokio::sync::OnceCell;
 use tracing::{Instrument as _, info_span};
 
-use crate::backends::compile_query_source;
 use crate::backends::http::ProviderQueryError;
+use crate::backends::{RegisteredSource, compile_query_source};
 use crate::runtime::catalog;
 use crate::runtime::dependent_join::error::resolver_rows_exceeded;
 use crate::runtime::dependent_join::optimizer;
@@ -28,7 +28,7 @@ use crate::runtime::error::{
 use crate::runtime::json::register_json_support;
 use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::query_planner::CoralQueryPlanner;
-use crate::runtime::recipes::{recipe_query_parameters, recipe_sql};
+use crate::runtime::recipes::{published_table_functions, recipe_query_parameters, recipe_sql};
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
@@ -63,6 +63,7 @@ struct FallbackRuntimeConfig {
     runtime_context: QueryRuntimeContext,
     dependent_join: DependentJoinConfig,
     memory: QueryMemoryConfig,
+    recipes: Vec<RecipeRuntimeDefinition>,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 }
@@ -114,6 +115,7 @@ async fn build_runtime_inner(
             runtime_context: runtime_context.clone(),
             dependent_join: dependent_join.clone(),
             memory: memory.clone(),
+            recipes: recipes.clone(),
             request_authenticators: request_authenticators.clone(),
             source_input_resolver: source_input_resolver.clone(),
         })
@@ -127,6 +129,7 @@ async fn build_runtime_inner(
         extensions.source_decorators.as_mut_slice(),
         &dependent_join,
         &memory,
+        &recipes,
     )
     .await?;
 
@@ -150,6 +153,7 @@ async fn build_registered_runtime(
     source_decorators: &mut [Box<dyn SourceDecorator>],
     dependent_join: &DependentJoinConfig,
     memory: &QueryMemoryConfig,
+    recipes: &[RecipeRuntimeDefinition],
 ) -> Result<RegisteredRuntime, CoreError> {
     let ctx = build_session_context(dependent_join, memory)?;
     let registration = register_runtime_sources(
@@ -161,13 +165,15 @@ async fn build_registered_runtime(
         source_decorators,
     )
     .await?;
-    catalog::register(&ctx, &registration.active_sources)
-        .map_err(|err| datafusion_to_core(&err, &[]))?;
+    let recipe_table_functions =
+        published_table_functions(recipes).map_err(|err| datafusion_to_core(&err, &[]))?;
+    let catalog_sources =
+        sources_with_recipe_table_functions(&registration.active_sources, recipe_table_functions);
+    catalog::register(&ctx, &catalog_sources).map_err(|err| datafusion_to_core(&err, &[]))?;
     let tables = catalog::collect_tables(&registration.active_sources);
-    let table_functions = catalog::collect_table_functions(&registration.active_sources);
+    let table_functions = catalog::collect_table_functions(&catalog_sources);
     let source_functions = SourceFunctionRegistry::new(
-        registration
-            .active_sources
+        catalog_sources
             .iter()
             .flat_map(|source| source.table_functions.iter()),
     );
@@ -583,7 +589,7 @@ fn apply_query_parameters(
     df.with_param_values(values)
 }
 
-fn reject_unknown_parameters(
+pub(crate) fn reject_unknown_parameters(
     plan: &LogicalPlan,
     params: &QueryParameters,
 ) -> Result<(), DataFusionError> {
@@ -612,7 +618,7 @@ fn reject_unknown_parameters(
     )))
 }
 
-fn parameter_scalar_value(value: &QueryParameterValue) -> ScalarValue {
+pub(crate) fn parameter_scalar_value(value: &QueryParameterValue) -> ScalarValue {
     match value {
         QueryParameterValue::String(value) => ScalarValue::Utf8(Some(value.clone())),
         QueryParameterValue::Integer(value) => ScalarValue::Int64(Some(*value)),
@@ -674,9 +680,28 @@ impl FallbackRuntimeConfig {
             source_decorators.as_mut_slice(),
             &self.dependent_join.without_rewrites(),
             &self.memory,
+            &self.recipes,
         )
         .await
     }
+}
+
+fn sources_with_recipe_table_functions(
+    active_sources: &[RegisteredSource],
+    recipe_table_functions: Vec<crate::backends::RegisteredTableFunction>,
+) -> Vec<RegisteredSource> {
+    if recipe_table_functions.is_empty() {
+        return active_sources.to_vec();
+    }
+
+    let mut sources = active_sources.to_vec();
+    sources.push(RegisteredSource {
+        schema_name: "recipes".to_string(),
+        tables: Vec::new(),
+        table_functions: recipe_table_functions,
+        inputs: Vec::new(),
+    });
+    sources
 }
 
 impl FallbackRuntime {
