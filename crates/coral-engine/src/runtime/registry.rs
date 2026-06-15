@@ -14,7 +14,7 @@ use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{CoreError, QuerySource, SourceDecorator, SourceFailurePolicy};
 
-const RESERVED_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin"];
+const RESERVED_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "public"];
 
 /// One selected query source together with its compiled backend artifact.
 ///
@@ -385,6 +385,17 @@ mod tests {
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("coral"),
+            "error message should mention the schema name"
+        );
+    }
+
+    #[test]
+    fn reserved_schema_public_is_rejected() {
+        let result = check_reserved_schema("public");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("public"),
             "error message should mention the schema name"
         );
     }

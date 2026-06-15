@@ -290,6 +290,35 @@ tables:
     }
 
     #[test]
+    fn reserved_source_name_is_rejected() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: public
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect_err("reserved source name should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("source name 'public' is reserved"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn lookup_key_on_file_jsonl_rejects_at_spec_layer() {
         let error = parse_source_manifest_yaml(
             r"

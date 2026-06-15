@@ -85,6 +85,28 @@ surfaces:
 }
 
 #[test]
+fn reserved_default_relation_namespace_is_rejected() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: public
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+",
+    )
+    .expect_err("reserved relation namespace should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source surface relation namespace 'public' is reserved"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn rejects_multiple_surfaces_omitting_namespace_suffix() {
     let error = parse_source_manifest_yaml(
         r"

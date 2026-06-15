@@ -12,7 +12,7 @@ use crate::inputs::{
 };
 use crate::{
     HeaderSpec, ManifestError, ManifestInputSpec, ParsedTemplate, Result, TemplateNamespace,
-    validate_test_queries,
+    validate_reserved_source_schema_name, validate_test_queries,
 };
 
 #[derive(Debug, Clone)]
@@ -421,7 +421,10 @@ fn validate_relation_namespace(
     let valid = matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
     if valid {
-        Ok(())
+        validate_reserved_source_schema_name(
+            relation_namespace,
+            "source surface relation namespace",
+        )
     } else {
         Err(ManifestError::validation(format!(
             "source '{source_name}' surface '{surface_id}' relation namespace '{relation_namespace}' must match [a-z][a-z0-9_]*"
