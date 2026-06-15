@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -38,6 +38,7 @@ impl RowFetcher for McpFetchPlan {
     async fn fetch(&self) -> Result<Vec<Value>> {
         let mut all_rows = Vec::new();
         let mut next_cursor: Option<Value> = None;
+        let mut seen_cursors = BTreeSet::new();
         let mut page_count = 0usize;
         let max_pages = self
             .pagination
@@ -86,7 +87,20 @@ impl RowFetcher for McpFetchPlan {
                 break;
             };
             match next_page_cursor(pagination, &payload) {
-                Some(cursor) => next_cursor = Some(cursor),
+                Some(cursor) => {
+                    let cursor_key = cursor_identity(&cursor);
+                    if !seen_cursors.insert(cursor_key.clone()) {
+                        return Err(DataFusionError::External(Box::new(
+                            McpProviderQueryError::Pagination {
+                                source_schema: self.source_schema.clone(),
+                                relation: self.relation.clone(),
+                                tool: self.tool_name.clone(),
+                                detail: format!("returned repeated cursor {cursor_key}"),
+                            },
+                        )));
+                    }
+                    next_cursor = Some(cursor);
+                }
                 None => break,
             }
         }
@@ -117,6 +131,13 @@ impl McpFetchPlan {
             arguments.insert(pagination.cursor_arg.clone(), cursor.clone());
         }
         Ok(arguments)
+    }
+}
+
+fn cursor_identity(cursor: &Value) -> String {
+    match cursor {
+        Value::String(text) => format!("'{text}'"),
+        other => other.to_string(),
     }
 }
 
