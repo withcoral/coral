@@ -526,6 +526,15 @@ impl QueryRuntimeAdapter {
         ))
     }
 
+    pub(crate) async fn infer_sql_schema(
+        &self,
+        sql: &str,
+        params: &QueryParameters,
+    ) -> Result<Arc<arrow::datatypes::Schema>, CoreError> {
+        let df = self.sql_dataframe(sql, params).await?;
+        Ok(Arc::new(df.schema().as_arrow().clone()))
+    }
+
     async fn sql_dataframe(
         &self,
         sql: &str,

@@ -2,11 +2,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::error::{DataFusionError, Result};
 
+use crate::runtime::query::QueryRuntimeAdapter;
 use crate::{
-    QueryParameterValue, QueryParameters, RecipeRuntimeArgument, RecipeRuntimeArgumentType,
-    RecipeRuntimeArgumentValue, RecipeRuntimeDefinition, RecipeRuntimeImplementation,
+    CoreError, QueryParameterValue, QueryParameters, RecipeRuntimeArgument,
+    RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue, RecipeRuntimeDefinition,
+    RecipeRuntimeImplementation,
 };
 
 pub(crate) fn recipe_sql(recipe: &RecipeRuntimeDefinition) -> &str {
@@ -29,6 +32,208 @@ pub(crate) fn recipe_query_parameters(
             Ok((argument.name.clone(), query_value))
         })
         .collect()
+}
+
+pub(crate) async fn infer_recipe_schema(
+    query_runtime: &QueryRuntimeAdapter,
+    recipe: &RecipeRuntimeDefinition,
+) -> Result<std::sync::Arc<Schema>, CoreError> {
+    let (sample_schema, sample_values) = infer_recipe_sample_schema(query_runtime, recipe).await?;
+    let Some(null_values) = recipe_optional_null_values(recipe, &sample_values) else {
+        return Ok(sample_schema);
+    };
+    let null_schema = infer_recipe_schema_with_values(query_runtime, recipe, &null_values).await?;
+    merge_recipe_inferred_schemas(
+        recipe.name.as_str(),
+        sample_schema.as_ref(),
+        null_schema.as_ref(),
+    )
+}
+
+async fn infer_recipe_sample_schema(
+    query_runtime: &QueryRuntimeAdapter,
+    recipe: &RecipeRuntimeDefinition,
+) -> Result<
+    (
+        std::sync::Arc<Schema>,
+        BTreeMap<String, RecipeRuntimeArgumentValue>,
+    ),
+    CoreError,
+> {
+    let mut sample_values = recipe_sample_values(recipe);
+    let max_attempts = sample_values.len() + 1;
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match infer_recipe_schema_with_values(query_runtime, recipe, &sample_values).await {
+            Ok(schema) => return Ok((schema, sample_values)),
+            Err(error)
+                if attempts < max_attempts
+                    && update_recipe_sample_from_allowed_value(&error, &mut sample_values) => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn infer_recipe_schema_with_values(
+    query_runtime: &QueryRuntimeAdapter,
+    recipe: &RecipeRuntimeDefinition,
+    values: &BTreeMap<String, RecipeRuntimeArgumentValue>,
+) -> Result<std::sync::Arc<Schema>, CoreError> {
+    let params = recipe_query_parameters(recipe, values)
+        .map_err(|error| CoreError::InvalidInput(error.to_string()))?;
+    query_runtime
+        .infer_sql_schema(recipe_sql(recipe), &params)
+        .await
+}
+
+fn recipe_sample_values(
+    recipe: &RecipeRuntimeDefinition,
+) -> BTreeMap<String, RecipeRuntimeArgumentValue> {
+    recipe
+        .arguments
+        .iter()
+        .map(|argument| {
+            (
+                argument.name.clone(),
+                recipe_sample_value(argument.data_type, &argument.name),
+            )
+        })
+        .collect()
+}
+
+fn recipe_optional_null_values(
+    recipe: &RecipeRuntimeDefinition,
+    sample_values: &BTreeMap<String, RecipeRuntimeArgumentValue>,
+) -> Option<BTreeMap<String, RecipeRuntimeArgumentValue>> {
+    if recipe.arguments.iter().all(|argument| argument.required) {
+        return None;
+    }
+    Some(
+        recipe
+            .arguments
+            .iter()
+            .map(|argument| {
+                let value = if argument.required {
+                    sample_values
+                        .get(&argument.name)
+                        .cloned()
+                        .unwrap_or_else(|| recipe_sample_value(argument.data_type, &argument.name))
+                } else {
+                    RecipeRuntimeArgumentValue::Null
+                };
+                (argument.name.clone(), value)
+            })
+            .collect(),
+    )
+}
+
+fn recipe_sample_value(
+    data_type: RecipeRuntimeArgumentType,
+    argument_name: &str,
+) -> RecipeRuntimeArgumentValue {
+    match data_type {
+        RecipeRuntimeArgumentType::String => {
+            RecipeRuntimeArgumentValue::String(format!("__coral_recipe_sample_{argument_name}"))
+        }
+        RecipeRuntimeArgumentType::Integer => RecipeRuntimeArgumentValue::Integer(0),
+        RecipeRuntimeArgumentType::Boolean => RecipeRuntimeArgumentValue::Boolean(false),
+    }
+}
+
+fn update_recipe_sample_from_allowed_value(
+    error: &CoreError,
+    sample_values: &mut BTreeMap<String, RecipeRuntimeArgumentValue>,
+) -> bool {
+    let message = error.to_string();
+    let Some(allowed_value) = first_allowed_source_function_value(&message) else {
+        return false;
+    };
+    for sample in sample_values.values_mut() {
+        if message.contains(sample_error_value(sample).as_str())
+            && let Some(value) = parse_allowed_value_for_sample(sample, allowed_value)
+        {
+            *sample = value;
+            return true;
+        }
+    }
+    false
+}
+
+fn sample_error_value(sample: &RecipeRuntimeArgumentValue) -> String {
+    match sample {
+        RecipeRuntimeArgumentValue::String(value) => value.clone(),
+        RecipeRuntimeArgumentValue::Integer(value) => value.to_string(),
+        RecipeRuntimeArgumentValue::Boolean(value) => value.to_string(),
+        RecipeRuntimeArgumentValue::Null => "NULL".to_string(),
+    }
+}
+
+fn parse_allowed_value_for_sample(
+    sample: &RecipeRuntimeArgumentValue,
+    allowed_value: &str,
+) -> Option<RecipeRuntimeArgumentValue> {
+    match sample {
+        RecipeRuntimeArgumentValue::String(_) => Some(RecipeRuntimeArgumentValue::String(
+            allowed_value.to_string(),
+        )),
+        RecipeRuntimeArgumentValue::Integer(_) => allowed_value
+            .parse()
+            .ok()
+            .map(RecipeRuntimeArgumentValue::Integer),
+        RecipeRuntimeArgumentValue::Boolean(_) => allowed_value
+            .parse()
+            .ok()
+            .map(RecipeRuntimeArgumentValue::Boolean),
+        RecipeRuntimeArgumentValue::Null => None,
+    }
+}
+
+fn first_allowed_source_function_value(message: &str) -> Option<&str> {
+    let (_, values) = message.split_once("expected one of: ")?;
+    values
+        .split([',', '\n'])
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn merge_recipe_inferred_schemas(
+    recipe_name: &str,
+    sample_schema: &Schema,
+    null_schema: &Schema,
+) -> Result<std::sync::Arc<Schema>, CoreError> {
+    if sample_schema.fields().len() != null_schema.fields().len() {
+        return Err(CoreError::FailedPrecondition(format!(
+            "recipe '{recipe_name}' inferred different result column counts for sample and omitted optional arguments"
+        )));
+    }
+
+    let fields = sample_schema
+        .fields()
+        .iter()
+        .zip(null_schema.fields())
+        .map(|(sample, null)| {
+            if sample.name() != null.name()
+                || !compatible_recipe_data_type(sample.data_type(), null.data_type())
+            {
+                return Err(CoreError::FailedPrecondition(format!(
+                    "recipe '{recipe_name}' inferred incompatible result column '{}' for omitted optional arguments",
+                    sample.name()
+                )));
+            }
+            Ok(Field::new(
+                sample.name(),
+                sample.data_type().clone(),
+                sample.is_nullable() || null.is_nullable(),
+            ))
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+    Ok(std::sync::Arc::new(Schema::new(fields)))
+}
+
+fn compatible_recipe_data_type(left: &DataType, right: &DataType) -> bool {
+    left == right || matches!(left, DataType::Null) || matches!(right, DataType::Null)
 }
 
 fn reject_unknown_arguments(
