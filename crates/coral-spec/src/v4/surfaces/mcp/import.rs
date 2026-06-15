@@ -91,7 +91,14 @@ impl<'a> McpImporter<'a> {
     }
 
     fn import_tool(&mut self, tool: &McpToolDescriptor, operation_id: &str) -> IrOperation {
-        let inputs = self.import_inputs(tool);
+        let mut diagnostics = Vec::new();
+        let inputs = self.import_inputs(tool, operation_id, &mut diagnostics);
+        let input_schema_complete = diagnostics.iter().all(|diagnostic| {
+            diagnostic.code != "MCP_INPUT_SCHEMA_REF_UNSUPPORTED"
+                && diagnostic.code != "MCP_INPUT_SCHEMA_REF_NOT_FOUND"
+                && diagnostic.code != "MCP_INPUT_SCHEMA_COMPOSITION_UNSUPPORTED"
+                && diagnostic.code != "MCP_INPUT_SCHEMA_CONFLICT"
+        });
         let output = self.import_output(operation_id, tool.output_schema.as_ref());
         let pagination = infer_mcp_pagination(&inputs, &output, tool.output_schema.as_ref());
         IrOperation {
@@ -103,7 +110,7 @@ impl<'a> McpImporter<'a> {
                 .or_else(|| tool.title.clone())
                 .unwrap_or_default(),
             deprecated: false,
-            read_only: tool.read_only_hint.unwrap_or(false),
+            read_only: tool.read_only_hint.unwrap_or(false) && input_schema_complete,
             inputs,
             output,
             entity: Some(IrEntityCandidate {
@@ -115,28 +122,29 @@ impl<'a> McpImporter<'a> {
                 tool_name: tool.name.clone(),
                 pagination,
             }),
-            diagnostics: Vec::new(),
+            diagnostics,
         }
     }
 
-    fn import_inputs(&mut self, tool: &McpToolDescriptor) -> Vec<IrOperationInput> {
-        let Some(schema) = tool.input_schema.as_object() else {
+    fn import_inputs(
+        &mut self,
+        tool: &McpToolDescriptor,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Vec<IrOperationInput> {
+        let mut resolving_refs = BTreeSet::new();
+        let Some(shape) = input_object_shape(
+            &tool.input_schema,
+            &tool.input_schema,
+            &self.surface.id,
+            operation_id,
+            &mut resolving_refs,
+            diagnostics,
+        ) else {
             return Vec::new();
         };
-        let required = schema
-            .get("required")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
-            return Vec::new();
-        };
-        properties
+        shape
+            .properties
             .iter()
             .map(|(name, property)| {
                 let data_type = schema_scalar_type(property);
@@ -144,7 +152,7 @@ impl<'a> McpImporter<'a> {
                 IrOperationInput {
                     name: name.clone(),
                     location: IrInputLocation::ToolArg,
-                    required: required.contains(name.as_str()),
+                    required: shape.required.contains(name.as_str()),
                     data_type,
                     default_value: property_default(property),
                     description: schema_description(property),
@@ -294,6 +302,169 @@ impl<'a> McpImporter<'a> {
         });
         id
     }
+}
+
+#[derive(Default)]
+struct InputObjectShape {
+    properties: BTreeMap<String, Value>,
+    required: BTreeSet<String>,
+}
+
+fn input_object_shape(
+    root: &Value,
+    schema: &Value,
+    surface_id: &str,
+    operation_id: &str,
+    resolving_refs: &mut BTreeSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<InputObjectShape> {
+    let schema = resolve_input_schema_ref(
+        root,
+        schema,
+        surface_id,
+        operation_id,
+        resolving_refs,
+        diagnostics,
+    )?;
+
+    if schema.get("anyOf").is_some() || schema.get("oneOf").is_some() {
+        diagnostics.push(Diagnostic::warning(
+            "MCP_INPUT_SCHEMA_COMPOSITION_UNSUPPORTED",
+            "MCP input schema uses anyOf/oneOf, which cannot be safely imported as SQL inputs",
+            surface_id.to_string(),
+            Some(operation_id.to_string()),
+        ));
+        return None;
+    }
+
+    let mut shape = direct_input_object_shape(schema);
+    if let Some(all_of) = schema.get("allOf").and_then(Value::as_array) {
+        for item in all_of {
+            let Some(item_shape) = input_object_shape(
+                root,
+                item,
+                surface_id,
+                operation_id,
+                resolving_refs,
+                diagnostics,
+            ) else {
+                return None;
+            };
+            if !merge_input_object_shape(
+                &mut shape,
+                item_shape,
+                surface_id,
+                operation_id,
+                diagnostics,
+            ) {
+                return None;
+            }
+        }
+    }
+    Some(shape)
+}
+
+fn resolve_input_schema_ref<'a>(
+    root: &'a Value,
+    schema: &'a Value,
+    surface_id: &str,
+    operation_id: &str,
+    resolving_refs: &mut BTreeSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<&'a Value> {
+    let Some(reference) = schema.get("$ref").and_then(Value::as_str) else {
+        return Some(schema);
+    };
+    if !reference.starts_with("#/") {
+        diagnostics.push(Diagnostic::warning(
+            "MCP_INPUT_SCHEMA_REF_UNSUPPORTED",
+            format!("MCP input schema external reference '{reference}' is unsupported"),
+            surface_id.to_string(),
+            Some(operation_id.to_string()),
+        ));
+        return None;
+    }
+    if !resolving_refs.insert(reference.to_string()) {
+        diagnostics.push(Diagnostic::warning(
+            "MCP_INPUT_SCHEMA_REF_UNSUPPORTED",
+            format!("MCP input schema reference cycle includes '{reference}'"),
+            surface_id.to_string(),
+            Some(operation_id.to_string()),
+        ));
+        return None;
+    }
+    let pointer = reference.strip_prefix('#').unwrap_or(reference);
+    let resolved = root.pointer(pointer);
+    resolving_refs.remove(reference);
+    if let Some(resolved) = resolved {
+        Some(resolved)
+    } else {
+        diagnostics.push(Diagnostic::warning(
+            "MCP_INPUT_SCHEMA_REF_NOT_FOUND",
+            format!("MCP input schema reference '{reference}' was not found"),
+            surface_id.to_string(),
+            Some(operation_id.to_string()),
+        ));
+        None
+    }
+}
+
+fn direct_input_object_shape(schema: &Value) -> InputObjectShape {
+    let Some(schema) = schema.as_object() else {
+        return InputObjectShape::default();
+    };
+    let required = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| {
+            properties
+                .iter()
+                .map(|(name, property)| (name.clone(), property.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    InputObjectShape {
+        properties,
+        required,
+    }
+}
+
+fn merge_input_object_shape(
+    target: &mut InputObjectShape,
+    source: InputObjectShape,
+    surface_id: &str,
+    operation_id: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    for (name, property) in source.properties {
+        if target
+            .properties
+            .get(&name)
+            .is_some_and(|existing| existing != &property)
+        {
+            diagnostics.push(Diagnostic::warning(
+                "MCP_INPUT_SCHEMA_CONFLICT",
+                format!("MCP input schema defines conflicting property '{name}'"),
+                surface_id.to_string(),
+                Some(operation_id.to_string()),
+            ));
+            return false;
+        }
+        target.properties.insert(name, property);
+    }
+    target.required.extend(source.required);
+    true
 }
 
 fn schema_scalar_type(schema: &Value) -> IrScalarType {
@@ -576,6 +747,104 @@ surfaces:
             .find(|input| input.name == "since")
             .expect("since input");
         assert_eq!(since.data_type, IrScalarType::Timestamp);
+    }
+
+    #[test]
+    fn imports_ref_and_all_of_input_schema_properties() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "$defs": {
+                        "Pagination": {
+                            "type": "object",
+                            "properties": {
+                                "cursor": {"type": "string"}
+                            }
+                        }
+                    },
+                    "allOf": [
+                        {"$ref": "#/$defs/Pagination"},
+                        {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string"}
+                            },
+                            "required": ["query"]
+                        }
+                    ]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "search_items");
+        assert!(operation.diagnostics.is_empty());
+
+        let cursor = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "cursor")
+            .expect("cursor input");
+        assert_eq!(cursor.data_type, IrScalarType::String);
+        assert!(!cursor.required);
+
+        let query = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "query")
+            .expect("query input");
+        assert_eq!(query.data_type, IrScalarType::String);
+        assert!(query.required);
+    }
+
+    #[test]
+    fn hides_tools_with_unsupported_composed_input_schemas() {
+        let manifest = manifest();
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("surface");
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string"}
+                            },
+                            "required": ["query"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"}
+                            },
+                            "required": ["id"]
+                        }
+                    ]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_mcp_surface(v4, surface, &catalog).expect("import");
+        let operation = operation(&ir, "search_items");
+        assert!(!operation.read_only);
+        assert!(
+            operation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_COMPOSITION_UNSUPPORTED")
+        );
+
+        let projections =
+            generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("projections");
+        let projection = projections.projections.first().expect("projection");
+        assert_eq!(projection.visibility, ProjectionVisibility::Hidden);
     }
 
     #[test]
