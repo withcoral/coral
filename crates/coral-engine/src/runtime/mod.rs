@@ -9,6 +9,7 @@ pub(crate) mod memory;
 pub(crate) mod pattern_validator;
 pub(crate) mod query;
 pub(crate) mod query_planner;
+pub(crate) mod recipes;
 pub(crate) mod registry;
 pub(crate) mod schema_provider;
 pub(crate) mod source_functions;
