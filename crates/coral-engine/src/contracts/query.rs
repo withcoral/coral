@@ -13,7 +13,7 @@ use coral_spec::backends::mcp::McpSourceManifest;
 use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
 use opentelemetry::Context as OtelContext;
 
-use super::ColumnInfo;
+use super::{ColumnInfo, RecipeRuntimeDefinition};
 use crate::EngineExtensions;
 
 /// One managed source selected into the current query runtime.
@@ -380,6 +380,8 @@ pub struct QueryRuntimeConfig {
     pub extensions: EngineExtensions,
     /// Runtime policy for dependent predicate pushdown.
     pub dependent_join: DependentJoinConfig,
+    /// Validated recipes available in this runtime build.
+    pub recipes: Vec<RecipeRuntimeDefinition>,
 }
 
 impl QueryRuntimeConfig {
@@ -390,7 +392,15 @@ impl QueryRuntimeConfig {
             context,
             extensions,
             dependent_join: DependentJoinConfig::default(),
+            recipes: Vec::new(),
         }
+    }
+
+    /// Attaches validated recipes to this runtime config.
+    #[must_use]
+    pub fn with_recipes(mut self, recipes: Vec<RecipeRuntimeDefinition>) -> Self {
+        self.recipes = recipes;
+        self
     }
 }
 

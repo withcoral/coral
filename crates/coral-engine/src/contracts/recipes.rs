@@ -13,6 +13,15 @@ pub struct RecipeRuntimeDefinition {
     pub implementation: RecipeRuntimeImplementation,
 }
 
+/// One trusted recipe invocation.
+#[derive(Debug, Clone)]
+pub struct RecipeRuntimeCall {
+    /// Recipe id to call.
+    pub recipe_name: String,
+    /// Argument values keyed by recipe argument name.
+    pub arguments: std::collections::BTreeMap<String, RecipeRuntimeArgumentValue>,
+}
+
 /// One typed recipe argument.
 #[derive(Debug, Clone)]
 pub struct RecipeRuntimeArgument {

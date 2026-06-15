@@ -70,10 +70,10 @@ pub use contracts::{
     DescribeTableInfo, EffectiveDependentJoinConfig, QueryExecution, QueryParameterValue,
     QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
     QueryTestFailure, QueryTestResult, QueryTestSuccess, RecipeRuntimeArgument,
-    RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue, RecipeRuntimeDefinition,
-    RecipeRuntimeImplementation, RuntimeSourceComponent, RuntimeSourcePackage,
-    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
-    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue, RecipeRuntimeCall,
+    RecipeRuntimeDefinition, RecipeRuntimeImplementation, RuntimeSourceComponent,
+    RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
+    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
@@ -179,6 +179,24 @@ impl CoralQuery {
         runtime::query::build_runtime(sources, runtime)
             .await?
             .execute_sql(sql, &params)
+            .await
+    }
+
+    /// Executes one validated runtime recipe by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if source compilation fails, if the named recipe
+    /// is not available in this runtime build, if recipe argument validation
+    /// fails, or if the recipe's read-only SQL cannot execute.
+    pub async fn execute_recipe(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        call: RecipeRuntimeCall,
+    ) -> Result<QueryExecution, CoreError> {
+        runtime::query::build_runtime(sources, runtime)
+            .await?
+            .execute_recipe(&call)
             .await
     }
 

@@ -28,6 +28,7 @@ use crate::runtime::error::{
 use crate::runtime::json::register_json_support;
 use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::query_planner::CoralQueryPlanner;
+use crate::runtime::recipes::{recipe_query_parameters, recipe_sql};
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
@@ -35,8 +36,9 @@ use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
     CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, QueryExecution,
     QueryParameterValue, QueryParameters, QueryPlan, QueryResultObserver, QueryResultObserverError,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceDecorator,
-    SourceInputResolver, TableFunctionInfo, TableInfo,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RecipeRuntimeCall,
+    RecipeRuntimeDefinition, RequestAuthenticator, SourceDecorator, SourceInputResolver,
+    TableFunctionInfo, TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -45,6 +47,7 @@ pub(crate) struct QueryRuntimeAdapter {
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
+    recipes: Vec<RecipeRuntimeDefinition>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
 }
 
@@ -91,6 +94,7 @@ async fn build_runtime_inner(
         context: runtime_context,
         dependent_join,
         mut extensions,
+        recipes,
     } = runtime;
     let request_authenticators = extensions.request_authenticators.clone();
     let source_input_resolver = extensions.source_input_resolver.clone();
@@ -127,6 +131,7 @@ async fn build_runtime_inner(
         tables: primary.tables,
         table_functions: primary.table_functions,
         failures: primary.failures,
+        recipes,
         query_result_observers: extensions.query_result_observers,
     })
 }
@@ -371,6 +376,29 @@ impl QueryRuntimeAdapter {
             }
             Err(error) => Err(self.sql_execution_failure_to_core(error, sql)),
         }
+    }
+
+    pub(crate) async fn execute_recipe(
+        &self,
+        call: &RecipeRuntimeCall,
+    ) -> Result<QueryExecution, CoreError> {
+        let recipe = self.find_recipe(&call.recipe_name)?;
+        let params = recipe_query_parameters(recipe, &call.arguments).map_err(|err| {
+            datafusion_to_core_with_sql_and_table_functions(
+                &err,
+                &self.tables,
+                &self.table_functions,
+                Some(recipe_sql(recipe)),
+            )
+        })?;
+        self.execute_sql(recipe_sql(recipe), &params).await
+    }
+
+    fn find_recipe(&self, recipe_name: &str) -> Result<&RecipeRuntimeDefinition, CoreError> {
+        self.recipes
+            .iter()
+            .find(|recipe| recipe.name == recipe_name)
+            .ok_or_else(|| CoreError::InvalidInput(format!("unknown recipe '{recipe_name}'")))
     }
 
     async fn execute_sql_once(
@@ -641,6 +669,7 @@ mod tests {
             }],
             table_functions: Vec::new(),
             failures: Vec::new(),
+            recipes: Vec::new(),
             query_result_observers: Vec::new(),
         }
     }
