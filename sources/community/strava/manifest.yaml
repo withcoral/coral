@@ -59,10 +59,23 @@ auth:
 
 tables:
   - name: activities
-    description: "Athlete's activity history — runs, rides, swims. Ordered by most recent."
+    description: "Athlete's activity history — runs, rides, swims. Ordered by most recent. Use before/after filters (epoch seconds) to narrow the date range."
+    fetch_limit_default: 200
+    filters:
+      - name: before
+        description: "Epoch timestamp — only return activities before this time."
+      - name: after
+        description: "Epoch timestamp — only return activities after this time."
     request:
       path: "/athlete/activities"
       method: GET
+      query:
+        - name: before
+          from: filter
+          key: before
+        - name: after
+          from: filter
+          key: after
     pagination:
       mode: page
       page_size:
@@ -149,7 +162,7 @@ tables:
         type: Utf8
 
   - name: athlete_stats
-    description: "Aggregate running and riding totals for the athlete — all time, recent, and year-to-date."
+    description: "Aggregate running, riding, and swimming totals for the athlete — all time, recent, and year-to-date."
     request:
       path: "/athletes/{{input.STRAVA_ATHLETE_ID}}/stats"
       method: GET
@@ -184,7 +197,20 @@ tables:
         type: Int64
       - name: ytd_ride_totals__distance
         type: Float64
+      - name: recent_swim_totals__count
+        type: Int64
+      - name: recent_swim_totals__distance
+        type: Float64
+      - name: ytd_swim_totals__count
+        type: Int64
+      - name: ytd_swim_totals__distance
+        type: Float64
+      - name: all_swim_totals__count
+        type: Int64
+      - name: all_swim_totals__distance
+        type: Float64
 
 test_queries:
   - "SELECT name, sport_type, distance, moving_time, start_date_local FROM strava.activities LIMIT 5"
   - "SELECT firstname, lastname, city, weight FROM strava.athlete"
+  - "SELECT recent_run_totals__count, recent_run_totals__distance, recent_swim_totals__count FROM strava.athlete_stats"

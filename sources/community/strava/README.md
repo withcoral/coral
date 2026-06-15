@@ -35,14 +35,16 @@ coral source test strava
 ### Live Query - Recent Activities
 
 ```sql
-SELECT name, sport_type, distance, moving_time, start_date_local 
-FROM strava.activities 
+SELECT name, sport_type, distance, moving_time, start_date_local
+FROM strava.activities
 LIMIT 5;
 ```
+
+The `activities` table supports optional `before` and `after` filters (epoch timestamps) to narrow the date range and respect [Strava rate limits](https://developers.strava.com/docs/rate-limits/).
 
 ### Live Query - Athlete Stats
 
 ```sql
-SELECT firstname, lastname, city, weight 
+SELECT firstname, lastname, city, weight
 FROM strava.athlete;
 ```
