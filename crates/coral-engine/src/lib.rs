@@ -71,9 +71,10 @@ pub use contracts::{
     QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
     QueryTestFailure, QueryTestResult, QueryTestSuccess, RecipeRuntimeArgument,
     RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue, RecipeRuntimeCall,
-    RecipeRuntimeDefinition, RecipeRuntimeImplementation, RuntimeSourceComponent,
-    RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
-    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    RecipeRuntimeDefinition, RecipeRuntimeImplementation, RecipeRuntimePublish,
+    RecipeRuntimeResultColumn, RuntimeSourceComponent, RuntimeSourcePackage,
+    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
+    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.

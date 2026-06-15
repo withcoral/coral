@@ -75,6 +75,8 @@ fn review_queue_recipe(source_name: &str) -> RecipeRuntimeDefinition {
                 "select title, score from {source_name}.search_issues(q => $query, mode => $mode)"
             ),
         },
+        publish: Vec::new(),
+        result_columns: Vec::new(),
     }
 }
 

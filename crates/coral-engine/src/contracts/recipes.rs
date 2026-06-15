@@ -11,6 +11,10 @@ pub struct RecipeRuntimeDefinition {
     pub arguments: Vec<RecipeRuntimeArgument>,
     /// Executable recipe implementation.
     pub implementation: RecipeRuntimeImplementation,
+    /// Public surfaces requested by the recipe.
+    pub publish: Vec<RecipeRuntimePublish>,
+    /// Result columns inferred during app/runtime validation.
+    pub result_columns: Vec<RecipeRuntimeResultColumn>,
 }
 
 /// One trusted recipe invocation.
@@ -67,4 +71,31 @@ pub enum RecipeRuntimeImplementation {
         /// SQL query executed by Coral after typed argument binding.
         query: String,
     },
+}
+
+/// Public surface requested by one recipe.
+#[derive(Debug, Clone)]
+pub enum RecipeRuntimePublish {
+    /// Public SQL table-function wrapper.
+    TableFunction {
+        /// SQL schema.
+        schema: String,
+        /// SQL function name.
+        name: String,
+        /// Optional publish-target-specific description.
+        description: String,
+    },
+}
+
+/// One column returned by a recipe.
+#[derive(Debug, Clone)]
+pub struct RecipeRuntimeResultColumn {
+    /// Column name.
+    pub name: String,
+    /// Arrow/DataFusion type rendered as text.
+    pub data_type: String,
+    /// Whether the column can contain null values.
+    pub nullable: bool,
+    /// Optional user-facing description.
+    pub description: String,
 }
