@@ -13,8 +13,6 @@ coral --enable-<FEATURE> <COMMAND>
 coral --disable-<FEATURE> <COMMAND>
 coral --enable-feedback mcp-stdio
 coral --disable-feedback mcp-stdio
-coral --enable-episodes mcp-stdio
-coral --disable-episodes mcp-stdio
 ```
 
 These flags do not edit `config.toml`. Use `coral features enable <FEATURE>` or
@@ -195,7 +193,6 @@ feature is listed in [Configuration](/reference/configuration#runtime-features).
 
 ```shellscript
 coral features enable feedback
-coral features enable episodes
 ```
 
 ### `coral features disable <FEATURE>`
@@ -204,7 +201,6 @@ Persistently disables an experimental runtime feature.
 
 ```shellscript
 coral features disable feedback
-coral features disable episodes
 ```
 
 ## `coral ui`
@@ -259,8 +255,6 @@ By default, this server exposes:
 | Resource | `coral://tables` | JSON summaries of query-visible database tables, including Coral catalog tables and required filters |
 
 When the `feedback` feature is enabled, the server also exposes a non-read-only `feedback` tool for blocked-agent reports. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.
-
-When the `episodes` feature is enabled, the server also exposes a non-read-only `create_episode` tool. Agents can call it once at the start of a task, then pass the returned `episode_id` on follow-up Coral tool calls so Coral can attribute those calls to the task intent. Episode records are stored locally; indexing and retrieval over those records are still in progress.
 
 Catalog helpers include the `coral` system schema, so `list_catalog`,
 `search_catalog`, `describe_table`, `list_columns`, and `coral://tables` can discover

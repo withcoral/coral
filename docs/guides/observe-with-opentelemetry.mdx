@@ -106,8 +106,6 @@ Each CLI query produces a `coral.cli` root span exported as an OpenTelemetry `cl
 
 When Coral runs over MCP — the `coral mcp-stdio` entry point handling tool calls from an agent — each MCP tool or resource request produces a `coral.mcp.*` server span before the request calls into the local Coral app. The MCP adapter then emits `grpc.client.*` client spans for its local gRPC calls, which parent the app's gRPC server handler spans.
 
-When the experimental `episodes` feature is enabled and a tool call includes `episode_id`, Coral records `episode.id` on the MCP tool-call span and on query execution spans. The episode intent is stored in the local episode log, not on spans or metadata.
-
 #### gRPC handler spans
 
 Inbound Coral gRPC handler spans are exported as OpenTelemetry `server` spans with `rpc.system.name`, `rpc.method`, and `rpc.response.status_code`.

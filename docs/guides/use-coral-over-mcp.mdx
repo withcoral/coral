@@ -188,24 +188,6 @@ Once your client is connected, ask the agent to list available tables or run a s
 
 The agent should call `list_catalog`, `search_catalog`, or query `coral.tables` and `coral.table_functions` to return SQL schemas and catalog items, and use `describe_table` or `list_columns` for table-specific metadata. Large catalogs should be paged with `limit` and `offset`.
 
-### Experimental episodes
-
-Coral can expose an experimental `create_episode` MCP tool behind the `episodes` feature flag. Enable it persistently:
-
-```shellscript
-coral features enable episodes
-```
-
-Or enable it only for one MCP server process:
-
-```shellscript
-coral --enable-episodes mcp-stdio
-```
-
-When enabled, agents should call `create_episode` once at the start of a task with an `intent`. Coral returns an `episode_id`; the agent must pass that ID as `episode_id` on follow-up Coral tool calls for the same task. A child task can pass `parent_episode_id` to `create_episode` to link back to the parent episode.
-
-Episode records are stored locally today. Indexing and retrieval over those records are still in progress, so the first useful behavior is attribution: subsequent Coral MCP calls carry the episode id into Coral traces and query execution.
-
 ## Available tools and resources
 
 | Type     | Name             | Description                                             |
@@ -218,37 +200,33 @@ Episode records are stored locally today. Indexing and retrieval over those reco
 | Resource | `coral://guide`  | Database workflow guide for agents                     |
 | Resource | `coral://tables` | JSON summaries of query-visible database tables, including Coral catalog tables and required filters |
 
-Feature-gated tools can also appear: `feedback` when the `feedback` feature is enabled, and `create_episode` when the `episodes` feature is enabled.
-
 Clients see the same database catalog and query results as `coral sql`. You set up sources with the CLI, then agents query Coral over MCP as SQL schemas and tables.
 
 The `coral` system schema is part of that catalog. No-schema `list_catalog` and `coral://tables` include both configured source tables and Coral catalog tables: `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs`. Agents can also call `describe_table` and `list_columns` on those system tables.
 
 Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. Tool descriptions include connected source/schema names, such as `github` or `slack`, to help clients route provider-specific prompts to Coral. For data questions, prefer a single `sql` call using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over multiple tool calls that fetch rows and combine them in the agent.
 
-When `episodes` is enabled, `sql` also accepts optional `episode_id` for task attribution.
-
 ### Discovery tools
 
 **`list_catalog`**: paginated list of database tables and parameterized table functions.
 
-- Arguments: optional `schema`, `kind`, `limit`, `offset`. Omit `kind` (or pass `null`) to include both `"table"` and `"table_function"` items. When `episodes` is enabled, pass optional `episode_id` to attribute the call.
+- Arguments: optional `schema`, `kind`, `limit`, `offset`. Omit `kind` (or pass `null`) to include both `"table"` and `"table_function"` items.
 - For tables, use `sql_reference` in `FROM` and `JOIN` clauses.
 - For table functions, use `sql_call_example` and fill in the required arguments.
 - Do not quote the whole `schema.item` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
 
 **`search_catalog`**: deterministic regex matching over database catalog metadata.
 
-- Arguments: required `pattern` plus optional `schema`, `kind`, `ignore_case`, `limit`, `offset`. When `episodes` is enabled, pass optional `episode_id` to attribute the call.
+- Arguments: required `pattern` plus optional `schema`, `kind`, `ignore_case`, `limit`, `offset`.
 
 **`describe_table`**: compact metadata for one table.
 
-- Arguments: exact `schema` and `table`. When `episodes` is enabled, pass optional `episode_id` to attribute the call.
+- Arguments: exact `schema` and `table`.
 - Returns guide text, required filters, and a column count without dumping full columns.
 
 **`list_columns`**: paginated columns for one table.
 
-- Arguments: exact `schema` and `table`, plus optional `pattern`, `ignore_case`, `required_only`, `limit`, `offset`. When `episodes` is enabled, pass optional `episode_id` to attribute the call.
+- Arguments: exact `schema` and `table`, plus optional `pattern`, `ignore_case`, `required_only`, `limit`, `offset`.
 - For existing tables, returns a `columns` page with `total`, `has_more`, and optional `next_offset`. When `pattern` is set, matching rows include `matched_fields` so clients can explain why a column matched.
 - When the requested table does not exist, returns `found: false` with recovery hints instead of an empty page. Clients should branch to `search_catalog` or `list_catalog` rather than pretending the table has zero columns.
 
