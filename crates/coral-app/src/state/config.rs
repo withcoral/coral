@@ -617,7 +617,7 @@ impl PersistedMemoryConfig {
             .map(str::parse::<MemorySize>)
             .transpose()
             .map_err(|error| AppError::InvalidInput(format!("engine.memory.limit: {error}")))?;
-        Ok(QueryMemoryConfig { limit })
+        Ok(QueryMemoryConfig::with_limit(limit))
     }
 }
 

@@ -31,7 +31,7 @@ use crate::runtime::registry::{
 };
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
-    CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, QueryExecution,
+    CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, MemorySize, QueryExecution,
     QueryMemoryConfig, QueryPlan, QueryResultObserver, QueryResultObserverError,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceDecorator,
     SourceInputResolver, TableFunctionInfo, TableInfo,
@@ -40,6 +40,7 @@ use crate::{
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
     fallback_runtime: Option<FallbackRuntime>,
+    memory: QueryMemoryConfig,
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
@@ -126,6 +127,7 @@ async fn build_runtime_inner(
     Ok(QueryRuntimeAdapter {
         ctx: primary.ctx,
         fallback_runtime,
+        memory,
         tables: primary.tables,
         table_functions: primary.table_functions,
         failures: primary.failures,
@@ -365,9 +367,9 @@ impl QueryRuntimeAdapter {
                 // the dependent-join rewrite disabled; binding fanout and
                 // per-binding fetch caps remain hard execution errors.
                 let Some(cap_error) = resolver_rows_exceeded(&error) else {
-                    return Err(datafusion_to_core(&error, &self.tables));
+                    return Err(self.collection_error_to_core(&error));
                 };
-                let cap_core_error = datafusion_to_core(&error, &self.tables);
+                let cap_core_error = self.collection_error_to_core(&error);
                 let Some(fallback_runtime) = &self.fallback_runtime else {
                     return Err(cap_core_error);
                 };
@@ -430,9 +432,18 @@ impl QueryRuntimeAdapter {
                     Some(sql),
                 )
             }
-            SqlExecutionFailure::Collection(error) => datafusion_to_core(&error, &self.tables),
+            SqlExecutionFailure::Collection(error) => self.collection_error_to_core(&error),
             SqlExecutionFailure::Observer(error) => error,
         }
+    }
+
+    fn collection_error_to_core(&self, error: &DataFusionError) -> CoreError {
+        if let Some(limit) = self.memory.limit
+            && let Some(error) = memory_budget_error(error, limit)
+        {
+            return error;
+        }
+        datafusion_to_core(error, &self.tables)
     }
 
     fn observe_query_result(
@@ -501,6 +512,34 @@ fn is_missing_required_filter_failure(error: &SqlExecutionFailure) -> bool {
         inner.downcast_ref::<ProviderQueryError>(),
         Some(ProviderQueryError::MissingRequiredFilter { .. })
     )
+}
+
+fn memory_budget_error(error: &DataFusionError, limit: MemorySize) -> Option<CoreError> {
+    let DataFusionError::ResourcesExhausted(detail) = error.find_root() else {
+        return None;
+    };
+
+    Some(CoreError::Unavailable(format!(
+        "query engine memory budget exceeded ([engine.memory].limit = {}). The query was aborted. \
+         Increase [engine.memory].limit in config.toml, narrow the query, or reduce source rows. \
+         Underlying engine error: {detail}",
+        format_memory_limit(limit),
+    )))
+}
+
+fn format_memory_limit(limit: MemorySize) -> String {
+    let bytes = limit.as_bytes();
+    for (suffix, multiplier) in [
+        ("Ti", 1024_usize.pow(4)),
+        ("Gi", 1024_usize.pow(3)),
+        ("Mi", 1024_usize.pow(2)),
+        ("Ki", 1024),
+    ] {
+        if bytes % multiplier == 0 {
+            return format!("{}{} ({} bytes)", bytes / multiplier, suffix, bytes);
+        }
+    }
+    format!("{bytes} bytes")
 }
 
 impl FallbackRuntimeConfig {
@@ -580,6 +619,7 @@ mod tests {
         QueryRuntimeAdapter {
             ctx: Arc::new(SessionContext::new()),
             fallback_runtime: None,
+            memory: QueryMemoryConfig::default(),
             tables: vec![TableInfo {
                 schema_name: "demo".to_string(),
                 table_name: "events".to_string(),

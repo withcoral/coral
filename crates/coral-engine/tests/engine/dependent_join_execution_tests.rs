@@ -362,6 +362,10 @@ async fn dependent_join_respects_engine_memory_limit() {
     .expect_err("DPP should fail when retained memory exceeds engine limit");
 
     assert_eq!(error.status_code(), StatusCode::Unavailable);
+    assert_error_contains(&error, "query engine memory budget exceeded");
+    assert_error_contains(&error, "[engine.memory].limit = 256Ki (262144 bytes)");
+    assert_error_contains(&error, "Increase [engine.memory].limit in config.toml");
+    assert_error_contains(&error, "narrow the query");
     assert_error_contains(&error, "Additional allocation failed");
     assert_error_contains(&error, "DependentJoinExec(github.pull_requests)");
 }

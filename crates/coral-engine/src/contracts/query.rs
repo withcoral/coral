@@ -396,10 +396,23 @@ impl QueryRuntimeConfig {
 }
 
 /// Engine-wide query memory policy.
+///
+/// This type is non-exhaustive so additional global memory policy can be added
+/// later without changing the meaning of [`Self::limit`], including source- or
+/// table-scoped retained-memory budgets and memory-pool strategy selection.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryMemoryConfig {
     /// Optional total query-engine memory limit.
     pub limit: Option<MemorySize>,
+}
+
+impl QueryMemoryConfig {
+    /// Builds a memory policy with an optional whole-runtime memory limit.
+    #[must_use]
+    pub fn with_limit(limit: Option<MemorySize>) -> Self {
+        Self { limit }
+    }
 }
 
 /// Human-readable memory size stored internally as bytes.
