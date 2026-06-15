@@ -211,7 +211,11 @@ publish:
   table_function:
     schema: recipes
     name: open_prs
+  mcp:
+    name: open_prs
 ```
+
+Use `table_function` to expose the recipe through SQL. Add `mcp` to expose it as an MCP tool once the MCP server refreshes its tool list.
 
 ### `coral recipe list`
 

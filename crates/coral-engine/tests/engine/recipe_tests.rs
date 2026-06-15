@@ -152,6 +152,7 @@ fn recipe_publish(name: &str) -> RecipeRuntimePublish {
             name: name.to_string(),
             description: String::new(),
         },
+        mcp: None,
     }
 }
 
@@ -220,6 +221,7 @@ fn review_queue_recipe_published_at(
             name: name.to_string(),
             description: String::new(),
         },
+        mcp: None,
     };
     recipe
 }

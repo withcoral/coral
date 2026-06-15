@@ -73,6 +73,8 @@ pub enum RecipeRuntimeImplementation {
 pub struct RecipeRuntimePublish {
     /// Canonical public SQL table-function wrapper.
     pub table_function: RecipeRuntimeTableFunctionPublish,
+    /// Optional MCP tool wrapper.
+    pub mcp: Option<RecipeRuntimeMcpToolPublish>,
 }
 
 /// Canonical SQL table-function surface for one recipe.
@@ -81,6 +83,15 @@ pub struct RecipeRuntimeTableFunctionPublish {
     /// SQL schema.
     pub schema: String,
     /// SQL function name.
+    pub name: String,
+    /// Optional publish-target-specific description.
+    pub description: String,
+}
+
+/// Optional MCP tool surface for one recipe.
+#[derive(Debug, Clone)]
+pub struct RecipeRuntimeMcpToolPublish {
+    /// MCP tool name.
     pub name: String,
     /// Optional publish-target-specific description.
     pub description: String,

@@ -773,12 +773,21 @@ async fn run_recipe(app: &AppClient, args: RecipeArgs) -> Result<(), CliError> {
 }
 
 fn recipe_publish_summary(recipe: &Recipe) -> String {
-    recipe
-        .publish
-        .as_ref()
-        .and_then(|publish| publish.table_function.as_ref())
-        .map(|target| format!("sql: {}.{}", target.schema, target.name))
-        .unwrap_or_else(|| "-".to_string())
+    let Some(publish) = recipe.publish.as_ref() else {
+        return "-".to_string();
+    };
+    let mut targets = Vec::new();
+    if let Some(target) = publish.table_function.as_ref() {
+        targets.push(format!("sql: {}.{}", target.schema, target.name));
+    }
+    if let Some(target) = publish.mcp.as_ref() {
+        targets.push(format!("mcp: {}", target.name));
+    }
+    if targets.is_empty() {
+        "-".to_string()
+    } else {
+        targets.join(", ")
+    }
 }
 
 fn recipe_columns_summary(recipe: &Recipe) -> String {

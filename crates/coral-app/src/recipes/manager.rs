@@ -7,8 +7,8 @@ use std::sync::Arc;
 use coral_engine::{
     CoralQuery, QueryRuntimeConfig, QuerySource, RecipeRuntimeArgument, RecipeRuntimeArgumentType,
     RecipeRuntimeArgumentValue, RecipeRuntimeDefinition, RecipeRuntimeImplementation,
-    RecipeRuntimePublish, RecipeRuntimeResultColumn, RecipeRuntimeTableFunctionPublish,
-    RuntimeSourceComponent,
+    RecipeRuntimeMcpToolPublish, RecipeRuntimePublish, RecipeRuntimeResultColumn,
+    RecipeRuntimeTableFunctionPublish, RuntimeSourceComponent,
 };
 use coral_spec::{
     RecipeArgumentType, RecipeImplementationSpec, RecipePublishSpec, RecipeSpec,
@@ -619,6 +619,10 @@ fn runtime_publish(spec: &RecipePublishSpec) -> RecipeRuntimePublish {
             name: spec.table_function.name.clone(),
             description: spec.table_function.description.clone(),
         },
+        mcp: spec.mcp.as_ref().map(|mcp| RecipeRuntimeMcpToolPublish {
+            name: mcp.name.clone(),
+            description: mcp.description.clone(),
+        }),
     }
 }
 

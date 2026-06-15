@@ -3,10 +3,13 @@
 use coral_api::v1::recipe_service_server::RecipeService as RecipeServiceApi;
 use coral_api::v1::{
     AddRecipeRequest, AddRecipeResponse, ListRecipesRequest, ListRecipesResponse, Recipe,
-    RecipeArgument, RecipePublish, RecipeResultColumn, RecipeTableFunctionPublish,
-    RemoveRecipeRequest, RemoveRecipeResponse,
+    RecipeArgument, RecipeMcpToolPublish, RecipePublish, RecipeResultColumn,
+    RecipeTableFunctionPublish, RemoveRecipeRequest, RemoveRecipeResponse,
 };
-use coral_engine::{RecipeRuntimeArgumentType, RecipeRuntimeDefinition, RecipeRuntimePublish};
+use coral_engine::{
+    RecipeRuntimeArgumentType, RecipeRuntimeDefinition, RecipeRuntimeMcpToolPublish,
+    RecipeRuntimePublish, RecipeRuntimeTableFunctionPublish,
+};
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
@@ -129,11 +132,27 @@ fn runtime_recipe_to_proto(recipe: RecipeRuntimeDefinition) -> Recipe {
 
 fn recipe_publish_to_proto(publish: RecipeRuntimePublish) -> RecipePublish {
     RecipePublish {
-        table_function: Some(RecipeTableFunctionPublish {
-            schema: publish.table_function.schema,
-            name: publish.table_function.name,
-            description: publish.table_function.description,
-        }),
+        table_function: Some(recipe_table_function_publish_to_proto(
+            publish.table_function,
+        )),
+        mcp: publish.mcp.map(recipe_mcp_publish_to_proto),
+    }
+}
+
+fn recipe_table_function_publish_to_proto(
+    publish: RecipeRuntimeTableFunctionPublish,
+) -> RecipeTableFunctionPublish {
+    RecipeTableFunctionPublish {
+        schema: publish.schema,
+        name: publish.name,
+        description: publish.description,
+    }
+}
+
+fn recipe_mcp_publish_to_proto(publish: RecipeRuntimeMcpToolPublish) -> RecipeMcpToolPublish {
+    RecipeMcpToolPublish {
+        name: publish.name,
+        description: publish.description,
     }
 }
 

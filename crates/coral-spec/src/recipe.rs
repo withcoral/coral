@@ -95,6 +95,9 @@ pub enum RecipeImplementationSpec {
 pub struct RecipePublishSpec {
     /// Required SQL table-function surface.
     pub table_function: RecipeTableFunctionPublishSpec,
+    /// Optional MCP tool surface.
+    #[serde(default)]
+    pub mcp: Option<RecipeMcpPublishSpec>,
 }
 
 /// SQL table-function surface published by a recipe.
@@ -104,6 +107,17 @@ pub struct RecipeTableFunctionPublishSpec {
     /// SQL schema where the public table function is exposed.
     pub schema: String,
     /// Public table-function name within `schema`.
+    pub name: String,
+    /// Optional publish-target-specific description.
+    #[serde(default)]
+    pub description: String,
+}
+
+/// Optional MCP tool surface published by a recipe.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecipeMcpPublishSpec {
+    /// MCP tool name.
     pub name: String,
     /// Optional publish-target-specific description.
     #[serde(default)]
@@ -380,6 +394,9 @@ fn validate_publish_targets(recipe: &str, publish: &RecipePublishSpec) -> Result
             table_function.schema
         )));
     }
+    if let Some(mcp) = &publish.mcp {
+        validate_lowercase_identifier(&mcp.name, &format!("recipe '{recipe}' mcp publish name"))?;
+    }
     Ok(())
 }
 
@@ -422,6 +439,8 @@ publish:
   table_function:
     schema: recipes
     name: github_review_queue
+  mcp:
+    name: github_review_queue
 "
     }
 
@@ -441,6 +460,10 @@ publish:
         ));
         assert_eq!(recipe.publish().table_function.schema, "recipes");
         assert_eq!(recipe.publish().table_function.name, "github_review_queue");
+        assert_eq!(
+            recipe.publish().mcp.as_ref().map(|mcp| mcp.name.as_str()),
+            Some("github_review_queue")
+        );
     }
 
     #[test]
@@ -719,6 +742,31 @@ publish:
         assert_eq!(
             error.to_string(),
             "recipe 'demo' table_function publish schema 'Recipes' must be lowercase"
+        );
+    }
+
+    #[test]
+    fn parse_recipe_yaml_rejects_malformed_mcp_publish_target() {
+        let error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: demo
+implementation:
+  kind: coral_sql
+  query: select 1
+publish:
+  table_function:
+    schema: recipes
+    name: demo
+  mcp:
+    name: Demo
+",
+        )
+        .expect_err("mixed-case mcp target should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "recipe 'demo' mcp publish name 'Demo' must be lowercase"
         );
     }
 }
