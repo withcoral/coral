@@ -820,26 +820,34 @@ impl SourceManager {
         bindings: &SourceBindings,
         filled_secret_keys: &BTreeSet<String>,
     ) -> Result<BTreeMap<String, String>, AppError> {
-        if !source_needs_stored_material_for_validation(candidate, bindings, filled_secret_keys)? {
-            return Ok(BTreeMap::new());
-        }
-
-        let credential_storage = match self
+        let (credential_storage, persisted_secret_keys) = match self
             .config_store
             .get_source(workspace_name, &candidate.name)
         {
-            Ok(source) => source.credential_storage_for_material(),
+            Ok(source) => (
+                source.credential_storage_for_material(),
+                Some(source.secrets.iter().cloned().collect::<BTreeSet<_>>()),
+            ),
             Err(AppError::SourceNotFound(_))
                 if self
                     .layout
                     .secret_file(workspace_name, &candidate.name)
                     .exists() =>
             {
-                Some(CredentialStorageKind::File)
+                (Some(CredentialStorageKind::File), None)
             }
-            Err(AppError::SourceNotFound(_)) => None,
+            Err(AppError::SourceNotFound(_)) => (None, Some(BTreeSet::new())),
             Err(error) => return Err(error),
         };
+
+        if !source_needs_stored_material_for_validation(
+            candidate,
+            bindings,
+            filled_secret_keys,
+            persisted_secret_keys.as_ref(),
+        )? {
+            return Ok(BTreeMap::new());
+        }
 
         match credential_storage {
             Some(credential_storage) => {
@@ -1225,12 +1233,14 @@ fn source_needs_stored_material_for_validation(
     candidate: &CandidateSource,
     bindings: &SourceBindings,
     filled_secret_keys: &BTreeSet<String>,
+    persisted_secret_keys: Option<&BTreeSet<String>>,
 ) -> Result<bool, AppError> {
     let supplied_secrets = collect_unique_secrets(&bindings.secrets)?;
     Ok(candidate.inputs.iter().any(|input| {
         input.kind == ManifestInputKind::Secret
             && !supplied_secrets.contains_key(&input.key)
             && !filled_secret_keys.contains(&input.key)
+            && persisted_secret_keys.is_none_or(|keys| keys.contains(&input.key))
     }))
 }
 
@@ -1485,7 +1495,7 @@ mod tests {
         CredentialStore,
     };
     use crate::sources::SourceName;
-    use crate::sources::model::{CandidateSource, SourceOrigin};
+    use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
@@ -1819,10 +1829,12 @@ tables:
     #[test]
     fn materialization_inputs_include_persisted_optional_secrets() {
         let candidate = candidate_with_secret("OPTIONAL_TOKEN", false);
+        let persisted_secret_keys = BTreeSet::from(["OPTIONAL_TOKEN".to_string()]);
         let needs_stored = source_needs_stored_material_for_validation(
             &candidate,
             &SourceBindings::default(),
             &BTreeSet::new(),
+            Some(&persisted_secret_keys),
         )
         .expect("stored material check");
         assert!(
@@ -1843,6 +1855,62 @@ tables:
             inputs.secrets.get("OPTIONAL_TOKEN").map(String::as_str),
             Some("persisted-secret")
         );
+    }
+
+    #[test]
+    fn unsupplied_optional_secret_without_persisted_material_skips_keychain_read() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::with_unavailable_keychain_for_test(
+            layout.clone(),
+            CredentialStoragePreference::Keychain,
+        );
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store.clone(), credential_manager, layout);
+        let candidate = candidate_with_secret("OPTIONAL_TOKEN", false);
+
+        config_store
+            .upsert_source(
+                &default_workspace(),
+                InstalledSource {
+                    name: candidate.name.clone(),
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: vec!["OTHER_TOKEN".to_string()],
+                    credential_storage: Some(CredentialStorageKind::Keychain),
+                    origin: SourceOrigin::Imported,
+                },
+            )
+            .expect("persist source metadata");
+
+        let stored_material = manager
+            .source_stored_material_for_validation(
+                &default_workspace(),
+                &candidate,
+                &SourceBindings::default(),
+                &BTreeSet::new(),
+            )
+            .expect("optional secret should not force keychain read");
+
+        assert!(stored_material.is_empty());
+    }
+
+    #[test]
+    fn unsupplied_optional_secret_with_persisted_material_needs_stored_material() {
+        let candidate = candidate_with_secret("OPTIONAL_TOKEN", false);
+        let persisted_secret_keys = BTreeSet::from(["OPTIONAL_TOKEN".to_string()]);
+        let needs_stored = source_needs_stored_material_for_validation(
+            &candidate,
+            &SourceBindings::default(),
+            &BTreeSet::new(),
+            Some(&persisted_secret_keys),
+        )
+        .expect("stored material check");
+
+        assert!(needs_stored);
     }
 
     #[test]
