@@ -405,4 +405,245 @@ publish:
                 if schema == "recipes" && name == "github_review_queue"
         ));
     }
+
+    #[test]
+    fn parse_recipe_yaml_rejects_unknown_kind() {
+        let error = parse_recipe_yaml(
+            r"
+kind: source
+name: demo
+implementation:
+  kind: coral_sql
+  query: select 1
+",
+        )
+        .expect_err("kind should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "recipe kind must be 'recipe', got 'source'"
+        );
+    }
+
+    #[test]
+    fn parse_recipe_yaml_rejects_duplicate_inputs() {
+        let error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: demo
+inputs:
+  owner:
+    type: string
+  owner:
+    type: string
+implementation:
+  kind: coral_sql
+  query: select 1
+",
+        )
+        .expect_err("duplicate input should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("recipe input 'owner' is declared more than once")
+        );
+    }
+
+    #[test]
+    fn parse_recipe_yaml_rejects_mixed_case_identifiers() {
+        let recipe_name_error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: Demo
+implementation:
+  kind: coral_sql
+  query: select 1
+",
+        )
+        .expect_err("mixed-case recipe name should fail");
+
+        assert_eq!(
+            recipe_name_error.to_string(),
+            "recipe name 'Demo' must be lowercase"
+        );
+
+        let input_name_error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: demo
+inputs:
+  Owner:
+    type: string
+implementation:
+  kind: coral_sql
+  query: select $Owner
+",
+        )
+        .expect_err("mixed-case input name should fail");
+
+        assert_eq!(
+            input_name_error.to_string(),
+            "recipe 'demo' input name 'Owner' must be lowercase"
+        );
+    }
+
+    #[test]
+    fn parse_recipe_yaml_rejects_unknown_fields() {
+        let error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: demo
+presentation: {}
+implementation:
+  kind: coral_sql
+  query: select 1
+",
+        )
+        .expect_err("unknown field should fail");
+
+        assert!(error.to_string().contains("unknown field `presentation`"));
+    }
+
+    #[test]
+    fn parse_recipe_yaml_rejects_empty_coral_sql_query() {
+        let error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: demo
+implementation:
+  kind: coral_sql
+  query: '   '
+",
+        )
+        .expect_err("empty query should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "recipe 'demo' coral_sql query must not be empty"
+        );
+    }
+
+    #[test]
+    fn parse_recipe_yaml_rejects_duplicate_publish_targets() {
+        let table_function_error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: demo
+implementation:
+  kind: coral_sql
+  query: select 1
+publish:
+  - table_function: recipes.demo
+  - table_function: recipes.demo
+",
+        )
+        .expect_err("duplicate table_function target should fail");
+
+        assert_eq!(
+            table_function_error.to_string(),
+            "recipe 'demo' table_function publish target 'recipes.demo' is declared more than once"
+        );
+
+        let mcp_tool_error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: demo
+implementation:
+  kind: coral_sql
+  query: select 1
+publish:
+  - mcp_tool: demo
+  - mcp_tool: demo
+",
+        )
+        .expect_err("duplicate mcp_tool target should fail");
+
+        assert_eq!(
+            mcp_tool_error.to_string(),
+            "recipe 'demo' mcp_tool publish target 'demo' is declared more than once"
+        );
+    }
+
+    #[test]
+    fn parse_recipe_yaml_rejects_reserved_table_function_schemas() {
+        let error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: demo
+implementation:
+  kind: coral_sql
+  query: select 1
+publish:
+  - table_function: __coral_recipes.demo
+",
+        )
+        .expect_err("reserved recipe schema should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "recipe 'demo' table_function publish schema '__coral_recipes' is reserved"
+        );
+    }
+
+    #[test]
+    fn parse_recipe_yaml_rejects_malformed_table_function_target() {
+        let error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: demo
+implementation:
+  kind: coral_sql
+  query: select 1
+publish:
+  - table_function: recipes
+",
+        )
+        .expect_err("malformed table_function target should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "recipe 'demo' table_function publish target 'recipes' must be written as schema.name"
+        );
+    }
+
+    #[test]
+    fn parse_recipe_yaml_rejects_publish_entry_with_wrong_target_count() {
+        let multiple_targets_error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: demo
+implementation:
+  kind: coral_sql
+  query: select 1
+publish:
+  - table_function: recipes.demo
+    mcp_tool: demo
+",
+        )
+        .expect_err("publish entry with two targets should fail");
+
+        assert_eq!(
+            multiple_targets_error.to_string(),
+            "recipe 'demo' publish entry must set exactly one of 'table_function' or 'mcp_tool'"
+        );
+
+        let no_targets_error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: demo
+implementation:
+  kind: coral_sql
+  query: select 1
+publish:
+  - description: Demo
+",
+        )
+        .expect_err("publish entry without target should fail");
+
+        assert_eq!(
+            no_targets_error.to_string(),
+            "recipe 'demo' publish entry must set exactly one of 'table_function' or 'mcp_tool'"
+        );
+    }
 }
