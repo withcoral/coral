@@ -5,9 +5,17 @@
     reason = "recipe manager is exposed through API/CLI surfaces in later stack branches"
 )]
 
+use std::collections::HashSet;
 use std::io::ErrorKind;
 
-use coral_spec::parse_recipe_yaml;
+use coral_engine::{
+    CoralQuery, QueryRuntimeConfig, QuerySource, RecipeRuntimeArgument, RecipeRuntimeArgumentType,
+    RecipeRuntimeDefinition, RecipeRuntimeImplementation, RecipeRuntimePublish,
+    RecipeRuntimeResultColumn,
+};
+use coral_spec::{
+    RecipeArgumentType, RecipeImplementationSpec, RecipePublishSpec, RecipeSpec, parse_recipe_yaml,
+};
 use uuid::Uuid;
 
 use crate::bootstrap::AppError;
@@ -66,6 +74,25 @@ impl RecipeManager {
         Ok(installed)
     }
 
+    pub(crate) async fn validate_user_recipe_yaml(
+        &self,
+        _workspace_name: &WorkspaceName,
+        selected_sources: &[QuerySource],
+        mut runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
+        raw_yaml: &str,
+    ) -> Result<RecipeRuntimeDefinition, AppError> {
+        let spec = parse_recipe_yaml(raw_yaml).map_err(|error| {
+            AppError::InvalidInput(format!("recipe validation failed: {error}"))
+        })?;
+        RecipeName::parse(spec.name())?;
+        let mut publish_targets =
+            source_publish_targets(selected_sources, runtime_config()?).await?;
+        let runtime_recipe =
+            infer_runtime_recipe(selected_sources, runtime_config()?, &spec).await?;
+        record_publish_targets(&runtime_recipe, &mut publish_targets)?;
+        Ok(runtime_recipe)
+    }
+
     pub(crate) fn list_user_recipes(
         &self,
         workspace_name: &WorkspaceName,
@@ -115,6 +142,160 @@ impl RecipeManager {
             std::fs::remove_dir_all(&recipe_dir_backup)?;
         }
         Ok(())
+    }
+}
+
+async fn source_publish_targets(
+    selected_sources: &[QuerySource],
+    runtime_config: QueryRuntimeConfig,
+) -> Result<HashSet<PublishTarget>, AppError> {
+    let catalog = CoralQuery::list_catalog(selected_sources, runtime_config, None)
+        .await
+        .map_err(|error| {
+            AppError::FailedPrecondition(format!(
+                "failed to inspect installed source catalog for recipe publish collisions: {error}"
+            ))
+        })?;
+    let mut targets = HashSet::new();
+    targets.extend(
+        catalog
+            .tables
+            .into_iter()
+            .map(|table| PublishTarget::sql_relation(&table.schema_name, &table.table_name)),
+    );
+    targets.extend(catalog.table_functions.into_iter().map(|function| {
+        PublishTarget::sql_relation(&function.schema_name, &function.function_name)
+    }));
+    Ok(targets)
+}
+
+fn runtime_recipe_without_columns(spec: &RecipeSpec) -> RecipeRuntimeDefinition {
+    runtime_recipe_with_result_columns(spec, Vec::new())
+}
+
+async fn infer_runtime_recipe(
+    selected_sources: &[QuerySource],
+    runtime_config: QueryRuntimeConfig,
+    spec: &RecipeSpec,
+) -> Result<RecipeRuntimeDefinition, AppError> {
+    let runtime_recipe = runtime_recipe_without_columns(spec);
+    let schema = CoralQuery::infer_recipe_schema(selected_sources, runtime_config, runtime_recipe)
+        .await
+        .map_err(|error| {
+            AppError::FailedPrecondition(format!("recipe failed runtime validation: {error}"))
+        })?;
+    Ok(runtime_recipe_with_schema(spec, schema.as_ref()))
+}
+
+fn runtime_recipe_with_schema(
+    spec: &RecipeSpec,
+    schema: &arrow::datatypes::Schema,
+) -> RecipeRuntimeDefinition {
+    let result_columns = schema
+        .fields()
+        .iter()
+        .map(|field| RecipeRuntimeResultColumn {
+            name: field.name().clone(),
+            data_type: field.data_type().to_string(),
+            nullable: field.is_nullable(),
+            description: String::new(),
+        })
+        .collect();
+    runtime_recipe_with_result_columns(spec, result_columns)
+}
+
+fn runtime_recipe_with_result_columns(
+    spec: &RecipeSpec,
+    result_columns: Vec<RecipeRuntimeResultColumn>,
+) -> RecipeRuntimeDefinition {
+    RecipeRuntimeDefinition {
+        name: spec.name().to_string(),
+        description: spec.description().to_string(),
+        arguments: runtime_arguments(spec),
+        implementation: runtime_implementation(spec.implementation()),
+        publish: runtime_publish(spec.publish()),
+        result_columns,
+    }
+}
+
+fn runtime_arguments(spec: &RecipeSpec) -> Vec<RecipeRuntimeArgument> {
+    spec.arguments()
+        .iter()
+        .map(|argument| RecipeRuntimeArgument {
+            name: argument.name.clone(),
+            data_type: match argument.data_type {
+                RecipeArgumentType::String => RecipeRuntimeArgumentType::String,
+                RecipeArgumentType::Integer => RecipeRuntimeArgumentType::Integer,
+                RecipeArgumentType::Boolean => RecipeRuntimeArgumentType::Boolean,
+            },
+            required: argument.required,
+            description: argument.description.clone(),
+        })
+        .collect()
+}
+
+fn runtime_implementation(spec: &RecipeImplementationSpec) -> RecipeRuntimeImplementation {
+    match spec {
+        RecipeImplementationSpec::CoralSql { query } => RecipeRuntimeImplementation::CoralSql {
+            query: query.clone(),
+        },
+    }
+}
+
+fn runtime_publish(specs: &[RecipePublishSpec]) -> Vec<RecipeRuntimePublish> {
+    specs
+        .iter()
+        .filter_map(|spec| match spec {
+            RecipePublishSpec::TableFunction {
+                schema,
+                name,
+                description,
+            } => Some(RecipeRuntimePublish::TableFunction {
+                schema: schema.clone(),
+                name: name.clone(),
+                description: description.clone(),
+            }),
+            RecipePublishSpec::McpTool { .. } => None,
+        })
+        .collect()
+}
+
+fn record_publish_targets(
+    recipe: &RecipeRuntimeDefinition,
+    publish_targets: &mut HashSet<PublishTarget>,
+) -> Result<(), AppError> {
+    let mut recipe_targets = HashSet::new();
+    for publish in &recipe.publish {
+        let RecipeRuntimePublish::TableFunction { schema, name, .. } = publish;
+        let target = PublishTarget::sql_relation(schema, name);
+        if publish_targets.contains(&target) || !recipe_targets.insert(target.clone()) {
+            return Err(AppError::FailedPrecondition(format!(
+                "recipe publish target '{}' is installed more than once",
+                target.display_name()
+            )));
+        }
+    }
+    publish_targets.extend(recipe_targets);
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum PublishTarget {
+    SqlRelation { schema: String, name: String },
+}
+
+impl PublishTarget {
+    fn sql_relation(schema: &str, name: &str) -> Self {
+        Self::SqlRelation {
+            schema: schema.to_ascii_lowercase(),
+            name: name.to_ascii_lowercase(),
+        }
+    }
+
+    fn display_name(&self) -> String {
+        match self {
+            Self::SqlRelation { schema, name } => format!("{schema}.{name}"),
+        }
     }
 }
 
@@ -228,5 +409,26 @@ publish:
                 .expect("list recipes")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn validate_user_recipe_yaml_infers_result_columns() {
+        let (_temp, _layout, manager) = fixture();
+        let workspace = workspace();
+
+        let recipe = manager
+            .validate_user_recipe_yaml(
+                &workspace,
+                &[],
+                || Ok(QueryRuntimeConfig::default()),
+                &recipe_yaml("review_queue"),
+            )
+            .await
+            .expect("validate recipe");
+
+        assert_eq!(recipe.name, "review_queue");
+        assert_eq!(recipe.result_columns.len(), 1);
+        let column = recipe.result_columns.first().expect("id result column");
+        assert_eq!(column.name, "id");
     }
 }
