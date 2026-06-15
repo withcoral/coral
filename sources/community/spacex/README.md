@@ -8,6 +8,12 @@ This source makes the unofficial SpaceXData mission and vehicle dataset availabl
 
 SpaceXData v4 is best treated as a historical community dataset, not a live launch-monitoring API. At the time this source was added, the newest launch record returned by the API was from December 5, 2022.
 
+## Availability and maintenance risk
+
+This is a best-effort, community-maintained historical dataset, **not** a dependable product or SaaS surface. The upstream SpaceXData v4 API (`api.spacexdata.com`) and its source repository are unofficial and not guaranteed to stay online. The endpoints have been observed returning Cloudflare errors (HTTP `521`/`525`) when the origin is down or unreachable, in which case `coral source test spacex` and any queries will fail until upstream recovers.
+
+Before adding this source to a catalog, treat it as a snapshot of public historical data that may become unavailable without notice. Do not rely on it for live or production launch monitoring, and check upstream availability if `coral source test spacex` fails.
+
 ## Install
 
 ```bash
