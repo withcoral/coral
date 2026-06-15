@@ -474,24 +474,63 @@ fn merge_input_object_shape(
     schema_complete: &mut bool,
 ) -> bool {
     for (name, property) in source.properties {
-        if target
-            .properties
-            .get(&name)
-            .is_some_and(|existing| existing != &property)
-        {
-            *schema_complete = false;
-            diagnostics.push(Diagnostic::warning(
-                "MCP_INPUT_SCHEMA_CONFLICT",
-                format!("MCP input schema defines conflicting property '{name}'"),
-                surface_id.to_string(),
-                Some(operation_id.to_string()),
-            ));
-            return false;
+        if let Some(existing) = target.properties.get_mut(&name) {
+            if input_property_schemas_conflict(existing, &property) {
+                *schema_complete = false;
+                diagnostics.push(Diagnostic::warning(
+                    "MCP_INPUT_SCHEMA_CONFLICT",
+                    format!("MCP input schema defines conflicting property '{name}'"),
+                    surface_id.to_string(),
+                    Some(operation_id.to_string()),
+                ));
+                return false;
+            }
+            merge_input_property_metadata(existing, &property);
+        } else {
+            target.properties.insert(name, property);
         }
-        target.properties.insert(name, property);
     }
     target.required.extend(source.required);
     true
+}
+
+fn input_property_schemas_conflict(existing: &Value, candidate: &Value) -> bool {
+    schema_without_annotation_metadata(existing) != schema_without_annotation_metadata(candidate)
+}
+
+fn schema_without_annotation_metadata(schema: &Value) -> Value {
+    const ANNOTATION_KEYS: &[&str] = &["$comment", "description", "examples", "title"];
+    match schema {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .filter(|(key, _value)| !ANNOTATION_KEYS.contains(&key.as_str()))
+                .map(|(key, value)| (key.clone(), schema_without_annotation_metadata(value)))
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(schema_without_annotation_metadata)
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn merge_input_property_metadata(existing: &mut Value, candidate: &Value) {
+    const ANNOTATION_KEYS: &[&str] = &["$comment", "description", "examples", "title"];
+    let (Some(existing), Some(candidate)) = (existing.as_object_mut(), candidate.as_object())
+    else {
+        return;
+    };
+    for key in ANNOTATION_KEYS {
+        if !existing.contains_key(*key)
+            && let Some(value) = candidate.get(*key)
+        {
+            existing.insert((*key).to_string(), value.clone());
+        }
+    }
 }
 
 fn schema_description(schema: &Value) -> String {
@@ -820,6 +859,53 @@ surfaces:
             generate_projection_catalog(manifest().as_v4().expect("v4"), std::slice::from_ref(&ir))
                 .expect("projections");
         assert_eq!(projections.projections.len(), 0);
+    }
+
+    #[test]
+    fn imports_all_of_properties_with_metadata_only_differences() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "allOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "title": "Query"
+                                }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "Search query"
+                                }
+                            },
+                            "required": ["query"]
+                        }
+                    ]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "search_items");
+        assert!(operation.diagnostics.is_empty());
+
+        let query = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "query")
+            .expect("query input");
+        assert_eq!(query.data_type, IrScalarType::String);
+        assert!(query.required);
+        assert_eq!(query.description, "Search query");
     }
 
     #[test]
