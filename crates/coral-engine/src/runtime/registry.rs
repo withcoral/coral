@@ -61,12 +61,18 @@ pub(crate) struct SourceRegistrationResult {
 }
 
 fn check_reserved_schema(schema: &str) -> DataFusionResult<()> {
-    if RESERVED_SCHEMA_NAMES.contains(&schema) {
-        return Err(DataFusionError::Execution(format!(
-            "source schema '{schema}' is reserved and cannot be used by manifests"
-        )));
+    if is_reserved_schema(schema) {
+        return Err(DataFusionError::Execution(reserved_schema_detail(schema)));
     }
     Ok(())
+}
+
+fn is_reserved_schema(schema: &str) -> bool {
+    RESERVED_SCHEMA_NAMES.contains(&schema)
+}
+
+fn reserved_schema_detail(schema: &str) -> String {
+    format!("source schema '{schema}' is reserved and cannot be used by manifests")
 }
 
 /// Register all configured source manifests into the active `SessionContext`.
@@ -180,6 +186,9 @@ fn validate_selected_source_schema_names(
     let mut owner_by_schema = HashMap::new();
     for source in sources {
         for schema_name in source.schema_names() {
+            if is_reserved_schema(schema_name) {
+                return Err(CoreError::InvalidInput(reserved_schema_detail(schema_name)));
+            }
             if let Some(existing_source) =
                 owner_by_schema.insert(schema_name.to_string(), source.source_name().to_string())
             {
@@ -397,7 +406,11 @@ fn source_decorator_error(name: &str, error: &crate::SourceDecoratorError) -> Co
 
 #[cfg(test)]
 mod tests {
-    use super::check_reserved_schema;
+    use std::collections::BTreeMap;
+
+    use crate::{CoreError, QuerySource, RuntimeSourcePackage};
+
+    use super::{check_reserved_schema, validate_selected_source_schema_names};
 
     #[test]
     fn reserved_schema_coral_is_rejected() {
@@ -426,5 +439,33 @@ mod tests {
         check_reserved_schema("github").expect("github is not reserved");
         check_reserved_schema("pagerduty").expect("pagerduty is not reserved");
         check_reserved_schema("slack").expect("slack is not reserved");
+    }
+
+    #[test]
+    fn selected_sources_reject_reserved_schema_before_backend_registration() {
+        let source = QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "public".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                components: Vec::new(),
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("runtime package");
+
+        let error = validate_selected_source_schema_names(&[source])
+            .expect_err("reserved source schema should fail selected-source preflight");
+
+        let CoreError::InvalidInput(detail) = error else {
+            panic!("expected invalid input, got {error:?}");
+        };
+        assert!(
+            detail.contains("source schema 'public' is reserved"),
+            "unexpected error: {detail}"
+        );
     }
 }
