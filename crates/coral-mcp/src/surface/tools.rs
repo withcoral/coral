@@ -236,7 +236,7 @@ pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
     )
 }
 
-pub(crate) fn describe_table_tool(episodes_enabled: bool) -> Tool {
+pub(crate) fn describe_table_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "describe_table",
         "Describe one database table without returning full column definitions.",
@@ -255,7 +255,7 @@ pub(crate) fn describe_table_tool(episodes_enabled: bool) -> Tool {
                     }
                 }
             }),
-            episodes_enabled,
+            context.episodes_enabled,
         ),
     )
     .with_annotations(
@@ -267,7 +267,7 @@ pub(crate) fn describe_table_tool(episodes_enabled: bool) -> Tool {
     )
 }
 
-pub(crate) fn list_columns_tool(episodes_enabled: bool) -> Tool {
+pub(crate) fn list_columns_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "list_columns",
         "List columns for one database table with optional regex and required-filter narrowing.",
@@ -312,7 +312,7 @@ pub(crate) fn list_columns_tool(episodes_enabled: bool) -> Tool {
                 }
             }
         }),
-            episodes_enabled,
+            context.episodes_enabled,
         ),
     )
     .with_raw_output_schema(list_columns_output_schema())
@@ -371,18 +371,9 @@ pub(crate) fn create_episode_tool() -> Tool {
                     "minLength": 1,
                     "maxLength": CORAL_EPISODE_INTENT_MAX_CHARS
                 },
-                "parent_episode_id": {
-                    "description": "Optional parent episode id when this task is a child of an existing episode.",
-                    "anyOf": [
-                        {
-                            "type": "string",
-                            "maxLength": CORAL_EPISODE_ID_MAX_LEN
-                        },
-                        {
-                            "type": "null"
-                        }
-                    ]
-                }
+                "parent_episode_id": nullable_episode_id_schema(Some(
+                    "Optional parent episode id when this task is a child of an existing episode."
+                ))
             }
         })),
     )
@@ -571,19 +562,29 @@ fn add_episode_id_property(value: &mut Value) {
         .expect("tool input properties are an object")
         .insert(
             "episode_id".to_string(),
-            json!({
-                "description": EPISODE_ID_ARGUMENT_DESCRIPTION,
-                "anyOf": [
-                    {
-                        "type": "string",
-                        "maxLength": CORAL_EPISODE_ID_MAX_LEN
-                    },
-                    {
-                        "type": "null"
-                    }
-                ]
-            }),
+            nullable_episode_id_schema(Some(EPISODE_ID_ARGUMENT_DESCRIPTION)),
         );
+}
+
+fn nullable_episode_id_schema(description: Option<&str>) -> Value {
+    let mut schema = json!({
+        "anyOf": [
+            {
+                "type": "string",
+                "maxLength": CORAL_EPISODE_ID_MAX_LEN
+            },
+            {
+                "type": "null"
+            }
+        ]
+    });
+    if let Some(description) = description {
+        schema
+            .as_object_mut()
+            .expect("nullable episode id schema is an object")
+            .insert("description".to_string(), json!(description));
+    }
+    schema
 }
 
 fn create_episode_output_schema() -> Arc<Map<String, Value>> {
@@ -596,17 +597,7 @@ fn create_episode_output_schema() -> Arc<Map<String, Value>> {
                 "type": "string",
                 "maxLength": CORAL_EPISODE_ID_MAX_LEN
             },
-            "parent_episode_id": {
-                "anyOf": [
-                    {
-                        "type": "string",
-                        "maxLength": CORAL_EPISODE_ID_MAX_LEN
-                    },
-                    {
-                        "type": "null"
-                    }
-                ]
-            },
+            "parent_episode_id": nullable_episode_id_schema(None),
             "message": { "type": "string" },
             "instructions": { "type": "string" }
         }

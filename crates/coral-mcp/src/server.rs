@@ -32,12 +32,13 @@ use tonic::{
 use crate::{
     McpOptions,
     surface::{
-        CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
-        describe_table_tool, describe_table_value, feedback_tool, guide_resource,
-        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_tool,
-        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
-        optional_episode_id_argument, required_string_argument, search_catalog_arguments,
-        search_catalog_tool, search_catalog_value, sql_tool, status_to_error_data, tables_resource,
+        CatalogToolKind, ToolDescriptionContext, build_tool_result, create_episode_arguments,
+        create_episode_tool, describe_table_arguments, describe_table_tool, describe_table_value,
+        feedback_tool, guide_resource, guide_resource_content, initial_instructions,
+        list_catalog_arguments, list_catalog_tool, list_catalog_value, list_columns_arguments,
+        list_columns_tool, list_columns_value, optional_episode_id_argument,
+        required_string_argument, search_catalog_arguments, search_catalog_tool,
+        search_catalog_value, sql_tool, status_to_error_data, tables_resource,
         tables_resource_content, tool_error_from_status, tool_error_result,
     },
     telemetry,
@@ -302,6 +303,7 @@ impl CoralMcpServer {
         &self,
         intent: &str,
         parent_episode_id: Option<&str>,
+        span: &tracing::Span,
     ) -> Result<Value, tonic::Status> {
         let episode_id = format!("ep_{}", uuid::Uuid::new_v4().simple());
         let mut episode_client = self.episode.clone();
@@ -313,6 +315,7 @@ impl CoralMcpServer {
                 parent_episode_id: parent_episode_id.unwrap_or_default().to_string(),
             }))
             .await?;
+        telemetry::record_episode_id(span, &episode_id);
         serialize_tool_value(EpisodeCreatedValue {
             episode_id,
             parent_episode_id: parent_episode_id.map(str::to_string),
@@ -431,6 +434,7 @@ impl CoralMcpServer {
         &self,
         request: CallToolRequestParams,
         context: &ToolCallContext,
+        span: &tracing::Span,
     ) -> Result<ToolCallOutcome, ErrorData> {
         match request.name.as_ref() {
             "sql" => {
@@ -461,10 +465,13 @@ impl CoralMcpServer {
                     .await
             }
             "create_episode" if self.options.episodes_enabled => {
-                let arguments =
-                    crate::surface::create_episode_arguments(request.arguments.as_ref())?;
+                let arguments = create_episode_arguments(request.arguments.as_ref())?;
                 match self
-                    .create_episode_value(&arguments.intent, arguments.parent_episode_id.as_deref())
+                    .create_episode_value(
+                        &arguments.intent,
+                        arguments.parent_episode_id.as_deref(),
+                        span,
+                    )
                     .await
                 {
                     Ok(value) => Ok(ToolCallOutcome::Success(value)),
@@ -592,11 +599,11 @@ impl ServerHandler for CoralMcpServer {
                 sql_tool(&tool_context),
                 list_catalog_tool(&tool_context),
                 search_catalog_tool(&tool_context),
-                describe_table_tool(self.options.episodes_enabled),
-                list_columns_tool(self.options.episodes_enabled),
+                describe_table_tool(&tool_context),
+                list_columns_tool(&tool_context),
             ];
             if self.options.episodes_enabled {
-                tools.push(crate::surface::create_episode_tool());
+                tools.push(create_episode_tool());
             }
             if self.options.feedback_enabled {
                 tools.push(feedback_tool());
@@ -617,7 +624,8 @@ impl ServerHandler for CoralMcpServer {
             ToolCallContext::from_tool_request(&self.options, request.arguments.as_ref(), &span);
         let outcome = match context {
             Ok(context) => {
-                telemetry::instrument(span.clone(), self.dispatch_tool(request, &context)).await
+                telemetry::instrument(span.clone(), self.dispatch_tool(request, &context, &span))
+                    .await
             }
             Err(error) => Err(error),
         };
