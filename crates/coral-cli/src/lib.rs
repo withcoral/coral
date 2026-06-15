@@ -27,7 +27,10 @@ use clap::{
     Parser, Subcommand, ValueEnum,
 };
 use clap_complete::{Shell, generate};
-use coral_api::v1::ExecuteSqlRequest;
+use coral_api::v1::{
+    AddRecipeRequest, ExecuteSqlRequest, ListRecipesRequest, Recipe, RemoveRecipeRequest,
+    ValidateRecipeRequest, recipe_publish,
+};
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
 use coral_client::{
@@ -65,6 +68,8 @@ enum Command {
     Sql(SqlArgs),
     /// Manage data sources
     Source(SourceArgs),
+    /// Manage recipes
+    Recipe(RecipeArgs),
     /// Interactive wizard to set up Coral and explore use cases
     Onboard,
     /// Start the MCP server over stdio
@@ -217,6 +222,36 @@ struct FeaturesArgs {
     command: FeaturesCommand,
 }
 
+#[derive(Debug, Args)]
+/// Manage recipes
+struct RecipeArgs {
+    #[command(subcommand)]
+    command: RecipeCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum RecipeCommand {
+    /// List installed recipes
+    List,
+    /// Add or replace a user recipe
+    Add {
+        /// Path to a recipe YAML file
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Validate a recipe without installing it
+    Validate {
+        /// Path to a recipe YAML file
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Remove a user recipe
+    Remove {
+        /// Name of the recipe to remove
+        name: String,
+    },
+}
+
 #[derive(Debug, Subcommand)]
 enum FeaturesCommand {
     /// List experimental runtime features and their current status
@@ -358,9 +393,11 @@ impl CliError {
 impl Command {
     fn required_runtime(&self) -> RequiredRuntime {
         match self {
-            Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
-                RequiredRuntime::AppClient
-            }
+            Command::Sql(_)
+            | Command::Source(_)
+            | Command::Recipe(_)
+            | Command::Onboard
+            | Command::McpStdio(_) => RequiredRuntime::AppClient,
             Command::Features(_) | Command::Completion(_) => RequiredRuntime::None,
             #[cfg(feature = "embedded-ui")]
             Command::Ui(_) => RequiredRuntime::None,
@@ -520,7 +557,11 @@ async fn run_no_runtime_command(
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
         Command::Ui(args) => run_ui(args).await.map_err(Into::into),
-        Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
+        Command::Sql(_)
+        | Command::Source(_)
+        | Command::Recipe(_)
+        | Command::Onboard
+        | Command::McpStdio(_) => {
             unreachable!("app client commands are routed through app runtime startup")
         }
     }
@@ -555,6 +596,7 @@ async fn run_app_command(
             print_batches(result.batches(), args.format)?;
         }
         Command::Source(args) => run_source(&app, args).await?,
+        Command::Recipe(args) => run_recipe(&app, args).await?,
         Command::Onboard => {
             onboard::run(&app).await?;
         }
@@ -680,6 +722,129 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
         }
     }
     Ok(())
+}
+
+async fn run_recipe(app: &AppClient, args: RecipeArgs) -> Result<(), CliError> {
+    match args.command {
+        RecipeCommand::List => {
+            let mut client = app.recipe_client();
+            let recipes = client
+                .list_recipes(Request::new(ListRecipesRequest {
+                    workspace: Some(default_workspace()),
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner()
+                .recipes;
+            if recipes.is_empty() {
+                println!("No recipes configured.");
+            } else {
+                let rows = recipes.into_iter().map(|recipe| {
+                    [
+                        recipe.name.clone(),
+                        recipe_publish_summary(&recipe),
+                        recipe_columns_summary(&recipe),
+                    ]
+                });
+                print_text_table(["Recipe", "Publish", "Columns"], rows);
+            }
+        }
+        RecipeCommand::Add { file } => {
+            let yaml = std::fs::read_to_string(&file).map_err(anyhow::Error::from)?;
+            let mut client = app.recipe_client();
+            let recipe = client
+                .add_recipe(Request::new(AddRecipeRequest {
+                    workspace: Some(default_workspace()),
+                    yaml,
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner();
+            println!("Added recipe {}", recipe.name);
+        }
+        RecipeCommand::Validate { file } => {
+            let yaml = std::fs::read_to_string(&file).map_err(anyhow::Error::from)?;
+            let mut client = app.recipe_client();
+            let recipe = client
+                .validate_recipe(Request::new(ValidateRecipeRequest {
+                    workspace: Some(default_workspace()),
+                    yaml,
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner()
+                .recipe
+                .ok_or_else(|| anyhow::anyhow!("validate recipe response missing recipe"))?;
+            println!("Recipe {} is valid.", recipe.name);
+            print_text_table(
+                ["Recipe", "Publish", "Columns"],
+                [[
+                    recipe.name.clone(),
+                    recipe_publish_summary(&recipe),
+                    recipe_columns_summary(&recipe),
+                ]],
+            );
+        }
+        RecipeCommand::Remove { name } => {
+            let name = recipe_name_arg(&name)?;
+            let mut client = app.recipe_client();
+            client
+                .remove_recipe(Request::new(RemoveRecipeRequest {
+                    workspace: Some(default_workspace()),
+                    name: name.clone(),
+                }))
+                .await
+                .map_err(anyhow::Error::from)?;
+            println!("Removed recipe {name}");
+        }
+    }
+    Ok(())
+}
+
+fn recipe_publish_summary(recipe: &Recipe) -> String {
+    let targets = recipe
+        .publish
+        .iter()
+        .filter_map(|publish| match publish.target.as_ref()? {
+            recipe_publish::Target::TableFunction(target) => {
+                Some(format!("sql: {}.{}", target.schema, target.name))
+            }
+        })
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        "-".to_string()
+    } else {
+        targets.join(", ")
+    }
+}
+
+fn recipe_columns_summary(recipe: &Recipe) -> String {
+    if recipe.result_columns.is_empty() {
+        return "-".to_string();
+    }
+    recipe
+        .result_columns
+        .iter()
+        .take(4)
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn recipe_name_arg(name: &str) -> Result<String, anyhow::Error> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("missing recipe name"));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err(anyhow::anyhow!(
+            "recipe name must not contain '/' or '\\\\'"
+        ));
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err(anyhow::anyhow!("recipe name must not be '.' or '..'"));
+    }
+    Ok(trimmed.to_string())
 }
 
 fn print_batches(
@@ -884,6 +1049,10 @@ mod tests {
     #[test]
     fn regular_commands_use_normal_app_bootstrap() {
         let cli = Cli::try_parse_from(["coral", "source", "list"]).expect("source list parses");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+
+        let cli = Cli::try_parse_from(["coral", "recipe", "list"]).expect("recipe list parses");
 
         assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
     }

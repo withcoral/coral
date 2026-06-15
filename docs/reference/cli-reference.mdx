@@ -160,6 +160,82 @@ Remove an installed source.
 coral source remove github
 ```
 
+## `coral recipe`
+
+Manage user-installed recipes. A recipe is a YAML artifact that defines a reusable, typed query and can publish it as SQL under `recipes.*`.
+
+### `coral recipe add --file <PATH>`
+
+Validate, then install or replace, a user recipe from a YAML file.
+
+```shellscript
+coral recipe add --file ./my-review-queue.recipe.yaml
+```
+
+Coral validates the recipe before storing it in the current workspace. Validation checks the YAML shape, installed-source references, SQL publish target collisions, and inferred result columns. If runtime validation fails, the recipe is not installed.
+
+Example recipe:
+
+```yaml
+kind: recipe
+name: my_review_queue
+description: Pull requests ready for review
+inputs:
+  owner:
+    type: string
+    required: true
+  repo:
+    type: string
+    required: true
+implementation:
+  kind: coral_sql
+  query: |
+    select number, title, url
+    from github.pull_requests
+    where owner = $owner
+      and repo = $repo
+      and state = 'open'
+publish:
+  - table_function: recipes.my_review_queue
+```
+
+### `coral recipe validate --file <PATH>`
+
+Validate a recipe against the current workspace without installing it.
+
+```shellscript
+coral recipe validate --file ./my-review-queue.recipe.yaml
+```
+
+Use this when you want the runtime check explicitly, for example after a source changed or before sharing a recipe file.
+
+### `coral recipe list`
+
+List installed recipes.
+
+```shellscript
+coral recipe list
+```
+
+The output is inventory-only and does not re-run runtime validation, so it stays fast. For user-installed recipes, Coral shows the result columns cached during the last successful `coral recipe add --file`.
+
+If a recipe publishes SQL, call it with named arguments:
+
+```sql
+select *
+from recipes.my_review_queue(owner => 'withcoral', repo => 'coral')
+```
+
+### `coral recipe remove <NAME>`
+
+Remove a user-installed recipe.
+
+```shellscript
+coral recipe remove my_review_queue
+```
+
+Bundled recipes shipped with sources cannot be removed through workspace recipe config.
+
 ## `coral onboard`
 
 Run the guided source setup flow.
