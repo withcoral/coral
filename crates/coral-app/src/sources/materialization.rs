@@ -436,10 +436,10 @@ fn validate_projection_references(
     materialized: &V4MaterializedSource,
     operations_by_surface: &BTreeMap<&str, BTreeSet<&str>>,
 ) -> Result<(), AppError> {
-    let namespace_by_surface = manifest
+    let relation_namespace_by_surface = manifest
         .surfaces
         .iter()
-        .map(|surface| (surface.id.as_str(), surface.namespace.as_str()))
+        .map(|surface| (surface.id.as_str(), surface.relation_namespace.as_str()))
         .collect::<BTreeMap<_, _>>();
     for projection in &materialized.projections.projections {
         let Some(operations) = operations_by_surface.get(projection.surface_id.as_str()) else {
@@ -451,7 +451,7 @@ fn validate_projection_references(
                 ),
             ));
         };
-        let expected_namespace = namespace_by_surface
+        let expected_relation_namespace = relation_namespace_by_surface
             .get(projection.surface_id.as_str())
             .ok_or_else(|| {
                 incompatible_materialization_error(
@@ -462,15 +462,15 @@ fn validate_projection_references(
                     ),
                 )
             })?;
-        if projection.namespace != *expected_namespace {
+        if projection.namespace != *expected_relation_namespace {
             return Err(incompatible_materialization_error(
                 source_name,
                 format!(
-                    "projection '{}' namespace '{}' does not match surface '{}' namespace '{}'",
+                    "projection '{}' namespace '{}' does not match surface '{}' relation namespace '{}'",
                     projection.name,
                     projection.namespace,
                     projection.surface_id,
-                    expected_namespace
+                    expected_relation_namespace
                 ),
             ));
         }

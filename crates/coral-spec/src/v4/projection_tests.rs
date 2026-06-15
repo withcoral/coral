@@ -385,10 +385,12 @@ name: github
 dsl_version: 4
 surfaces:
   - id: rest
+    namespace_suffix: rest
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.github.com
   - id: mcp
+    namespace_suffix: mcp
     type: mcp
     server:
       transport: stdio
@@ -405,10 +407,12 @@ name: github
 dsl_version: 4
 surfaces:
   - id: rest_primary
+    namespace_suffix: rest_primary
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.github.com
   - id: rest_secondary
+    namespace_suffix: rest_secondary
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.github.com

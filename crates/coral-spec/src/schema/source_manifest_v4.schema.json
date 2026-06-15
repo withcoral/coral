@@ -47,8 +47,9 @@
               "type": "string",
               "pattern": "^[a-z][a-z0-9_]*$"
             },
-            "namespace": {
+            "namespace_suffix": {
               "type": "string",
+              "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
               "minLength": 1,
               "pattern": "^[a-z][a-z0-9_]*$"
             },
@@ -125,8 +126,9 @@
               "type": "string",
               "pattern": "^[a-z][a-z0-9_]*$"
             },
-            "namespace": {
+            "namespace_suffix": {
               "type": "string",
+              "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
               "minLength": 1,
               "pattern": "^[a-z][a-z0-9_]*$"
             },

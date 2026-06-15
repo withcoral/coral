@@ -34,7 +34,7 @@ enum V4SurfaceSchema {
 struct V4OpenApiSurfaceSchema {
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    namespace: Option<String>,
+    namespace_suffix: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -56,7 +56,7 @@ struct V4OpenApiSurfaceSchema {
 struct V4McpSurfaceSchema {
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    namespace: Option<String>,
+    namespace_suffix: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     server: McpServerSpec,
@@ -139,7 +139,7 @@ fn post_process_schema(schema: &mut Value) {
         .and_then(Value::as_object_mut)
     {
         post_process_surface_id(properties);
-        post_process_surface_namespace(properties);
+        post_process_surface_namespace_suffix(properties);
         if let Some(url) = properties.get_mut("url").and_then(Value::as_object_mut) {
             url.insert("type".to_string(), json!("string"));
             url.insert("pattern".to_string(), json!("^https://"));
@@ -169,7 +169,7 @@ fn post_process_schema(schema: &mut Value) {
         .and_then(Value::as_object_mut)
     {
         post_process_surface_id(properties);
-        post_process_surface_namespace(properties);
+        post_process_surface_namespace_suffix(properties);
         post_process_surface_inputs(properties);
     }
 }
@@ -232,7 +232,7 @@ fn post_process_surface_variants(surface_schema: &mut Value) {
             continue;
         };
         post_process_surface_id(properties);
-        post_process_surface_namespace(properties);
+        post_process_surface_namespace_suffix(properties);
         post_process_surface_inputs(properties);
         if let Some("openapi") = surface_type.as_deref() {
             if let Some(url) = properties.get_mut("url").and_then(Value::as_object_mut) {
@@ -311,14 +311,20 @@ fn post_process_surface_id(properties: &mut serde_json::Map<String, Value>) {
     }
 }
 
-fn post_process_surface_namespace(properties: &mut serde_json::Map<String, Value>) {
-    if let Some(namespace) = properties
-        .get_mut("namespace")
+fn post_process_surface_namespace_suffix(properties: &mut serde_json::Map<String, Value>) {
+    if let Some(namespace_suffix) = properties
+        .get_mut("namespace_suffix")
         .and_then(Value::as_object_mut)
     {
-        namespace.insert("type".to_string(), json!("string"));
-        namespace.insert("minLength".to_string(), json!(1));
-        namespace.insert("pattern".to_string(), json!("^[a-z][a-z0-9_]*$"));
+        namespace_suffix.insert("type".to_string(), json!("string"));
+        namespace_suffix.insert(
+            "description".to_string(),
+            json!(
+                "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>."
+            ),
+        );
+        namespace_suffix.insert("minLength".to_string(), json!(1));
+        namespace_suffix.insert("pattern".to_string(), json!("^[a-z][a-z0-9_]*$"));
     }
 }
 
@@ -366,7 +372,7 @@ name: demo
 dsl_version: 4
 surfaces:
   - id: mcp
-    namespace: demo_mcp
+    namespace_suffix: mcp
     type: mcp
     inputs:
       MCP_TOKEN:
@@ -394,7 +400,7 @@ name: demo
 dsl_version: 4
 surfaces:
   - id: stdio_mcp
-    namespace: demo_stdio
+    namespace_suffix: stdio
     type: mcp
     inputs:
       MCP_TOKEN:
@@ -407,7 +413,7 @@ surfaces:
           from: input
           key: MCP_TOKEN
   - id: http_mcp
-    namespace: demo_http
+    namespace_suffix: http
     type: mcp
     inputs:
       HTTP_TOKEN:
@@ -486,21 +492,71 @@ surfaces:
     }
 
     #[test]
+    fn generated_schema_accepts_one_missing_multi_surface_namespace_and_parser_agrees() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+  - id: mcp
+    namespace_suffix: mcp
+    type: mcp
+    server:
+      transport: stdio
+      command: demo-mcp-server
+";
+
+        if let Err(errors) = validator().validate(&manifest_json(raw)) {
+            let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
+            panic!("generated schema should accept one default relation namespace: {errors:?}");
+        }
+        parse_source_manifest_yaml(raw)
+            .expect("parser should accept one missing multi-surface namespace");
+    }
+
+    #[test]
+    fn parser_rejects_two_missing_multi_surface_namespaces_after_schema_accepts_shape() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+  - id: mcp
+    type: mcp
+    server:
+      transport: stdio
+      command: demo-mcp-server
+";
+
+        if let Err(errors) = validator().validate(&manifest_json(raw)) {
+            let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
+            panic!("generated schema should accept this parser-owned invariant: {errors:?}");
+        }
+        parse_source_manifest_yaml(raw)
+            .expect_err("parser should reject multiple missing multi-surface namespaces");
+    }
+
+    #[test]
     fn generated_schema_rejects_invalid_surface_namespace_and_parser_agrees() {
         let raw = r"
 name: demo
 dsl_version: 4
 surfaces:
   - id: rest
-    namespace: GitHubRest
+    namespace_suffix: GitHubRest
     type: openapi
     url: https://example.com/openapi.yaml
 ";
 
         assert!(
             validator().validate(&manifest_json(raw)).is_err(),
-            "mixed-case namespace should be rejected by generated schema"
+            "mixed-case namespace_suffix should be rejected by generated schema"
         );
-        parse_source_manifest_yaml(raw).expect_err("parser should reject mixed-case namespace");
+        parse_source_manifest_yaml(raw)
+            .expect_err("parser should reject mixed-case namespace_suffix");
     }
 }

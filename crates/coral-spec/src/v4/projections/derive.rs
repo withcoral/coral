@@ -31,7 +31,7 @@ pub fn generate_projection_catalog(
     for ir in surfaces {
         let namespace = manifest
             .surface(&ir.surface_id)
-            .map(|surface| surface.namespace.as_str())
+            .map(|surface| surface.relation_namespace.as_str())
             .ok_or_else(|| {
                 ManifestError::validation(format!(
                     "projection surface '{}' is not declared in source '{}'",

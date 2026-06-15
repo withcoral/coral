@@ -149,7 +149,7 @@ fn http_manifest_for_surface(
     Ok(HttpSourceManifest {
         common: SourceManifestCommon {
             dsl_version: manifest.common.dsl_version,
-            name: surface.namespace.clone(),
+            name: surface.relation_namespace.clone(),
             version: String::new(),
             description: manifest.common.description.clone(),
             test_queries: Vec::new(),
@@ -246,7 +246,7 @@ fn mcp_manifest_for_surface(
     Ok(McpSourceManifest {
         common: SourceManifestCommon {
             dsl_version: manifest.common.dsl_version,
-            name: surface.namespace.clone(),
+            name: surface.relation_namespace.clone(),
             version: String::new(),
             description: manifest.common.description.clone(),
             test_queries: Vec::new(),
@@ -410,7 +410,7 @@ mod tests {
     fn surface_without_authored_base_url() -> V4Surface {
         V4Surface {
             id: "rest".to_string(),
-            namespace: "demo".to_string(),
+            relation_namespace: "demo".to_string(),
             surface_type: SurfaceType::OpenApi,
             descriptor: SurfaceDescriptor::File {
                 file: PathBuf::from("/tmp/openapi.yaml"),
@@ -457,10 +457,10 @@ mod tests {
         }
     }
 
-    fn mcp_surface(id: &str, namespace: &str) -> V4Surface {
+    fn mcp_surface(id: &str, relation_namespace: &str) -> V4Surface {
         V4Surface {
             id: id.to_string(),
-            namespace: namespace.to_string(),
+            relation_namespace: relation_namespace.to_string(),
             surface_type: SurfaceType::Mcp,
             descriptor: SurfaceDescriptor::McpServer {
                 location: "demo-mcp-server".to_string(),
@@ -541,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_surface_runtime_components_use_surface_namespaces() {
+    fn multi_surface_runtime_components_use_surface_relation_namespaces() {
         let manifest = V4SourceManifest {
             common: V4SourceCommon {
                 dsl_version: 4,

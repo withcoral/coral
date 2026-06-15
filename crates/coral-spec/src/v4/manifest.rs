@@ -33,7 +33,8 @@ pub struct V4SourceCommon {
 #[derive(Debug, Clone)]
 pub struct V4Surface {
     pub id: String,
-    pub namespace: String,
+    /// Effective relation namespace after applying any authored suffix.
+    pub relation_namespace: String,
     pub surface_type: SurfaceType,
     pub descriptor: SurfaceDescriptor,
     pub inputs: Vec<ManifestInputSpec>,
@@ -124,7 +125,7 @@ struct RawV4SourceManifest {
 struct RawV4Surface {
     id: String,
     #[serde(default)]
-    namespace: Option<String>,
+    namespace_suffix: Option<String>,
     #[serde(rename = "type")]
     surface_type: RawSurfaceType,
     #[serde(default)]
@@ -188,7 +189,8 @@ impl V4SourceManifest {
             .ok_or_else(|| ManifestError::validation("v4 manifest surfaces must be a list"))?;
         let surface_count = surfaces.len();
         let mut seen_surface_ids = HashSet::new();
-        let mut namespace_by_name = BTreeMap::new();
+        let mut default_relation_namespace_surface = None;
+        let mut relation_namespace_by_name = BTreeMap::new();
         let mut validated_surfaces = Vec::with_capacity(surfaces.len());
         let mut declared_inputs = Vec::new();
         let mut input_by_key: BTreeMap<String, (String, ManifestInputSpec)> = BTreeMap::new();
@@ -204,15 +206,27 @@ impl V4SourceManifest {
                     raw_surface.id
                 )));
             }
-            let namespace = raw_surface.namespace.clone().unwrap_or_else(|| {
-                default_surface_namespace(&name, &raw_surface.id, surface_count)
-            });
-            validate_surface_namespace(&name, &raw_surface.id, &namespace)?;
-            if let Some(existing_surface) =
-                namespace_by_name.insert(namespace.clone(), raw_surface.id.clone())
+            if raw_surface.namespace_suffix.is_none()
+                && surface_count > 1
+                && let Some(existing_surface) =
+                    default_relation_namespace_surface.replace(raw_surface.id.clone())
             {
                 return Err(ManifestError::validation(format!(
-                    "source '{name}' surfaces '{existing_surface}' and '{}' declare duplicate namespace '{namespace}'",
+                    "source '{name}' surfaces '{existing_surface}' and '{}' both omit namespace_suffix; at most one surface may use the default relation namespace '{name}'",
+                    raw_surface.id
+                )));
+            }
+            let relation_namespace = surface_relation_namespace(
+                &name,
+                &raw_surface.id,
+                raw_surface.namespace_suffix.as_deref(),
+            )?;
+            validate_relation_namespace(&name, &raw_surface.id, &relation_namespace)?;
+            if let Some(existing_surface) = relation_namespace_by_name
+                .insert(relation_namespace.clone(), raw_surface.id.clone())
+            {
+                return Err(ManifestError::validation(format!(
+                    "source '{name}' surfaces '{existing_surface}' and '{}' declare duplicate relation namespace '{relation_namespace}'",
                     raw_surface.id
                 )));
             }
@@ -231,7 +245,7 @@ impl V4SourceManifest {
                 raw_surface,
                 surface_value,
                 inputs,
-                namespace,
+                relation_namespace,
             )?);
         }
 
@@ -254,15 +268,19 @@ fn parse_surface(
     raw_surface: RawV4Surface,
     surface_value: &Value,
     inputs: Vec<ManifestInputSpec>,
-    namespace: String,
+    relation_namespace: String,
 ) -> Result<V4Surface> {
     match raw_surface.surface_type {
         RawSurfaceType::OpenApi => {
-            parse_openapi_surface(source_name, raw_surface, inputs, namespace)
+            parse_openapi_surface(source_name, raw_surface, inputs, relation_namespace)
         }
-        RawSurfaceType::Mcp => {
-            parse_mcp_surface(source_name, raw_surface, surface_value, inputs, namespace)
-        }
+        RawSurfaceType::Mcp => parse_mcp_surface(
+            source_name,
+            raw_surface,
+            surface_value,
+            inputs,
+            relation_namespace,
+        ),
     }
 }
 
@@ -270,7 +288,7 @@ fn parse_openapi_surface(
     source_name: &str,
     raw_surface: RawV4Surface,
     inputs: Vec<ManifestInputSpec>,
-    namespace: String,
+    relation_namespace: String,
 ) -> Result<V4Surface> {
     if raw_surface.server.is_some() {
         return Err(ManifestError::validation(format!(
@@ -290,7 +308,7 @@ fn parse_openapi_surface(
     let descriptor = parse_openapi_descriptor(source_name, &raw_surface)?;
     Ok(V4Surface {
         id: raw_surface.id,
-        namespace,
+        relation_namespace,
         surface_type: SurfaceType::OpenApi,
         descriptor,
         inputs,
@@ -310,7 +328,7 @@ fn parse_mcp_surface(
     raw_surface: RawV4Surface,
     surface_value: &Value,
     inputs: Vec<ManifestInputSpec>,
-    namespace: String,
+    relation_namespace: String,
 ) -> Result<V4Surface> {
     if raw_surface.url.is_some() || raw_surface.file.is_some() {
         return Err(ManifestError::validation(format!(
@@ -335,7 +353,7 @@ fn parse_mcp_surface(
     validate_mcp_server(source_name, &server, &inputs)?;
     Ok(V4Surface {
         id: raw_surface.id,
-        namespace,
+        relation_namespace,
         surface_type: SurfaceType::Mcp,
         descriptor: SurfaceDescriptor::McpServer {
             location: mcp_server_location(&server),
@@ -365,23 +383,48 @@ fn validate_surface_id(source_name: &str, id: &str) -> Result<()> {
     }
 }
 
-fn default_surface_namespace(source_name: &str, surface_id: &str, surface_count: usize) -> String {
-    if surface_count == 1 {
-        source_name.to_string()
-    } else {
-        format!("{source_name}_{surface_id}")
+fn surface_relation_namespace(
+    source_name: &str,
+    surface_id: &str,
+    namespace_suffix: Option<&str>,
+) -> Result<String> {
+    if let Some(namespace_suffix) = namespace_suffix {
+        validate_surface_namespace_suffix(source_name, surface_id, namespace_suffix)?;
+        return Ok(format!("{source_name}_{namespace_suffix}"));
     }
+    Ok(source_name.to_string())
 }
 
-fn validate_surface_namespace(source_name: &str, surface_id: &str, namespace: &str) -> Result<()> {
-    let mut chars = namespace.chars();
+fn validate_surface_namespace_suffix(
+    source_name: &str,
+    surface_id: &str,
+    namespace_suffix: &str,
+) -> Result<()> {
+    let mut chars = namespace_suffix.chars();
     let valid = matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
     if valid {
         Ok(())
     } else {
         Err(ManifestError::validation(format!(
-            "source '{source_name}' surface '{surface_id}' namespace '{namespace}' must match [a-z][a-z0-9_]*"
+            "source '{source_name}' surface '{surface_id}' namespace_suffix '{namespace_suffix}' must match [a-z][a-z0-9_]*"
+        )))
+    }
+}
+
+fn validate_relation_namespace(
+    source_name: &str,
+    surface_id: &str,
+    relation_namespace: &str,
+) -> Result<()> {
+    let mut chars = relation_namespace.chars();
+    let valid = matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if valid {
+        Ok(())
+    } else {
+        Err(ManifestError::validation(format!(
+            "source '{source_name}' surface '{surface_id}' relation namespace '{relation_namespace}' must match [a-z][a-z0-9_]*"
         )))
     }
 }
