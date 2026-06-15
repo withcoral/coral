@@ -3,8 +3,9 @@
 //!
 //! Registers `{ episode_id -> intent, parent }` into the per-workspace
 //! [`EpisodeStore`](super::store::EpisodeStore). Experimental: the capture that
-//! drives this — opening an episode per session and tagging each query with the
-//! `coral-episode-id` metadata key — is wired in `coral-mcp` in a later PR.
+//! drives this — opening an episode per task and tagging follow-up Coral MCP
+//! tool calls with the `coral-episode-id` metadata key — is wired through the
+//! feature-gated `coral-mcp` episode surface.
 //!
 //! Like the other local gRPC services (e.g. `FeedbackService`), the route is
 //! **registered unconditionally**: the transport is feature-agnostic by design,

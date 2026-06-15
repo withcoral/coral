@@ -11,7 +11,7 @@
 //!
 //! The exposed MCP surface is intentionally small:
 //!
-//! - tools: `sql`, paginated `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, and optionally `feedback`
+//! - tools: `sql`, paginated `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, and optionally `feedback` and `create_episode`
 //! - resources: `coral://guide`, `coral://tables`
 //!
 //! Protocol lifecycle, initialization, and stdio transport behavior should stay
@@ -41,6 +41,8 @@ pub(crate) use server::CoralMcpServer;
 pub struct McpOptions {
     /// Expose the feedback submission tool.
     pub feedback_enabled: bool,
+    /// Expose the experimental episode creation and attribution surface.
+    pub episodes_enabled: bool,
     /// Optional W3C traceparent used to parent each MCP request span.
     pub trace_parent: Option<String>,
 }

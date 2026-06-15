@@ -2,6 +2,7 @@
 
 use coral_api::v1::Workspace;
 use coral_api::v1::catalog_service_client::CatalogServiceClient;
+use coral_api::v1::episode_service_client::EpisodeServiceClient;
 use coral_api::v1::feedback_service_client::FeedbackServiceClient;
 use coral_api::v1::query_service_client::QueryServiceClient;
 use coral_api::v1::source_service_client::SourceServiceClient;
@@ -41,6 +42,9 @@ pub type QueryClient = QueryServiceClient<GrpcService>;
 /// Public feedback-submission gRPC client.
 pub type FeedbackClient = FeedbackServiceClient<GrpcService>;
 
+/// Public episode-registration gRPC client.
+pub type EpisodeClient = EpisodeServiceClient<GrpcService>;
+
 /// Public Coral client handle.
 ///
 /// Wraps the generated gRPC clients for a Coral endpoint.
@@ -50,6 +54,7 @@ pub struct AppClient {
     catalog: CatalogClient,
     query: QueryClient,
     feedback: FeedbackClient,
+    episode: EpisodeClient,
 }
 
 impl AppClient {
@@ -72,12 +77,14 @@ impl AppClient {
             .max_decoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE);
         let query_client = QueryClient::new(grpc_service(channel.clone(), &grpc_endpoint))
             .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
-        let feedback_client = FeedbackClient::new(grpc_service(channel, &grpc_endpoint));
+        let feedback_client = FeedbackClient::new(grpc_service(channel.clone(), &grpc_endpoint));
+        let episode_client = EpisodeClient::new(grpc_service(channel, &grpc_endpoint));
         Ok(Self {
             source: source_client,
             catalog: catalog_client,
             query: query_client,
             feedback: feedback_client,
+            episode: episode_client,
         })
     }
 
@@ -103,6 +110,12 @@ impl AppClient {
     /// Returns a cloned feedback-submission client.
     pub fn feedback_client(&self) -> FeedbackClient {
         self.feedback.clone()
+    }
+
+    #[must_use]
+    /// Returns a cloned episode-registration client.
+    pub fn episode_client(&self) -> EpisodeClient {
+        self.episode.clone()
     }
 }
 

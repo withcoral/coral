@@ -15,9 +15,9 @@ use crate::state::{
 pub enum Feature {
     /// Expose the optional MCP `feedback` tool.
     Feedback,
-    /// Experimental trajectory-memory episodes (in progress): will associate each
-    /// query with the intent it served (`OpenEpisode` + the `coral-episode-id`
-    /// metadata key). No effect yet — the capture path is wired in a follow-up.
+    /// Experimental trajectory-memory episodes (in progress): exposes the MCP
+    /// `create_episode` tool and associates follow-up Coral MCP tool calls with
+    /// the intent they served via the `coral-episode-id` metadata key.
     Episodes,
 }
 
@@ -82,7 +82,7 @@ const FEATURE_SPECS: &[FeatureSpec] = &[
         feature: Feature::Episodes,
         key: "episodes",
         default_enabled: false,
-        description: "Experimental trajectory memory (in progress): will associate each query with the intent it served. Enabling this has no effect yet — the capture path lands in a follow-up. Off by default.",
+        description: "Experimental trajectory memory (in progress): exposes MCP create_episode and tags follow-up Coral tool calls with episode ids. Off by default.",
         enable_flag: "enable-episodes",
         disable_flag: "disable-episodes",
     },

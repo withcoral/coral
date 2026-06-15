@@ -401,7 +401,7 @@ async fn start_server(
         // Registered unconditionally, like `FeedbackService` above: the local
         // transport is feature-agnostic by design (effective features are resolved
         // in `coral-cli`, which gates the *consumers*, not the routes). The
-        // `episodes` feature gates the only caller — the `coral-mcp` capture path —
+        // `episodes` feature gates the only caller — the `coral-mcp` episode surface —
         // so on a default/disabled install this endpoint is reachable but inert:
         // nothing opens an episode, so no intent is ever written. See the
         // `EpisodeService` module docs and `open_episode_*` server tests below.

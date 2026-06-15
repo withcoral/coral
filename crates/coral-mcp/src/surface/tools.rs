@@ -6,12 +6,17 @@ use rmcp::{
 };
 use serde_json::{Map, Value, json};
 
+use coral_api::{CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_INTENT_MAX_CHARS};
+
 use super::{Pagination, parse_pagination, parse_pagination_with_limits};
+
+const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by create_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolDescriptionContext {
     pub(crate) visible_table_count: usize,
     pub(crate) visible_function_count: usize,
+    pub(crate) episodes_enabled: bool,
     connected_source_names: Vec<String>,
 }
 
@@ -26,8 +31,15 @@ impl ToolDescriptionContext {
         Self {
             visible_table_count,
             visible_function_count,
+            episodes_enabled: false,
             connected_source_names,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_episodes_enabled(mut self, episodes_enabled: bool) -> Self {
+        self.episodes_enabled = episodes_enabled;
+        self
     }
 
     fn connected_sources_sentence(&self) -> String {
@@ -72,11 +84,17 @@ pub(crate) struct ListColumnsArguments {
     pub(crate) pagination: Pagination,
 }
 
+pub(crate) struct CreateEpisodeArguments {
+    pub(crate) intent: String,
+    pub(crate) parent_episode_id: Option<String>,
+}
+
 pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "sql",
         sql_tool_description(context),
-        json_object_schema(&json!({
+        tool_input_schema(
+            json!({
             "type": "object",
             "required": ["sql"],
             "properties": {
@@ -85,7 +103,9 @@ pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
                     "description": "One read-only SQL statement to execute against the Coral database and its configured connected source schemas."
                 }
             }
-        })),
+        }),
+            context.episodes_enabled,
+        ),
     )
     .with_annotations(
         ToolAnnotations::with_title("Run SQL")
@@ -105,7 +125,8 @@ pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
             context.visible_table_count,
             context.visible_function_count
         ),
-        json_object_schema(&json!({
+        tool_input_schema(
+            json!({
             "type": "object",
             "properties": {
                 "schema": {
@@ -139,7 +160,9 @@ pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
                     "default": 0
                 }
             }
-        })),
+        }),
+            context.episodes_enabled,
+        ),
     )
     .with_raw_output_schema(list_catalog_output_schema())
     .with_annotations(
@@ -155,7 +178,8 @@ pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "search_catalog",
         search_catalog_description(context),
-        json_object_schema(&json!({
+        tool_input_schema(
+            json!({
             "type": "object",
             "required": ["pattern"],
             "properties": {
@@ -198,7 +222,9 @@ pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
                     "default": 0
                 }
             }
-        })),
+        }),
+            context.episodes_enabled,
+        ),
     )
     .with_raw_output_schema(search_catalog_output_schema())
     .with_annotations(
@@ -210,24 +236,27 @@ pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
     )
 }
 
-pub(crate) fn describe_table_tool() -> Tool {
+pub(crate) fn describe_table_tool(episodes_enabled: bool) -> Tool {
     Tool::new(
         "describe_table",
         "Describe one database table without returning full column definitions.",
-        json_object_schema(&json!({
-            "type": "object",
-            "required": ["schema", "table"],
-            "properties": {
-                "schema": {
-                    "type": "string",
-                    "description": "Exact SQL schema/source name."
-                },
-                "table": {
-                    "type": "string",
-                    "description": "Exact table name within the SQL schema."
+        tool_input_schema(
+            json!({
+                "type": "object",
+                "required": ["schema", "table"],
+                "properties": {
+                    "schema": {
+                        "type": "string",
+                        "description": "Exact SQL schema/source name."
+                    },
+                    "table": {
+                        "type": "string",
+                        "description": "Exact table name within the SQL schema."
+                    }
                 }
-            }
-        })),
+            }),
+            episodes_enabled,
+        ),
     )
     .with_annotations(
         ToolAnnotations::with_title("Describe Table")
@@ -238,11 +267,12 @@ pub(crate) fn describe_table_tool() -> Tool {
     )
 }
 
-pub(crate) fn list_columns_tool() -> Tool {
+pub(crate) fn list_columns_tool(episodes_enabled: bool) -> Tool {
     Tool::new(
         "list_columns",
         "List columns for one database table with optional regex and required-filter narrowing.",
-        json_object_schema(&json!({
+        tool_input_schema(
+            json!({
             "type": "object",
             "required": ["schema", "table"],
             "properties": {
@@ -281,7 +311,9 @@ pub(crate) fn list_columns_tool() -> Tool {
                     "default": 0
                 }
             }
-        })),
+        }),
+            episodes_enabled,
+        ),
     )
     .with_raw_output_schema(list_columns_output_schema())
     .with_annotations(
@@ -325,6 +357,45 @@ pub(crate) fn feedback_tool() -> Tool {
     )
 }
 
+pub(crate) fn create_episode_tool() -> Tool {
+    Tool::new(
+        "create_episode",
+        "Create a Coral episode for the current task. Call this once at the start of a task, then pass the returned episode_id on subsequent Coral tool calls for that task.",
+        json_object_schema(&json!({
+            "type": "object",
+            "required": ["intent"],
+            "properties": {
+                "intent": {
+                    "type": "string",
+                    "description": "Natural-language description of the task this episode should group.",
+                    "minLength": 1,
+                    "maxLength": CORAL_EPISODE_INTENT_MAX_CHARS
+                },
+                "parent_episode_id": {
+                    "description": "Optional parent episode id when this task is a child of an existing episode.",
+                    "anyOf": [
+                        {
+                            "type": "string",
+                            "maxLength": CORAL_EPISODE_ID_MAX_LEN
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            }
+        })),
+    )
+    .with_raw_output_schema(create_episode_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("Create Episode")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
 pub(crate) fn required_string_argument(
     arguments: Option<&Map<String, Value>>,
     key: &str,
@@ -338,6 +409,15 @@ pub(crate) fn required_string_argument(
             ErrorData::invalid_params(format!("missing string argument '{key}'"), None)
         })?;
     Ok(value.to_string())
+}
+
+pub(crate) fn create_episode_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<CreateEpisodeArguments, ErrorData> {
+    Ok(CreateEpisodeArguments {
+        intent: required_string_argument(arguments, "intent")?,
+        parent_episode_id: optional_episode_id_argument(arguments, "parent_episode_id")?,
+    })
 }
 
 pub(crate) fn list_catalog_arguments(
@@ -400,6 +480,40 @@ pub(crate) fn list_columns_arguments(
     })
 }
 
+pub(crate) fn optional_episode_id_argument(
+    arguments: Option<&Map<String, Value>>,
+    key: &str,
+) -> Result<Option<String>, ErrorData> {
+    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let value = value.as_str().ok_or_else(|| {
+        ErrorData::invalid_params(format!("argument '{key}' must be a string"), None)
+    })?;
+    if value.is_empty() {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must not be empty"),
+            None,
+        ));
+    }
+    if value.len() > CORAL_EPISODE_ID_MAX_LEN {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must be at most {CORAL_EPISODE_ID_MAX_LEN} bytes"),
+            None,
+        ));
+    }
+    if !value.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must be graphic ASCII with no spaces or control bytes"),
+            None,
+        ));
+    }
+    Ok(Some(value.to_string()))
+}
+
 pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
     let compact = serde_json::to_string(&value)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -438,6 +552,65 @@ fn connected_source_names_text(source_names: &[String]) -> Option<String> {
     }
 
     Some(source_names.join(", "))
+}
+
+fn tool_input_schema(mut value: Value, episodes_enabled: bool) -> Arc<Map<String, Value>> {
+    if episodes_enabled {
+        add_episode_id_property(&mut value);
+    }
+    json_object_schema(&value)
+}
+
+fn add_episode_id_property(value: &mut Value) {
+    value
+        .as_object_mut()
+        .expect("tool input schema is an object")
+        .entry("properties")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("tool input properties are an object")
+        .insert(
+            "episode_id".to_string(),
+            json!({
+                "description": EPISODE_ID_ARGUMENT_DESCRIPTION,
+                "anyOf": [
+                    {
+                        "type": "string",
+                        "maxLength": CORAL_EPISODE_ID_MAX_LEN
+                    },
+                    {
+                        "type": "null"
+                    }
+                ]
+            }),
+        );
+}
+
+fn create_episode_output_schema() -> Arc<Map<String, Value>> {
+    json_object_schema(&json!({
+        "type": "object",
+        "required": ["episode_id", "parent_episode_id", "message", "instructions"],
+        "additionalProperties": false,
+        "properties": {
+            "episode_id": {
+                "type": "string",
+                "maxLength": CORAL_EPISODE_ID_MAX_LEN
+            },
+            "parent_episode_id": {
+                "anyOf": [
+                    {
+                        "type": "string",
+                        "maxLength": CORAL_EPISODE_ID_MAX_LEN
+                    },
+                    {
+                        "type": "null"
+                    }
+                ]
+            },
+            "message": { "type": "string" },
+            "instructions": { "type": "string" }
+        }
+    }))
 }
 
 fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
