@@ -415,33 +415,45 @@ fn identity_resolver_error(
     identity_context: &RequestIdentityResolutionContext,
     error: &RequestIdentityResolverError,
 ) -> DataFusionError {
-    DataFusionError::Execution(format!(
+    let detail = format!(
         "request identity resolver failed for source '{}' surface '{}': {error}",
         identity_context.source_name(),
         identity_context.surface_id()
-    ))
+    );
+    match error {
+        RequestIdentityResolverError::InvalidInput(_) => DataFusionError::External(Box::new(
+            RequestIdentityResolverError::invalid_input(detail),
+        )),
+        RequestIdentityResolverError::FailedPrecondition(_) => DataFusionError::External(Box::new(
+            RequestIdentityResolverError::failed_precondition(detail),
+        )),
+    }
 }
 
 fn missing_identity_resolver_error(
     identity_context: &RequestIdentityResolutionContext,
 ) -> DataFusionError {
-    DataFusionError::Execution(format!(
-        "source '{}' surface '{}' declares identity_requirements but no request identity resolver is installed",
-        identity_context.source_name(),
-        identity_context.surface_id()
-    ))
+    DataFusionError::External(Box::new(RequestIdentityResolverError::failed_precondition(
+        format!(
+            "source '{}' surface '{}' declares identity_requirements but no request identity resolver is installed",
+            identity_context.source_name(),
+            identity_context.surface_id()
+        ),
+    )))
 }
 
 fn identity_header_conflict_error(
     identity_context: &RequestIdentityResolutionContext,
     name: &HeaderName,
 ) -> DataFusionError {
-    DataFusionError::Execution(format!(
-        "request identity resolver attempted to overwrite header '{}' for source '{}' surface '{}'",
-        name.as_str(),
-        identity_context.source_name(),
-        identity_context.surface_id()
-    ))
+    DataFusionError::External(Box::new(RequestIdentityResolverError::invalid_input(
+        format!(
+            "request identity resolver attempted to overwrite header '{}' for source '{}' surface '{}'",
+            name.as_str(),
+            identity_context.source_name(),
+            identity_context.surface_id()
+        ),
+    )))
 }
 
 fn request_error(

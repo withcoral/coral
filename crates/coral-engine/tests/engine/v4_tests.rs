@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use coral_engine::{
-    CoralQuery, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
+    CoralQuery, CoreError, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
     RequestIdentityResolutionContext, RequestIdentityResolver, RequestIdentityResolverError,
     RuntimeHttpSourceComponent, RuntimeSourceComponent, RuntimeSourcePackage,
 };
@@ -120,6 +120,23 @@ impl RequestIdentityResolver for RecordingIdentityResolver {
     }
 }
 
+#[derive(Debug)]
+struct FailingIdentityResolver;
+
+#[async_trait::async_trait]
+impl RequestIdentityResolver for FailingIdentityResolver {
+    async fn resolve_identity_headers(
+        &self,
+        _identity: &RequestIdentityResolutionContext,
+        _request: &reqwest::Request,
+        _resolved_inputs: &BTreeMap<String, String>,
+    ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestIdentityResolverError> {
+        Err(RequestIdentityResolverError::failed_precondition(
+            "no healthy identity is bound",
+        ))
+    }
+}
+
 /// Engine runtime with a [`RecordingIdentityResolver`] writing into `observed`.
 fn recording_identity_runtime(observed: &ObservedCell) -> QueryRuntimeConfig {
     QueryRuntimeConfig::new(QueryRuntimeContext::default(), EngineExtensions::default())
@@ -173,12 +190,35 @@ async fn v4_identity_requirements_fail_closed_without_resolver() {
         .await
         .expect_err("identity-backed query without resolver should fail");
 
-    assert!(
-        error.to_string().contains(
-            "declares identity_requirements but no request identity resolver is installed"
+    match error {
+        CoreError::FailedPrecondition(detail) => assert!(
+            detail.contains(
+                "declares identity_requirements but no request identity resolver is installed"
+            ),
+            "unexpected error: {detail}"
         ),
-        "unexpected error: {error}"
-    );
+        other => panic!("expected CoreError::FailedPrecondition, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn v4_identity_resolver_failure_preserves_failed_precondition() {
+    let runtime =
+        QueryRuntimeConfig::new(QueryRuntimeContext::default(), EngineExtensions::default())
+            .with_request_identity_resolver(Some(Arc::new(FailingIdentityResolver)));
+    let source = github_v4_source("http://127.0.0.1:1", identity_requirements_yaml());
+
+    let error = CoralQuery::execute_sql(&[source], runtime, github_issues_sql())
+        .await
+        .expect_err("identity resolver should fail");
+
+    match error {
+        CoreError::FailedPrecondition(detail) => assert!(
+            detail.contains("no healthy identity is bound"),
+            "unexpected error: {detail}"
+        ),
+        other => panic!("expected CoreError::FailedPrecondition, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -196,12 +236,15 @@ async fn v4_identity_resolver_cannot_overwrite_existing_headers() {
         .await
         .expect_err("identity resolver should not overwrite existing header");
 
-    assert!(
-        error
-            .to_string()
-            .contains("request identity resolver attempted to overwrite header 'x-coral-identity'"),
-        "unexpected error: {error}"
-    );
+    match error {
+        CoreError::InvalidInput(detail) => assert!(
+            detail.contains(
+                "request identity resolver attempted to overwrite header 'x-coral-identity'"
+            ),
+            "unexpected error: {detail}"
+        ),
+        other => panic!("expected CoreError::InvalidInput, got {other:?}"),
+    }
 }
 
 /// Builds an app-style v4 runtime source for the GitHub openapi fixture;
