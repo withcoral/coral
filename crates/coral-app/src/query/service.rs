@@ -11,6 +11,7 @@ use coral_api::v1::{
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
+use crate::authorization::{WorkspaceAccessKind, WorkspaceAuthorizer, authorization_status};
 use crate::bootstrap::core_status;
 use crate::identity::UserPrincipalProvider;
 use crate::query::QueryAttribution;
@@ -24,16 +25,19 @@ use crate::transport::{
 pub(crate) struct QueryService {
     queries: QueryManager,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    workspace_authorizer: Arc<dyn WorkspaceAuthorizer>,
 }
 
 impl QueryService {
     pub(crate) fn new(
         query_manager: QueryManager,
         user_principal_provider: Arc<dyn UserPrincipalProvider>,
+        workspace_authorizer: Arc<dyn WorkspaceAuthorizer>,
     ) -> Self {
         Self {
             queries: query_manager,
             user_principal_provider,
+            workspace_authorizer,
         }
     }
 }
@@ -45,6 +49,7 @@ impl QueryServiceApi for QueryService {
         request: Request<ExecuteSqlRequest>,
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
         let queries = self.queries.clone();
+        let workspace_authorizer = Arc::clone(&self.workspace_authorizer);
         let attribution = QueryAttribution {
             episode_id: episode_id_from_metadata(request.metadata()),
         };
@@ -53,6 +58,14 @@ impl QueryServiceApi for QueryService {
             request,
             |principal, inner| async move {
                 let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+                workspace_authorizer
+                    .authorize_workspace_access(
+                        &principal,
+                        workspace_name.as_str(),
+                        WorkspaceAccessKind::Read,
+                    )
+                    .await
+                    .map_err(authorization_status)?;
                 let execution = queries
                     .execute_sql_with_context(&workspace_name, &principal, &inner.sql, &attribution)
                     .await
@@ -77,6 +90,7 @@ impl QueryServiceApi for QueryService {
         request: Request<ExplainSqlRequest>,
     ) -> Result<Response<ExplainSqlResponse>, Status> {
         let queries = self.queries.clone();
+        let workspace_authorizer = Arc::clone(&self.workspace_authorizer);
         let attribution = QueryAttribution {
             episode_id: episode_id_from_metadata(request.metadata()),
         };
@@ -85,6 +99,14 @@ impl QueryServiceApi for QueryService {
             request,
             |principal, inner| async move {
                 let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+                workspace_authorizer
+                    .authorize_workspace_access(
+                        &principal,
+                        workspace_name.as_str(),
+                        WorkspaceAccessKind::Read,
+                    )
+                    .await
+                    .map_err(authorization_status)?;
                 let plan = queries
                     .explain_sql_with_context(&workspace_name, &principal, &inner.sql, &attribution)
                     .await

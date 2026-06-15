@@ -6,6 +6,7 @@ use coral_api::v1::{
 };
 use tonic::{Request, Response, Status};
 
+use crate::authorization::{WorkspaceAccessKind, WorkspaceAuthorizer, authorization_status};
 use crate::bootstrap::app_status;
 use crate::feedback::manager::{FeedbackManager, FeedbackReport};
 use crate::identity::UserPrincipalProvider;
@@ -17,16 +18,19 @@ use crate::transport::{
 pub(crate) struct FeedbackService {
     feedback: FeedbackManager,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    workspace_authorizer: Arc<dyn WorkspaceAuthorizer>,
 }
 
 impl FeedbackService {
     pub(crate) fn new(
         feedback: FeedbackManager,
         user_principal_provider: Arc<dyn UserPrincipalProvider>,
+        workspace_authorizer: Arc<dyn WorkspaceAuthorizer>,
     ) -> Self {
         Self {
             feedback,
             user_principal_provider,
+            workspace_authorizer,
         }
     }
 }
@@ -38,11 +42,20 @@ impl FeedbackServiceApi for FeedbackService {
         request: Request<SubmitFeedbackRequest>,
     ) -> Result<Response<SubmitFeedbackResponse>, Status> {
         let feedback = self.feedback.clone();
+        let workspace_authorizer = Arc::clone(&self.workspace_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                workspace_authorizer
+                    .authorize_workspace_access(
+                        &principal,
+                        workspace_name.as_str(),
+                        WorkspaceAccessKind::Write,
+                    )
+                    .await
+                    .map_err(authorization_status)?;
                 let submission = feedback
                     .submit_feedback(
                         &workspace_name,

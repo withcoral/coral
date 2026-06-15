@@ -159,6 +159,15 @@ impl UserPrincipalError {
 /// corresponding user principal.
 #[tonic::async_trait]
 pub trait UserPrincipalProvider: Send + Sync + std::fmt::Debug {
+    /// Returns true for Coral's default local single-user provider.
+    ///
+    /// Server startup uses this to prevent accidental public network exposure
+    /// with OSS local defaults. Product providers should use the default
+    /// implementation.
+    fn is_default_single_user_provider(&self) -> bool {
+        false
+    }
+
     /// Returns the user principal for one inbound gRPC request.
     ///
     /// # Errors
@@ -177,6 +186,10 @@ pub struct SingleUserPrincipalProvider;
 
 #[tonic::async_trait]
 impl UserPrincipalProvider for SingleUserPrincipalProvider {
+    fn is_default_single_user_provider(&self) -> bool {
+        true
+    }
+
     async fn principal_for_metadata(
         &self,
         _metadata: &tonic::metadata::MetadataMap,
@@ -213,13 +226,6 @@ pub enum SourceIdentitySubject {
     Workspace,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "source identity vocabulary consumed and re-exported in later PRs"
-    )
-)]
 impl SourceIdentitySubject {
     pub(crate) fn for_binding_owner(
         owner: SourceIdentityOwner,
@@ -483,10 +489,6 @@ pub(crate) struct IdentityManager {
     providers: Arc<Vec<Arc<dyn SourceIdentityProvider>>>,
 }
 
-#[expect(
-    dead_code,
-    reason = "identity manager consumed by query-time identity resolution in a later PR"
-)]
 impl IdentityManager {
     pub(crate) fn new(providers: Vec<Arc<dyn SourceIdentityProvider>>) -> Self {
         Self {

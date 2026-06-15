@@ -39,7 +39,10 @@ use coral_spec::{
 };
 use tonic::{Request, Response, Status};
 
-use crate::authorization::{ManagementAuthorizer, SourceMutationKind, authorization_status};
+use crate::authorization::{
+    ManagementAuthorizer, SourceMutationKind, WorkspaceAccessKind, WorkspaceAuthorizer,
+    authorization_status,
+};
 use crate::bootstrap::{AppError, app_status};
 use crate::credentials::CredentialStorageKind;
 use crate::credentials::oauth::{OAuthProgressEvent, OAuthProgressEventSender};
@@ -52,6 +55,7 @@ use crate::sources::manager::{
     CreateBundledSourceCommand, CreateBundledSourceWithOAuthCommand, ImportSourceCommand,
     ImportSourceWithCredentialsCommand, PreservedUserSourceIdentityBinding, SourceBinding,
     SourceBindings, SourceImportRollbackState, SourceManager, SourceOAuthCredentialRetrieval,
+    UserSourceIdentityBindingCleanup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::transport::{
@@ -72,6 +76,7 @@ pub(crate) struct SourceService {
     user_owned_identities: UserOwnedIdentityManager,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
+    workspace_authorizer: Arc<dyn WorkspaceAuthorizer>,
 }
 
 impl SourceService {
@@ -82,6 +87,7 @@ impl SourceService {
         user_owned_identity_manager: UserOwnedIdentityManager,
         user_principal_provider: Arc<dyn UserPrincipalProvider>,
         management_authorizer: Arc<dyn ManagementAuthorizer>,
+        workspace_authorizer: Arc<dyn WorkspaceAuthorizer>,
     ) -> Self {
         Self {
             sources: source_manager,
@@ -90,6 +96,7 @@ impl SourceService {
             user_owned_identities: user_owned_identity_manager,
             user_principal_provider,
             management_authorizer,
+            workspace_authorizer,
         }
     }
 }
@@ -104,11 +111,18 @@ impl SourceServiceApi for SourceService {
         request: Request<DiscoverSourcesRequest>,
     ) -> Result<Response<DiscoverSourcesResponse>, Status> {
         let sources = self.sources.clone();
+        let workspace_authorizer = Arc::clone(&self.workspace_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                authorize_workspace_read(
+                    workspace_authorizer.as_ref(),
+                    &principal,
+                    workspace_name.as_str(),
+                )
+                .await?;
                 let sources = sources
                     .discover_sources(&workspace_name)
                     .map_err(app_status)?
@@ -126,11 +140,18 @@ impl SourceServiceApi for SourceService {
         request: Request<ListSourcesRequest>,
     ) -> Result<Response<ListSourcesResponse>, Status> {
         let sources = self.sources.clone();
+        let workspace_authorizer = Arc::clone(&self.workspace_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                authorize_workspace_read(
+                    workspace_authorizer.as_ref(),
+                    &principal,
+                    workspace_name.as_str(),
+                )
+                .await?;
                 let sources: Vec<_> = sources
                     .list_workspace_sources(&workspace_name)
                     .map_err(app_status)?
@@ -148,11 +169,18 @@ impl SourceServiceApi for SourceService {
         request: Request<GetSourceRequest>,
     ) -> Result<Response<GetSourceResponse>, Status> {
         let sources = self.sources.clone();
+        let workspace_authorizer = Arc::clone(&self.workspace_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                authorize_workspace_read(
+                    workspace_authorizer.as_ref(),
+                    &principal,
+                    workspace_name.as_str(),
+                )
+                .await?;
                 let source_name = SourceName::parse(&request.name).map_err(app_status)?;
                 let source = sources
                     .get_source(&workspace_name, &source_name)
@@ -170,11 +198,18 @@ impl SourceServiceApi for SourceService {
         request: Request<GetSourceInfoRequest>,
     ) -> Result<Response<GetSourceInfoResponse>, Status> {
         let sources = self.sources.clone();
+        let workspace_authorizer = Arc::clone(&self.workspace_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                authorize_workspace_read(
+                    workspace_authorizer.as_ref(),
+                    &principal,
+                    workspace_name.as_str(),
+                )
+                .await?;
                 let source_name = SourceName::parse(&request.name).map_err(app_status)?;
                 let source = sources
                     .get_source_info(&workspace_name, &source_name)
@@ -192,6 +227,7 @@ impl SourceServiceApi for SourceService {
         request: Request<CreateBundledSourceRequest>,
     ) -> Result<Response<CreateBundledSourceResponse>, Status> {
         let sources = self.sources.clone();
+        let user_owned_identities = self.user_owned_identities.clone();
         let management_authorizer = Arc::clone(&self.management_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
@@ -212,10 +248,19 @@ impl SourceServiceApi for SourceService {
                     bindings: source_bindings_from_proto(request.variables, request.secrets),
                 };
                 let response_workspace_name = workspace_name.clone();
-                let installed = run_blocking_operation("source operation", move || {
+                let cleanup_workspace_name = workspace_name.clone();
+                let cleanup_source_name = command.name.clone();
+                let (installed, cleanup) = run_blocking_operation("source operation", move || {
                     sources.create_bundled_source(&workspace_name, &command)
                 })
                 .await?;
+                cleanup_stale_user_identity_bindings_best_effort(
+                    &user_owned_identities,
+                    &cleanup_workspace_name,
+                    &cleanup_source_name,
+                    &cleanup,
+                )
+                .await;
                 Ok(Response::new(CreateBundledSourceResponse {
                     source: Some(installed_source_to_proto(
                         &response_workspace_name,
@@ -232,6 +277,7 @@ impl SourceServiceApi for SourceService {
         request: Request<CreateBundledSourceWithOAuthRequest>,
     ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
         let sources = self.sources.clone();
+        let user_owned_identities = self.user_owned_identities.clone();
         let management_authorizer = Arc::clone(&self.management_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
@@ -258,17 +304,28 @@ impl SourceServiceApi for SourceService {
                         .collect::<Result<Vec<_>, _>>()
                         .map_err(app_status)?,
                 };
+                let cleanup_workspace_name = workspace_name.clone();
+                let cleanup_source_name = command.name.clone();
                 let stream =
                     import_source_response_stream(response_workspace_name, move |event_sender| {
+                        let user_owned_identities = user_owned_identities.clone();
                         instrument_grpc(span, async move {
-                            sources
+                            let (installed, cleanup) = sources
                                 .create_bundled_source_with_oauth(
                                     &workspace_name,
                                     command,
                                     event_sender,
                                 )
                                 .await
-                                .map_err(app_status)
+                                .map_err(app_status)?;
+                            cleanup_stale_user_identity_bindings_best_effort(
+                                &user_owned_identities,
+                                &cleanup_workspace_name,
+                                &cleanup_source_name,
+                                &cleanup,
+                            )
+                            .await;
+                            Ok(installed)
                         })
                     });
                 Ok(Response::new(Box::pin(stream.map(|response| {
@@ -387,6 +444,7 @@ impl SourceServiceApi for SourceService {
         request: Request<DeleteSourceRequest>,
     ) -> Result<Response<DeleteSourceResponse>, Status> {
         let sources = self.sources.clone();
+        let user_owned_identities = self.user_owned_identities.clone();
         let management_authorizer = Arc::clone(&self.management_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
@@ -402,10 +460,27 @@ impl SourceServiceApi for SourceService {
                     .await
                     .map_err(authorization_status)?;
                 let source_name = SourceName::parse(&request.name).map_err(app_status)?;
+                let cleanup_workspace_name = workspace_name.clone();
+                let cleanup_source_name = source_name.clone();
                 run_blocking_operation("source operation", move || {
                     sources.delete_source(&workspace_name, &source_name)
                 })
                 .await?;
+                if let Err(error) = cleanup_user_source_identity_bindings(
+                    &user_owned_identities,
+                    &cleanup_workspace_name,
+                    &cleanup_source_name,
+                    &[],
+                    None,
+                )
+                .await
+                {
+                    warn!(
+                        source = %cleanup_source_name,
+                        error = %error,
+                        "failed to clean up user source identity bindings after source delete"
+                    );
+                }
                 Ok(Response::new(DeleteSourceResponse {}))
             },
         )
@@ -417,11 +492,18 @@ impl SourceServiceApi for SourceService {
         request: Request<ValidateSourceRequest>,
     ) -> Result<Response<ValidateSourceResponse>, Status> {
         let queries = self.queries.clone();
+        let workspace_authorizer = Arc::clone(&self.workspace_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
             |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                authorize_workspace_read(
+                    workspace_authorizer.as_ref(),
+                    &principal,
+                    workspace_name.as_str(),
+                )
+                .await?;
                 let source_name = SourceName::parse(&request.name).map_err(app_status)?;
                 let result = queries
                     .validate_source(&workspace_name, &principal, &source_name)
@@ -501,6 +583,17 @@ async fn authorize_import_source_request(
             .map_err(authorization_status)?;
     }
     Ok(())
+}
+
+async fn authorize_workspace_read(
+    workspace_authorizer: &dyn WorkspaceAuthorizer,
+    user_principal: &UserPrincipal,
+    workspace_id: &str,
+) -> Result<(), Status> {
+    workspace_authorizer
+        .authorize_workspace_access(user_principal, workspace_id, WorkspaceAccessKind::Read)
+        .await
+        .map_err(authorization_status)
 }
 
 async fn import_source_with_identity_specs(
@@ -634,7 +727,15 @@ async fn persist_bindings_or_rollback(
         return Err(error);
     }
     identity_spec_rollback.disarm();
-    Ok(source_rollback.disarm(&rebound_user_bindings))
+    let (installed, stale_user_binding_cleanup) = source_rollback.disarm(&rebound_user_bindings);
+    identity_context
+        .cleanup_stale_user_identity_bindings_best_effort(
+            workspace_name,
+            &installed.name,
+            &stale_user_binding_cleanup,
+        )
+        .await;
+    Ok(installed)
 }
 
 /// Installs the bundled identity specs and validates the user-owned identity
@@ -771,12 +872,22 @@ impl SourceImportRollbackGuard {
     fn disarm(
         mut self,
         preserved_user_bindings: &[PreservedUserSourceIdentityBinding],
-    ) -> InstalledSource {
+    ) -> (InstalledSource, UserSourceIdentityBindingCleanup) {
         if let Some(rollback) = self.rollback.take() {
-            self.sources
-                .commit_import_source_rollback_state(rollback, preserved_user_bindings);
+            let cleanup = SourceManager::commit_import_source_rollback_state(
+                rollback,
+                preserved_user_bindings,
+            );
+            return (self.installed.take().expect("installed source"), cleanup);
         }
-        self.installed.take().expect("installed source")
+        (
+            self.installed.take().expect("installed source"),
+            UserSourceIdentityBindingCleanup {
+                all_users_surface_ids: Vec::new(),
+                other_users_surface_ids: Vec::new(),
+                preserved_user_id: None,
+            },
+        )
     }
 }
 
@@ -823,7 +934,7 @@ impl ImportSourceIdentityContext {
         &self,
         workspace_name: &WorkspaceName,
         installed: &InstalledSource,
-    ) -> Result<(), AppError> {
+    ) -> Result<Vec<UserSourceIdentityBindingRollback>, AppError> {
         persist_user_source_identity_bindings(
             &self.user_owned_identities,
             self.user_principal.as_ref(),
@@ -846,6 +957,61 @@ impl ImportSourceIdentityContext {
                 surface_id: surface_id.clone(),
             })
             .collect()
+    }
+
+    async fn cleanup_stale_user_identity_bindings_best_effort(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        cleanup: &UserSourceIdentityBindingCleanup,
+    ) {
+        cleanup_stale_user_identity_bindings_best_effort(
+            &self.user_owned_identities,
+            workspace_name,
+            source_name,
+            cleanup,
+        )
+        .await;
+    }
+}
+
+async fn cleanup_stale_user_identity_bindings_best_effort(
+    identities: &UserOwnedIdentityManager,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    cleanup: &UserSourceIdentityBindingCleanup,
+) {
+    if !cleanup.all_users_surface_ids.is_empty()
+        && let Err(error) = cleanup_user_source_identity_bindings(
+            identities,
+            workspace_name,
+            source_name,
+            &cleanup.all_users_surface_ids,
+            None,
+        )
+        .await
+    {
+        warn!(
+            source = %source_name,
+            error = %error,
+            "failed to clean up stale user source identity bindings after source install"
+        );
+    }
+    if !cleanup.other_users_surface_ids.is_empty()
+        && let Err(error) = cleanup_user_source_identity_bindings(
+            identities,
+            workspace_name,
+            source_name,
+            &cleanup.other_users_surface_ids,
+            cleanup.preserved_user_id.as_deref(),
+        )
+        .await
+    {
+        warn!(
+            source = %source_name,
+            error = %error,
+            "failed to clean up stale user source identity bindings after source install"
+        );
     }
 }
 
@@ -1239,9 +1405,9 @@ async fn persist_user_source_identity_bindings(
     workspace_name: &WorkspaceName,
     installed: &InstalledSource,
     bindings: &BTreeMap<String, AppSourceIdentitySelection>,
-) -> Result<(), AppError> {
+) -> Result<Vec<UserSourceIdentityBindingRollback>, AppError> {
     if bindings.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let principal = principal.ok_or_else(|| {
         AppError::FailedPrecondition(
@@ -1311,7 +1477,7 @@ async fn persist_user_source_identity_bindings(
             return Err(error);
         }
     }
-    Ok(())
+    Ok(rollback)
 }
 
 struct UserSourceIdentityBindingRollback {
@@ -1345,6 +1511,23 @@ async fn rollback_user_source_identity_bindings(
             );
         }
     }
+}
+
+async fn cleanup_user_source_identity_bindings(
+    identities: &UserOwnedIdentityManager,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    surface_ids: &[String],
+    preserved_user_id: Option<&str>,
+) -> Result<(), AppError> {
+    identities
+        .delete_user_owned_source_identity_bindings(
+            workspace_name,
+            source_name,
+            surface_ids,
+            preserved_user_id,
+        )
+        .await
 }
 
 fn single_import_source_response(
@@ -1618,12 +1801,148 @@ mod tests {
     )]
 
     use super::*;
+    use std::{
+        fs,
+        sync::{Arc, Mutex, MutexGuard},
+    };
+
+    use coral_api::v1::Workspace;
+    use coral_engine::QueryRuntimeContext;
     use coral_spec::{
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
         ManifestOAuthClientIdSpec, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
         ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
         ManifestOAuthRedirectUriPortMode,
     };
+    use tempfile::TempDir;
+
+    use crate::authorization::{AllowAllManagementAuthorizer, AllowAllWorkspaceAuthorizer};
+    use crate::credentials::{CredentialManager, CredentialStore};
+    use crate::features::Features;
+    use crate::identities::{
+        IdentityOwnerKey, UserOwnedIdentityMaterialGuard, UserOwnedIdentityRecord,
+        UserOwnedIdentityStore,
+    };
+    use crate::identity::SingleUserPrincipalProvider;
+    use crate::query::manager::QueryManager;
+    use crate::state::AppStateLayout;
+    use crate::state::ConfigStore;
+
+    type DeletedSourceIdentityBindings = Vec<(String, String, Vec<String>, Option<String>)>;
+
+    #[derive(Debug, Default)]
+    struct RecordingUserOwnedIdentityStore {
+        deleted_source_bindings: Mutex<DeletedSourceIdentityBindings>,
+        delete_source_bindings_error: Mutex<Option<String>>,
+    }
+
+    impl RecordingUserOwnedIdentityStore {
+        fn deleted_source_bindings(
+            &self,
+        ) -> Result<MutexGuard<'_, DeletedSourceIdentityBindings>, AppError> {
+            self.deleted_source_bindings.lock().map_err(|_error| {
+                AppError::FailedPrecondition(
+                    "deleted source binding records lock poisoned".to_string(),
+                )
+            })
+        }
+
+        fn fail_delete_source_bindings_with(&self, error: &str) {
+            *self
+                .delete_source_bindings_error
+                .lock()
+                .expect("delete source binding error lock") = Some(error.to_string());
+        }
+
+        fn delete_source_bindings_error(&self) -> Result<Option<String>, AppError> {
+            self.delete_source_bindings_error
+                .lock()
+                .map_err(|_error| {
+                    AppError::FailedPrecondition(
+                        "delete source binding error lock poisoned".to_string(),
+                    )
+                })
+                .map(|error| error.clone())
+        }
+    }
+
+    #[tonic::async_trait]
+    impl UserOwnedIdentityStore for RecordingUserOwnedIdentityStore {
+        async fn list_identities(
+            &self,
+            _owner: &IdentityOwnerKey,
+        ) -> Result<Vec<UserOwnedIdentityRecord>, AppError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_identity(
+            &self,
+            _owner: &IdentityOwnerKey,
+            _identity_name: &str,
+        ) -> Result<Option<UserOwnedIdentityRecord>, AppError> {
+            Ok(None)
+        }
+
+        async fn replace_identity(
+            &self,
+            _owner: &IdentityOwnerKey,
+            _record: &UserOwnedIdentityRecord,
+            _material: &BTreeMap<String, String>,
+        ) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        async fn delete_identity(
+            &self,
+            _owner: &IdentityOwnerKey,
+            _identity_name: &str,
+        ) -> Result<bool, AppError> {
+            Ok(false)
+        }
+
+        async fn material_guard(
+            &self,
+            _owner: &IdentityOwnerKey,
+            _identity_name: &str,
+        ) -> Result<Box<dyn UserOwnedIdentityMaterialGuard>, AppError> {
+            Ok(Box::new(RecordingMaterialGuard))
+        }
+
+        async fn delete_source_identity_bindings(
+            &self,
+            workspace_name: &str,
+            source_name: &str,
+            surface_ids: &[String],
+            preserved_user_id: Option<&str>,
+        ) -> Result<(), AppError> {
+            self.deleted_source_bindings()?.push((
+                workspace_name.to_string(),
+                source_name.to_string(),
+                surface_ids.to_vec(),
+                preserved_user_id.map(ToString::to_string),
+            ));
+            if let Some(error) = self.delete_source_bindings_error()? {
+                return Err(AppError::FailedPrecondition(error));
+            }
+            Ok(())
+        }
+    }
+
+    struct RecordingMaterialGuard;
+
+    #[tonic::async_trait]
+    impl UserOwnedIdentityMaterialGuard for RecordingMaterialGuard {
+        async fn read_material(&self) -> Result<BTreeMap<String, String>, AppError> {
+            Ok(BTreeMap::new())
+        }
+
+        async fn write_material(
+            &self,
+            _material: &BTreeMap<String, String>,
+        ) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
 
     /// A required `API_TOKEN` secret input with the given credential spec.
     fn api_token_input(credential: Option<ManifestCredentialSpec>) -> ManifestInputSpec {
@@ -1643,6 +1962,297 @@ mod tests {
             ProtoSourceInput::Secret(secret) => secret,
             ProtoSourceInput::Variable(_) => panic!("expected secret input"),
         }
+    }
+
+    fn user_owned_identity_manager_with_store(
+        store: Arc<dyn UserOwnedIdentityStore>,
+    ) -> (TempDir, UserOwnedIdentityManager) {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("layout");
+        let identity_specs =
+            IdentitySpecManager::new_with_usage_providers(layout, Features::default(), Vec::new());
+        (
+            temp,
+            UserOwnedIdentityManager::new_with_store(identity_specs, store),
+        )
+    }
+
+    fn identity_spec_manager() -> (TempDir, IdentitySpecManager) {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("layout");
+        (
+            temp,
+            IdentitySpecManager::new_with_usage_providers(layout, Features::default(), Vec::new()),
+        )
+    }
+
+    #[tokio::test]
+    async fn cleanup_user_source_identity_bindings_uses_configured_identity_store() {
+        let store = Arc::new(RecordingUserOwnedIdentityStore::default());
+        let (_temp, identities) = user_owned_identity_manager_with_store(store.clone());
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github_v4").expect("source");
+        let surface_ids = vec!["rest".to_string()];
+
+        cleanup_user_source_identity_bindings(
+            &identities,
+            &workspace_name,
+            &source_name,
+            &surface_ids,
+            Some("saul"),
+        )
+        .await
+        .expect("cleanup source identity bindings");
+
+        assert_eq!(
+            *store.deleted_source_bindings().expect("deleted bindings"),
+            vec![(
+                "default".to_string(),
+                "github_v4".to_string(),
+                surface_ids,
+                Some("saul".to_string())
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_source_cleans_configured_identity_store_without_current_user_slots() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let sources = SourceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+        );
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("public_messages").expect("source");
+        sources
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: r"
+name: public_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Public messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+"
+                    .to_string(),
+                    bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
+                },
+            )
+            .expect("import source without user-owned slots");
+        let store = Arc::new(RecordingUserOwnedIdentityStore::default());
+        let (_identity_temp, user_owned_identities) =
+            user_owned_identity_manager_with_store(store.clone());
+        let (_spec_temp, identity_specs) = identity_spec_manager();
+        let queries = QueryManager::new(
+            config_store,
+            credential_manager,
+            QueryRuntimeContext::default(),
+            layout,
+            Vec::new(),
+        );
+        let service = SourceService::new(
+            sources,
+            queries,
+            identity_specs,
+            user_owned_identities,
+            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(AllowAllManagementAuthorizer),
+            Arc::new(AllowAllWorkspaceAuthorizer),
+        );
+
+        service
+            .delete_source(Request::new(DeleteSourceRequest {
+                workspace: Some(Workspace {
+                    name: workspace_name.as_str().to_string(),
+                }),
+                name: source_name.as_str().to_string(),
+            }))
+            .await
+            .expect("delete source");
+
+        assert_eq!(
+            *store.deleted_source_bindings().expect("deleted bindings"),
+            vec![(
+                workspace_name.as_str().to_string(),
+                source_name.as_str().to_string(),
+                Vec::new(),
+                None
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn create_bundled_source_cleans_stale_configured_identity_store_bindings() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source");
+        let previous_manifest_yaml = r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/github-openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    identity_requirements:
+      accepts:
+        - id: github-rest-read
+          identity_specs:
+            - github_oauth
+          audience:
+            host: github.com
+";
+        let previous_manifest_file = layout.manifest_file(&workspace_name, &source_name);
+        fs::create_dir_all(previous_manifest_file.parent().expect("manifest parent"))
+            .expect("create manifest parent");
+        fs::write(&previous_manifest_file, previous_manifest_yaml).expect("write manifest");
+        config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name.clone(),
+                    version: Some("0.1.0".to_string()),
+                    variables: BTreeMap::new(),
+                    secrets: Vec::new(),
+                    credential_storage: None,
+                    identity_bindings: BTreeMap::from([(
+                        "rest".to_string(),
+                        AppSourceIdentityBinding::user_owned(),
+                    )]),
+                    origin: SourceOrigin::Imported,
+                },
+            )
+            .expect("seed imported source");
+        let sources = SourceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+        );
+        let store = Arc::new(RecordingUserOwnedIdentityStore::default());
+        let (_identity_temp, user_owned_identities) =
+            user_owned_identity_manager_with_store(store.clone());
+        let (_spec_temp, identity_specs) = identity_spec_manager();
+        let queries = QueryManager::new(
+            config_store,
+            credential_manager,
+            QueryRuntimeContext::default(),
+            layout,
+            Vec::new(),
+        );
+        let service = SourceService::new(
+            sources,
+            queries,
+            identity_specs,
+            user_owned_identities,
+            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(AllowAllManagementAuthorizer),
+            Arc::new(AllowAllWorkspaceAuthorizer),
+        );
+
+        service
+            .create_bundled_source(Request::new(CreateBundledSourceRequest {
+                workspace: Some(Workspace {
+                    name: workspace_name.as_str().to_string(),
+                }),
+                name: source_name.as_str().to_string(),
+                variables: vec![SourceVariable {
+                    key: "GITHUB_API_BASE".to_string(),
+                    value: "https://api.github.com".to_string(),
+                }],
+                secrets: vec![SourceSecret {
+                    key: "GITHUB_TOKEN".to_string(),
+                    value: "github-token".to_string(),
+                }],
+            }))
+            .await
+            .expect("create bundled source");
+
+        assert_eq!(
+            *store.deleted_source_bindings().expect("deleted bindings"),
+            vec![(
+                workspace_name.as_str().to_string(),
+                source_name.as_str().to_string(),
+                vec!["rest".to_string()],
+                None
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_user_source_identity_cleanup_is_best_effort_after_import_commit() {
+        let store = Arc::new(RecordingUserOwnedIdentityStore::default());
+        store.fail_delete_source_bindings_with("cleanup failed");
+        let (_identity_temp, identities) = user_owned_identity_manager_with_store(store.clone());
+        let (_spec_temp, identity_specs) = identity_spec_manager();
+        let identity_context = ImportSourceIdentityContext {
+            identity_specs,
+            user_owned_identities: identities,
+            manifest_yamls: Vec::new(),
+            inputs: Vec::new(),
+            user_principal: None,
+            user_identity_bindings: BTreeMap::new(),
+        };
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github_v4").expect("source");
+        let cleanup = UserSourceIdentityBindingCleanup {
+            all_users_surface_ids: vec!["graphql".to_string()],
+            other_users_surface_ids: vec!["rest".to_string()],
+            preserved_user_id: Some("saul".to_string()),
+        };
+
+        identity_context
+            .cleanup_stale_user_identity_bindings_best_effort(
+                &workspace_name,
+                &source_name,
+                &cleanup,
+            )
+            .await;
+
+        assert_eq!(
+            *store.deleted_source_bindings().expect("deleted bindings"),
+            vec![
+                (
+                    "default".to_string(),
+                    "github_v4".to_string(),
+                    vec!["graphql".to_string()],
+                    None
+                ),
+                (
+                    "default".to_string(),
+                    "github_v4".to_string(),
+                    vec!["rest".to_string()],
+                    Some("saul".to_string())
+                )
+            ]
+        );
     }
 
     #[test]

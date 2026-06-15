@@ -11,10 +11,11 @@ use coral_api::v1::{
 };
 use tonic::{Request, Response, Status};
 
+use crate::authorization::{WorkspaceAccessKind, WorkspaceAuthorizer, authorization_status};
 use crate::bootstrap::app_status;
 use crate::catalog::discovery::{
-    CatalogDiscovery, CatalogItemKind, CatalogTableRef, ListColumnsQuery, Pagination,
-    SearchCatalogQuery, column_pagination, search_pagination,
+    CatalogDiscovery, CatalogItemKind, CatalogSearchQuery, CatalogTableRef, ListColumnsQuery,
+    Pagination, column_pagination, search_pagination,
 };
 use crate::identity::UserPrincipalProvider;
 use crate::query::manager::QueryManager;
@@ -28,16 +29,19 @@ use crate::transport::{
 pub(crate) struct CatalogService {
     catalog: CatalogDiscovery,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    workspace_authorizer: Arc<dyn WorkspaceAuthorizer>,
 }
 
 impl CatalogService {
     pub(crate) fn new(
         query_manager: QueryManager,
         user_principal_provider: Arc<dyn UserPrincipalProvider>,
+        workspace_authorizer: Arc<dyn WorkspaceAuthorizer>,
     ) -> Self {
         Self {
             catalog: CatalogDiscovery::new(query_manager),
             user_principal_provider,
+            workspace_authorizer,
         }
     }
 }
@@ -49,22 +53,25 @@ impl CatalogServiceApi for CatalogService {
         request: Request<ListCatalogRequest>,
     ) -> Result<Response<ListCatalogResponse>, Status> {
         let catalog = self.catalog.clone();
+        let workspace_authorizer = Arc::clone(&self.workspace_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
             |principal, request| async move {
                 let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                workspace_authorizer
+                    .authorize_workspace_access(
+                        &principal,
+                        workspace_name.as_str(),
+                        WorkspaceAccessKind::Read,
+                    )
+                    .await
+                    .map_err(authorization_status)?;
                 let schema_name = optional_trimmed(&request.schema_name);
                 let kind = catalog_item_kind_from_proto(request.kind)?;
                 let catalog_page = catalog
-                    .list_catalog_with_context(
-                        &workspace_name,
-                        &principal,
-                        schema_name,
-                        kind,
-                        pagination,
-                    )
+                    .list_catalog(&workspace_name, &principal, schema_name, kind, pagination)
                     .await
                     .map_err(query_status)?;
                 let page = catalog_page.items;
@@ -97,20 +104,29 @@ impl CatalogServiceApi for CatalogService {
         request: Request<SearchCatalogRequest>,
     ) -> Result<Response<SearchCatalogResponse>, Status> {
         let catalog = self.catalog.clone();
+        let workspace_authorizer = Arc::clone(&self.workspace_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
             |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                workspace_authorizer
+                    .authorize_workspace_access(
+                        &principal,
+                        workspace_name.as_str(),
+                        WorkspaceAccessKind::Read,
+                    )
+                    .await
+                    .map_err(authorization_status)?;
                 let schema_name = optional_trimmed(&request.schema_name);
                 let kind = catalog_item_kind_from_proto(request.kind)?;
                 let pagination = search_pagination(request.pagination.map(pagination_from_proto))
                     .map_err(app_status)?;
                 let page = catalog
-                    .search_catalog_with_context(
+                    .search_catalog(
                         &workspace_name,
                         &principal,
-                        SearchCatalogQuery {
+                        CatalogSearchQuery {
                             pattern: &request.pattern,
                             schema_name,
                             kind,
@@ -145,15 +161,24 @@ impl CatalogServiceApi for CatalogService {
         request: Request<DescribeTableRequest>,
     ) -> Result<Response<DescribeTableResponse>, Status> {
         let catalog = self.catalog.clone();
+        let workspace_authorizer = Arc::clone(&self.workspace_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
             |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                workspace_authorizer
+                    .authorize_workspace_access(
+                        &principal,
+                        workspace_name.as_str(),
+                        WorkspaceAccessKind::Read,
+                    )
+                    .await
+                    .map_err(authorization_status)?;
                 let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
                 let table_name = required_trimmed(&request.table_name, "table_name")?;
                 let result = catalog
-                    .describe_table_with_context(
+                    .describe_table(
                         &workspace_name,
                         &principal,
                         CatalogTableRef::new(&schema_name, &table_name),
@@ -174,17 +199,26 @@ impl CatalogServiceApi for CatalogService {
         request: Request<ListColumnsRequest>,
     ) -> Result<Response<ListColumnsResponse>, Status> {
         let catalog = self.catalog.clone();
+        let workspace_authorizer = Arc::clone(&self.workspace_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
             |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                workspace_authorizer
+                    .authorize_workspace_access(
+                        &principal,
+                        workspace_name.as_str(),
+                        WorkspaceAccessKind::Read,
+                    )
+                    .await
+                    .map_err(authorization_status)?;
                 let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
                 let table_name = required_trimmed(&request.table_name, "table_name")?;
                 let pagination = column_pagination(request.pagination.map(pagination_from_proto))
                     .map_err(app_status)?;
                 let page = catalog
-                    .list_columns_with_context(
+                    .list_columns(
                         &workspace_name,
                         &principal,
                         ListColumnsQuery {

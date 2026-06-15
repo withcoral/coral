@@ -13,7 +13,7 @@ use std::task::{Context, Poll};
 
 use axum::body::Body as AxumBody;
 use axum::extract::Request as AxumRequest;
-use axum::response::Response as AxumResponse;
+use axum::response::{IntoResponse as _, Response as AxumResponse};
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
 use coral_api::v1::episode_service_server::EpisodeServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
@@ -32,6 +32,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::codegen::http::header::CONTENT_TYPE;
 use tonic::codegen::http::{HeaderValue, Method, Request, Response, StatusCode};
+use tonic::server::NamedService;
 use tonic::service::Routes;
 use tonic::transport::Server;
 use tonic_web::GrpcWebLayer;
@@ -39,30 +40,38 @@ use tower::{Layer, Service};
 
 use super::env::AppEnvironment;
 use super::error::AppError;
-use crate::authorization::{AllowAllManagementAuthorizer, ManagementAuthorizer};
+use crate::authorization::{
+    AllowAllManagementAuthorizer, AllowAllWorkspaceAuthorizer, ManagementAuthorizer,
+    WorkspaceAuthorizer,
+};
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::episode::service::EpisodeService;
 use crate::episode::store::EpisodeStore;
-use crate::features::{FeatureOverrides, FeatureStore};
+use crate::features::{FeatureOverrides, FeatureStore, Features};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
-use crate::identities::{IdentityService, UserOwnedIdentityManager};
-use crate::identity_specs::{IdentitySpecManager, IdentitySpecService, IdentitySpecUsageProvider};
+use crate::identities::{
+    IdentityManagementHandle, IdentityService, UserOwnedIdentityManager, UserOwnedIdentityStore,
+};
+use crate::identity_specs::{IdentitySpecManager, IdentitySpecRegistry, IdentitySpecService};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::source_registry::SourceRegistry;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
-use crate::state::ConfigStore;
+use crate::state::{AppStateLayout, ConfigStore};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
-use crate::{EngineExtensionsProvider, SingleUserPrincipalProvider, UserPrincipalProvider};
+use crate::{
+    EngineExtensionsProvider, IdentitySpecUsageProvider, SingleUserPrincipalProvider,
+    SourceIdentityProvider, UserPrincipalError, UserPrincipalProvider,
+};
 
 /// A static asset (e.g., a built SPA file) served on the same port as
 /// gRPC-Web.
@@ -83,6 +92,34 @@ pub trait StaticAssetsProvider: Send + Sync + 'static {
     fn get(&self, path: &str) -> Option<StaticAsset>;
 }
 
+type GrpcRouteExtender = Arc<
+    dyn Fn(&ServerExtensionContext, &Arc<dyn UserPrincipalProvider>, Routes) -> Routes
+        + Send
+        + Sync,
+>;
+type SourceIdentityProviderFactory =
+    Arc<dyn Fn(&ServerExtensionContext) -> Arc<dyn SourceIdentityProvider> + Send + Sync>;
+
+/// Runtime context supplied to product-specific server extensions.
+#[derive(Clone)]
+pub struct ServerExtensionContext {
+    identity_management: IdentityManagementHandle,
+}
+
+impl ServerExtensionContext {
+    fn new(identity_management: IdentityManagementHandle) -> Self {
+        Self {
+            identity_management,
+        }
+    }
+
+    /// Returns the shared identity management handle for this server.
+    #[must_use]
+    pub fn identity_management(&self) -> &IdentityManagementHandle {
+        &self.identity_management
+    }
+}
+
 /// Concrete local server mode.
 ///
 /// Each variant is a supported product mode instead of an independent
@@ -101,9 +138,11 @@ pub enum ServerMode {
 }
 
 impl ServerMode {
-    fn bind_addr(&self) -> SocketAddr {
+    fn bind_addr(&self, native_grpc_bind_addr: Option<SocketAddr>) -> SocketAddr {
         match self {
-            Self::NativeGrpc => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            Self::NativeGrpc => {
+                native_grpc_bind_addr.unwrap_or_else(|| SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            }
             Self::EmbeddedUi { port, .. } => SocketAddr::from((Ipv4Addr::LOCALHOST, *port)),
         }
     }
@@ -115,13 +154,22 @@ pub struct ServerBuilder {
     // Defaults preserve single-user local-first behavior; see `Self::new`.
     config_dir: Option<PathBuf>,
     mode: ServerMode,
-    feature_overrides: FeatureOverrides,
+    native_grpc_bind_addr: Option<SocketAddr>,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    source_identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
+    source_identity_provider_factories: Vec<SourceIdentityProviderFactory>,
+    identity_spec_usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
+    source_registry: Option<Arc<dyn SourceRegistry>>,
+    identity_spec_registry: Option<Arc<dyn IdentitySpecRegistry>>,
+    user_owned_identity_store: Option<Arc<dyn UserOwnedIdentityStore>>,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
-    identity_spec_usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
+    workspace_authorizer: Arc<dyn WorkspaceAuthorizer>,
+    unsafe_public_native_grpc_bind: bool,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
+    grpc_route_extenders: Vec<GrpcRouteExtender>,
     enable_stderr_logs: bool,
+    feature_overrides: FeatureOverrides,
 }
 
 impl Default for ServerBuilder {
@@ -137,13 +185,22 @@ impl ServerBuilder {
         Self {
             config_dir: None,
             mode: ServerMode::NativeGrpc,
-            feature_overrides: FeatureOverrides::default(),
+            native_grpc_bind_addr: None,
             engine_extensions_providers: Vec::new(),
+            source_identity_providers: Vec::new(),
+            source_identity_provider_factories: Vec::new(),
+            identity_spec_usage_providers: Vec::new(),
+            source_registry: None,
+            identity_spec_registry: None,
+            user_owned_identity_store: None,
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             management_authorizer: Arc::new(AllowAllManagementAuthorizer),
-            identity_spec_usage_providers: Vec::new(),
+            workspace_authorizer: Arc::new(AllowAllWorkspaceAuthorizer),
+            unsafe_public_native_grpc_bind: false,
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
+            grpc_route_extenders: Vec::new(),
             enable_stderr_logs: false,
+            feature_overrides: FeatureOverrides::default(),
         }
     }
 
@@ -173,16 +230,33 @@ impl ServerBuilder {
     }
 
     #[must_use]
-    /// Overrides the Coral config directory used by the local server.
-    pub fn with_config_dir(mut self, config_dir: impl Into<PathBuf>) -> Self {
-        self.config_dir = Some(config_dir.into());
+    /// Selects the bind address for native gRPC mode.
+    ///
+    /// The default native gRPC address remains `127.0.0.1:0` for local-first
+    /// OSS callers. Product runtimes that install their own authentication and
+    /// management authorization can bind a public address such as `0.0.0.0:0`
+    /// only after explicitly calling [`Self::allow_unsafe_public_native_grpc_bind`].
+    pub fn with_native_grpc_bind_addr(mut self, bind_addr: SocketAddr) -> Self {
+        self.native_grpc_bind_addr = Some(bind_addr);
         self
     }
 
     #[must_use]
-    /// Applies process-local runtime feature overrides to the local server.
-    pub fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
-        self.feature_overrides = feature_overrides;
+    /// Allows native gRPC to bind a non-loopback address.
+    ///
+    /// This opt-in exists to keep OSS Coral's allow-all local defaults from
+    /// accidentally becoming a network service. Only product runtimes that have
+    /// installed request authentication and management authorization should use
+    /// it.
+    pub fn allow_unsafe_public_native_grpc_bind(mut self) -> Self {
+        self.unsafe_public_native_grpc_bind = true;
+        self
+    }
+
+    #[must_use]
+    /// Overrides the Coral config directory used by the local server.
+    pub fn with_config_dir(mut self, config_dir: impl Into<PathBuf>) -> Self {
+        self.config_dir = Some(config_dir.into());
         self
     }
 
@@ -230,13 +304,163 @@ impl ServerBuilder {
     }
 
     #[must_use]
-    /// Adds a provider that reports product-owned stored identities for
-    /// identity-spec replacement and deletion checks.
+    /// Sets the product-specific workspace data-access authorizer.
+    ///
+    /// The default authorizer allows all workspace reads and observational writes
+    /// to preserve OSS single-user behavior. Product runtimes can install a
+    /// stricter policy for multi-user data planes.
+    pub fn with_workspace_authorizer(
+        mut self,
+        workspace_authorizer: Arc<dyn WorkspaceAuthorizer>,
+    ) -> Self {
+        self.workspace_authorizer = workspace_authorizer;
+        self
+    }
+
+    #[must_use]
+    /// Adds a provider that can resolve configured source identity bindings.
+    pub fn add_source_identity_provider(
+        mut self,
+        source_identity_provider: Arc<dyn SourceIdentityProvider>,
+    ) -> Self {
+        self.source_identity_providers
+            .push(source_identity_provider);
+        self
+    }
+
+    #[must_use]
+    /// Adds a provider factory that receives server runtime extension context.
+    ///
+    /// Use this when a product-specific provider needs access to shared
+    /// managers created during server startup, such as identity management.
+    pub fn add_source_identity_provider_factory(
+        mut self,
+        source_identity_provider_factory: impl Fn(
+            &ServerExtensionContext,
+        ) -> Arc<dyn SourceIdentityProvider>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.source_identity_provider_factories
+            .push(Arc::new(source_identity_provider_factory));
+        self
+    }
+
+    #[must_use]
+    /// Adds a provider that reports stored identities using installed identity specs.
+    ///
+    /// OSS Coral stores only user-owned identities, but products built on Coral
+    /// can store workspace-owned identities too. Those products should install
+    /// a usage provider so identity-spec deletion can reject or report
+    /// orphaning for every stored identity owner and type.
     pub fn add_identity_spec_usage_provider(
         mut self,
-        usage_provider: Arc<dyn IdentitySpecUsageProvider>,
+        identity_spec_usage_provider: Arc<dyn IdentitySpecUsageProvider>,
     ) -> Self {
-        self.identity_spec_usage_providers.push(usage_provider);
+        self.identity_spec_usage_providers
+            .push(identity_spec_usage_provider);
+        self
+    }
+
+    #[must_use]
+    /// Sets the durable registry used for workspace-installed sources.
+    ///
+    /// The default registry persists source records in local `config.toml`.
+    /// Product-specific siblings can install a registry backed by their own
+    /// durable control-plane store.
+    pub fn with_source_registry(mut self, source_registry: Arc<dyn SourceRegistry>) -> Self {
+        self.source_registry = Some(source_registry);
+        self
+    }
+
+    #[must_use]
+    /// Sets the durable registry used for global identity specs.
+    ///
+    /// The default registry persists identity specs in local app state.
+    /// Product-specific siblings can install a registry backed by their own
+    /// control-plane store.
+    pub fn with_identity_spec_registry(
+        mut self,
+        identity_spec_registry: Arc<dyn IdentitySpecRegistry>,
+    ) -> Self {
+        self.identity_spec_registry = Some(identity_spec_registry);
+        self
+    }
+
+    #[must_use]
+    /// Sets the durable store used for user-owned identities and source
+    /// identity selections.
+    ///
+    /// The default store persists identities in local app state.
+    /// Product-specific siblings can install a store backed by their own
+    /// credential and identity persistence layer. Custom stores must also add
+    /// an [`IdentitySpecUsageProvider`] so identity-spec replacement and
+    /// deletion cannot orphan externally stored identities.
+    pub fn with_user_owned_identity_store(
+        mut self,
+        user_owned_identity_store: Arc<dyn UserOwnedIdentityStore>,
+    ) -> Self {
+        self.user_owned_identity_store = Some(user_owned_identity_store);
+        self
+    }
+
+    #[must_use]
+    /// Adds a product-specific gRPC service to the Coral server listener.
+    ///
+    /// OSS Coral owns the core gRPC service set. Product-specific sibling
+    /// crates can use this seam to mount their own generated tonic services onto
+    /// the same authenticated gRPC endpoint without adding product concepts to
+    /// OSS APIs.
+    pub fn add_grpc_service<S>(mut self, service: S) -> Self
+    where
+        S: Service<Request<tonic::body::Body>, Error = Infallible>
+            + NamedService
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        S::Response: axum::response::IntoResponse,
+        S::Future: Send + 'static,
+    {
+        let service = Arc::new(service);
+        self.grpc_route_extenders.push(Arc::new(
+            move |_context, user_principal_provider, routes| {
+                routes.add_service(AuthenticatedGrpcService::new(
+                    (*service).clone(),
+                    Arc::clone(user_principal_provider),
+                ))
+            },
+        ));
+        self
+    }
+
+    #[must_use]
+    /// Adds a product-specific gRPC service factory to the Coral listener.
+    ///
+    /// The factory runs after core server managers are initialized and receives
+    /// [`ServerExtensionContext`], allowing product services to reuse shared
+    /// Coral managers instead of rebuilding parallel logic.
+    pub fn add_grpc_service_factory<F, S>(mut self, factory: F) -> Self
+    where
+        F: Fn(&ServerExtensionContext) -> S + Send + Sync + 'static,
+        S: Service<Request<tonic::body::Body>, Error = Infallible>
+            + NamedService
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        S::Response: axum::response::IntoResponse,
+        S::Future: Send + 'static,
+    {
+        self.grpc_route_extenders.push(Arc::new(
+            move |context, user_principal_provider, routes| {
+                routes.add_service(AuthenticatedGrpcService::new(
+                    factory(context),
+                    Arc::clone(user_principal_provider),
+                ))
+            },
+        ));
         self
     }
 
@@ -248,6 +472,13 @@ impl ServerBuilder {
     /// leave it disabled and rely on OTEL export for logs.
     pub fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
         self.enable_stderr_logs = enable_stderr_logs;
+        self
+    }
+
+    #[must_use]
+    /// Applies process-local runtime feature overrides to this local server.
+    pub fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
+        self.feature_overrides = feature_overrides;
         self
     }
 
@@ -270,6 +501,7 @@ impl ServerBuilder {
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
+        self.ensure_compatible_extension_storage()?;
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config_dir)?;
         layout.ensure()?;
@@ -284,15 +516,17 @@ impl ServerBuilder {
             internal_trace_store_dir.clone(),
         )?;
         let config_store = ConfigStore::new(layout.clone());
+        let source_registry = self
+            .source_registry
+            .unwrap_or_else(|| Arc::new(config_store.clone()));
         let features =
             FeatureStore::new(layout.clone()).load_with_overrides(&self.feature_overrides)?;
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store.clone());
-        let source_registry: Arc<dyn SourceRegistry> = Arc::new(config_store.clone());
         let source_manager = SourceManager::new_with_features_and_source_registry(
-            source_registry.clone(),
+            Arc::clone(&source_registry),
             credential_manager.clone(),
             layout.clone(),
             features.clone(),
@@ -306,26 +540,38 @@ impl ServerBuilder {
         let query_runtime_context = env
             .query_runtime_context()
             .with_body_capture_max_bytes(body_capture_max_bytes);
-        let identity_spec_manager = IdentitySpecManager::new_with_credential_store(
-            layout.clone(),
-            credential_store.clone(),
-            features.clone(),
+        let identity_spec_manager = identity_spec_manager_for_server(
+            &layout,
+            &credential_store,
+            &features,
+            self.identity_spec_registry,
             self.identity_spec_usage_providers,
         );
-        let user_owned_identity_manager = UserOwnedIdentityManager::new(
-            layout.clone(),
-            identity_spec_manager.clone(),
-            credential_store,
-        );
+        let user_owned_identity_manager = if let Some(store) = self.user_owned_identity_store {
+            UserOwnedIdentityManager::new_with_store(identity_spec_manager.clone(), store)
+        } else {
+            UserOwnedIdentityManager::new(
+                layout.clone(),
+                identity_spec_manager.clone(),
+                credential_store,
+            )
+        };
+        let extension_context = ServerExtensionContext::new(user_owned_identity_manager.handle());
+        let mut source_identity_providers = self.source_identity_providers;
+        for source_identity_provider_factory in self.source_identity_provider_factories {
+            source_identity_providers.push(source_identity_provider_factory(&extension_context));
+        }
+        source_identity_providers.push(Arc::new(user_owned_identity_manager.clone()));
 
-        let query_manager = QueryManager::new_with_source_registry(
+        let query_manager = QueryManager::new_with_features_and_source_registry(
             config_store,
             source_registry,
             credential_manager,
             query_runtime_context,
-            layout,
-            features,
+            layout.clone(),
             self.engine_extensions_providers,
+            source_identity_providers,
+            features,
         );
         let trace_service = if telemetry_config.trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
@@ -339,12 +585,71 @@ impl ServerBuilder {
             user_owned_identity_manager,
             user_principal_provider: self.user_principal_provider,
             management_authorizer: self.management_authorizer,
+            workspace_authorizer: self.workspace_authorizer,
             feedback_manager,
             episode_store,
             trace_service,
             mode: self.mode,
+            native_grpc_bind_addr: self.native_grpc_bind_addr,
+            grpc_route_extenders: self.grpc_route_extenders,
+            extension_context,
         })
         .await
+    }
+
+    fn ensure_compatible_extension_storage(&self) -> Result<(), AppError> {
+        if let ServerMode::NativeGrpc = self.mode
+            && let Some(bind_addr) = self.native_grpc_bind_addr
+            && !bind_addr.ip().is_loopback()
+            && (!self.unsafe_public_native_grpc_bind
+                || self
+                    .user_principal_provider
+                    .is_default_single_user_provider()
+                || self.management_authorizer.is_default_allow_all_authorizer()
+                || self.workspace_authorizer.is_default_allow_all_authorizer())
+        {
+            return Err(AppError::FailedPrecondition(format!(
+                "non-loopback native gRPC bind address '{bind_addr}' requires allow_unsafe_public_native_grpc_bind(), a non-default user principal provider, a non-default management authorizer, and a non-default workspace authorizer"
+            )));
+        }
+        if self.identity_spec_registry.is_some() && self.user_owned_identity_store.is_none() {
+            return Err(AppError::FailedPrecondition(
+                "custom identity spec registries require a custom user-owned identity store"
+                    .to_string(),
+            ));
+        }
+        if self.user_owned_identity_store.is_some() && self.identity_spec_usage_providers.is_empty()
+        {
+            return Err(AppError::FailedPrecondition(
+                "custom user-owned identity stores require an identity spec usage provider"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn identity_spec_manager_for_server(
+    layout: &AppStateLayout,
+    credential_store: &CredentialStore,
+    features: &Features,
+    identity_spec_registry: Option<Arc<dyn IdentitySpecRegistry>>,
+    identity_spec_usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
+) -> IdentitySpecManager {
+    if let Some(identity_spec_registry) = identity_spec_registry {
+        IdentitySpecManager::new_with_registry(
+            layout.clone(),
+            identity_spec_registry,
+            features.clone(),
+            identity_spec_usage_providers,
+        )
+    } else {
+        IdentitySpecManager::new_with_credential_store(
+            layout.clone(),
+            credential_store.clone(),
+            features.clone(),
+            identity_spec_usage_providers,
+        )
     }
 }
 
@@ -425,13 +730,38 @@ struct ServerServices {
     user_owned_identity_manager: UserOwnedIdentityManager,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
+    workspace_authorizer: Arc<dyn WorkspaceAuthorizer>,
     feedback_manager: FeedbackManager,
     episode_store: EpisodeStore,
     trace_service: Option<TraceService>,
     mode: ServerMode,
+    native_grpc_bind_addr: Option<SocketAddr>,
+    grpc_route_extenders: Vec<GrpcRouteExtender>,
+    extension_context: ServerExtensionContext,
 }
 
 async fn start_server(services: ServerServices) -> Result<RunningServer, AppError> {
+    let (routes, mode, native_grpc_bind_addr) = build_server_routes(services);
+
+    let listener = TcpListener::bind(mode.bind_addr(native_grpc_bind_addr)).await?;
+    let endpoint_uri = format!("http://{}", listener.local_addr()?);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    let task = match mode {
+        ServerMode::NativeGrpc => start_grpc_server(listener, shutdown_rx, routes),
+        ServerMode::EmbeddedUi { assets, .. } => {
+            start_grpc_web_server(listener, shutdown_rx, routes, assets)
+        }
+    };
+
+    Ok(RunningServer {
+        endpoint_uri,
+        shutdown_tx: Mutex::new(Some(shutdown_tx)),
+        task: Mutex::new(Some(task)),
+    })
+}
+
+fn build_server_routes(services: ServerServices) -> (Routes, ServerMode, Option<SocketAddr>) {
     let ServerServices {
         source_manager,
         query_manager,
@@ -439,10 +769,14 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
         user_owned_identity_manager,
         user_principal_provider,
         management_authorizer,
+        workspace_authorizer,
         feedback_manager,
         episode_store,
         trace_service,
         mode,
+        native_grpc_bind_addr,
+        grpc_route_extenders,
+        extension_context,
     } = services;
     let source_service = SourceService::new(
         source_manager,
@@ -451,22 +785,37 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
         user_owned_identity_manager.clone(),
         Arc::clone(&user_principal_provider),
         Arc::clone(&management_authorizer),
+        Arc::clone(&workspace_authorizer),
     );
-    let catalog_service =
-        CatalogService::new(query_manager.clone(), Arc::clone(&user_principal_provider));
+    let catalog_service = CatalogService::new(
+        query_manager.clone(),
+        Arc::clone(&user_principal_provider),
+        Arc::clone(&workspace_authorizer),
+    );
     let identity_service = IdentityService::new(
         user_owned_identity_manager,
         Arc::clone(&user_principal_provider),
     );
-    let query_service = QueryService::new(query_manager, Arc::clone(&user_principal_provider));
+    let query_service = QueryService::new(
+        query_manager,
+        Arc::clone(&user_principal_provider),
+        Arc::clone(&workspace_authorizer),
+    );
     let identity_spec_service = IdentitySpecService::new(
         identity_spec_manager,
         Arc::clone(&user_principal_provider),
         Arc::clone(&management_authorizer),
     );
-    let feedback_service =
-        FeedbackService::new(feedback_manager, Arc::clone(&user_principal_provider));
-    let episode_service = EpisodeService::new(episode_store);
+    let feedback_service = FeedbackService::new(
+        feedback_manager,
+        Arc::clone(&user_principal_provider),
+        Arc::clone(&workspace_authorizer),
+    );
+    let episode_service = EpisodeService::new(
+        episode_store,
+        Arc::clone(&user_principal_provider),
+        Arc::clone(&workspace_authorizer),
+    );
     let mut routes = Routes::default()
         .add_service(GrpcMethodAnnotatedService::new(SourceServiceServer::new(
             source_service,
@@ -506,23 +855,11 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
                 .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
         ));
     }
+    for extend_routes in grpc_route_extenders {
+        routes = extend_routes(&extension_context, &user_principal_provider, routes);
+    }
 
-    let listener = TcpListener::bind(mode.bind_addr()).await?;
-    let endpoint_uri = format!("http://{}", listener.local_addr()?);
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-    let task = match mode {
-        ServerMode::NativeGrpc => start_grpc_server(listener, shutdown_rx, routes),
-        ServerMode::EmbeddedUi { assets, .. } => {
-            start_grpc_web_server(listener, shutdown_rx, routes, assets)
-        }
-    };
-
-    Ok(RunningServer {
-        endpoint_uri,
-        shutdown_tx: Mutex::new(Some(shutdown_tx)),
-        task: Mutex::new(Some(task)),
-    })
+    (routes, mode, native_grpc_bind_addr)
 }
 
 fn start_grpc_server(
@@ -568,6 +905,70 @@ fn start_grpc_web_server(
             })
             .await
     })
+}
+
+#[derive(Clone)]
+struct AuthenticatedGrpcService<S> {
+    inner: S,
+    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+}
+
+impl<S> AuthenticatedGrpcService<S> {
+    fn new(inner: S, user_principal_provider: Arc<dyn UserPrincipalProvider>) -> Self {
+        Self {
+            inner,
+            user_principal_provider,
+        }
+    }
+}
+
+impl<S> NamedService for AuthenticatedGrpcService<S>
+where
+    S: NamedService,
+{
+    const NAME: &'static str = S::NAME;
+}
+
+impl<S> Service<Request<tonic::body::Body>> for AuthenticatedGrpcService<S>
+where
+    S: Service<Request<tonic::body::Body>, Error = Infallible> + Clone + Send + 'static,
+    S::Response: axum::response::IntoResponse,
+    S::Future: Send + 'static,
+{
+    type Response = AxumResponse;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: Request<tonic::body::Body>) -> Self::Future {
+        let metadata = tonic::metadata::MetadataMap::from_headers(request.headers().clone());
+        let user_principal_provider = Arc::clone(&self.user_principal_provider);
+        let clone = self.inner.clone();
+        let mut inner = std::mem::replace(&mut self.inner, clone);
+        Box::pin(async move {
+            if let Err(error) = user_principal_provider
+                .principal_for_metadata(&metadata)
+                .await
+            {
+                return Ok(user_principal_status(error).into_http::<AxumBody>());
+            }
+            let response = inner.call(request).await?;
+            Ok(response.into_response())
+        })
+    }
+}
+
+fn user_principal_status(error: UserPrincipalError) -> tonic::Status {
+    match error {
+        UserPrincipalError::Unauthenticated(message) => tonic::Status::unauthenticated(message),
+        UserPrincipalError::InvalidInput(message) => {
+            tonic::Status::invalid_argument(format!("invalid user principal metadata: {message}"))
+        }
+        UserPrincipalError::Internal(message) => tonic::Status::internal(message),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -719,15 +1120,19 @@ mod tests {
     )]
 
     use std::borrow::Cow;
+    use std::collections::BTreeMap;
+    use std::convert::Infallible;
     use std::future::Future;
-    use std::net::{Ipv4Addr, TcpListener};
+    use std::net::{Ipv4Addr, SocketAddr, TcpListener};
     use std::path::Path;
     use std::sync::Arc;
+    use std::task::{Context, Poll};
     use std::time::Duration;
 
     use coral_api::v1::catalog_service_client::CatalogServiceClient;
     use coral_api::v1::episode_service_client::EpisodeServiceClient;
     use coral_api::v1::feedback_service_client::FeedbackServiceClient;
+    use coral_api::v1::identity_service_client::IdentityServiceClient;
     use coral_api::v1::identity_spec_service_client::IdentitySpecServiceClient;
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
@@ -735,31 +1140,43 @@ mod tests {
     use coral_api::v1::{
         AddIdentitySpecRequest, CreateBundledSourceRequest, DeleteIdentitySpecRequest,
         ExecuteSqlRequest, ExecuteSqlResponse, ImportSourceRequest, ImportSourceResponse,
-        ListCatalogRequest, ListSourcesRequest, ListTracesRequest, ListTracesResponse,
-        OAuthCredentialRetrieval, OpenEpisodeRequest, SubmitFeedbackRequest, Workspace,
-        import_source_response,
+        ListCatalogRequest, ListIdentitySpecsRequest, ListSourcesRequest, ListTracesRequest,
+        ListTracesResponse, ListUserOwnedIdentitiesRequest, OAuthCredentialRetrieval,
+        OpenEpisodeRequest, SubmitFeedbackRequest, Workspace, import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
 
+    use crate::authorization::{
+        AllowAllManagementAuthorizer, AllowAllWorkspaceAuthorizer, AuthorizationError,
+        ManagementAuthorizer, SourceMutationKind, WorkspaceAccessKind, WorkspaceAuthorizer,
+    };
+    use crate::identities::{
+        IdentityOwnerKey, UserOwnedIdentityManager, UserOwnedIdentityMaterialGuard,
+        UserOwnedIdentityRecord, UserOwnedIdentityStore,
+    };
+    use crate::identity_specs::{
+        IdentitySpecManager, IdentitySpecRegistry, IdentitySpecRegistryRecord,
+        IdentitySpecUsageProvider,
+    };
     use tempfile::TempDir;
+    use tonic::body::Body as TonicBody;
+    use tonic::codegen::http::{Request as HttpRequest, Response as HttpResponse};
+    use tonic::server::NamedService;
     use tonic::transport::{Channel, Endpoint};
     use tonic::{Code, Request};
+    use tower::{Service, ServiceExt as _};
 
     use super::{
-        RunningServer, ServerBuilder, ServerMode, ServerServices, StaticAsset,
-        StaticAssetsProvider, is_grpc_web_content_type, is_native_grpc_content_type, start_server,
-    };
-    use crate::authorization::{
-        AllowAllManagementAuthorizer, AuthorizationError, ManagementAuthorizer, SourceMutationKind,
+        RunningServer, ServerBuilder, ServerExtensionContext, ServerMode, ServerServices,
+        StaticAsset, StaticAssetsProvider, is_grpc_web_content_type, is_native_grpc_content_type,
+        start_server,
     };
     use crate::bootstrap::AppError;
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::episode::store::EpisodeStore;
     use crate::features::{Feature, FeatureOverrides};
     use crate::feedback::manager::FeedbackManager;
-    use crate::identities::UserOwnedIdentityManager;
-    use crate::identity_specs::{IdentitySpecManager, IdentitySpecUsageProvider};
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore};
@@ -787,6 +1204,129 @@ mod tests {
             Err(UserPrincipalError::unauthenticated(
                 "rejected user principal",
             ))
+        }
+    }
+
+    #[derive(Clone)]
+    struct ExtensionProbeService;
+
+    impl NamedService for ExtensionProbeService {
+        const NAME: &'static str = "coral.test.ExtensionProbe";
+    }
+
+    impl Service<HttpRequest<TonicBody>> for ExtensionProbeService {
+        type Response = HttpResponse<TonicBody>;
+        type Error = Infallible;
+        type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
+
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, _request: HttpRequest<TonicBody>) -> Self::Future {
+            std::future::ready(Ok(
+                tonic::Status::unimplemented("extension reached").into_http()
+            ))
+        }
+    }
+
+    #[derive(Debug)]
+    struct EmptyIdentitySpecRegistry;
+
+    impl IdentitySpecRegistry for EmptyIdentitySpecRegistry {
+        fn list_identity_specs(&self) -> Result<Vec<IdentitySpecRegistryRecord>, AppError> {
+            Ok(Vec::new())
+        }
+
+        fn get_identity_spec(
+            &self,
+            _name: &str,
+        ) -> Result<Option<IdentitySpecRegistryRecord>, AppError> {
+            Ok(None)
+        }
+
+        fn upsert_identity_spec(
+            &self,
+            _name: &str,
+            _record: IdentitySpecRegistryRecord,
+        ) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        fn remove_identity_spec(&self, _name: &str) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct EmptyUserOwnedIdentityStore;
+
+    #[tonic::async_trait]
+    impl UserOwnedIdentityStore for EmptyUserOwnedIdentityStore {
+        async fn list_identities(
+            &self,
+            _owner: &IdentityOwnerKey,
+        ) -> Result<Vec<UserOwnedIdentityRecord>, AppError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_identity(
+            &self,
+            _owner: &IdentityOwnerKey,
+            _identity_name: &str,
+        ) -> Result<Option<UserOwnedIdentityRecord>, AppError> {
+            Ok(None)
+        }
+
+        async fn replace_identity(
+            &self,
+            _owner: &IdentityOwnerKey,
+            _record: &UserOwnedIdentityRecord,
+            _material: &BTreeMap<String, String>,
+        ) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        async fn delete_identity(
+            &self,
+            _owner: &IdentityOwnerKey,
+            _identity_name: &str,
+        ) -> Result<bool, AppError> {
+            Ok(false)
+        }
+
+        async fn material_guard(
+            &self,
+            _owner: &IdentityOwnerKey,
+            _identity_name: &str,
+        ) -> Result<Box<dyn UserOwnedIdentityMaterialGuard>, AppError> {
+            Ok(Box::new(EmptyUserOwnedIdentityMaterialGuard))
+        }
+
+        async fn delete_source_identity_bindings(
+            &self,
+            _workspace_name: &str,
+            _source_name: &str,
+            _surface_ids: &[String],
+            _preserved_user_id: Option<&str>,
+        ) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
+
+    struct EmptyUserOwnedIdentityMaterialGuard;
+
+    #[tonic::async_trait]
+    impl UserOwnedIdentityMaterialGuard for EmptyUserOwnedIdentityMaterialGuard {
+        async fn read_material(&self) -> Result<BTreeMap<String, String>, AppError> {
+            Ok(BTreeMap::new())
+        }
+
+        async fn write_material(
+            &self,
+            _material: &BTreeMap<String, String>,
+        ) -> Result<(), AppError> {
+            Ok(())
         }
     }
 
@@ -860,6 +1400,36 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct DenyingWorkspaceAuthorizer;
+
+    #[tonic::async_trait]
+    impl WorkspaceAuthorizer for DenyingWorkspaceAuthorizer {
+        async fn authorize_workspace_access(
+            &self,
+            _principal: &UserPrincipal,
+            _workspace_id: &str,
+            _kind: WorkspaceAccessKind,
+        ) -> Result<(), AuthorizationError> {
+            Err(AuthorizationError::forbidden("workspace access is blocked"))
+        }
+    }
+
+    #[derive(Debug)]
+    struct AllowAllNonDefaultWorkspaceAuthorizer;
+
+    #[tonic::async_trait]
+    impl WorkspaceAuthorizer for AllowAllNonDefaultWorkspaceAuthorizer {
+        async fn authorize_workspace_access(
+            &self,
+            _principal: &UserPrincipal,
+            _workspace_id: &str,
+            _kind: WorkspaceAccessKind,
+        ) -> Result<(), AuthorizationError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
     struct StaticIdentitySpecUsageProvider {
         identity_spec_name: String,
         count: u32,
@@ -924,6 +1494,7 @@ enabled = false
             identity_spec_manager.clone(),
             credential_store,
         );
+        let extension_context = ServerExtensionContext::new(user_owned_identity_manager.handle());
         let server = start_server(ServerServices {
             source_manager: SourceManager::new(
                 config_store.clone(),
@@ -935,17 +1506,20 @@ enabled = false
                 credential_manager,
                 runtime_context,
                 layout.clone(),
-                crate::features::dsl_v4_features(),
                 vec![Arc::new(NoopEngineExtensionsProvider)],
             ),
-            identity_spec_manager,
+            identity_spec_manager: identity_spec_manager.clone(),
             user_owned_identity_manager,
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             management_authorizer: Arc::new(AllowAllManagementAuthorizer),
+            workspace_authorizer: Arc::new(AllowAllWorkspaceAuthorizer),
             feedback_manager: FeedbackManager::new(layout.clone()),
             episode_store: EpisodeStore::new(layout.clone()),
             trace_service,
             mode: ServerMode::NativeGrpc,
+            native_grpc_bind_addr: None,
+            grpc_route_extenders: Vec::new(),
+            extension_context,
         })
         .await
         .expect("start server");
@@ -1034,6 +1608,17 @@ enabled = false
             .await
             .expect_err(&format!("{label} should require a request principal"));
         assert_eq!(status.code(), Code::Unauthenticated, "{label}");
+    }
+
+    /// Asserts that `call` is rejected with `PermissionDenied`.
+    async fn expect_permission_denied<T: std::fmt::Debug>(
+        label: &str,
+        call: impl Future<Output = Result<T, tonic::Status>>,
+    ) {
+        let status = call
+            .await
+            .expect_err(&format!("{label} should require workspace access"));
+        assert_eq!(status.code(), Code::PermissionDenied, "{label}");
     }
 
     #[tokio::test]
@@ -1338,6 +1923,105 @@ enabled = false
     }
 
     #[tokio::test]
+    async fn server_builder_rejects_public_native_grpc_bind_without_auth_overrides() {
+        let temp = TempDir::new().expect("temp dir");
+        let result = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_native_grpc_bind_addr(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+            .start()
+            .await;
+
+        let Err(error) = result else {
+            panic!("server should reject public native gRPC bind with default auth");
+        };
+        assert!(
+            error.to_string().contains(
+                "non-loopback native gRPC bind address '0.0.0.0:0' requires allow_unsafe_public_native_grpc_bind(), a non-default user principal provider, a non-default management authorizer, and a non-default workspace authorizer"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn server_builder_rejects_public_native_grpc_bind_with_unsafe_opt_in_and_local_defaults()
+    {
+        let temp = TempDir::new().expect("temp dir");
+        let result = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_native_grpc_bind_addr(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+            .allow_unsafe_public_native_grpc_bind()
+            .with_user_principal_provider(Arc::new(SingleUserPrincipalProvider))
+            .with_management_authorizer(Arc::new(AllowAllManagementAuthorizer))
+            .with_workspace_authorizer(Arc::new(AllowAllWorkspaceAuthorizer))
+            .start()
+            .await;
+
+        let Err(error) = result else {
+            panic!("server should reject public native gRPC bind with local default auth");
+        };
+        assert!(
+            error.to_string().contains(
+                "non-loopback native gRPC bind address '0.0.0.0:0' requires allow_unsafe_public_native_grpc_bind(), a non-default user principal provider, a non-default management authorizer, and a non-default workspace authorizer"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn server_builder_accepts_public_native_grpc_bind_with_explicit_opt_in() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_native_grpc_bind_addr(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+            .allow_unsafe_public_native_grpc_bind()
+            .with_user_principal_provider(Arc::new(RejectingUserPrincipalProvider))
+            .with_management_authorizer(Arc::new(DenyingManagementAuthorizer))
+            .with_workspace_authorizer(Arc::new(AllowAllNonDefaultWorkspaceAuthorizer))
+            .start()
+            .await
+            .expect("public bind should start once auth is explicit");
+
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn server_builder_rejects_custom_user_owned_identity_store_without_usage_provider() {
+        let temp = TempDir::new().expect("temp dir");
+        let result = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_user_owned_identity_store(Arc::new(EmptyUserOwnedIdentityStore))
+            .start()
+            .await;
+
+        let Err(error) = result else {
+            panic!("server should reject custom identity store without usage provider");
+        };
+        assert!(
+            error.to_string().contains(
+                "custom user-owned identity stores require an identity spec usage provider"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn server_builder_accepts_custom_user_owned_identity_store_with_usage_provider() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_user_owned_identity_store(Arc::new(EmptyUserOwnedIdentityStore))
+            .add_identity_spec_usage_provider(Arc::new(StaticIdentitySpecUsageProvider {
+                identity_spec_name: "demo_oauth".to_string(),
+                count: 0,
+            }))
+            .start()
+            .await
+            .expect("custom identity store should start with usage provider");
+
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
     async fn grpc_services_reject_unauthenticated_requests() {
         let temp = TempDir::new().expect("temp dir");
         let server = ServerBuilder::new()
@@ -1350,7 +2034,10 @@ enabled = false
         let mut source_client = SourceServiceClient::new(channel.clone());
         let mut query_client = QueryServiceClient::new(channel.clone());
         let mut catalog_client = CatalogServiceClient::new(channel.clone());
+        let mut identity_spec_client = IdentitySpecServiceClient::new(channel.clone());
+        let mut identity_client = IdentityServiceClient::new(channel.clone());
         let mut feedback_client = FeedbackServiceClient::new(channel.clone());
+        let mut episode_client = EpisodeServiceClient::new(channel.clone());
         let mut trace_client = TraceServiceClient::new(channel);
 
         expect_unauthenticated(
@@ -1368,6 +2055,16 @@ enabled = false
         )
         .await;
         expect_unauthenticated(
+            "identity specs",
+            identity_spec_client.list_identity_specs(ListIdentitySpecsRequest {}),
+        )
+        .await;
+        expect_unauthenticated(
+            "identity list",
+            identity_client.list_user_owned_identities(ListUserOwnedIdentitiesRequest {}),
+        )
+        .await;
+        expect_unauthenticated(
             "feedback",
             feedback_client.submit_feedback(SubmitFeedbackRequest {
                 workspace: Some(default_workspace()),
@@ -1377,9 +2074,140 @@ enabled = false
             }),
         )
         .await;
+        expect_unauthenticated(
+            "episodes",
+            episode_client.open_episode(OpenEpisodeRequest {
+                workspace: Some(default_workspace()),
+                episode_id: "ep_auth".to_string(),
+                intent: "test auth".to_string(),
+                parent_episode_id: String::new(),
+            }),
+        )
+        .await;
         expect_unauthenticated("traces", list_traces(&mut trace_client)).await;
 
         server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn workspace_scoped_services_reject_unauthorized_workspace_access() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_workspace_authorizer(Arc::new(DenyingWorkspaceAuthorizer))
+            .start()
+            .await
+            .expect("start server");
+        let channel = connect(&server).await;
+        let mut source_client = SourceServiceClient::new(channel.clone());
+        let mut query_client = QueryServiceClient::new(channel.clone());
+        let mut catalog_client = CatalogServiceClient::new(channel.clone());
+        let mut feedback_client = FeedbackServiceClient::new(channel.clone());
+        let mut episode_client = EpisodeServiceClient::new(channel);
+
+        expect_permission_denied(
+            "source list",
+            source_client.list_sources(list_sources_request()),
+        )
+        .await;
+        expect_permission_denied("query", execute_sql(&mut query_client, "SELECT 1")).await;
+        expect_permission_denied(
+            "catalog",
+            catalog_client.list_catalog(ListCatalogRequest {
+                workspace: Some(default_workspace()),
+                ..ListCatalogRequest::default()
+            }),
+        )
+        .await;
+        expect_permission_denied(
+            "feedback",
+            feedback_client.submit_feedback(SubmitFeedbackRequest {
+                workspace: Some(default_workspace()),
+                trying_to_do: "test".to_string(),
+                tried: "test".to_string(),
+                stuck: "test".to_string(),
+            }),
+        )
+        .await;
+        expect_permission_denied(
+            "episodes",
+            episode_client.open_episode(OpenEpisodeRequest {
+                workspace: Some(default_workspace()),
+                episode_id: "ep_authz".to_string(),
+                intent: "test authz".to_string(),
+                parent_episode_id: String::new(),
+            }),
+        )
+        .await;
+
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn extension_grpc_services_reject_unauthenticated_requests() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_user_principal_provider(Arc::new(RejectingUserPrincipalProvider))
+            .add_grpc_service(ExtensionProbeService)
+            .start()
+            .await
+            .expect("start server");
+        let mut channel = connect(&server).await;
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/coral.test.ExtensionProbe/Check")
+            .header("content-type", "application/grpc")
+            .body(TonicBody::empty())
+            .expect("extension request");
+
+        let response = channel
+            .ready()
+            .await
+            .expect("extension channel ready")
+            .call(request)
+            .await
+            .expect("extension auth response");
+
+        assert_eq!(
+            response
+                .headers()
+                .get("grpc-status")
+                .and_then(|value| value.to_str().ok()),
+            Some("16")
+        );
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn server_builder_rejects_custom_identity_spec_registry_without_custom_identity_store() {
+        let temp = TempDir::new().expect("temp dir");
+        let result = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_identity_spec_registry(Arc::new(EmptyIdentitySpecRegistry))
+            .start()
+            .await;
+
+        let Err(error) = result else {
+            panic!("server should reject incompatible identity spec registry/store configuration");
+        };
+        assert!(
+            error.to_string().contains(
+                "custom identity spec registries require a custom user-owned identity store"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn native_grpc_mode_uses_configured_bind_addr() {
+        let bind_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0));
+
+        assert_eq!(ServerMode::NativeGrpc.bind_addr(Some(bind_addr)), bind_addr);
+        assert_eq!(
+            ServerMode::NativeGrpc.bind_addr(None),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 0))
+        );
     }
 
     #[test]

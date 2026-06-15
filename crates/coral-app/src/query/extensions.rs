@@ -94,7 +94,7 @@ impl SourceInputResolver for CredentialRefreshingInputResolver {
         let source_name = SourceName::parse(source.source_name())
             .map_err(|error| SourceInputResolverError::invalid_input(error.to_string()))?;
         let credential_set_id = CredentialSetId::for_source(&source_name);
-        let record = self
+        let source_record = self
             .source_registry
             .get_source(self.workspace_name.as_str(), source_name.as_str())
             .map_err(source_input_error)?
@@ -104,7 +104,7 @@ impl SourceInputResolver for CredentialRefreshingInputResolver {
                     self.workspace_name, source_name
                 )))
             })?;
-        let installed_source = installed_source_from_record(&self.workspace_name, record)
+        let installed_source = installed_source_from_record(&self.workspace_name, source_record)
             .map_err(source_input_error)?;
         let material =
             if let Some(credential_storage) = installed_source.credential_storage_for_material() {
@@ -220,9 +220,16 @@ mod tests {
         QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
         RequestAuthenticatorError,
     };
+    use coral_spec::parse_source_manifest_yaml;
     use reqwest::header::{HeaderName, HeaderValue};
+    use tempfile::TempDir;
 
     use super::*;
+    use crate::credentials::{CredentialStorageKind, CredentialStore};
+    use crate::source_registry::{
+        SourceRegistryCredentialStorage, SourceRegistryOrigin, SourceRegistryRecord,
+    };
+    use crate::state::AppStateLayout;
 
     #[derive(Debug)]
     struct TestAuthenticator {
@@ -293,6 +300,48 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct SingleSourceRegistry {
+        record: SourceRegistryRecord,
+    }
+
+    impl SourceRegistry for SingleSourceRegistry {
+        fn list_workspace_sources(
+            &self,
+            workspace_id: &str,
+        ) -> Result<Vec<SourceRegistryRecord>, AppError> {
+            if self.record.workspace_id == workspace_id {
+                Ok(vec![self.record.clone()])
+            } else {
+                Ok(Vec::new())
+            }
+        }
+
+        fn get_source(
+            &self,
+            workspace_id: &str,
+            source_name: &str,
+        ) -> Result<Option<SourceRegistryRecord>, AppError> {
+            if self.record.workspace_id == workspace_id && self.record.source_name == source_name {
+                Ok(Some(self.record.clone()))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn upsert_source(&self, _record: SourceRegistryRecord) -> Result<(), AppError> {
+            Err(AppError::FailedPrecondition(
+                "test registry is read-only".to_string(),
+            ))
+        }
+
+        fn remove_source(&self, _workspace_id: &str, _source_name: &str) -> Result<(), AppError> {
+            Err(AppError::FailedPrecondition(
+                "test registry is read-only".to_string(),
+            ))
+        }
+    }
+
     #[test]
     fn noop_provider_installs_no_extensions() {
         let extensions = NoopEngineExtensionsProvider.extensions_for(&[]);
@@ -356,5 +405,91 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(observer_names, ["base", "extra"]);
+    }
+
+    #[tokio::test]
+    async fn input_resolver_uses_source_registry_for_installed_source_metadata() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("secured_messages").expect("source name");
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout));
+        credential_manager
+            .replace_material(
+                &workspace_name,
+                &CredentialSetId::for_source(&source_name),
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "stored-token".to_string())]),
+            )
+            .expect("write credential material");
+        let source_spec = parse_source_manifest_yaml(
+            r#"
+name: secured_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://example.com
+  API_TOKEN:
+    kind: secret
+base_url: "{{input.API_BASE}}"
+tables:
+  - name: messages
+    description: Secured messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+"#,
+        )
+        .expect("parse source manifest");
+        let query_source = QuerySource::new(
+            source_spec,
+            BTreeMap::from([(
+                "API_BASE".to_string(),
+                "https://registry.example".to_string(),
+            )]),
+            BTreeMap::new(),
+        );
+        let registry = SingleSourceRegistry {
+            record: SourceRegistryRecord {
+                workspace_id: workspace_name.as_str().to_string(),
+                source_name: source_name.as_str().to_string(),
+                version: Some("0.1.0".to_string()),
+                manifest_yaml: None,
+                variables: query_source.variables().clone(),
+                secrets: vec!["API_TOKEN".to_string()],
+                credential_storage: Some(SourceRegistryCredentialStorage::File),
+                identity_bindings: BTreeMap::new(),
+                origin: SourceRegistryOrigin::Imported,
+            },
+        };
+        let resolver = CredentialRefreshingInputResolver::new(
+            workspace_name,
+            Arc::new(registry),
+            credential_manager,
+            None,
+        );
+
+        let resolved_inputs = resolver
+            .resolve_inputs(&SourceInputResolutionContext::from_query_source(
+                &query_source,
+            ))
+            .await
+            .expect("resolve inputs through custom registry");
+
+        assert_eq!(
+            resolved_inputs.get("API_BASE").map(String::as_str),
+            Some("https://registry.example")
+        );
+        assert_eq!(
+            resolved_inputs.get("API_TOKEN").map(String::as_str),
+            Some("stored-token")
+        );
     }
 }

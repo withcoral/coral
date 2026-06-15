@@ -54,12 +54,17 @@ mod transport;
 mod workspaces;
 
 pub use authorization::{
-    AllowAllManagementAuthorizer, AuthorizationError, ManagementAuthorizer, SourceMutationKind,
+    AllowAllManagementAuthorizer, AllowAllWorkspaceAuthorizer, AuthorizationError,
+    ManagementAuthorizer, SourceMutationKind, WorkspaceAccessKind, WorkspaceAuthorizer,
 };
 pub use bootstrap::{
-    AppError, RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
+    AppError, RunningServer, ServerBuilder, ServerExtensionContext, ServerMode, StaticAsset,
+    StaticAssetsProvider,
 };
-pub use coral_engine::{EngineExtensions, QuerySource};
+pub use coral_engine::{
+    EngineExtensions, QuerySource, RequestIdentityResolutionContext, RequestIdentityResolver,
+    RequestIdentityResolverError,
+};
 pub use credentials::oauth::{OAuthProgressEvent, OAuthProgressEventSender};
 pub use identities::{
     CreateFixedTokenIdentityCommand, CreateOAuthIdentityCommand, IdentityCredentialInput,

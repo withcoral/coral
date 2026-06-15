@@ -189,6 +189,12 @@ impl Drop for SourceImportPreflight {
     }
 }
 
+pub(crate) struct UserSourceIdentityBindingCleanup {
+    pub(crate) all_users_surface_ids: Vec<String>,
+    pub(crate) other_users_surface_ids: Vec<String>,
+    pub(crate) preserved_user_id: Option<String>,
+}
+
 #[derive(Clone)]
 struct RegistrySource {
     source: InstalledSource,
@@ -196,7 +202,6 @@ struct RegistrySource {
 }
 
 pub(crate) struct SourceImportRollbackState {
-    workspace_name: WorkspaceName,
     source_name: SourceName,
     installed_record: SourceRegistryRecord,
     installed_manifest_yaml: Option<String>,
@@ -274,6 +279,29 @@ impl SourceManager {
         }
     }
 
+    pub(crate) fn source_identity_binding_cleanup_plan(
+        rollback: &SourceImportRollbackState,
+        preserved_user_bindings: &[PreservedUserSourceIdentityBinding],
+    ) -> UserSourceIdentityBindingCleanup {
+        let preserved_user_id = preserved_user_bindings
+            .first()
+            .map(|preserved| preserved.user_id.clone());
+        let (other_users_surface_ids, all_users_surface_ids): (Vec<_>, Vec<_>) = rollback
+            .stale_user_binding_surfaces
+            .iter()
+            .cloned()
+            .partition(|surface_id| {
+                preserved_user_bindings
+                    .iter()
+                    .any(|preserved| preserved.surface_id == *surface_id)
+            });
+        UserSourceIdentityBindingCleanup {
+            all_users_surface_ids,
+            other_users_surface_ids,
+            preserved_user_id,
+        }
+    }
+
     fn list_registry_sources(
         &self,
         workspace_name: &WorkspaceName,
@@ -341,7 +369,10 @@ impl SourceManager {
         Ok(self
             .list_registry_source_records(workspace_name)?
             .into_iter()
-            .map(|source| self.populate_registry_source_version_or_keep(workspace_name, source))
+            .map(|source| {
+                self.populate_registry_source_version_or_keep(workspace_name, source)
+                    .source
+            })
             .collect())
     }
 
@@ -350,10 +381,12 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
-        Ok(self.populate_registry_source_version_or_keep(
-            workspace_name,
-            self.require_registry_source_record(workspace_name, source_name)?,
-        ))
+        Ok(self
+            .populate_registry_source_version_or_keep(
+                workspace_name,
+                self.require_registry_source_record(workspace_name, source_name)?,
+            )
+            .source)
     }
 
     pub(crate) fn get_source_info(
@@ -421,7 +454,7 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
         command: &CreateBundledSourceCommand,
-    ) -> Result<InstalledSource, AppError> {
+    ) -> Result<(InstalledSource, UserSourceIdentityBindingCleanup), AppError> {
         let bundled = load_bundled_source(&command.name)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
         self.install_validated_source(
@@ -430,7 +463,7 @@ impl SourceManager {
                 candidate: &candidate,
                 bindings: &command.bindings,
                 identity_bindings: &BTreeMap::new(),
-                replace_identity_bindings: false,
+                replace_identity_bindings: true,
                 manifest_yaml: None,
                 materialization_manifest_yaml: &bundled.manifest_yaml,
                 origin: SourceOrigin::Bundled,
@@ -443,7 +476,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         command: CreateBundledSourceWithOAuthCommand,
         events: OAuthProgressEventSender,
-    ) -> Result<InstalledSource, AppError> {
+    ) -> Result<(InstalledSource, UserSourceIdentityBindingCleanup), AppError> {
         let bundled = load_bundled_source(&command.name)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
         self.install_source_with_oauth(
@@ -452,7 +485,7 @@ impl SourceManager {
                 candidate: &candidate,
                 bindings: &command.bindings,
                 identity_bindings: &BTreeMap::new(),
-                replace_identity_bindings: false,
+                replace_identity_bindings: true,
                 manifest_yaml: None,
                 materialization_manifest_yaml: &bundled.manifest_yaml,
                 origin: SourceOrigin::Bundled,
@@ -493,7 +526,7 @@ impl SourceManager {
             self.materialization_manifest_yaml_for_import(&command.manifest_yaml, None)?;
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
-        self.install_validated_source(
+        let (source, cleanup) = self.install_validated_source(
             workspace_name,
             InstallSourceRequest {
                 candidate: &candidate,
@@ -504,7 +537,13 @@ impl SourceManager {
                 materialization_manifest_yaml: &manifest_yaml,
                 origin: SourceOrigin::Imported,
             },
-        )
+        )?;
+        self.cleanup_user_source_identity_bindings_for_plan_best_effort(
+            workspace_name,
+            &source.name,
+            &cleanup,
+        );
+        Ok(source)
     }
 
     #[cfg_attr(
@@ -581,7 +620,6 @@ impl SourceManager {
         installed: Option<&InstalledSource>,
     ) {
         let SourceImportRollbackState {
-            workspace_name: _,
             source_name,
             installed_record,
             installed_manifest_yaml,
@@ -668,20 +706,13 @@ impl SourceManager {
     }
 
     pub(crate) fn commit_import_source_rollback_state(
-        &self,
         rollback: SourceImportRollbackState,
         preserved_user_bindings: &[PreservedUserSourceIdentityBinding],
-    ) {
-        let stale_user_binding_surfaces = rollback.stale_user_binding_surfaces;
-        if !stale_user_binding_surfaces.is_empty() {
-            self.cleanup_user_source_identity_bindings_for_surfaces_best_effort(
-                &rollback.workspace_name,
-                &rollback.source_name,
-                &stale_user_binding_surfaces,
-                preserved_user_bindings,
-            );
-        }
+    ) -> UserSourceIdentityBindingCleanup {
+        let cleanup =
+            Self::source_identity_binding_cleanup_plan(&rollback, preserved_user_bindings);
         rollback.materialization_rollback.cleanup();
+        cleanup
     }
 
     #[cfg_attr(
@@ -701,21 +732,28 @@ impl SourceManager {
             self.materialization_manifest_yaml_for_import(&command.manifest_yaml, None)?;
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
-        self.install_source_with_oauth(
+        let (source, cleanup) = self
+            .install_source_with_oauth(
+                workspace_name,
+                InstallSourceRequest {
+                    candidate: &candidate,
+                    bindings: &command.bindings,
+                    identity_bindings: &command.identity_bindings,
+                    replace_identity_bindings: command.replace_identity_bindings,
+                    manifest_yaml: Some(&manifest_yaml),
+                    materialization_manifest_yaml: &manifest_yaml,
+                    origin: SourceOrigin::Imported,
+                },
+                command.oauth_credential_retrievals,
+                events,
+            )
+            .await?;
+        self.cleanup_user_source_identity_bindings_for_plan_best_effort(
             workspace_name,
-            InstallSourceRequest {
-                candidate: &candidate,
-                bindings: &command.bindings,
-                identity_bindings: &command.identity_bindings,
-                replace_identity_bindings: command.replace_identity_bindings,
-                manifest_yaml: Some(&manifest_yaml),
-                materialization_manifest_yaml: &manifest_yaml,
-                origin: SourceOrigin::Imported,
-            },
-            command.oauth_credential_retrievals,
-            events,
-        )
-        .await
+            &source.name,
+            &cleanup,
+        );
+        Ok(source)
     }
 
     #[expect(
@@ -802,10 +840,34 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
         request: InstallSourceRequest<'_>,
-    ) -> Result<InstalledSource, AppError> {
+    ) -> Result<(InstalledSource, UserSourceIdentityBindingCleanup), AppError> {
+        self.ensure_direct_install_has_no_identity_bindings(workspace_name, request)?;
         let persisted = self.install_validated_source_deferred(workspace_name, request, None)?;
-        self.commit_import_source_rollback_state(persisted.rollback, &[]);
-        Ok(persisted.source)
+        let cleanup = Self::commit_import_source_rollback_state(persisted.rollback, &[]);
+        Ok((persisted.source, cleanup))
+    }
+
+    fn ensure_direct_install_has_no_identity_bindings(
+        &self,
+        workspace_name: &WorkspaceName,
+        request: InstallSourceRequest<'_>,
+    ) -> Result<(), AppError> {
+        let manifest = parse_source_manifest_yaml(request.materialization_manifest_yaml)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        self.ensure_dsl_v4_feature_enabled(&manifest)?;
+        let identity_bindings = self.effective_source_identity_bindings(
+            workspace_name,
+            &request.candidate.name,
+            request.identity_bindings,
+            request.replace_identity_bindings,
+        )?;
+        validate_import_identity_bindings(&manifest, &identity_bindings)?;
+        if identity_bindings.is_empty() {
+            return Ok(());
+        }
+        Err(AppError::FailedPrecondition(
+            "request identity resolution is not installed".to_string(),
+        ))
     }
 
     fn install_validated_source_deferred(
@@ -829,7 +891,6 @@ impl SourceManager {
             request.replace_identity_bindings,
         )?;
         validate_import_identity_bindings(&manifest, &identity_bindings)?;
-        ensure_identity_backed_imports_have_query_resolver(&manifest)?;
         let stored_material = self.source_stored_material_for_validation(
             workspace_name,
             request.candidate,
@@ -941,7 +1002,8 @@ impl SourceManager {
         request: InstallSourceRequest<'_>,
         oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
         events: OAuthProgressEventSender,
-    ) -> Result<InstalledSource, AppError> {
+    ) -> Result<(InstalledSource, UserSourceIdentityBindingCleanup), AppError> {
+        self.ensure_direct_install_has_no_identity_bindings(workspace_name, request)?;
         let persisted = self
             .install_source_with_oauth_deferred(
                 workspace_name,
@@ -951,8 +1013,8 @@ impl SourceManager {
                 None,
             )
             .await?;
-        self.commit_import_source_rollback_state(persisted.rollback, &[]);
-        Ok(persisted.source)
+        let cleanup = Self::commit_import_source_rollback_state(persisted.rollback, &[]);
+        Ok((persisted.source, cleanup))
     }
 
     async fn install_source_with_oauth_deferred(
@@ -978,7 +1040,6 @@ impl SourceManager {
             request.replace_identity_bindings,
         )?;
         validate_import_identity_bindings(&manifest, &identity_bindings)?;
-        ensure_identity_backed_imports_have_query_resolver(&manifest)?;
         let oauth_input_keys = oauth_credential_retrievals
             .iter()
             .map(|credential| credential.input_key.clone())
@@ -1035,8 +1096,9 @@ impl SourceManager {
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
         let stored_record = self.require_registry_source_record(workspace_name, source_name)?;
-        let removed =
-            self.populate_registry_source_version_or_keep(workspace_name, stored_record.clone());
+        let removed = self
+            .populate_registry_source_version_or_keep(workspace_name, stored_record.clone())
+            .source;
         let stored = stored_record.source;
         let source_dir = self.layout.source_dir(workspace_name, source_name);
         let credential_set_id = CredentialSetId::for_source(source_name);
@@ -1305,7 +1367,6 @@ impl SourceManager {
         Ok(PersistedSource {
             source: resolved,
             rollback: SourceImportRollbackState {
-                workspace_name: workspace_name.clone(),
                 source_name,
                 installed_record,
                 installed_manifest_yaml,
@@ -1816,6 +1877,43 @@ impl SourceManager {
         );
     }
 
+    fn cleanup_user_source_identity_bindings_for_plan_best_effort(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        cleanup: &UserSourceIdentityBindingCleanup,
+    ) {
+        if !cleanup.all_users_surface_ids.is_empty() {
+            self.cleanup_user_source_identity_bindings_for_surfaces_best_effort(
+                workspace_name,
+                source_name,
+                &cleanup.all_users_surface_ids,
+                &[],
+            );
+        }
+        if cleanup.other_users_surface_ids.is_empty() {
+            return;
+        }
+        let preserved_user_bindings = cleanup
+            .preserved_user_id
+            .iter()
+            .flat_map(|user_id| {
+                cleanup.other_users_surface_ids.iter().map(|surface_id| {
+                    PreservedUserSourceIdentityBinding {
+                        user_id: user_id.clone(),
+                        surface_id: surface_id.clone(),
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        self.cleanup_user_source_identity_bindings_for_surfaces_best_effort(
+            workspace_name,
+            source_name,
+            &cleanup.other_users_surface_ids,
+            &preserved_user_bindings,
+        );
+    }
+
     fn cleanup_user_source_identity_bindings_for_surfaces_best_effort(
         &self,
         workspace_name: &WorkspaceName,
@@ -1896,7 +1994,7 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
         mut source: RegistrySource,
-    ) -> Result<InstalledSource, AppError> {
+    ) -> Result<RegistrySource, AppError> {
         source.source.version = resolve_installed_manifest_with_imported_yaml(
             workspace_name,
             &source.source,
@@ -1905,16 +2003,16 @@ impl SourceManager {
         )?
         .candidate
         .version;
-        Ok(source.source)
+        Ok(source)
     }
 
     fn populate_registry_source_version_or_keep(
         &self,
         workspace_name: &WorkspaceName,
         source: RegistrySource,
-    ) -> InstalledSource {
+    ) -> RegistrySource {
         self.populate_registry_source_version(workspace_name, source.clone())
-            .unwrap_or(source.source)
+            .unwrap_or(source)
     }
 }
 
@@ -2076,25 +2174,6 @@ fn validate_import_identity_bindings(
         }
     }
     Ok(())
-}
-
-fn ensure_identity_backed_imports_have_query_resolver(
-    manifest: &ValidatedSourceManifest,
-) -> Result<(), AppError> {
-    let Some(v4) = manifest.as_v4() else {
-        return Ok(());
-    };
-    if !v4
-        .surfaces
-        .iter()
-        .any(|surface| surface.identity_requirements.is_some())
-    {
-        return Ok(());
-    }
-    Err(AppError::FailedPrecondition(format!(
-        "source '{}' declares identity_requirements, but request identity resolution is not installed for query execution in this build",
-        manifest.schema_name()
-    )))
 }
 
 fn source_needs_stored_material_for_validation(
@@ -3100,6 +3179,61 @@ surfaces:
         }
     }
 
+    fn registry_record_with_imported_manifest(
+        source_name: &str,
+        manifest_yaml: String,
+    ) -> SourceRegistryRecord {
+        SourceRegistryRecord {
+            workspace_id: default_workspace().as_str().to_string(),
+            source_name: source_name.to_string(),
+            version: None,
+            manifest_yaml: Some(manifest_yaml),
+            variables: BTreeMap::new(),
+            secrets: Vec::new(),
+            credential_storage: None,
+            identity_bindings: BTreeMap::new(),
+            origin: SourceRegistryOrigin::Imported,
+        }
+    }
+
+    #[test]
+    fn registry_backed_imported_manifest_supports_info_and_delete_without_local_file() {
+        let manifest_yaml = manifest_without_secrets();
+        let source_name = SourceName::parse("public_messages").expect("source name");
+        let registry = Arc::new(StaticSourceRegistry::with_records(vec![
+            registry_record_with_imported_manifest(source_name.as_str(), manifest_yaml),
+        ]));
+        let fixture = manager_fixture_with_source_registry(registry.clone());
+        assert!(
+            !fixture
+                .layout
+                .manifest_file(&default_workspace(), &source_name)
+                .exists(),
+            "test must exercise registry manifest storage, not local manifest files"
+        );
+
+        let source_info = fixture
+            .manager
+            .get_source_info(&default_workspace(), &source_name)
+            .expect("get source info from registry manifest");
+        assert_eq!(source_info.name, source_name);
+        assert_eq!(source_info.version.as_deref(), Some("0.1.0"));
+
+        let removed = fixture
+            .manager
+            .delete_source(&default_workspace(), &source_name)
+            .expect("delete registry-backed source");
+        assert_eq!(removed.name, source_name);
+        assert_eq!(removed.version.as_deref(), Some("0.1.0"));
+        assert!(
+            registry
+                .get_source(default_workspace().as_str(), source_name.as_str())
+                .expect("registry read")
+                .is_none(),
+            "delete should remove the registry record"
+        );
+    }
+
     fn manifest_v4_with_variable_input() -> String {
         r#"
 name: secured_messages_v4
@@ -3428,9 +3562,7 @@ tables:
                 Some(preflight),
             )
             .expect("import v4 source with preflight materialization");
-        fixture
-            .manager
-            .commit_import_source_rollback_state(rollback, &[]);
+        SourceManager::commit_import_source_rollback_state(rollback, &[]);
 
         assert_eq!(installed.name.as_str(), "github_v4_test");
         assert!(
@@ -3544,9 +3676,7 @@ base_url: "https://example.com"
             .manager
             .import_source_with_rollback_state(&default_workspace(), &initial_command)
             .expect("initial import");
-        fixture
-            .manager
-            .commit_import_source_rollback_state(initial_rollback, &[]);
+        SourceManager::commit_import_source_rollback_state(initial_rollback, &[]);
         let stale_command = import_command(
             manifest("0.2.0", "Stale messages"),
             SourceBindings::default(),
@@ -3563,9 +3693,7 @@ base_url: "https://example.com"
             .manager
             .import_source_with_rollback_state(&default_workspace(), &current_command)
             .expect("current import");
-        fixture
-            .manager
-            .commit_import_source_rollback_state(current_rollback, &[]);
+        SourceManager::commit_import_source_rollback_state(current_rollback, &[]);
 
         fixture.manager.restore_import_source_rollback_state(
             &default_workspace(),
@@ -3656,50 +3784,9 @@ base_url: "https://example.com"
     }
 
     #[test]
-    fn commit_import_preserves_rebound_stale_user_identity_selection() {
-        let fixture = manager_fixture();
+    fn commit_import_returns_stale_user_identity_cleanup_plan() {
         let source_name = SourceName::parse("github_v4_test").expect("source");
-        let rest_binding_path = fixture.layout.user_owned_source_identity_binding_file(
-            "saul",
-            &default_workspace(),
-            &source_name,
-            "rest",
-        );
-        let graphql_binding_path = fixture.layout.user_owned_source_identity_binding_file(
-            "saul",
-            &default_workspace(),
-            &source_name,
-            "graphql",
-        );
-        let other_user_rest_binding_path = fixture.layout.user_owned_source_identity_binding_file(
-            "ada",
-            &default_workspace(),
-            &source_name,
-            "rest",
-        );
-        for path in [
-            &rest_binding_path,
-            &graphql_binding_path,
-            &other_user_rest_binding_path,
-        ] {
-            std::fs::create_dir_all(path.parent().expect("binding parent"))
-                .expect("create binding parent");
-            std::fs::write(path, "version: 1\nidentity: github_saul\n").expect("write binding");
-        }
-        let rest_binding_dir = rest_binding_path
-            .parent()
-            .expect("rest binding dir")
-            .to_path_buf();
-        let graphql_binding_dir = graphql_binding_path
-            .parent()
-            .expect("graphql binding dir")
-            .to_path_buf();
-        let other_user_rest_binding_dir = other_user_rest_binding_path
-            .parent()
-            .expect("other user rest binding dir")
-            .to_path_buf();
         let rollback = SourceImportRollbackState {
-            workspace_name: default_workspace(),
             source_name: source_name.clone(),
             installed_record: record_from_installed_source(
                 &default_workspace(),
@@ -3711,7 +3798,7 @@ base_url: "https://example.com"
             stale_user_binding_surfaces: vec!["rest".to_string(), "graphql".to_string()],
         };
 
-        fixture.manager.commit_import_source_rollback_state(
+        let cleanup = SourceManager::commit_import_source_rollback_state(
             rollback,
             &[PreservedUserSourceIdentityBinding {
                 user_id: "saul".to_string(),
@@ -3719,18 +3806,9 @@ base_url: "https://example.com"
             }],
         );
 
-        assert!(
-            rest_binding_dir.exists(),
-            "commit cleanup should preserve explicitly rebound user selections"
-        );
-        assert!(
-            !graphql_binding_dir.exists(),
-            "commit cleanup should remove stale user selections that were not rebound"
-        );
-        assert!(
-            !other_user_rest_binding_dir.exists(),
-            "commit cleanup should remove other users' stale selections for rebound surfaces"
-        );
+        assert_eq!(cleanup.all_users_surface_ids, vec!["graphql".to_string()]);
+        assert_eq!(cleanup.other_users_surface_ids, vec!["rest".to_string()]);
+        assert_eq!(cleanup.preserved_user_id.as_deref(), Some("saul"));
     }
 
     #[test]

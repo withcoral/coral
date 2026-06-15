@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use coral_app::{AwsEngineExtensionsProvider, features::FeatureOverrides};
+use coral_app::AwsEngineExtensionsProvider;
 use coral_client::{
     AppClient, ClientError,
     local::{LocalServerError, RunningServer, ServerBuilder},
@@ -14,7 +14,7 @@ pub(crate) struct Bootstrap {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BootstrapOptions {
     pub(crate) enable_stderr_logs: bool,
-    pub(crate) feature_overrides: FeatureOverrides,
+    pub(crate) feature_overrides: coral_app::features::FeatureOverrides,
 }
 
 impl Bootstrap {
@@ -54,7 +54,7 @@ pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, Bo
 #[cfg(feature = "embedded-ui")]
 pub(crate) async fn start_ui_server(
     port: u16,
-    feature_overrides: FeatureOverrides,
+    feature_overrides: coral_app::features::FeatureOverrides,
 ) -> Result<RunningServer, BootstrapError> {
     let server = configure_server_builder(
         ServerBuilder::embedded_ui_loopback(port, crate::embedded_ui_assets()),

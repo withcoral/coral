@@ -12,8 +12,11 @@
 //! *consumers* rather than the routes. The `episodes` feature gates the only
 //! caller — the `coral-mcp` capture path — so on a default/disabled install this
 //! endpoint is reachable but inert: nothing opens an episode, so no `intent`
-//! (possibly PII) is ever written. The always-registered write endpoint is the
-//! supported contract; see the `open_episode_*` server smoke tests.
+//! (possibly PII) is ever written. The always-registered write endpoint still
+//! authenticates through the app transport principal provider; see the
+//! `open_episode_*` server smoke tests.
+
+use std::sync::Arc;
 
 use coral_api::v1::episode_service_server::EpisodeService as EpisodeServiceApi;
 use coral_api::v1::{OpenEpisodeRequest, OpenEpisodeResponse};
@@ -22,17 +25,29 @@ use tracing::warn;
 
 use super::EpisodeId;
 use super::store::{Episode, EpisodeStore, EpisodeStoreError, now_unix_nanos};
+use crate::authorization::{WorkspaceAccessKind, WorkspaceAuthorizer, authorization_status};
 use crate::bootstrap::app_status;
-use crate::transport::{grpc_span, instrument_grpc, workspace_name_from_proto};
+use crate::identity::UserPrincipalProvider;
+use crate::transport::{instrument_authenticated_grpc, workspace_name_from_proto};
 
 #[derive(Clone)]
 pub(crate) struct EpisodeService {
     store: EpisodeStore,
+    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    workspace_authorizer: Arc<dyn WorkspaceAuthorizer>,
 }
 
 impl EpisodeService {
-    pub(crate) fn new(store: EpisodeStore) -> Self {
-        Self { store }
+    pub(crate) fn new(
+        store: EpisodeStore,
+        user_principal_provider: Arc<dyn UserPrincipalProvider>,
+        workspace_authorizer: Arc<dyn WorkspaceAuthorizer>,
+    ) -> Self {
+        Self {
+            store,
+            user_principal_provider,
+            workspace_authorizer,
+        }
     }
 }
 
@@ -42,31 +57,42 @@ impl EpisodeServiceApi for EpisodeService {
         &self,
         request: Request<OpenEpisodeRequest>,
     ) -> Result<Response<OpenEpisodeResponse>, Status> {
-        let span = grpc_span(&request);
         let store = self.store.clone();
-        instrument_grpc(span, async move {
-            let request = request.into_inner();
-            let workspace = workspace_name_from_proto(request.workspace.as_ref())?;
-            let id = EpisodeId::parse(&request.episode_id).map_err(app_status)?;
-            let intent = non_blank("intent", &request.intent)?;
-            // Per AIP-149, an empty `parent_episode_id` means "no parent" (a root
-            // episode); any other value must satisfy the `EpisodeId` contract.
-            let parent_episode_id = match request.parent_episode_id.as_str() {
-                "" => None,
-                parent => Some(EpisodeId::parse(parent).map_err(app_status)?),
-            };
-            let episode = Episode {
-                id,
-                workspace,
-                intent,
-                parent_episode_id,
-                created_at_unix_nanos: now_unix_nanos(),
-            };
-            store
-                .open_episode(&episode)
-                .map_err(|error| open_episode_status(&error))?;
-            Ok(Response::new(OpenEpisodeResponse {}))
-        })
+        let workspace_authorizer = Arc::clone(&self.workspace_authorizer);
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |principal, request| async move {
+                let workspace = workspace_name_from_proto(request.workspace.as_ref())?;
+                workspace_authorizer
+                    .authorize_workspace_access(
+                        &principal,
+                        workspace.as_str(),
+                        WorkspaceAccessKind::Write,
+                    )
+                    .await
+                    .map_err(authorization_status)?;
+                let id = EpisodeId::parse(&request.episode_id).map_err(app_status)?;
+                let intent = non_blank("intent", &request.intent)?;
+                // Per AIP-149, an empty `parent_episode_id` means "no parent" (a root
+                // episode); any other value must satisfy the `EpisodeId` contract.
+                let parent_episode_id = match request.parent_episode_id.as_str() {
+                    "" => None,
+                    parent => Some(EpisodeId::parse(parent).map_err(app_status)?),
+                };
+                let episode = Episode {
+                    id,
+                    workspace,
+                    intent,
+                    parent_episode_id,
+                    created_at_unix_nanos: now_unix_nanos(),
+                };
+                store
+                    .open_episode(&episode)
+                    .map_err(|error| open_episode_status(&error))?;
+                Ok(Response::new(OpenEpisodeResponse {}))
+            },
+        )
         .await
     }
 }
@@ -99,6 +125,7 @@ fn open_episode_status(error: &EpisodeStoreError) -> Status {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::Arc;
 
     use coral_api::v1::{OpenEpisodeRequest, Workspace};
     use tempfile::TempDir;
@@ -106,6 +133,8 @@ mod tests {
 
     use super::super::store::EpisodeStore;
     use super::{EpisodeService, EpisodeServiceApi};
+    use crate::authorization::AllowAllWorkspaceAuthorizer;
+    use crate::identity::SingleUserPrincipalProvider;
     use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
 
@@ -113,7 +142,11 @@ mod tests {
         let dir = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(dir.path().join("coral-config")))
             .expect("layout should resolve");
-        let service = EpisodeService::new(EpisodeStore::new(layout.clone()));
+        let service = EpisodeService::new(
+            EpisodeStore::new(layout.clone()),
+            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(AllowAllWorkspaceAuthorizer),
+        );
         (dir, layout, service)
     }
 

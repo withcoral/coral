@@ -20,12 +20,17 @@ use coral_api::v1::{
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::default_workspace;
+use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 use tonic::Request;
+use url::Url;
+use wiremock::matchers::{header, method, path as request_path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::harness::{
-    FailingHttpFixture, GrpcHarness, fixed_token_identity_spec_yaml,
+    FailingHttpFixture, GrpcHarness, OAuthFixture, create_github_oauth_identity,
+    fixed_token_identity_spec_yaml, fixed_token_identity_spec_yaml_with_scheme,
     fixture_function_only_manifest_yaml, fixture_manifest_with_inputs_yaml,
     fixture_manifest_with_multiple_tables_yaml, fixture_manifest_with_required_inputs_yaml,
     fixture_manifest_with_test_queries_yaml, fixture_manifest_yaml, import_request,
@@ -77,26 +82,131 @@ async fn import_source_persists_and_lists() {
 }
 
 #[tokio::test]
-async fn import_v4_source_with_identity_bindings_fails_closed_from_grpc() {
+async fn import_v4_source_persists_identity_bindings_from_grpc() {
     let harness = GrpcHarness::new().await;
     create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
     let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
 
-    let error = harness
-        .try_import_source(identity_import_request(manifest_yaml, "github_local"))
-        .await
-        .expect_err("identity-backed source import should fail closed");
+    let added = import_grpc_identity_source(&harness, manifest_yaml, "github_local").await;
+    assert_eq!(added.name, "github_v4_grpc");
 
-    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    let config_raw = read_config(&harness);
     assert!(
-        error
-            .message()
-            .contains("request identity resolution is not installed"),
-        "unexpected error: {error}"
+        config_raw.contains("identity_bindings = { rest = { owner = \"user\" } }"),
+        "expected source identity binding in config: {config_raw}"
+    );
+    let user_binding_raw = read_user_binding(&harness);
+    assert!(user_binding_raw.contains("identity: github_local"));
+    assert!(user_binding_raw.contains("accepted_identity: github-rest-read"));
+}
+
+#[tokio::test]
+async fn reimport_source_can_clear_identity_bindings_from_grpc() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
+    let (openapi_file, openapi_sha256) = write_v4_openapi(&harness, "http://127.0.0.1:1");
+    let manifest_yaml = grpc_identity_manifest_yaml_for_host(
+        "github_v4_grpc",
+        &openapi_file,
+        &openapi_sha256,
+        "github.com",
+    );
+
+    import_grpc_identity_source(&harness, manifest_yaml, "github_local").await;
+
+    let manifest_without_identity = format!(
+        r"
+name: github_v4_grpc
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    sha256: {}
+",
+        openapi_file.display(),
+        openapi_sha256
+    );
+    harness
+        .try_import_source(ImportSourceRequest {
+            replace_identity_bindings: true,
+            ..import_request(manifest_without_identity)
+        })
+        .await
+        .expect("reimport source");
+
+    let config_raw = read_config(&harness);
+    assert!(
+        !config_raw.contains("identity_bindings"),
+        "expected source identity bindings to be cleared: {config_raw}"
+    );
+}
+
+#[tokio::test]
+async fn reimport_v4_source_replaces_user_identity_binding_from_grpc() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
+    create_fixed_token_identity(&harness, "github_reauth", "github_oauth", "github.com").await;
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
+
+    import_grpc_identity_source(&harness, manifest_yaml.clone(), "github_local").await;
+    import_grpc_identity_source(&harness, manifest_yaml, "github_reauth").await;
+
+    let user_binding_raw = read_user_binding(&harness);
+    assert!(
+        user_binding_raw.contains("identity: github_reauth"),
+        "expected reimport to replace user identity binding: {user_binding_raw}"
     );
     assert!(
-        harness.list_sources().await.is_empty(),
-        "failed identity-backed import must not install the source"
+        !user_binding_raw.contains("identity: github_local"),
+        "expected prior identity binding to be replaced: {user_binding_raw}"
+    );
+}
+
+#[tokio::test]
+async fn reimport_v4_source_can_reselect_user_identity_with_preserved_slot_from_grpc() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
+    create_fixed_token_identity(&harness, "github_reauth", "github_oauth", "github.com").await;
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
+
+    import_grpc_identity_source(&harness, manifest_yaml.clone(), "github_local").await;
+
+    harness
+        .try_import_source(ImportSourceRequest {
+            user_identity_bindings: rest_user_identity_bindings(
+                "github_reauth",
+                "github-rest-read",
+            ),
+            ..import_request(manifest_yaml)
+        })
+        .await
+        .expect("reimport should use preserved source identity slot");
+
+    let user_binding_raw = read_user_binding(&harness);
+    assert!(
+        user_binding_raw.contains("identity: github_reauth"),
+        "expected preserved slot reimport to replace user identity binding: {user_binding_raw}"
+    );
+}
+
+#[tokio::test]
+async fn reimport_v4_source_can_preserve_user_identity_selection_from_grpc() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
+
+    import_grpc_identity_source(&harness, manifest_yaml.clone(), "github_local").await;
+
+    harness
+        .try_import_source(import_request(manifest_yaml))
+        .await
+        .expect("reimport should preserve existing user identity selection");
+
+    let user_binding_raw = read_user_binding(&harness);
+    assert!(
+        user_binding_raw.contains("identity: github_local"),
+        "expected no-op reimport to preserve user identity binding: {user_binding_raw}"
     );
     assert_no_preflight_materialization_dirs(&harness, "github_v4_grpc");
 }
@@ -172,6 +282,70 @@ surfaces:
 }
 
 #[tokio::test]
+async fn v4_source_uses_user_owned_oauth_identity_end_to_end() {
+    let harness = GrpcHarness::new().await;
+    let oauth = OAuthFixture::start().await;
+    let api = MockServer::start().await;
+    let api_host = host_of(&api.uri());
+    harness
+        .add_identity_spec(oauth.identity_spec_yaml_with_audience_origin(
+            "github_oauth",
+            &api_host,
+            Some("http"),
+        ))
+        .await;
+    let identity = create_github_oauth_identity(&harness, &oauth).await;
+    assert_eq!(identity.name, "github_local");
+
+    mount_users_endpoint(&api, "Bearer identity-access-token").await;
+
+    let manifest_yaml = write_v4_manifest(&harness, &api.uri(), &api_host);
+    import_grpc_identity_source(&harness, manifest_yaml, &identity.name).await;
+
+    let rows = harness
+        .execute_sql_rows("SELECT id FROM github_v4_grpc.users")
+        .await;
+    assert_eq!(rows, vec![json!({"id": "u1"})]);
+}
+
+#[tokio::test]
+async fn v4_source_rejects_identity_header_injection_for_off_audience_request_host() {
+    let harness = GrpcHarness::new().await;
+    let oauth = OAuthFixture::start().await;
+    harness
+        .add_identity_spec(oauth.identity_spec_yaml("github_oauth"))
+        .await;
+    let identity = create_github_oauth_identity(&harness, &oauth).await;
+    assert_eq!(identity.name, "github_local");
+
+    let api = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(request_path("/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "u1"}
+        ])))
+        .expect(0)
+        .mount(&api)
+        .await;
+
+    let manifest_yaml = write_v4_manifest(&harness, &api.uri(), "github.com");
+    import_grpc_identity_source(&harness, manifest_yaml, &identity.name).await;
+
+    let error = harness
+        .try_execute_sql("SELECT id FROM github_v4_grpc.users")
+        .await
+        .expect_err("off-audience query should fail before HTTP request");
+
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        error
+            .message()
+            .contains("audience host 'github.com' does not match request host"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
 async fn import_v4_source_rejects_incompatible_user_identity_binding() {
     let harness = GrpcHarness::new().await;
     create_fixed_token_identity(&harness, "github_local", "gitlab_oauth", "gitlab.com").await;
@@ -228,6 +402,54 @@ async fn import_v4_source_rejects_identity_after_spec_force_remove_and_readd() {
     );
 }
 
+#[tokio::test]
+async fn import_v4_source_uses_identity_after_same_spec_force_remove_and_readd() {
+    let harness = GrpcHarness::new().await;
+    let api = MockServer::start().await;
+    let api_host = host_of(&api.uri());
+    let spec_yaml =
+        fixed_token_identity_spec_yaml_with_scheme("github_oauth", &api_host, Some("http"));
+    harness.add_identity_spec(spec_yaml.clone()).await;
+    harness
+        .create_fixed_token_identity("github_local", "github_oauth", "identity-token")
+        .await;
+    harness.force_delete_identity_spec("github_oauth").await;
+    harness.add_identity_spec(spec_yaml).await;
+
+    mount_users_endpoint(&api, "Bearer identity-token").await;
+
+    let manifest_yaml = write_v4_manifest(&harness, &api.uri(), &api_host);
+    import_grpc_identity_source(&harness, manifest_yaml, "github_local").await;
+
+    let rows = harness
+        .execute_sql_rows("SELECT id FROM github_v4_grpc.users")
+        .await;
+    assert_eq!(rows, vec![json!({"id": "u1"})]);
+}
+
+#[tokio::test]
+async fn validate_v4_source_rejects_orphaned_user_identity_without_test_queries() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
+    import_grpc_identity_source(&harness, manifest_yaml, "github_local").await;
+
+    harness.force_delete_identity_spec("github_oauth").await;
+
+    let error = harness
+        .try_validate_source("github_v4_grpc")
+        .await
+        .expect_err("orphaned identity-backed source should fail validation");
+
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        error
+            .message()
+            .contains("identity 'github_local' is orphaned"),
+        "unexpected error: {error}"
+    );
+}
+
 /// Adds a fixed-token identity spec named `spec_name` for `audience_host` and
 /// creates a user-owned identity bound to it.
 async fn create_fixed_token_identity(
@@ -273,6 +495,17 @@ fn rest_user_identity_bindings(
     }]
 }
 
+async fn import_grpc_identity_source(
+    harness: &GrpcHarness,
+    manifest_yaml: String,
+    identity: &str,
+) -> Source {
+    harness
+        .try_import_source(identity_import_request(manifest_yaml, identity))
+        .await
+        .expect("import source")
+}
+
 fn read_config(harness: &GrpcHarness) -> String {
     fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config")
 }
@@ -292,6 +525,34 @@ fn assert_no_preflight_materialization_dirs(harness: &GrpcHarness, source_name: 
         leaked.is_empty(),
         "preflight materialization dirs leaked: {leaked:?}"
     );
+}
+
+fn read_user_binding(harness: &GrpcHarness) -> String {
+    let binding = harness
+        .config_dir()
+        .join("identities/source-bindings/users/local/default/github_v4_grpc/rest/binding.yaml");
+    fs::read_to_string(binding).expect("read user binding")
+}
+
+fn host_of(uri: &str) -> String {
+    Url::parse(uri)
+        .expect("api uri")
+        .host_str()
+        .expect("api host")
+        .to_string()
+}
+
+/// Mounts a `GET /users` endpoint on `api` that requires the given
+/// authorization header value and returns one user row.
+async fn mount_users_endpoint(api: &MockServer, authorization: &str) {
+    Mock::given(method("GET"))
+        .and(request_path("/users"))
+        .and(header("authorization", authorization))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "u1"}
+        ])))
+        .mount(api)
+        .await;
 }
 
 /// Writes the shared `OpenAPI` fixture targeting `base_url`; returns its path

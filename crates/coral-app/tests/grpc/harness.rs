@@ -337,6 +337,17 @@ pub(crate) fn secret(key: &str, value: &str) -> SourceSecret {
 }
 
 pub(crate) fn fixed_token_identity_spec_yaml(spec_name: &str, audience_host: &str) -> String {
+    fixed_token_identity_spec_yaml_with_scheme(spec_name, audience_host, None)
+}
+
+pub(crate) fn fixed_token_identity_spec_yaml_with_scheme(
+    spec_name: &str,
+    audience_host: &str,
+    audience_scheme: Option<&str>,
+) -> String {
+    let scheme_yaml = audience_scheme
+        .map(|scheme| format!("\n  scheme: {scheme}"))
+        .unwrap_or_default();
     format!(
         r"
 kind: identity
@@ -347,7 +358,7 @@ description: Test token identity.
 issuer: github
 type: fixed_token
 audience:
-  host: {audience_host}
+  host: {audience_host}{scheme_yaml}
 "
     )
 }
@@ -423,6 +434,18 @@ impl OAuthFixture {
         name: &str,
         audience_host: &str,
     ) -> String {
+        self.identity_spec_yaml_with_audience_origin(name, audience_host, None)
+    }
+
+    pub(crate) fn identity_spec_yaml_with_audience_origin(
+        &self,
+        name: &str,
+        audience_host: &str,
+        audience_scheme: Option<&str>,
+    ) -> String {
+        let scheme_yaml = audience_scheme
+            .map(|scheme| format!("\n  scheme: {scheme}"))
+            .unwrap_or_default();
         format!(
             r"
 kind: identity
@@ -433,7 +456,7 @@ description: GitHub OAuth test identity.
 issuer: github
 type: oauth
 audience:
-  host: {audience_host}
+  host: {audience_host}{scheme_yaml}
 oauth:
   method:
     label: Test device flow

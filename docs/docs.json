@@ -90,7 +90,8 @@
           "reference/engine-configuration",
           "reference/bundled-sources",
           "reference/community-sources",
-          "reference/source-spec-reference"
+          "reference/source-spec-reference",
+          "reference/identity-spec-reference"
         ]
       },
       {

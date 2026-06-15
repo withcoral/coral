@@ -1,4 +1,4 @@
-//! Product authorization seam for management-plane mutations.
+//! Product authorization seams for management-plane mutations and workspace data access.
 
 use std::fmt;
 
@@ -44,6 +44,15 @@ pub enum SourceMutationKind {
     Delete,
 }
 
+/// Workspace-scoped operation being authorized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceAccessKind {
+    /// Read workspace-scoped source metadata, catalog data, or query results.
+    Read,
+    /// Write workspace-scoped observational records such as feedback or episodes.
+    Write,
+}
+
 /// Product-provided authorization policy for management-plane mutations.
 ///
 /// OSS Coral installs [`AllowAllManagementAuthorizer`] by default to preserve
@@ -51,6 +60,15 @@ pub enum SourceMutationKind {
 /// and identity-spec mutations while reusing the shared gRPC service surface.
 #[tonic::async_trait]
 pub trait ManagementAuthorizer: fmt::Debug + Send + Sync + 'static {
+    /// Returns true for Coral's default allow-all management authorizer.
+    ///
+    /// Server startup uses this to prevent accidental public network exposure
+    /// with OSS local defaults. Product authorizers should use the default
+    /// implementation.
+    fn is_default_allow_all_authorizer(&self) -> bool {
+        false
+    }
+
     /// Authorizes creating or deleting global identity specs.
     ///
     /// # Errors
@@ -77,12 +95,47 @@ pub trait ManagementAuthorizer: fmt::Debug + Send + Sync + 'static {
     ) -> Result<(), AuthorizationError>;
 }
 
+/// Product-provided authorization policy for workspace-scoped data access.
+///
+/// OSS Coral installs [`AllowAllWorkspaceAuthorizer`] by default to preserve
+/// local single-user behavior. Product runtimes that expose native gRPC beyond
+/// loopback must replace it so authenticated users cannot select arbitrary
+/// workspace IDs.
+#[tonic::async_trait]
+pub trait WorkspaceAuthorizer: fmt::Debug + Send + Sync + 'static {
+    /// Returns true for Coral's default allow-all workspace authorizer.
+    ///
+    /// Server startup uses this to prevent accidental public network exposure
+    /// with OSS local defaults. Product authorizers should use the default
+    /// implementation.
+    fn is_default_allow_all_authorizer(&self) -> bool {
+        false
+    }
+
+    /// Authorizes a workspace-scoped operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorizationError`] when the principal is not allowed to
+    /// access the workspace.
+    async fn authorize_workspace_access(
+        &self,
+        principal: &UserPrincipal,
+        workspace_id: &str,
+        kind: WorkspaceAccessKind,
+    ) -> Result<(), AuthorizationError>;
+}
+
 /// Default OSS authorizer for local single-user usage.
 #[derive(Debug, Default)]
 pub struct AllowAllManagementAuthorizer;
 
 #[tonic::async_trait]
 impl ManagementAuthorizer for AllowAllManagementAuthorizer {
+    fn is_default_allow_all_authorizer(&self) -> bool {
+        true
+    }
+
     async fn authorize_identity_spec_mutation(
         &self,
         _principal: &UserPrincipal,
@@ -95,6 +148,26 @@ impl ManagementAuthorizer for AllowAllManagementAuthorizer {
         _principal: &UserPrincipal,
         _workspace_id: &str,
         _kind: SourceMutationKind,
+    ) -> Result<(), AuthorizationError> {
+        Ok(())
+    }
+}
+
+/// Default OSS workspace authorizer for local single-user usage.
+#[derive(Debug, Default)]
+pub struct AllowAllWorkspaceAuthorizer;
+
+#[tonic::async_trait]
+impl WorkspaceAuthorizer for AllowAllWorkspaceAuthorizer {
+    fn is_default_allow_all_authorizer(&self) -> bool {
+        true
+    }
+
+    async fn authorize_workspace_access(
+        &self,
+        _principal: &UserPrincipal,
+        _workspace_id: &str,
+        _kind: WorkspaceAccessKind,
     ) -> Result<(), AuthorizationError> {
         Ok(())
     }

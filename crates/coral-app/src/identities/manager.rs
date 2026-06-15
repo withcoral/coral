@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -327,6 +328,30 @@ pub trait UserOwnedIdentityStore: Send + Sync + std::fmt::Debug + 'static {
                 .to_string(),
         ))
     }
+
+    /// Deletes user-owned source identity selections for one installed source.
+    ///
+    /// When `surface_ids` is empty, every user-owned selection for the source
+    /// should be removed. Otherwise only selections for the listed surface ids
+    /// should be removed. `preserved_user_id` lets callers retain the listed
+    /// surface selections for one user while removing them for every other
+    /// user.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the store cannot be written.
+    async fn delete_source_identity_bindings(
+        &self,
+        _workspace_name: &str,
+        _source_name: &str,
+        _surface_ids: &[String],
+        _preserved_user_id: Option<&str>,
+    ) -> Result<(), AppError> {
+        Err(AppError::FailedPrecondition(
+            "user-owned source identity binding storage is not supported by this identity store"
+                .to_string(),
+        ))
+    }
 }
 
 /// Manages provider-facing identities owned by Coral user principals.
@@ -444,10 +469,6 @@ impl UserOwnedIdentityManager {
         }
     }
 
-    #[expect(
-        dead_code,
-        reason = "consumed by the server extension context (ServerExtensionContext) in a later PR"
-    )]
     pub(crate) fn handle(&self) -> IdentityManagementHandle {
         IdentityManagementHandle {
             manager: self.clone(),
@@ -692,6 +713,28 @@ impl UserOwnedIdentityManager {
                 source_name.as_str(),
                 &surface_id,
                 selection,
+            )
+            .await
+    }
+
+    pub(crate) async fn delete_user_owned_source_identity_bindings(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        surface_ids: &[String],
+        preserved_user_id: Option<&str>,
+    ) -> Result<(), AppError> {
+        let surface_ids = surface_ids
+            .iter()
+            .map(|surface_id| validate_source_surface_id(surface_id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let preserved_user_id = preserved_user_id.map(validate_user_id).transpose()?;
+        self.store
+            .delete_source_identity_bindings(
+                workspace_name.as_str(),
+                source_name.as_str(),
+                &surface_ids,
+                preserved_user_id.as_deref(),
             )
             .await
     }
@@ -1234,6 +1277,72 @@ impl UserOwnedIdentityStore for FileUserOwnedIdentityStore {
         })
         .await?
     }
+
+    async fn delete_source_identity_bindings(
+        &self,
+        workspace_name: &str,
+        source_name: &str,
+        surface_ids: &[String],
+        preserved_user_id: Option<&str>,
+    ) -> Result<(), AppError> {
+        let store = self.clone();
+        let workspace_name = workspace_name.to_string();
+        let source_name = source_name.to_string();
+        let surface_ids = surface_ids.to_vec();
+        let preserved_user_id = preserved_user_id.map(ToString::to_string);
+        tokio::task::spawn_blocking(move || {
+            let workspace_name = WorkspaceName::parse(&workspace_name)?;
+            let source_name = SourceName::parse(&source_name)?;
+            let surface_ids = surface_ids
+                .iter()
+                .map(|surface_id| validate_source_surface_id(surface_id))
+                .collect::<Result<Vec<_>, _>>()?;
+            let preserved_user_id = preserved_user_id
+                .as_deref()
+                .map(validate_user_id)
+                .transpose()?;
+            let _lock = FileLock::exclusive(store.layout.state_lock())?;
+            let bindings_root = store.layout.source_identity_bindings_root();
+            let users_root = bindings_root.join("users");
+            let Ok(users) = fs::read_dir(&users_root) else {
+                return Ok(());
+            };
+            for user in users {
+                let user = user?;
+                let is_preserved_user = user.file_name().to_str().and_then(|user_id| {
+                    preserved_user_id
+                        .as_deref()
+                        .map(|preserved_user_id| user_id == preserved_user_id)
+                }) == Some(true);
+                let source_bindings_dir = user
+                    .path()
+                    .join(workspace_name.as_str())
+                    .join(source_name.as_str());
+                if surface_ids.is_empty() && is_preserved_user {
+                    continue;
+                }
+                let cleanup_dirs = if surface_ids.is_empty() {
+                    vec![source_bindings_dir]
+                } else if is_preserved_user {
+                    Vec::new()
+                } else {
+                    surface_ids
+                        .iter()
+                        .map(|surface_id| source_bindings_dir.join(surface_id))
+                        .collect()
+                };
+                for cleanup_dir in cleanup_dirs {
+                    if !cleanup_dir.exists() {
+                        continue;
+                    }
+                    fs::remove_dir_all(&cleanup_dir)?;
+                    cleanup_empty_parent(&bindings_root, cleanup_dir.parent());
+                }
+            }
+            Ok(())
+        })
+        .await?
+    }
 }
 
 struct FileUserOwnedIdentityMaterialGuard {
@@ -1602,6 +1711,25 @@ fn restore_file_unlocked(
     match snapshot {
         Some(bytes) => write_file_unlocked(path, &bytes).map_err(Into::into),
         None => remove_file_if_exists_unlocked(path).map_err(Into::into),
+    }
+}
+
+fn cleanup_empty_parent(root: &Path, path: Option<&Path>) {
+    let Some(mut current) = path.map(Path::to_path_buf) else {
+        return;
+    };
+    while current.starts_with(root) && current != root {
+        let Ok(mut entries) = fs::read_dir(&current) else {
+            break;
+        };
+        if entries.next().is_some() {
+            break;
+        }
+        let next = current.parent().unwrap_or(root).to_path_buf();
+        if fs::remove_dir(&current).is_err() {
+            break;
+        }
+        current = next;
     }
 }
 
@@ -2273,6 +2401,145 @@ oauth:
             .resolve_source_identity_selection(&request)
             .await
             .expect_err("restored missing binding should not resolve");
+    }
+
+    #[tokio::test]
+    async fn deletes_user_owned_source_identity_bindings_for_source_and_surfaces() {
+        let (_temp, manager, _identity_specs) = manager();
+        let saul = UserPrincipal::for_user("saul").expect("principal");
+        let tina = UserPrincipal::for_user("tina").expect("principal");
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github_v4").expect("source");
+        let selection =
+            SourceIdentitySelection::new("github_saul", Some("github-rest-read".to_string()))
+                .expect("selection");
+
+        for principal in [&saul, &tina] {
+            for surface_id in ["rest", "issues"] {
+                manager
+                    .replace_user_owned_source_identity_binding(
+                        principal,
+                        &workspace_name,
+                        &source_name,
+                        surface_id,
+                        &selection,
+                    )
+                    .await
+                    .expect("write source identity binding");
+            }
+        }
+
+        manager
+            .delete_user_owned_source_identity_bindings(
+                &workspace_name,
+                &source_name,
+                &["rest".to_string()],
+                None,
+            )
+            .await
+            .expect("delete rest surface bindings");
+
+        for user_id in ["saul", "tina"] {
+            manager
+                .resolve_source_identity_selection(&SourceIdentitySelectionRequest {
+                    workspace_name: "default".to_string(),
+                    subject: SourceIdentitySubject::User(user_id.to_string()),
+                    source_name: "github_v4".to_string(),
+                    surface_id: "rest".to_string(),
+                    binding: SourceIdentityBinding::user_owned(),
+                })
+                .await
+                .expect_err("rest surface binding should be removed");
+            let remaining = manager
+                .resolve_source_identity_selection(&SourceIdentitySelectionRequest {
+                    workspace_name: "default".to_string(),
+                    subject: SourceIdentitySubject::User(user_id.to_string()),
+                    source_name: "github_v4".to_string(),
+                    surface_id: "issues".to_string(),
+                    binding: SourceIdentityBinding::user_owned(),
+                })
+                .await
+                .expect("issues surface should remain")
+                .expect("issues selection");
+            assert_eq!(remaining, selection);
+        }
+
+        manager
+            .delete_user_owned_source_identity_bindings(&workspace_name, &source_name, &[], None)
+            .await
+            .expect("delete all source bindings");
+
+        for user_id in ["saul", "tina"] {
+            manager
+                .resolve_source_identity_selection(&SourceIdentitySelectionRequest {
+                    workspace_name: "default".to_string(),
+                    subject: SourceIdentitySubject::User(user_id.to_string()),
+                    source_name: "github_v4".to_string(),
+                    surface_id: "issues".to_string(),
+                    binding: SourceIdentityBinding::user_owned(),
+                })
+                .await
+                .expect_err("all source bindings should be removed");
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_source_identity_bindings_preserves_requested_user() {
+        let (_temp, manager, _identity_specs) = manager();
+        let saul = UserPrincipal::for_user("saul").expect("principal");
+        let tina = UserPrincipal::for_user("tina").expect("principal");
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github_v4").expect("source");
+        let selection =
+            SourceIdentitySelection::new("github_saul", Some("github-rest-read".to_string()))
+                .expect("selection");
+
+        for principal in [&saul, &tina] {
+            manager
+                .replace_user_owned_source_identity_binding(
+                    principal,
+                    &workspace_name,
+                    &source_name,
+                    "rest",
+                    &selection,
+                )
+                .await
+                .expect("write source identity binding");
+        }
+
+        manager
+            .delete_user_owned_source_identity_bindings(
+                &workspace_name,
+                &source_name,
+                &["rest".to_string()],
+                Some("saul"),
+            )
+            .await
+            .expect("delete other users' rest surface bindings");
+
+        let preserved = manager
+            .resolve_source_identity_selection(&SourceIdentitySelectionRequest {
+                workspace_name: "default".to_string(),
+                subject: SourceIdentitySubject::User("saul".to_string()),
+                source_name: "github_v4".to_string(),
+                surface_id: "rest".to_string(),
+                binding: SourceIdentityBinding::user_owned(),
+            })
+            .await
+            .expect("preserved user's rest surface binding should resolve")
+            .expect("preserved rest selection");
+        assert_eq!(preserved, selection);
+
+        manager
+            .resolve_source_identity_selection(&SourceIdentitySelectionRequest {
+                workspace_name: "default".to_string(),
+                subject: SourceIdentitySubject::User("tina".to_string()),
+                source_name: "github_v4".to_string(),
+                surface_id: "rest".to_string(),
+                binding: SourceIdentityBinding::user_owned(),
+            })
+            .await
+            .expect_err("other user's rest surface binding should be removed");
     }
 
     #[tokio::test]
