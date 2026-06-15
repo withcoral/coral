@@ -36,14 +36,6 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    #[allow(
-        dead_code,
-        reason = "recipe lifecycle wiring consumes inventory reads in a later stack branch"
-    )]
-    pub(crate) fn workspace_recipes(&self, workspace_name: &WorkspaceName) -> Vec<InstalledRecipe> {
-        self.recipes.workspace_recipes(workspace_name)
-    }
-
     pub(crate) fn workspace_sources(&self, workspace_name: &WorkspaceName) -> Vec<InstalledSource> {
         self.catalog.workspace_sources(workspace_name)
     }
@@ -326,10 +318,6 @@ impl SourceCatalog {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RecipeCatalog(BTreeMap<WorkspaceName, BTreeMap<RecipeName, InstalledRecipe>>);
 
-#[allow(
-    dead_code,
-    reason = "recipe lifecycle wiring consumes inventory mutation in a later stack branch"
-)]
 impl RecipeCatalog {
     pub(crate) fn workspace_recipes(&self, workspace_name: &WorkspaceName) -> Vec<InstalledRecipe> {
         self.0
@@ -582,10 +570,6 @@ impl ConfigStore {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "recipe lifecycle wiring consumes inventory accessors in a later stack branch"
-)]
 impl ConfigStore {
     pub(crate) fn list_workspace_recipes(
         &self,
@@ -1162,7 +1146,7 @@ enabled = false
             toml::from_str::<PersistedAppConfig>(raw).expect("workspace-keyed config should parse"),
         )
         .expect("config");
-        let recipes = config.workspace_recipes(&default_workspace());
+        let recipes = config.recipes.workspace_recipes(&default_workspace());
 
         assert_eq!(recipes.len(), 1);
         assert_eq!(recipes[0].name.as_str(), "review_queue");
