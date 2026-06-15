@@ -24,7 +24,10 @@ use rmcp::{
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
-use tonic::Request;
+use tonic::{
+    Request,
+    metadata::{Ascii, MetadataValue},
+};
 
 use crate::{
     McpOptions,
@@ -84,6 +87,51 @@ impl ToolCallOutcome {
             Ok(value) => Self::Success(value),
             Err(status) => Self::ToolError { operation, status },
         }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ToolCallContext {
+    episode_id_metadata: Option<MetadataValue<Ascii>>,
+}
+
+impl ToolCallContext {
+    fn from_tool_request(
+        options: &McpOptions,
+        arguments: Option<&Map<String, Value>>,
+        span: &tracing::Span,
+    ) -> Result<Self, ErrorData> {
+        if !options.episodes_enabled {
+            return Ok(Self::default());
+        }
+        let episode_id = optional_episode_id_argument(arguments, "episode_id")?;
+        if let Some(episode_id) = episode_id.as_deref() {
+            telemetry::record_episode_id(span, episode_id);
+        }
+        let episode_id_metadata = episode_id
+            .as_deref()
+            .map(|episode_id| {
+                episode_id.parse().map_err(|error| {
+                    ErrorData::invalid_params(
+                        format!("argument 'episode_id' is not valid metadata: {error}"),
+                        None,
+                    )
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            episode_id_metadata,
+        })
+    }
+
+    fn request<T>(&self, message: T) -> Request<T> {
+        let mut request = Request::new(message);
+        if let Some(metadata_value) = &self.episode_id_metadata {
+            request
+                .metadata_mut()
+                .insert(CORAL_EPISODE_ID_METADATA_KEY, metadata_value.clone());
+        }
+        request
     }
 }
 
@@ -179,18 +227,15 @@ impl CoralMcpServer {
         &self,
         schema_name: &str,
         table_name: &str,
-        episode_id: Option<&str>,
+        context: &ToolCallContext,
     ) -> Result<DescribeTableResponse, tonic::Status> {
         let mut catalog_client = self.catalog.clone();
         Ok(catalog_client
-            .describe_table(request_with_episode_metadata(
-                DescribeTableRequest {
-                    workspace: Some(default_workspace()),
-                    schema_name: schema_name.to_string(),
-                    table_name: table_name.to_string(),
-                },
-                episode_id,
-            ))
+            .describe_table(context.request(DescribeTableRequest {
+                workspace: Some(default_workspace()),
+                schema_name: schema_name.to_string(),
+                table_name: table_name.to_string(),
+            }))
             .await?
             .into_inner())
     }
@@ -305,25 +350,22 @@ impl CoralMcpServer {
     async fn search_catalog_tool_result(
         &self,
         request_arguments: Option<&Map<String, Value>>,
-        episode_id: Option<&str>,
+        context: &ToolCallContext,
     ) -> Result<ToolCallOutcome, ErrorData> {
         let arguments = search_catalog_arguments(request_arguments)?;
         let mut catalog_client = self.catalog.clone();
         match catalog_client
-            .search_catalog(request_with_episode_metadata(
-                SearchCatalogRequest {
-                    workspace: Some(default_workspace()),
-                    pattern: arguments.pattern,
-                    ignore_case: arguments.ignore_case,
-                    schema_name: arguments.schema.unwrap_or_default(),
-                    kind: catalog_item_kind_from_tool(arguments.kind) as i32,
-                    pagination: Some(PaginationRequest {
-                        limit: arguments.pagination.limit,
-                        offset: arguments.pagination.offset,
-                    }),
-                },
-                episode_id,
-            ))
+            .search_catalog(context.request(SearchCatalogRequest {
+                workspace: Some(default_workspace()),
+                pattern: arguments.pattern,
+                ignore_case: arguments.ignore_case,
+                schema_name: arguments.schema.unwrap_or_default(),
+                kind: catalog_item_kind_from_tool(arguments.kind) as i32,
+                pagination: Some(PaginationRequest {
+                    limit: arguments.pagination.limit,
+                    offset: arguments.pagination.offset,
+                }),
+            }))
             .await
             .map(|response| search_catalog_value(&response.into_inner()))
         {
@@ -341,23 +383,20 @@ impl CoralMcpServer {
     async fn list_catalog_tool_result(
         &self,
         request_arguments: Option<&Map<String, Value>>,
-        episode_id: Option<&str>,
+        context: &ToolCallContext,
     ) -> Result<ToolCallOutcome, ErrorData> {
         let arguments = list_catalog_arguments(request_arguments)?;
         let mut catalog_client = self.catalog.clone();
         let result = catalog_client
-            .list_catalog(request_with_episode_metadata(
-                ListCatalogRequest {
-                    workspace: Some(default_workspace()),
-                    schema_name: arguments.schema.unwrap_or_default(),
-                    kind: catalog_item_kind_from_tool(arguments.kind) as i32,
-                    pagination: Some(PaginationRequest {
-                        limit: arguments.pagination.limit,
-                        offset: arguments.pagination.offset,
-                    }),
-                },
-                episode_id,
-            ))
+            .list_catalog(context.request(ListCatalogRequest {
+                workspace: Some(default_workspace()),
+                schema_name: arguments.schema.unwrap_or_default(),
+                kind: catalog_item_kind_from_tool(arguments.kind) as i32,
+                pagination: Some(PaginationRequest {
+                    limit: arguments.pagination.limit,
+                    offset: arguments.pagination.offset,
+                }),
+            }))
             .await
             .map(|response| list_catalog_value(&response.into_inner()));
         Ok(ToolCallOutcome::from_value_result(
@@ -369,11 +408,11 @@ impl CoralMcpServer {
     async fn describe_table_tool_result(
         &self,
         request_arguments: Option<&Map<String, Value>>,
-        episode_id: Option<&str>,
+        context: &ToolCallContext,
     ) -> Result<ToolCallOutcome, ErrorData> {
         let arguments = describe_table_arguments(request_arguments)?;
         match self
-            .load_table_description(&arguments.schema, &arguments.table, episode_id)
+            .load_table_description(&arguments.schema, &arguments.table, context)
             .await
         {
             Ok(response) => Ok(ToolCallOutcome::Success(describe_table_value(
@@ -391,37 +430,34 @@ impl CoralMcpServer {
     async fn dispatch_tool(
         &self,
         request: CallToolRequestParams,
-        episode_id: Option<&str>,
+        context: &ToolCallContext,
     ) -> Result<ToolCallOutcome, ErrorData> {
         match request.name.as_ref() {
             "sql" => {
                 let sql = required_string_argument(request.arguments.as_ref(), "sql")?;
-                let request = request_with_episode_metadata(
-                    ExecuteSqlRequest {
-                        workspace: Some(default_workspace()),
-                        sql,
-                    },
-                    episode_id,
-                );
+                let request = context.request(ExecuteSqlRequest {
+                    workspace: Some(default_workspace()),
+                    sql,
+                });
                 Ok(ToolCallOutcome::from_value_result(
                     "Query",
                     self.execute_sql_value(request).await,
                 ))
             }
             "list_catalog" => {
-                self.list_catalog_tool_result(request.arguments.as_ref(), episode_id)
+                self.list_catalog_tool_result(request.arguments.as_ref(), context)
                     .await
             }
             "search_catalog" => {
-                self.search_catalog_tool_result(request.arguments.as_ref(), episode_id)
+                self.search_catalog_tool_result(request.arguments.as_ref(), context)
                     .await
             }
             "describe_table" => {
-                self.describe_table_tool_result(request.arguments.as_ref(), episode_id)
+                self.describe_table_tool_result(request.arguments.as_ref(), context)
                     .await
             }
             "list_columns" => {
-                self.list_columns_tool_result(request.arguments.as_ref(), episode_id)
+                self.list_columns_tool_result(request.arguments.as_ref(), context)
                     .await
             }
             "create_episode" if self.options.episodes_enabled => {
@@ -462,26 +498,23 @@ impl CoralMcpServer {
     async fn list_columns_tool_result(
         &self,
         request_arguments: Option<&Map<String, Value>>,
-        episode_id: Option<&str>,
+        context: &ToolCallContext,
     ) -> Result<ToolCallOutcome, ErrorData> {
         let arguments = list_columns_arguments(request_arguments)?;
         let mut catalog_client = self.catalog.clone();
         match catalog_client
-            .list_columns(request_with_episode_metadata(
-                ListColumnsRequest {
-                    workspace: Some(default_workspace()),
-                    schema_name: arguments.schema.clone(),
-                    table_name: arguments.table.clone(),
-                    pattern: arguments.pattern.clone(),
-                    ignore_case: arguments.ignore_case,
-                    required_only: arguments.required_only,
-                    pagination: Some(PaginationRequest {
-                        limit: arguments.pagination.limit,
-                        offset: arguments.pagination.offset,
-                    }),
-                },
-                episode_id,
-            ))
+            .list_columns(context.request(ListColumnsRequest {
+                workspace: Some(default_workspace()),
+                schema_name: arguments.schema.clone(),
+                table_name: arguments.table.clone(),
+                pattern: arguments.pattern.clone(),
+                ignore_case: arguments.ignore_case,
+                required_only: arguments.required_only,
+                pagination: Some(PaginationRequest {
+                    limit: arguments.pagination.limit,
+                    offset: arguments.pagination.offset,
+                }),
+            }))
             .await
         {
             Ok(response) => Ok(ToolCallOutcome::Success(list_columns_value(
@@ -494,7 +527,7 @@ impl CoralMcpServer {
             }
             Err(status) if status.code() == tonic::Code::NotFound => {
                 match self
-                    .load_table_description(&arguments.schema, &arguments.table, episode_id)
+                    .load_table_description(&arguments.schema, &arguments.table, context)
                     .await
                 {
                     Ok(response) => Ok(ToolCallOutcome::Success(describe_table_value(
@@ -580,21 +613,11 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let span =
             telemetry::call_tool_span(request.name.as_ref(), self.options.trace_parent.as_deref());
-        let episode_id = if self.options.episodes_enabled {
-            optional_episode_id_argument(request.arguments.as_ref(), "episode_id")
-        } else {
-            Ok(None)
-        };
-        let outcome = match episode_id {
-            Ok(episode_id) => {
-                if let Some(episode_id) = episode_id.as_deref() {
-                    telemetry::record_episode_id(&span, episode_id);
-                }
-                telemetry::instrument(
-                    span.clone(),
-                    self.dispatch_tool(request, episode_id.as_deref()),
-                )
-                .await
+        let context =
+            ToolCallContext::from_tool_request(&self.options, request.arguments.as_ref(), &span);
+        let outcome = match context {
+            Ok(context) => {
+                telemetry::instrument(span.clone(), self.dispatch_tool(request, &context)).await
             }
             Err(error) => Err(error),
         };
@@ -664,19 +687,6 @@ impl ServerHandler for CoralMcpServer {
         })
         .await
     }
-}
-
-fn request_with_episode_metadata<T>(message: T, episode_id: Option<&str>) -> Request<T> {
-    let mut request = Request::new(message);
-    if let Some(episode_id) = episode_id {
-        let metadata_value = episode_id
-            .parse()
-            .expect("episode_id was validated before metadata insertion");
-        request
-            .metadata_mut()
-            .insert(CORAL_EPISODE_ID_METADATA_KEY, metadata_value);
-    }
-    request
 }
 
 fn finish_tool_call(
