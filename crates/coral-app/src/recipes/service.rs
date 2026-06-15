@@ -4,8 +4,7 @@ use coral_api::v1::recipe_service_server::RecipeService as RecipeServiceApi;
 use coral_api::v1::{
     AddRecipeRequest, AddRecipeResponse, ListRecipesRequest, ListRecipesResponse, Recipe,
     RecipeArgument, RecipeOrigin as ProtoRecipeOrigin, RecipePublish, RecipeResultColumn,
-    RecipeTableFunctionPublish, RemoveRecipeRequest, RemoveRecipeResponse, ValidateRecipeRequest,
-    ValidateRecipeResponse, recipe_publish,
+    RecipeTableFunctionPublish, RemoveRecipeRequest, RemoveRecipeResponse, recipe_publish,
 };
 use coral_engine::{RecipeRuntimeArgumentType, RecipeRuntimeDefinition, RecipeRuntimePublish};
 use tonic::{Request, Response, Status};
@@ -79,26 +78,6 @@ impl RecipeServiceApi for RecipeService {
         .await
     }
 
-    async fn validate_recipe(
-        &self,
-        request: Request<ValidateRecipeRequest>,
-    ) -> Result<Response<ValidateRecipeResponse>, Status> {
-        let span = grpc_span(&request);
-        let queries = self.queries.clone();
-        instrument_grpc(span, async move {
-            let inner = request.into_inner();
-            let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
-            let recipe = queries
-                .validate_recipe_yaml(&workspace_name, &inner.yaml)
-                .await
-                .map_err(query_status)?;
-            Ok(Response::new(ValidateRecipeResponse {
-                recipe: Some(runtime_recipe_to_proto(recipe)),
-            }))
-        })
-        .await
-    }
-
     async fn remove_recipe(
         &self,
         request: Request<RemoveRecipeRequest>,
@@ -132,11 +111,7 @@ fn runtime_recipe_to_proto(recipe: RecipeRuntimeDefinition) -> Recipe {
                 description: argument.description,
             })
             .collect(),
-        publish: recipe
-            .publish
-            .into_iter()
-            .map(recipe_publish_to_proto)
-            .collect(),
+        publish: vec![recipe_publish_to_proto(recipe.publish)],
         result_columns: recipe
             .result_columns
             .into_iter()
@@ -151,17 +126,11 @@ fn runtime_recipe_to_proto(recipe: RecipeRuntimeDefinition) -> Recipe {
 }
 
 fn recipe_publish_to_proto(publish: RecipeRuntimePublish) -> RecipePublish {
-    let target = match publish {
-        RecipeRuntimePublish::TableFunction {
-            schema,
-            name,
-            description,
-        } => recipe_publish::Target::TableFunction(RecipeTableFunctionPublish {
-            schema,
-            name,
-            description,
-        }),
-    };
+    let target = recipe_publish::Target::TableFunction(RecipeTableFunctionPublish {
+        schema: publish.table_function.schema,
+        name: publish.table_function.name,
+        description: publish.table_function.description,
+    });
     RecipePublish {
         target: Some(target),
     }

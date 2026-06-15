@@ -172,7 +172,7 @@ Validate, then install or replace, a user recipe from a YAML file.
 coral recipe add --file ./my-review-queue.recipe.yaml
 ```
 
-Coral validates the recipe before storing it in the current workspace. Validation checks the YAML shape, installed-source references, SQL publish target collisions, and inferred result columns. If runtime validation fails, the recipe is not installed.
+Coral validates the recipe before storing it in the current workspace. Validation checks the YAML shape, installed-source references, SQL publish target collisions, inferred result columns, and one concrete validation invocation using `validation.args`. If runtime validation fails, the recipe is not installed.
 
 Example recipe:
 
@@ -195,19 +195,15 @@ implementation:
     where owner = $owner
       and repo = $repo
       and state = 'open'
+validation:
+  args:
+    owner: withcoral
+    repo: coral
 publish:
-  - table_function: recipes.my_review_queue
+  table_function:
+    schema: recipes
+    name: my_review_queue
 ```
-
-### `coral recipe validate --file <PATH>`
-
-Validate a recipe against the current workspace without installing it.
-
-```shellscript
-coral recipe validate --file ./my-review-queue.recipe.yaml
-```
-
-Use this when you want the runtime check explicitly, for example after a source changed or before sharing a recipe file.
 
 ### `coral recipe list`
 

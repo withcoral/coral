@@ -119,7 +119,7 @@ pub use parser::{
 };
 pub use recipe::{
     RecipeArgumentSpec, RecipeArgumentType, RecipeImplementationSpec, RecipePublishSpec,
-    RecipeSpec, parse_recipe_yaml,
+    RecipeSpec, RecipeValidationSpec, RecipeValidationValue, parse_recipe_yaml,
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
 pub(crate) use validate::{

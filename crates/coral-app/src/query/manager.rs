@@ -1176,8 +1176,13 @@ implementation:
     select text
     from recipe_demo.messages
     where type = $kind
+validation:
+  args:
+    kind: human
 publish:
-  - table_function: recipes.messages_by_type
+  table_function:
+    schema: recipes
+    name: messages_by_type
 ";
         let validated_recipe = fixture
             .manager

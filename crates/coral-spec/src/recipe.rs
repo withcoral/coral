@@ -4,7 +4,7 @@
 //! artifact shape only; installed-source references, SQL planning, and publish
 //! collisions are checked by the app/runtime layers.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use schemars::JsonSchema;
@@ -22,7 +22,8 @@ pub struct RecipeSpec {
     description: String,
     arguments: Vec<RecipeArgumentSpec>,
     implementation: RecipeImplementationSpec,
-    publish: Vec<RecipePublishSpec>,
+    validation: RecipeValidationSpec,
+    publish: RecipePublishSpec,
 }
 
 /// One typed recipe argument.
@@ -54,6 +55,29 @@ pub enum RecipeArgumentType {
     Boolean,
 }
 
+/// Runtime validation inputs for one recipe.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecipeValidationSpec {
+    /// Concrete argument values Coral uses when validating the recipe at install time.
+    #[serde(default)]
+    pub args: BTreeMap<String, RecipeValidationValue>,
+}
+
+/// One scalar validation argument value.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum RecipeValidationValue {
+    /// UTF-8 string value.
+    String(String),
+    /// Signed 64-bit integer value.
+    Integer(i64),
+    /// Boolean value.
+    Boolean(bool),
+    /// Explicit null value.
+    Null(()),
+}
+
 /// The executable body behind a recipe.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -65,26 +89,25 @@ pub enum RecipeImplementationSpec {
     },
 }
 
-/// One public surface a recipe should publish.
+/// Public surfaces a recipe should publish.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub enum RecipePublishSpec {
-    /// Publish the recipe as a public SQL table function.
-    TableFunction {
-        /// SQL schema where the public table function is exposed.
-        schema: String,
-        /// Public table-function name within `schema`.
-        name: String,
-        /// Optional publish-target-specific description.
-        description: String,
-    },
-    /// Publish the recipe as an MCP tool.
-    McpTool {
-        /// MCP tool name.
-        name: String,
-        /// Optional publish-target-specific description.
-        description: String,
-    },
+pub struct RecipePublishSpec {
+    /// Required SQL table-function surface.
+    pub table_function: RecipeTableFunctionPublishSpec,
+}
+
+/// SQL table-function surface published by a recipe.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecipeTableFunctionPublishSpec {
+    /// SQL schema where the public table function is exposed.
+    pub schema: String,
+    /// Public table-function name within `schema`.
+    pub name: String,
+    /// Optional publish-target-specific description.
+    #[serde(default)]
+    pub description: String,
 }
 
 /// One recipe input as authored under the `inputs` map.
@@ -151,17 +174,6 @@ impl<'de> Deserialize<'de> for RawRecipeInputs {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawRecipePublishSpec {
-    #[serde(default)]
-    table_function: Option<String>,
-    #[serde(default)]
-    mcp_tool: Option<String>,
-    #[serde(default)]
-    description: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawRecipeSpec {
     kind: String,
     name: String,
@@ -171,7 +183,8 @@ struct RawRecipeSpec {
     inputs: RawRecipeInputs,
     implementation: RecipeImplementationSpec,
     #[serde(default)]
-    publish: Vec<RawRecipePublishSpec>,
+    validation: RecipeValidationSpec,
+    publish: RecipePublishSpec,
 }
 
 impl RecipeSpec {
@@ -199,9 +212,15 @@ impl RecipeSpec {
         &self.implementation
     }
 
+    /// Returns the install-time validation invocation.
+    #[must_use]
+    pub fn validation(&self) -> &RecipeValidationSpec {
+        &self.validation
+    }
+
     /// Returns public surfaces the recipe asks Coral to publish.
     #[must_use]
-    pub fn publish(&self) -> &[RecipePublishSpec] {
+    pub fn publish(&self) -> &RecipePublishSpec {
         &self.publish
     }
 }
@@ -227,61 +246,16 @@ fn validate_raw_recipe(raw: RawRecipeSpec) -> Result<RecipeSpec> {
     validate_lowercase_identifier(&raw.name, "recipe name")?;
     validate_arguments(&raw.name, &raw.inputs.0)?;
     validate_implementation(&raw.name, &raw.implementation)?;
-    let publish = raw_publish_targets(&raw.name, raw.publish)?;
-    validate_publish_targets(&raw.name, &publish)?;
+    validate_validation(&raw.name, &raw.inputs.0, &raw.validation)?;
+    validate_publish_targets(&raw.name, &raw.publish)?;
     Ok(RecipeSpec {
         name: raw.name,
         description: raw.description,
         arguments: raw.inputs.0,
         implementation: raw.implementation,
-        publish,
+        validation: raw.validation,
+        publish: raw.publish,
     })
-}
-
-fn raw_publish_targets(
-    recipe: &str,
-    publish: Vec<RawRecipePublishSpec>,
-) -> Result<Vec<RecipePublishSpec>> {
-    publish
-        .into_iter()
-        .map(|target| raw_publish_target(recipe, target))
-        .collect()
-}
-
-fn raw_publish_target(recipe: &str, target: RawRecipePublishSpec) -> Result<RecipePublishSpec> {
-    match (target.table_function, target.mcp_tool) {
-        (Some(table_function), None) => {
-            let (schema, name) = parse_table_function_target(recipe, &table_function)?;
-            Ok(RecipePublishSpec::TableFunction {
-                schema,
-                name,
-                description: target.description,
-            })
-        }
-        (None, Some(name)) => Ok(RecipePublishSpec::McpTool {
-            name,
-            description: target.description,
-        }),
-        _ => Err(ManifestError::validation(format!(
-            "recipe '{recipe}' publish entry must set exactly one of 'table_function' or 'mcp_tool'"
-        ))),
-    }
-}
-
-fn parse_table_function_target(recipe: &str, target: &str) -> Result<(String, String)> {
-    let Some((schema, name)) = target.split_once('.') else {
-        return Err(malformed_table_function_target(recipe, target));
-    };
-    if schema.is_empty() || name.is_empty() || name.contains('.') {
-        return Err(malformed_table_function_target(recipe, target));
-    }
-    Ok((schema.to_string(), name.to_string()))
-}
-
-fn malformed_table_function_target(recipe: &str, target: &str) -> ManifestError {
-    ManifestError::validation(format!(
-        "recipe '{recipe}' table_function publish target '{target}' must be written as schema.name"
-    ))
 }
 
 fn validate_arguments(recipe: &str, arguments: &[RecipeArgumentSpec]) -> Result<()> {
@@ -309,44 +283,102 @@ fn validate_implementation(recipe: &str, implementation: &RecipeImplementationSp
     }
 }
 
-fn validate_publish_targets(recipe: &str, publish: &[RecipePublishSpec]) -> Result<()> {
-    let mut table_functions = HashSet::new();
-    let mut mcp_tools = HashSet::new();
-    for target in publish {
-        match target {
-            RecipePublishSpec::TableFunction { schema, name, .. } => {
-                validate_lowercase_identifier(
-                    schema,
-                    &format!("recipe '{recipe}' table_function publish schema"),
-                )?;
-                validate_lowercase_identifier(
-                    name,
-                    &format!("recipe '{recipe}' table_function publish name"),
-                )?;
-                if RESERVED_TABLE_FUNCTION_SCHEMAS
-                    .iter()
-                    .any(|reserved| schema.eq_ignore_ascii_case(reserved))
-                {
-                    return Err(ManifestError::validation(format!(
-                        "recipe '{recipe}' table_function publish schema '{schema}' is reserved"
-                    )));
-                }
-                let key = (schema.as_str(), name.as_str());
-                if !table_functions.insert(key) {
-                    return Err(ManifestError::validation(format!(
-                        "recipe '{recipe}' table_function publish target '{schema}.{name}' is declared more than once"
-                    )));
-                }
-            }
-            RecipePublishSpec::McpTool { name, .. } => {
-                validate_lowercase_identifier(name, &format!("recipe '{recipe}' mcp_tool name"))?;
-                if !mcp_tools.insert(name.as_str()) {
-                    return Err(ManifestError::validation(format!(
-                        "recipe '{recipe}' mcp_tool publish target '{name}' is declared more than once"
-                    )));
-                }
-            }
+fn validate_validation(
+    recipe: &str,
+    arguments: &[RecipeArgumentSpec],
+    validation: &RecipeValidationSpec,
+) -> Result<()> {
+    let arguments_by_name = arguments
+        .iter()
+        .map(|argument| (argument.name.as_str(), argument))
+        .collect::<HashMap<_, _>>();
+
+    for (name, value) in &validation.args {
+        let Some(argument) = arguments_by_name.get(name.as_str()) else {
+            return Err(ManifestError::validation(format!(
+                "recipe '{recipe}' validation arg '{name}' is not declared as an input"
+            )));
+        };
+        if !validation_value_matches_argument(argument, value) {
+            return Err(ManifestError::validation(format!(
+                "recipe '{recipe}' validation arg '{name}' expected {}, got {}",
+                argument_type_name(argument.data_type),
+                validation_value_type_name(value)
+            )));
         }
+    }
+
+    for argument in arguments {
+        if argument.required
+            && !matches!(
+                validation.args.get(&argument.name),
+                Some(value) if !matches!(value, RecipeValidationValue::Null(()))
+            )
+        {
+            return Err(ManifestError::validation(format!(
+                "recipe '{recipe}' validation.args must include required input '{}'",
+                argument.name
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn validation_value_matches_argument(
+    argument: &RecipeArgumentSpec,
+    value: &RecipeValidationValue,
+) -> bool {
+    matches!(
+        (argument.data_type, value),
+        (RecipeArgumentType::String, RecipeValidationValue::String(_))
+            | (
+                RecipeArgumentType::Integer,
+                RecipeValidationValue::Integer(_)
+            )
+            | (
+                RecipeArgumentType::Boolean,
+                RecipeValidationValue::Boolean(_)
+            )
+            | (_, RecipeValidationValue::Null(()))
+    )
+}
+
+fn argument_type_name(data_type: RecipeArgumentType) -> &'static str {
+    match data_type {
+        RecipeArgumentType::String => "string",
+        RecipeArgumentType::Integer => "integer",
+        RecipeArgumentType::Boolean => "boolean",
+    }
+}
+
+fn validation_value_type_name(value: &RecipeValidationValue) -> &'static str {
+    match value {
+        RecipeValidationValue::String(_) => "string",
+        RecipeValidationValue::Integer(_) => "integer",
+        RecipeValidationValue::Boolean(_) => "boolean",
+        RecipeValidationValue::Null(()) => "null",
+    }
+}
+
+fn validate_publish_targets(recipe: &str, publish: &RecipePublishSpec) -> Result<()> {
+    let table_function = &publish.table_function;
+    validate_lowercase_identifier(
+        &table_function.schema,
+        &format!("recipe '{recipe}' table_function publish schema"),
+    )?;
+    validate_lowercase_identifier(
+        &table_function.name,
+        &format!("recipe '{recipe}' table_function publish name"),
+    )?;
+    if RESERVED_TABLE_FUNCTION_SCHEMAS
+        .iter()
+        .any(|reserved| table_function.schema.eq_ignore_ascii_case(reserved))
+    {
+        return Err(ManifestError::validation(format!(
+            "recipe '{recipe}' table_function publish schema '{}' is reserved",
+            table_function.schema
+        )));
     }
     Ok(())
 }
@@ -363,7 +395,7 @@ fn validate_lowercase_identifier(value: &str, context: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RecipeImplementationSpec, RecipePublishSpec, parse_recipe_yaml};
+    use super::{RecipeImplementationSpec, RecipeValidationValue, parse_recipe_yaml};
 
     fn valid_recipe() -> &'static str {
         r"
@@ -382,9 +414,14 @@ implementation:
   query: |
     select *
     from github.pulls(owner => $owner, repo => $repo)
+validation:
+  args:
+    owner: withcoral
+    repo: coral
 publish:
-  - table_function: recipes.github_review_queue
-  - mcp_tool: github_review_queue
+  table_function:
+    schema: recipes
+    name: github_review_queue
 "
     }
 
@@ -395,15 +432,15 @@ publish:
         assert_eq!(recipe.name(), "github_review_queue");
         assert_eq!(recipe.arguments().len(), 2);
         assert!(matches!(
+            recipe.validation().args.get("owner"),
+            Some(RecipeValidationValue::String(owner)) if owner == "withcoral"
+        ));
+        assert!(matches!(
             recipe.implementation(),
             RecipeImplementationSpec::CoralSql { .. }
         ));
-        assert_eq!(recipe.publish().len(), 2);
-        assert!(matches!(
-            recipe.publish().first(),
-            Some(RecipePublishSpec::TableFunction { schema, name, .. })
-                if schema == "recipes" && name == "github_review_queue"
-        ));
+        assert_eq!(recipe.publish().table_function.schema, "recipes");
+        assert_eq!(recipe.publish().table_function.name, "github_review_queue");
     }
 
     #[test]
@@ -415,6 +452,10 @@ name: demo
 implementation:
   kind: coral_sql
   query: select 1
+publish:
+  table_function:
+    schema: recipes
+    name: demo
 ",
         )
         .expect_err("kind should fail");
@@ -459,6 +500,10 @@ name: Demo
 implementation:
   kind: coral_sql
   query: select 1
+publish:
+  table_function:
+    schema: recipes
+    name: demo
 ",
         )
         .expect_err("mixed-case recipe name should fail");
@@ -478,6 +523,10 @@ inputs:
 implementation:
   kind: coral_sql
   query: select $Owner
+publish:
+  table_function:
+    schema: recipes
+    name: demo
 ",
         )
         .expect_err("mixed-case input name should fail");
@@ -514,6 +563,10 @@ name: demo
 implementation:
   kind: coral_sql
   query: '   '
+publish:
+  table_function:
+    schema: recipes
+    name: demo
 ",
         )
         .expect_err("empty query should fail");
@@ -525,43 +578,85 @@ implementation:
     }
 
     #[test]
-    fn parse_recipe_yaml_rejects_duplicate_publish_targets() {
-        let table_function_error = parse_recipe_yaml(
+    fn parse_recipe_yaml_rejects_missing_required_validation_arg() {
+        let error = parse_recipe_yaml(
             r"
 kind: recipe
 name: demo
+inputs:
+  owner:
+    type: string
+    required: true
 implementation:
   kind: coral_sql
-  query: select 1
+  query: select $owner
 publish:
-  - table_function: recipes.demo
-  - table_function: recipes.demo
+  table_function:
+    schema: recipes
+    name: demo
 ",
         )
-        .expect_err("duplicate table_function target should fail");
+        .expect_err("missing validation arg should fail");
 
         assert_eq!(
-            table_function_error.to_string(),
-            "recipe 'demo' table_function publish target 'recipes.demo' is declared more than once"
+            error.to_string(),
+            "recipe 'demo' validation.args must include required input 'owner'"
         );
+    }
 
-        let mcp_tool_error = parse_recipe_yaml(
+    #[test]
+    fn parse_recipe_yaml_rejects_unknown_validation_arg() {
+        let error = parse_recipe_yaml(
             r"
 kind: recipe
 name: demo
+validation:
+  args:
+    owner: withcoral
 implementation:
   kind: coral_sql
   query: select 1
 publish:
-  - mcp_tool: demo
-  - mcp_tool: demo
+  table_function:
+    schema: recipes
+    name: demo
 ",
         )
-        .expect_err("duplicate mcp_tool target should fail");
+        .expect_err("unknown validation arg should fail");
 
         assert_eq!(
-            mcp_tool_error.to_string(),
-            "recipe 'demo' mcp_tool publish target 'demo' is declared more than once"
+            error.to_string(),
+            "recipe 'demo' validation arg 'owner' is not declared as an input"
+        );
+    }
+
+    #[test]
+    fn parse_recipe_yaml_rejects_validation_arg_type_mismatch() {
+        let error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: demo
+inputs:
+  limit:
+    type: integer
+    required: true
+validation:
+  args:
+    limit: many
+implementation:
+  kind: coral_sql
+  query: select $limit
+publish:
+  table_function:
+    schema: recipes
+    name: demo
+",
+        )
+        .expect_err("validation arg type mismatch should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "recipe 'demo' validation arg 'limit' expected integer, got string"
         );
     }
 
@@ -575,7 +670,9 @@ implementation:
   kind: coral_sql
   query: select 1
 publish:
-  - table_function: __coral_recipes.demo
+  table_function:
+    schema: __coral_recipes
+    name: demo
 ",
         )
         .expect_err("reserved recipe schema should fail");
@@ -584,6 +681,22 @@ publish:
             error.to_string(),
             "recipe 'demo' table_function publish schema '__coral_recipes' is reserved"
         );
+    }
+
+    #[test]
+    fn parse_recipe_yaml_rejects_missing_publish() {
+        let error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: demo
+implementation:
+  kind: coral_sql
+  query: select 1
+",
+        )
+        .expect_err("missing publish should fail");
+
+        assert!(error.to_string().contains("missing field `publish`"));
     }
 
     #[test]
@@ -596,54 +709,16 @@ implementation:
   kind: coral_sql
   query: select 1
 publish:
-  - table_function: recipes
+  table_function:
+    schema: Recipes
+    name: demo
 ",
         )
-        .expect_err("malformed table_function target should fail");
+        .expect_err("mixed-case schema should fail");
 
         assert_eq!(
             error.to_string(),
-            "recipe 'demo' table_function publish target 'recipes' must be written as schema.name"
-        );
-    }
-
-    #[test]
-    fn parse_recipe_yaml_rejects_publish_entry_with_wrong_target_count() {
-        let multiple_targets_error = parse_recipe_yaml(
-            r"
-kind: recipe
-name: demo
-implementation:
-  kind: coral_sql
-  query: select 1
-publish:
-  - table_function: recipes.demo
-    mcp_tool: demo
-",
-        )
-        .expect_err("publish entry with two targets should fail");
-
-        assert_eq!(
-            multiple_targets_error.to_string(),
-            "recipe 'demo' publish entry must set exactly one of 'table_function' or 'mcp_tool'"
-        );
-
-        let no_targets_error = parse_recipe_yaml(
-            r"
-kind: recipe
-name: demo
-implementation:
-  kind: coral_sql
-  query: select 1
-publish:
-  - description: Demo
-",
-        )
-        .expect_err("publish entry without target should fail");
-
-        assert_eq!(
-            no_targets_error.to_string(),
-            "recipe 'demo' publish entry must set exactly one of 'table_function' or 'mcp_tool'"
+            "recipe 'demo' table_function publish schema 'Recipes' must be lowercase"
         );
     }
 }

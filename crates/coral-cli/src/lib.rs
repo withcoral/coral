@@ -29,7 +29,7 @@ use clap::{
 use clap_complete::{Shell, generate};
 use coral_api::v1::{
     AddRecipeRequest, ExecuteSqlRequest, ListRecipesRequest, Recipe, RemoveRecipeRequest,
-    ValidateRecipeRequest, recipe_publish,
+    recipe_publish,
 };
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
@@ -235,12 +235,6 @@ enum RecipeCommand {
     List,
     /// Add or replace a user recipe
     Add {
-        /// Path to a recipe YAML file
-        #[arg(long)]
-        file: PathBuf,
-    },
-    /// Validate a recipe without installing it
-    Validate {
         /// Path to a recipe YAML file
         #[arg(long)]
         file: PathBuf,
@@ -762,29 +756,6 @@ async fn run_recipe(app: &AppClient, args: RecipeArgs) -> Result<(), CliError> {
                 .map_err(anyhow::Error::from)?
                 .into_inner();
             println!("Added recipe {}", recipe.name);
-        }
-        RecipeCommand::Validate { file } => {
-            let yaml = std::fs::read_to_string(&file).map_err(anyhow::Error::from)?;
-            let mut client = app.recipe_client();
-            let recipe = client
-                .validate_recipe(Request::new(ValidateRecipeRequest {
-                    workspace: Some(default_workspace()),
-                    yaml,
-                }))
-                .await
-                .map_err(anyhow::Error::from)?
-                .into_inner()
-                .recipe
-                .ok_or_else(|| anyhow::anyhow!("validate recipe response missing recipe"))?;
-            println!("Recipe {} is valid.", recipe.name);
-            print_text_table(
-                ["Recipe", "Publish", "Columns"],
-                [[
-                    recipe.name.clone(),
-                    recipe_publish_summary(&recipe),
-                    recipe_columns_summary(&recipe),
-                ]],
-            );
         }
         RecipeCommand::Remove { name } => {
             let name = recipe_name_arg(&name)?;
