@@ -4,6 +4,7 @@ use coral_api::v1::Workspace;
 use coral_api::v1::catalog_service_client::CatalogServiceClient;
 use coral_api::v1::feedback_service_client::FeedbackServiceClient;
 use coral_api::v1::query_service_client::QueryServiceClient;
+use coral_api::v1::recipe_service_client::RecipeServiceClient;
 use coral_api::v1::source_service_client::SourceServiceClient;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
@@ -38,6 +39,9 @@ pub type CatalogClient = CatalogServiceClient<GrpcService>;
 /// Public SQL query gRPC client.
 pub type QueryClient = QueryServiceClient<GrpcService>;
 
+/// Public recipe-management gRPC client.
+pub type RecipeClient = RecipeServiceClient<GrpcService>;
+
 /// Public feedback-submission gRPC client.
 pub type FeedbackClient = FeedbackServiceClient<GrpcService>;
 
@@ -49,6 +53,7 @@ pub struct AppClient {
     source: SourceClient,
     catalog: CatalogClient,
     query: QueryClient,
+    recipe: RecipeClient,
     feedback: FeedbackClient,
 }
 
@@ -72,11 +77,14 @@ impl AppClient {
             .max_decoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE);
         let query_client = QueryClient::new(grpc_service(channel.clone(), &grpc_endpoint))
             .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
+        let recipe_client = RecipeClient::new(grpc_service(channel.clone(), &grpc_endpoint))
+            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
         let feedback_client = FeedbackClient::new(grpc_service(channel, &grpc_endpoint));
         Ok(Self {
             source: source_client,
             catalog: catalog_client,
             query: query_client,
+            recipe: recipe_client,
             feedback: feedback_client,
         })
     }
@@ -97,6 +105,12 @@ impl AppClient {
     /// Returns a cloned query client.
     pub fn query_client(&self) -> QueryClient {
         self.query.clone()
+    }
+
+    #[must_use]
+    /// Returns a cloned recipe-management client.
+    pub fn recipe_client(&self) -> RecipeClient {
+        self.recipe.clone()
     }
 
     #[must_use]

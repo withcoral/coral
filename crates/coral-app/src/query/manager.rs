@@ -366,13 +366,6 @@ impl QueryManager {
         Ok(runtime)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by the recipe lifecycle API in a later stack branch"
-        )
-    )]
     pub(crate) fn list_recipes(
         &self,
         workspace_name: &WorkspaceName,
@@ -382,13 +375,10 @@ impl QueryManager {
             .map_err(QueryManagerError::App)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by the recipe lifecycle API in a later stack branch"
-        )
-    )]
+    pub(crate) fn recipe_manager(&self) -> RecipeManager {
+        self.recipe_manager.clone()
+    }
+
     pub(crate) async fn validate_recipe_yaml(
         &self,
         workspace_name: &WorkspaceName,

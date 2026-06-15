@@ -18,6 +18,7 @@ use coral_api::v1::catalog_service_server::CatalogServiceServer;
 use coral_api::v1::episode_service_server::EpisodeServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
+use coral_api::v1::recipe_service_server::RecipeServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
 use coral_api::{
@@ -50,6 +51,7 @@ use crate::feedback::publisher::{
 use crate::feedback::service::FeedbackService;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
+use crate::recipes::service::RecipeService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
@@ -384,6 +386,7 @@ async fn start_server(
 ) -> Result<RunningServer, AppError> {
     let source_service = SourceService::new(source_manager, query_manager.clone());
     let catalog_service = CatalogService::new(query_manager.clone());
+    let recipe_service = RecipeService::new(query_manager.recipe_manager(), query_manager.clone());
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
     let episode_service = EpisodeService::new(episode_store);
@@ -398,6 +401,10 @@ async fn start_server(
         .add_service(GrpcMethodAnnotatedService::new(FeedbackServiceServer::new(
             feedback_service,
         )))
+        .add_service(GrpcMethodAnnotatedService::new(
+            RecipeServiceServer::new(recipe_service)
+                .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
+        ))
         // Registered unconditionally, like `FeedbackService` above: the local
         // transport is feature-agnostic by design (effective features are resolved
         // in `coral-cli`, which gates the *consumers*, not the routes). The
