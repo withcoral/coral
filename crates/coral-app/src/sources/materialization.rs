@@ -553,10 +553,10 @@ pub(crate) fn incompatible_materialization_error(
     source_name: &SourceName,
     detail: impl AsRef<str>,
 ) -> AppError {
-    AppError::MissingOrIncompatibleV4Materialization {
-        source_name: source_name.to_string(),
-        detail: detail.as_ref().to_string(),
-    }
+    AppError::SourceUnservable(format!(
+        "source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {}. Re-add the source to regenerate them.",
+        detail.as_ref()
+    ))
 }
 
 fn write_materialization(
@@ -679,7 +679,6 @@ fn materialize_surface(
     surface: &coral_spec::v4::V4Surface,
     inputs: &MaterializationInputs,
 ) -> Result<MaterializedSurfaceBuild, AppError> {
-    reject_unsupported_identity_requirements(manifest, surface)?;
     match surface.surface_type {
         SurfaceType::OpenApi => materialize_openapi_surface(manifest, surface),
         SurfaceType::Mcp => materialize_mcp_surface(manifest, surface, inputs),
@@ -802,20 +801,6 @@ fn app_error_from_core(error: coral_engine::CoreError) -> AppError {
         other => AppError::FailedPrecondition(other.to_string()),
     }
 }
-
-fn reject_unsupported_identity_requirements(
-    manifest: &V4SourceManifest,
-    surface: &coral_spec::v4::V4Surface,
-) -> Result<(), AppError> {
-    if surface.identity_requirements.is_none() {
-        return Ok(());
-    }
-    Err(AppError::FailedPrecondition(format!(
-        "source '{}' surface '{}' declares identity_requirements, but this build does not support DSL v4 identity binding for source import",
-        manifest.common.name, surface.id
-    )))
-}
-
 fn validate_materialized_surface_base_url(
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
@@ -1611,54 +1596,6 @@ surfaces:
 
         assert!(
             error.to_string().contains("expected aaaaaa"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn build_v4_materialization_rejects_identity_requirements_without_binding_support() {
-        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
-        let openapi_file = descriptor_temp.path().join("openapi.yaml");
-        std::fs::write(&openapi_file, openapi_fixture()).expect("write descriptor");
-        let state_temp = TempDir::new().expect("state temp dir");
-        let layout =
-            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let manifest_yaml = format!(
-            r"
-name: github_v4_materialization_test
-dsl_version: 4
-surfaces:
-  - id: rest
-    type: openapi
-    file: {}
-    sha256: {}
-    identity_requirements:
-      accepts:
-        - id: github-rest-read
-          identity_specs: [github_oauth]
-    base_url: https://api.example.com
-",
-            openapi_file.display(),
-            sha256_hex(openapi_fixture().as_bytes())
-        );
-        let manifest = parse_v4_manifest(&manifest_yaml);
-
-        let error = build_v4_materialization_tmp(
-            &layout,
-            &workspace_name(),
-            &source_name(),
-            &manifest_yaml,
-            &manifest,
-            &MaterializationInputs::default(),
-            "test",
-        )
-        .expect_err("identity requirements should fail closed");
-
-        assert!(
-            error
-                .to_string()
-                .contains("does not support DSL v4 identity binding"),
             "unexpected error: {error}"
         );
     }

@@ -55,6 +55,7 @@ use crate::identities::{IdentityService, UserOwnedIdentityManager};
 use crate::identity_specs::{IdentitySpecManager, IdentitySpecService, IdentitySpecUsageProvider};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
+use crate::source_registry::SourceRegistry;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
@@ -289,8 +290,9 @@ impl ServerBuilder {
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store.clone());
-        let source_manager = SourceManager::new_with_features(
-            config_store.clone(),
+        let source_registry: Arc<dyn SourceRegistry> = Arc::new(config_store.clone());
+        let source_manager = SourceManager::new_with_features_and_source_registry(
+            source_registry.clone(),
             credential_manager.clone(),
             layout.clone(),
             features.clone(),
@@ -316,8 +318,9 @@ impl ServerBuilder {
             credential_store,
         );
 
-        let query_manager = QueryManager::new(
+        let query_manager = QueryManager::new_with_source_registry(
             config_store,
+            source_registry,
             credential_manager,
             query_runtime_context,
             layout,
@@ -444,6 +447,8 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
     let source_service = SourceService::new(
         source_manager,
         query_manager.clone(),
+        identity_spec_manager.clone(),
+        user_owned_identity_manager.clone(),
         Arc::clone(&user_principal_provider),
         Arc::clone(&management_authorizer),
     );
@@ -808,6 +813,28 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct DenyIdentitySpecAllowSourcesAuthorizer;
+
+    #[tonic::async_trait]
+    impl ManagementAuthorizer for DenyIdentitySpecAllowSourcesAuthorizer {
+        async fn authorize_identity_spec_mutation(
+            &self,
+            _principal: &UserPrincipal,
+        ) -> Result<(), AuthorizationError> {
+            Err(AuthorizationError::forbidden("identity specs are blocked"))
+        }
+
+        async fn authorize_source_mutation(
+            &self,
+            _principal: &UserPrincipal,
+            _workspace_id: &str,
+            _kind: SourceMutationKind,
+        ) -> Result<(), AuthorizationError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
     struct DenyImportWithOAuthAuthorizer;
 
     #[tonic::async_trait]
@@ -1141,6 +1168,31 @@ enabled = false
 
         assert_eq!(status.code(), Code::PermissionDenied);
         assert!(status.message().contains("sources are blocked"));
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn source_import_with_identity_specs_requires_identity_spec_authorization() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_management_authorizer(Arc::new(DenyIdentitySpecAllowSourcesAuthorizer))
+            .start()
+            .await
+            .expect("start server");
+        let mut client = SourceServiceClient::new(connect(&server).await);
+        let mut request = import_source_request("not valid yaml".to_string());
+        request
+            .identity_spec_manifest_yamls
+            .push(fixed_token_identity_spec_yaml("github_oauth"));
+
+        let status = client
+            .import_source(Request::new(request))
+            .await
+            .expect_err("identity spec mutation should be denied before import starts");
+
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert!(status.message().contains("identity specs are blocked"));
         server.shutdown().await.expect("shutdown");
     }
 

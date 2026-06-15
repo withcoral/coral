@@ -99,6 +99,34 @@ pub struct IdentitySpecRegistryRecord {
     pub input_material: BTreeMap<String, String>,
 }
 
+/// Public storage hint for registry implementations that preserve where
+/// identity-spec setup input material is stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentitySpecInputMaterialStorage {
+    /// Plaintext file-backed setup input material.
+    File,
+    /// Platform keychain-backed setup input material.
+    Keychain,
+}
+
+impl From<CredentialStorageKind> for IdentitySpecInputMaterialStorage {
+    fn from(value: CredentialStorageKind) -> Self {
+        match value {
+            CredentialStorageKind::File => Self::File,
+            CredentialStorageKind::Keychain => Self::Keychain,
+        }
+    }
+}
+
+impl From<IdentitySpecInputMaterialStorage> for CredentialStorageKind {
+    fn from(value: IdentitySpecInputMaterialStorage) -> Self {
+        match value {
+            IdentitySpecInputMaterialStorage::File => Self::File,
+            IdentitySpecInputMaterialStorage::Keychain => Self::Keychain,
+        }
+    }
+}
+
 /// Durable storage backend for global identity specs.
 pub trait IdentitySpecRegistry: Send + Sync + std::fmt::Debug + 'static {
     /// Lists all installed identity specs.
@@ -131,6 +159,21 @@ pub trait IdentitySpecRegistry: Send + Sync + std::fmt::Debug + 'static {
     fn get_identity_spec(&self, name: &str)
     -> Result<Option<IdentitySpecRegistryRecord>, AppError>;
 
+    /// Fetches the setup input material storage backend for one identity spec,
+    /// when the registry exposes that distinction.
+    ///
+    /// Registries that do not split material by backend can use the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the registry cannot be read.
+    fn get_identity_spec_input_material_storage(
+        &self,
+        _name: &str,
+    ) -> Result<Option<IdentitySpecInputMaterialStorage>, AppError> {
+        Ok(None)
+    }
+
     /// Fetches one raw identity-spec manifest by name without loading stored
     /// setup input material.
     ///
@@ -154,6 +197,24 @@ pub trait IdentitySpecRegistry: Send + Sync + std::fmt::Debug + 'static {
         record: IdentitySpecRegistryRecord,
     ) -> Result<(), AppError>;
 
+    /// Inserts or replaces one identity spec using the provided material
+    /// storage backend when the registry supports backend-specific material.
+    ///
+    /// The default keeps existing [`Self::upsert_identity_spec`] implementations
+    /// source-compatible.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the record cannot be persisted.
+    fn upsert_identity_spec_with_input_material_storage(
+        &self,
+        name: &str,
+        record: IdentitySpecRegistryRecord,
+        _input_material_storage: Option<IdentitySpecInputMaterialStorage>,
+    ) -> Result<(), AppError> {
+        self.upsert_identity_spec(name, record)
+    }
+
     /// Removes one identity spec.
     ///
     /// # Errors
@@ -167,12 +228,27 @@ pub trait IdentitySpecRegistry: Send + Sync + std::fmt::Debug + 'static {
 pub(crate) struct IdentitySpecSnapshot {
     record: IdentitySpecRecord,
     input_material: BTreeMap<String, String>,
+    input_material_storage: Option<CredentialStorageKind>,
 }
 
 impl IdentitySpecSnapshot {
     pub(crate) fn name(&self) -> &str {
         &self.record.manifest.name
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct IdentitySpecImportInstall {
+    pub(crate) name: String,
+    pub(crate) previous: Option<IdentitySpecSnapshot>,
+    pub(crate) installed: IdentitySpecSnapshot,
+    pub(crate) pre_import_usage_count: u32,
+}
+
+struct IdentitySpecAddOutcome {
+    record: IdentitySpecRecord,
+    replaced: bool,
+    import_install: IdentitySpecImportInstall,
 }
 
 /// Reports stored identities that reference an installed identity spec.
@@ -282,31 +358,47 @@ impl IdentitySpecManager {
         manifest_yaml: &str,
         inputs: Vec<IdentitySpecInputValue>,
     ) -> Result<(IdentitySpecRecord, bool), AppError> {
+        let outcome = self.add_identity_spec_with_inputs_inner(manifest_yaml, inputs)?;
+        Ok((outcome.record, outcome.replaced))
+    }
+
+    pub(crate) fn add_identity_spec_with_inputs_for_import(
+        &self,
+        manifest_yaml: &str,
+        inputs: Vec<IdentitySpecInputValue>,
+    ) -> Result<IdentitySpecImportInstall, AppError> {
+        Ok(self
+            .add_identity_spec_with_inputs_inner(manifest_yaml, inputs)?
+            .import_install)
+    }
+
+    fn add_identity_spec_with_inputs_inner(
+        &self,
+        manifest_yaml: &str,
+        inputs: Vec<IdentitySpecInputValue>,
+    ) -> Result<IdentitySpecAddOutcome, AppError> {
         let span = info_span!("coral.app.identity_specs.add");
         let _guard = span.enter();
         self.features.ensure_dsl_v4_enabled()?;
         let record = parse_identity_spec_record(manifest_yaml)?;
         let name = record.manifest.name.clone();
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
-        let existing = self.registry.get_identity_spec(&name)?;
-        let replaced = existing.is_some();
-        let existing_input_material = existing
+        let previous = self.snapshot_identity_spec_unlocked(&name)?;
+        let replaced = previous.is_some();
+        let existing_input_material = previous
             .as_ref()
-            .map(|record| record.input_material.clone())
+            .map(|snapshot| snapshot.input_material.clone())
             .unwrap_or_default();
-        if let Some(existing) = &existing {
-            let existing = parse_identity_spec_record(&existing.manifest_yaml)?;
-            ensure_identity_spec_record_name(&name, &existing)?;
-            if existing.manifest != record.manifest {
-                let referencing_identities = self.count_identities_for_spec_unlocked(&name)?;
-                if referencing_identities > 0 {
-                    return Err(AppError::FailedPrecondition(format!(
-                        "identity spec '{name}' is used by {referencing_identities} stored {} and cannot be replaced with a different manifest; remove it with --force only if you intend to recreate {} against a new spec",
-                        plural_identity(referencing_identities),
-                        plural_pronoun(referencing_identities)
-                    )));
-                }
-            }
+        let pre_import_usage_count = self.count_identities_for_spec_unlocked(&name)?;
+        if let Some(previous) = &previous
+            && previous.record.manifest != record.manifest
+            && pre_import_usage_count > 0
+        {
+            return Err(AppError::FailedPrecondition(format!(
+                "identity spec '{name}' is used by {pre_import_usage_count} stored {} and cannot be replaced with a different manifest; remove it with --force only if you intend to recreate {} against a new spec",
+                plural_identity(pre_import_usage_count),
+                plural_pronoun(pre_import_usage_count)
+            )));
         }
         let provided_inputs = unique_input_map(
             inputs.into_iter().map(|input| (input.key, input.value)),
@@ -324,7 +416,36 @@ impl IdentitySpecManager {
                 input_material,
             },
         )?;
-        Ok((record, replaced))
+        let installed = match self.snapshot_identity_spec_unlocked(&name) {
+            Ok(Some(installed)) => installed,
+            Ok(None) => {
+                let error = AppError::FailedPrecondition(format!(
+                    "identity spec '{name}' was not available after import"
+                ));
+                return Err(self.restore_identity_spec_import_unlocked_or_error(
+                    &name,
+                    previous.as_ref(),
+                    error,
+                ));
+            }
+            Err(error) => {
+                return Err(self.restore_identity_spec_import_unlocked_or_error(
+                    &name,
+                    previous.as_ref(),
+                    error,
+                ));
+            }
+        };
+        Ok(IdentitySpecAddOutcome {
+            record,
+            replaced,
+            import_install: IdentitySpecImportInstall {
+                name,
+                previous,
+                installed,
+                pre_import_usage_count,
+            },
+        })
     }
 
     pub(crate) fn list_identity_specs(&self) -> Result<Vec<IdentitySpecRecord>, AppError> {
@@ -350,9 +471,12 @@ impl IdentitySpecManager {
         self.load_identity_spec_unlocked(&name)
     }
 
-    #[expect(
-        dead_code,
-        reason = "identity-spec rollback snapshot consumed by the source import flow in a later PR"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "rollback snapshot seam is exercised by unit tests; source import uses the atomic import-install method"
+        )
     )]
     pub(crate) fn snapshot_identity_spec(
         &self,
@@ -362,36 +486,123 @@ impl IdentitySpecManager {
         let _guard = span.enter();
         let name = validate_identity_spec_name(name)?;
         let _lock = FileLock::shared(self.layout.state_lock())?;
-        let Some(stored) = self.registry.get_identity_spec(&name)? else {
+        self.snapshot_identity_spec_unlocked(&name)
+    }
+
+    fn snapshot_identity_spec_unlocked(
+        &self,
+        name: &str,
+    ) -> Result<Option<IdentitySpecSnapshot>, AppError> {
+        let Some(stored) = self.registry.get_identity_spec(name)? else {
             return Ok(None);
         };
         let record = parse_identity_spec_record(&stored.manifest_yaml)?;
+        ensure_identity_spec_record_name(name, &record)?;
+        let input_material_storage = self
+            .registry
+            .get_identity_spec_input_material_storage(name)?
+            .map(Into::into);
         Ok(Some(IdentitySpecSnapshot {
             record,
             input_material: stored.input_material,
+            input_material_storage,
         }))
     }
 
-    #[expect(
-        dead_code,
-        reason = "identity-spec rollback snapshot consumed by the source import flow in a later PR"
-    )]
-    pub(crate) fn restore_identity_spec_snapshot(
+    fn restore_identity_spec_import_unlocked_or_error(
         &self,
-        snapshot: &IdentitySpecSnapshot,
+        name: &str,
+        previous: Option<&IdentitySpecSnapshot>,
+        error: AppError,
+    ) -> AppError {
+        if let Err(rollback_error) = self.restore_identity_spec_import_unlocked(name, previous) {
+            return AppError::FailedPrecondition(format!(
+                "failed to snapshot identity spec '{name}' after import: {error}; failed to restore previous identity spec state: {rollback_error}"
+            ));
+        }
+        error
+    }
+
+    fn restore_identity_spec_import_unlocked(
+        &self,
+        name: &str,
+        previous: Option<&IdentitySpecSnapshot>,
     ) -> Result<(), AppError> {
-        let span = info_span!("coral.app.identity_specs.restore_snapshot");
+        if let Some(previous) = previous {
+            self.registry
+                .upsert_identity_spec_with_input_material_storage(
+                    name,
+                    IdentitySpecRegistryRecord {
+                        manifest_yaml: previous.record.manifest_yaml.clone(),
+                        input_material: previous.input_material.clone(),
+                    },
+                    previous.input_material_storage.map(Into::into),
+                )
+        } else {
+            self.registry.remove_identity_spec(name)
+        }
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "usage-count seam is exercised by unit tests; source import captures usage under the add lock"
+        )
+    )]
+    pub(crate) fn identity_spec_usage_count(&self, name: &str) -> Result<u32, AppError> {
+        let name = validate_identity_spec_name(name)?;
+        let _lock = FileLock::shared(self.layout.state_lock())?;
+        self.count_identities_for_spec_unlocked(&name)
+    }
+
+    pub(crate) fn rollback_import_if_current(
+        &self,
+        installed: &IdentitySpecSnapshot,
+        previous: Option<&IdentitySpecSnapshot>,
+        pre_import_usage_count: u32,
+    ) -> Result<bool, AppError> {
+        let span = info_span!("coral.app.identity_specs.rollback_import");
         let _guard = span.enter();
-        let name = validate_identity_spec_name(snapshot.name())?;
+        let name = validate_identity_spec_name(installed.name())?;
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
-        self.registry.upsert_identity_spec(
-            &name,
-            IdentitySpecRegistryRecord {
-                manifest_yaml: snapshot.record.manifest_yaml.clone(),
-                input_material: snapshot.input_material.clone(),
-            },
-        )?;
-        Ok(())
+        let Some(stored) = self.registry.get_identity_spec(&name)? else {
+            return Ok(false);
+        };
+        let current = IdentitySpecSnapshot {
+            record: parse_identity_spec_record(&stored.manifest_yaml)?,
+            input_material: stored.input_material,
+            input_material_storage: self
+                .registry
+                .get_identity_spec_input_material_storage(&name)?
+                .map(Into::into),
+        };
+        if !identity_spec_snapshots_match(&current, installed) {
+            return Ok(false);
+        }
+        if let Some(previous) = previous {
+            let state_changed = !identity_spec_snapshots_match(previous, installed);
+            let current_usage_count = self.count_identities_for_spec_unlocked(&name)?;
+            if state_changed && (pre_import_usage_count > 0 || current_usage_count > 0) {
+                return Ok(false);
+            }
+            self.registry
+                .upsert_identity_spec_with_input_material_storage(
+                    &name,
+                    IdentitySpecRegistryRecord {
+                        manifest_yaml: previous.record.manifest_yaml.clone(),
+                        input_material: previous.input_material.clone(),
+                    },
+                    previous.input_material_storage.map(Into::into),
+                )?;
+        } else {
+            let current_usage_count = self.count_identities_for_spec_unlocked(&name)?;
+            if pre_import_usage_count > 0 || current_usage_count > 0 {
+                return Ok(false);
+            }
+            self.registry.remove_identity_spec(&name)?;
+        }
+        Ok(true)
     }
 
     pub(crate) fn resolve_identity_spec_inputs(
@@ -487,6 +698,15 @@ impl IdentitySpecManager {
         }
         Ok(count)
     }
+}
+
+fn identity_spec_snapshots_match(
+    left: &IdentitySpecSnapshot,
+    right: &IdentitySpecSnapshot,
+) -> bool {
+    left.record.manifest_yaml == right.record.manifest_yaml
+        && left.input_material == right.input_material
+        && left.input_material_storage == right.input_material_storage
 }
 
 struct FileIdentitySpecRegistry {
@@ -761,6 +981,67 @@ impl FileIdentitySpecRegistry {
         fs::remove_file(path)?;
         Ok(())
     }
+
+    fn upsert_identity_spec_with_storage(
+        &self,
+        name: &str,
+        record: &IdentitySpecRegistryRecord,
+        input_material_storage: Option<CredentialStorageKind>,
+    ) -> Result<(), AppError> {
+        let name = validate_identity_spec_name(name)?;
+        let path = self.layout.identity_spec_manifest_file(&name);
+        let previous_manifest = read_optional_file(&path)?;
+        let input_material_state_path = self.input_material_state_file(&name);
+        let previous_input_material_state = read_optional_file(&input_material_state_path)?;
+        let previous_material_state = if previous_manifest.is_some() {
+            Some(self.load_input_material_state(&name)?)
+        } else {
+            None
+        };
+        let existing_storage = previous_material_state
+            .as_ref()
+            .and_then(|state| state.credential_storage);
+        let previous_credential_material = self.snapshot_input_material(&name, existing_storage)?;
+        let rollback = IdentitySpecUpsertRollback {
+            manifest_path: path.clone(),
+            previous_manifest,
+            input_material_state_path,
+            previous_input_material_state,
+            previous_credential_storage: existing_storage,
+            previous_credential_material,
+        };
+        let credential_storage = if record.input_material.is_empty() {
+            None
+        } else {
+            input_material_storage
+                .or(existing_storage)
+                .or(Some(self.credential_store.default_write_storage()?))
+        };
+        if let Some(parent) = path.parent() {
+            storage_fs::ensure_private_dir(parent)?;
+        }
+        let result = (|| {
+            self.replace_input_material(
+                &name,
+                existing_storage,
+                credential_storage,
+                &record.input_material,
+            )?;
+            storage_fs::write_atomic(&path, record.manifest_yaml.as_bytes())?;
+            self.write_input_material_state(
+                &name,
+                &IdentitySpecInputMaterialState {
+                    credential_storage,
+                    version: IDENTITY_SPEC_INPUT_MATERIAL_STATE_VERSION,
+                },
+            )
+        })();
+        if let Err(error) = result {
+            self.restore_upsert_rollback(&name, &rollback, credential_storage);
+            return Err(error);
+        }
+        Ok(())
+    }
 }
 
 impl IdentitySpecRegistry for FileIdentitySpecRegistry {
@@ -825,6 +1106,17 @@ impl IdentitySpecRegistry for FileIdentitySpecRegistry {
         }))
     }
 
+    fn get_identity_spec_input_material_storage(
+        &self,
+        name: &str,
+    ) -> Result<Option<IdentitySpecInputMaterialStorage>, AppError> {
+        let name = validate_identity_spec_name(name)?;
+        Ok(self
+            .load_input_material_state(&name)?
+            .credential_storage
+            .map(Into::into))
+    }
+
     fn get_identity_spec_manifest(&self, name: &str) -> Result<Option<String>, AppError> {
         let name = validate_identity_spec_name(name)?;
         let path = self.layout.identity_spec_manifest_file(&name);
@@ -839,57 +1131,20 @@ impl IdentitySpecRegistry for FileIdentitySpecRegistry {
         name: &str,
         record: IdentitySpecRegistryRecord,
     ) -> Result<(), AppError> {
-        let name = validate_identity_spec_name(name)?;
-        let path = self.layout.identity_spec_manifest_file(&name);
-        let previous_manifest = read_optional_file(&path)?;
-        let input_material_state_path = self.input_material_state_file(&name);
-        let previous_input_material_state = read_optional_file(&input_material_state_path)?;
-        let previous_material_state = if previous_manifest.is_some() {
-            Some(self.load_input_material_state(&name)?)
-        } else {
-            None
-        };
-        let existing_storage = previous_material_state
-            .as_ref()
-            .and_then(|state| state.credential_storage);
-        let previous_credential_material = self.snapshot_input_material(&name, existing_storage)?;
-        let rollback = IdentitySpecUpsertRollback {
-            manifest_path: path.clone(),
-            previous_manifest,
-            input_material_state_path,
-            previous_input_material_state,
-            previous_credential_storage: existing_storage,
-            previous_credential_material,
-        };
-        let credential_storage = if record.input_material.is_empty() {
-            None
-        } else {
-            existing_storage.or(Some(self.credential_store.default_write_storage()?))
-        };
-        if let Some(parent) = path.parent() {
-            storage_fs::ensure_private_dir(parent)?;
-        }
-        let result = (|| {
-            self.replace_input_material(
-                &name,
-                existing_storage,
-                credential_storage,
-                &record.input_material,
-            )?;
-            storage_fs::write_atomic(&path, record.manifest_yaml.as_bytes())?;
-            self.write_input_material_state(
-                &name,
-                &IdentitySpecInputMaterialState {
-                    credential_storage,
-                    version: IDENTITY_SPEC_INPUT_MATERIAL_STATE_VERSION,
-                },
-            )
-        })();
-        if let Err(error) = result {
-            self.restore_upsert_rollback(&name, &rollback, credential_storage);
-            return Err(error);
-        }
-        Ok(())
+        self.upsert_identity_spec_with_storage(name, &record, None)
+    }
+
+    fn upsert_identity_spec_with_input_material_storage(
+        &self,
+        name: &str,
+        record: IdentitySpecRegistryRecord,
+        input_material_storage: Option<IdentitySpecInputMaterialStorage>,
+    ) -> Result<(), AppError> {
+        self.upsert_identity_spec_with_storage(
+            name,
+            &record,
+            input_material_storage.map(Into::into),
+        )
     }
 
     fn remove_identity_spec(&self, name: &str) -> Result<(), AppError> {
@@ -1137,7 +1392,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     use tempfile::TempDir;
 
@@ -1147,9 +1402,13 @@ mod tests {
         identity_spec_fingerprint,
     };
     use crate::bootstrap::AppError;
-    use crate::credentials::{CredentialStoragePreference, CredentialStore, parse_env_file};
+    use crate::credentials::{
+        CredentialSetId, CredentialStorageKind, CredentialStoragePreference, CredentialStore,
+        parse_env_file,
+    };
     use crate::features::{Features, dsl_v4_features};
     use crate::state::AppStateLayout;
+    use crate::workspaces::WorkspaceName;
 
     fn manager() -> (TempDir, IdentitySpecManager, AppStateLayout) {
         manager_with(dsl_v4_features(), Vec::new())
@@ -1268,6 +1527,22 @@ mod tests {
         fn count_identities_for_spec(&self, identity_spec_name: &str) -> Result<u32, AppError> {
             if identity_spec_name == self.identity_spec_name {
                 Ok(self.count)
+            } else {
+                Ok(0)
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct DynamicUsageProvider {
+        identity_spec_name: String,
+        count: Arc<AtomicU32>,
+    }
+
+    impl IdentitySpecUsageProvider for DynamicUsageProvider {
+        fn count_identities_for_spec(&self, identity_spec_name: &str) -> Result<u32, AppError> {
+            if identity_spec_name == self.identity_spec_name {
+                Ok(self.count.load(Ordering::SeqCst))
             } else {
                 Ok(0)
             }
@@ -1618,6 +1893,247 @@ credential_storage: keychain
             material.get("DEMO_OAUTH_CLIENT_SECRET").map(String::as_str),
             Some("client-secret")
         );
+    }
+
+    #[test]
+    fn import_rollback_skips_input_material_restore_when_spec_is_used() {
+        let usage_provider = Arc::new(StaticUsageProvider {
+            identity_spec_name: "demo_oauth".to_string(),
+            count: 1,
+        });
+        let (_temp, manager, _layout) = manager_with(dsl_v4_features(), vec![usage_provider]);
+        let manifest_yaml = oauth_identity_yaml_with_inputs_default("tenant-a");
+        let (record, _replaced) = add_spec_with_secret(&manager, &manifest_yaml);
+        let previous = manager
+            .snapshot_identity_spec("demo_oauth")
+            .expect("snapshot previous")
+            .expect("previous spec");
+        let pre_import_usage_count = manager
+            .identity_spec_usage_count("demo_oauth")
+            .expect("usage count");
+
+        manager
+            .add_identity_spec_with_inputs(
+                &manifest_yaml,
+                vec![IdentitySpecInputValue {
+                    key: "DEMO_OAUTH_CLIENT_SECRET".to_string(),
+                    value: "rotated-secret".to_string(),
+                }],
+            )
+            .expect("replace input material");
+        let installed = manager
+            .snapshot_identity_spec("demo_oauth")
+            .expect("snapshot installed")
+            .expect("installed spec");
+        let resolved = resolved_inputs(&manager, &record);
+        assert_input(&resolved, "DEMO_OAUTH_CLIENT_SECRET", "rotated-secret");
+
+        assert!(
+            !manager
+                .rollback_import_if_current(&installed, Some(&previous), pre_import_usage_count)
+                .expect("rollback import")
+        );
+        let resolved = resolved_inputs(&manager, &record);
+        assert_input(&resolved, "DEMO_OAUTH_CLIENT_SECRET", "rotated-secret");
+    }
+
+    #[test]
+    fn import_rollback_skips_input_material_restore_when_usage_count_grows() {
+        let usage_count = Arc::new(AtomicU32::new(0));
+        let usage_provider = Arc::new(DynamicUsageProvider {
+            identity_spec_name: "demo_oauth".to_string(),
+            count: Arc::clone(&usage_count),
+        });
+        let (_temp, manager, _layout) = manager_with(dsl_v4_features(), vec![usage_provider]);
+        let manifest_yaml = oauth_identity_yaml_with_inputs_default("tenant-a");
+        let (record, _replaced) = add_spec_with_secret(&manager, &manifest_yaml);
+
+        let install = manager
+            .add_identity_spec_with_inputs_for_import(
+                &manifest_yaml,
+                vec![IdentitySpecInputValue {
+                    key: "DEMO_OAUTH_CLIENT_SECRET".to_string(),
+                    value: "rotated-secret".to_string(),
+                }],
+            )
+            .expect("replace input material for import");
+        usage_count.store(1, Ordering::SeqCst);
+
+        assert!(
+            !manager
+                .rollback_import_if_current(
+                    &install.installed,
+                    install.previous.as_ref(),
+                    install.pre_import_usage_count,
+                )
+                .expect("rollback import")
+        );
+        let resolved = resolved_inputs(&manager, &record);
+        assert_input(&resolved, "DEMO_OAUTH_CLIENT_SECRET", "rotated-secret");
+    }
+
+    #[test]
+    fn import_install_rollback_removes_new_spec() {
+        let (_temp, manager, _layout) = manager();
+        let manifest_yaml = identity_yaml("github_oauth", "0.1.0");
+        let install = manager
+            .add_identity_spec_with_inputs_for_import(&manifest_yaml, Vec::new())
+            .expect("import identity spec");
+
+        assert!(
+            manager
+                .rollback_import_if_current(
+                    &install.installed,
+                    install.previous.as_ref(),
+                    install.pre_import_usage_count,
+                )
+                .expect("rollback unverified import")
+        );
+
+        let error = manager
+            .get_identity_spec("github_oauth")
+            .expect_err("new spec should be removed");
+        assert!(matches!(error, AppError::IdentitySpecNotFound(_)));
+    }
+
+    #[test]
+    fn import_install_rollback_keeps_new_spec_when_name_was_already_used() {
+        let usage_provider = Arc::new(StaticUsageProvider {
+            identity_spec_name: "github_oauth".to_string(),
+            count: 1,
+        });
+        let (_temp, manager, _layout) = manager_with(dsl_v4_features(), vec![usage_provider]);
+        let manifest_yaml = identity_yaml("github_oauth", "0.1.0");
+        let install = manager
+            .add_identity_spec_with_inputs_for_import(&manifest_yaml, Vec::new())
+            .expect("import identity spec");
+
+        assert!(
+            !manager
+                .rollback_import_if_current(
+                    &install.installed,
+                    install.previous.as_ref(),
+                    install.pre_import_usage_count,
+                )
+                .expect("rollback import")
+        );
+
+        manager
+            .get_identity_spec("github_oauth")
+            .expect("used new spec should remain installed");
+    }
+
+    #[test]
+    fn import_install_rollback_restores_previous_spec() {
+        let (_temp, manager, _layout) = manager();
+        let original_manifest = identity_yaml_with_audience("github_oauth", "0.1.0", "github.com");
+        add_spec(&manager, &original_manifest);
+        let replacement_manifest =
+            identity_yaml_with_audience("github_oauth", "0.1.0", "api.github.com");
+        let install = manager
+            .add_identity_spec_with_inputs_for_import(&replacement_manifest, Vec::new())
+            .expect("import identity spec");
+
+        assert!(
+            manager
+                .rollback_import_if_current(
+                    &install.installed,
+                    install.previous.as_ref(),
+                    install.pre_import_usage_count,
+                )
+                .expect("rollback import")
+        );
+
+        let restored = stored_spec(&manager, "github_oauth");
+        assert!(restored.manifest_yaml.contains("host: github.com"));
+        assert!(!restored.manifest_yaml.contains("host: api.github.com"));
+    }
+
+    #[test]
+    fn import_rollback_restores_previous_input_material_storage_backend() {
+        let temp = TempDir::new().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("layout directories");
+        let credential_store = CredentialStore::with_available_keychain_for_test(
+            layout.clone(),
+            CredentialStoragePreference::File,
+        );
+        let manager = IdentitySpecManager::new_with_credential_store(
+            layout.clone(),
+            credential_store.clone(),
+            dsl_v4_features(),
+            Vec::new(),
+        );
+        let (record, _replaced) =
+            add_spec_with_secret(&manager, &oauth_identity_yaml_with_inputs());
+        let keychain_material = BTreeMap::from([(
+            "DEMO_OAUTH_CLIENT_SECRET".to_string(),
+            "client-secret".to_string(),
+        )]);
+        credential_store
+            .replace_material(
+                &WorkspaceName::default(),
+                &CredentialSetId::for_identity_spec("demo_oauth"),
+                CredentialStorageKind::Keychain,
+                &keychain_material,
+            )
+            .expect("seed keychain material");
+        let state_file = layout.identity_spec_dir("demo_oauth").join("inputs.yaml");
+        fs::write(
+            &state_file,
+            r"
+version: 1
+credential_storage: keychain
+",
+        )
+        .expect("route input material to keychain");
+        fs::remove_file(layout.identity_spec_material_file("demo_oauth"))
+            .expect("remove file material");
+        let previous = manager
+            .snapshot_identity_spec("demo_oauth")
+            .expect("snapshot previous")
+            .expect("previous spec");
+        let pre_import_usage_count = manager
+            .identity_spec_usage_count("demo_oauth")
+            .expect("usage count");
+
+        add_spec(&manager, &identity_yaml("demo_oauth", "0.1.0"));
+        let installed = manager
+            .snapshot_identity_spec("demo_oauth")
+            .expect("snapshot installed")
+            .expect("installed spec");
+        assert_eq!(installed.input_material_storage, None);
+
+        assert!(
+            manager
+                .rollback_import_if_current(&installed, Some(&previous), pre_import_usage_count)
+                .expect("rollback import")
+        );
+
+        let restored_state = fs::read_to_string(&state_file).expect("restored input state");
+        assert!(
+            restored_state.contains("credential_storage: keychain"),
+            "rollback should restore keychain state: {restored_state}"
+        );
+        assert!(
+            !layout.identity_spec_material_file("demo_oauth").exists(),
+            "rollback must not copy keychain-only material into the file store"
+        );
+        let restored_keychain_material = credential_store
+            .read_material(
+                &WorkspaceName::default(),
+                &CredentialSetId::for_identity_spec("demo_oauth"),
+                CredentialStorageKind::Keychain,
+            )
+            .expect("read keychain material");
+        assert_input(
+            &restored_keychain_material,
+            "DEMO_OAUTH_CLIENT_SECRET",
+            "client-secret",
+        );
+        let resolved = resolved_inputs(&manager, &record);
+        assert_input(&resolved, "DEMO_OAUTH_CLIENT_SECRET", "client-secret");
     }
 
     /// Merges the previous `readding_identity_spec_preserves_existing_input_material`

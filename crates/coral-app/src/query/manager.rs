@@ -24,8 +24,9 @@ use crate::query::QueryAttribution;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
+use crate::source_registry::{SourceRegistry, installed_source_from_record};
 use crate::sources::SourceName;
-use crate::sources::catalog::resolve_installed_manifest;
+use crate::sources::catalog::resolve_installed_manifest_with_imported_yaml;
 use crate::sources::materialization::{
     incompatible_materialization_error, load_v4_materialization,
 };
@@ -45,9 +46,16 @@ pub(crate) struct ValidatedSource {
     pub(crate) report: SourceValidationReport,
 }
 
+#[derive(Debug)]
+struct RegistryQuerySource {
+    source: InstalledSource,
+    imported_manifest_yaml: Option<String>,
+}
+
 #[derive(Clone)]
 pub(crate) struct QueryManager {
     config_store: ConfigStore,
+    source_registry: Arc<dyn SourceRegistry>,
     credential_manager: CredentialManager,
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
@@ -56,6 +64,13 @@ pub(crate) struct QueryManager {
 }
 
 impl QueryManager {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "tests use the default ConfigStore-backed constructor; server bootstrap injects the shared SourceRegistry"
+        )
+    )]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
@@ -64,8 +79,29 @@ impl QueryManager {
         features: Features,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
+        Self::new_with_source_registry(
+            config_store.clone(),
+            Arc::new(config_store),
+            credential_manager,
+            runtime_context,
+            layout,
+            features,
+            engine_extensions_providers,
+        )
+    }
+
+    pub(crate) fn new_with_source_registry(
+        config_store: ConfigStore,
+        source_registry: Arc<dyn SourceRegistry>,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        features: Features,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    ) -> Self {
         Self {
             config_store,
+            source_registry,
             credential_manager,
             runtime_context,
             layout,
@@ -85,7 +121,7 @@ impl QueryManager {
             .load_config()
             .map_err(QueryManagerError::App)?;
         let sources = self
-            .load_query_sources(workspace_name, &config)
+            .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
         let runtime = self
             .runtime_config(workspace_name, &sources, &config)
@@ -116,7 +152,7 @@ impl QueryManager {
             .load_config()
             .map_err(QueryManagerError::App)?;
         let sources = self
-            .load_query_sources(workspace_name, &config)
+            .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
         let runtime = self
             .runtime_config(workspace_name, &sources, &config)
@@ -146,7 +182,7 @@ impl QueryManager {
             .load_config()
             .map_err(QueryManagerError::App)?;
         let sources = self
-            .load_query_sources(workspace_name, &config)
+            .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
         let runtime = self
             .runtime_config(workspace_name, &sources, &config)
@@ -184,7 +220,7 @@ impl QueryManager {
                     .load_config()
                     .map_err(QueryManagerError::App)?;
                 let sources = self
-                    .load_query_sources(workspace_name, &config)
+                    .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &sources, &config)
@@ -225,7 +261,7 @@ impl QueryManager {
                     .load_config()
                     .map_err(QueryManagerError::App)?;
                 let sources = self
-                    .load_query_sources(workspace_name, &config)
+                    .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &sources, &config)
@@ -252,18 +288,20 @@ impl QueryManager {
     pub(crate) async fn validate_source(
         &self,
         workspace_name: &WorkspaceName,
+        // Threaded by `SourceService::validate_source` for HEAD's gRPC
+        // surface; query-time identity resolution consumes it in PR 9.
+        _request_principal: &UserPrincipal,
         source_name: &SourceName,
     ) -> Result<ValidatedSource, QueryManagerError> {
         let config = self
             .config_store
             .load_config()
             .map_err(QueryManagerError::App)?;
-        let source = config
-            .get_source(workspace_name, source_name)
-            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
+        let registry_source = self
+            .registry_source(workspace_name, source_name)
             .map_err(QueryManagerError::App)?;
         let (query_source, version) = self
-            .load_query_source(workspace_name, &source)
+            .load_registry_query_source(workspace_name, &registry_source)
             .map_err(QueryManagerError::App)?;
         let runtime = self
             .runtime_config(workspace_name, std::slice::from_ref(&query_source), &config)
@@ -272,7 +310,7 @@ impl QueryManager {
             CoralQuery::validate_source(&query_source, runtime, query_source.test_queries())
                 .await
                 .map_err(QueryManagerError::Core)?;
-        let mut source = source;
+        let mut source = registry_source.source;
         source.version = version;
 
         Ok(ValidatedSource { source, report })
@@ -281,7 +319,6 @@ impl QueryManager {
     fn load_query_sources(
         &self,
         workspace_name: &WorkspaceName,
-        config: &AppConfig,
     ) -> Result<Vec<QuerySource>, AppError> {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
@@ -290,19 +327,18 @@ impl QueryManager {
         );
         let _guard = span.enter();
         let mut query_sources = Vec::new();
-        for source in config.workspace_sources(workspace_name) {
-            match self.load_query_source(workspace_name, &source) {
+        for source in self.list_registry_sources(workspace_name)? {
+            match self.load_registry_query_source(workspace_name, &source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
                 Err(
                     error @ (AppError::Credentials(CredentialsError::Unavailable(_))
-                    | AppError::SourceUnservable(_)
-                    | AppError::MissingOrIncompatibleV4Materialization { .. }),
+                    | AppError::SourceUnservable(_)),
                 ) => {
                     return Err(error);
                 }
                 Err(error) => {
                     tracing::warn!(
-                        source = %source.name,
+                        source = %source.source.name,
                         detail = %error,
                         "skipping source during query-source load"
                     );
@@ -313,12 +349,80 @@ impl QueryManager {
         Ok(query_sources)
     }
 
+    fn list_registry_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<RegistryQuerySource>, AppError> {
+        self.source_registry
+            .list_workspace_sources(workspace_name.as_str())?
+            .into_iter()
+            .map(|record| {
+                let imported_manifest_yaml = record.manifest_yaml.clone();
+                installed_source_from_record(workspace_name, record).map(|source| {
+                    RegistryQuerySource {
+                        source,
+                        imported_manifest_yaml,
+                    }
+                })
+            })
+            .collect()
+    }
+
+    fn registry_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<RegistryQuerySource, AppError> {
+        let record = self
+            .source_registry
+            .get_source(workspace_name.as_str(), source_name.as_str())?
+            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))?;
+        let imported_manifest_yaml = record.manifest_yaml.clone();
+        installed_source_from_record(workspace_name, record).map(|source| RegistryQuerySource {
+            source,
+            imported_manifest_yaml,
+        })
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "direct source loading is retained for focused unit tests; runtime paths keep registry manifest context"
+        )
+    )]
     fn load_query_source(
         &self,
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
     ) -> Result<(QuerySource, Option<String>), AppError> {
-        let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
+        self.load_query_source_with_imported_manifest(workspace_name, source, None)
+    }
+
+    fn load_registry_query_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &RegistryQuerySource,
+    ) -> Result<(QuerySource, Option<String>), AppError> {
+        self.load_query_source_with_imported_manifest(
+            workspace_name,
+            &source.source,
+            source.imported_manifest_yaml.as_deref(),
+        )
+    }
+
+    fn load_query_source_with_imported_manifest(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+        imported_manifest_yaml: Option<&str>,
+    ) -> Result<(QuerySource, Option<String>), AppError> {
+        let installed = resolve_installed_manifest_with_imported_yaml(
+            workspace_name,
+            source,
+            imported_manifest_yaml,
+            &self.layout,
+        )?;
         let source_spec = installed.source_spec;
         let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
             self.features.ensure_dsl_v4_enabled()?;
@@ -405,7 +509,7 @@ impl QueryManager {
         let provider_input_resolver = extensions.source_input_resolver.take();
         extensions.source_input_resolver = Some(Arc::new(CredentialRefreshingInputResolver::new(
             workspace_name.clone(),
-            self.config_store.clone(),
+            Arc::clone(&self.source_registry),
             self.credential_manager.clone(),
             provider_input_resolver,
         )));
@@ -538,10 +642,9 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::IdentitySpecNotFound(_) => "IDENTITY_SPEC_NOT_FOUND",
         AppError::IdentityNotFound(_) => "IDENTITY_NOT_FOUND",
         AppError::InvalidInput(_) => "INVALID_INPUT",
-        AppError::FailedPrecondition(_) | AppError::SourceUnservable(_) => "FAILED_PRECONDITION",
-        AppError::MissingOrIncompatibleV4Materialization { .. } => {
-            "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
-        }
+        AppError::FailedPrecondition(_)
+        | AppError::SourceUnservable(_)
+        | AppError::MissingOrIncompatibleV4Materialization { .. } => "FAILED_PRECONDITION",
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Unavailable(_) => "UNAVAILABLE",
         AppError::Io(_) => "IO",
@@ -621,6 +724,9 @@ mod tests {
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
     use crate::features::dsl_v4_features;
     use crate::identity::SingleUserPrincipalProvider;
+    use crate::source_registry::{
+        SourceRegistryCredentialStorage, SourceRegistryOrigin, SourceRegistryRecord,
+    };
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::materialization::sha256_hex;
     use crate::sources::model::SourceOrigin;
@@ -628,6 +734,51 @@ mod tests {
     struct QueryManagerFixture {
         _temp: TempDir,
         manager: QueryManager,
+    }
+
+    #[derive(Debug)]
+    struct StaticSourceRegistry {
+        records: Vec<SourceRegistryRecord>,
+    }
+
+    impl SourceRegistry for StaticSourceRegistry {
+        fn list_workspace_sources(
+            &self,
+            workspace_id: &str,
+        ) -> Result<Vec<SourceRegistryRecord>, AppError> {
+            Ok(self
+                .records
+                .iter()
+                .filter(|record| record.workspace_id == workspace_id)
+                .cloned()
+                .collect())
+        }
+
+        fn get_source(
+            &self,
+            workspace_id: &str,
+            source_name: &str,
+        ) -> Result<Option<SourceRegistryRecord>, AppError> {
+            Ok(self
+                .records
+                .iter()
+                .find(|record| {
+                    record.workspace_id == workspace_id && record.source_name == source_name
+                })
+                .cloned())
+        }
+
+        fn upsert_source(&self, _record: SourceRegistryRecord) -> Result<(), AppError> {
+            Err(AppError::FailedPrecondition(
+                "test registry is read-only".to_string(),
+            ))
+        }
+
+        fn remove_source(&self, _workspace_id: &str, _source_name: &str) -> Result<(), AppError> {
+            Err(AppError::FailedPrecondition(
+                "test registry is read-only".to_string(),
+            ))
+        }
     }
 
     fn query_manager_with(
@@ -716,6 +867,28 @@ mod tests {
         assert_eq!(episode_attr.value.as_str(), "ep_trace_1");
     }
 
+    fn query_manager_with_source_registry(
+        source_registry: Arc<dyn SourceRegistry>,
+    ) -> QueryManagerFixture {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let manager = QueryManager::new_with_source_registry(
+            config_store,
+            source_registry,
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            QueryRuntimeContext::default(),
+            layout,
+            dsl_v4_features(),
+            Vec::new(),
+        );
+        QueryManagerFixture {
+            _temp: temp,
+            manager,
+        }
+    }
+
     fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {
         let mut bytes = Vec::new();
         {
@@ -801,6 +974,7 @@ tables:
             variables: BTreeMap::new(),
             secrets: vec!["API_KEY".to_string(), "OAUTH_TOKEN".to_string()],
             credential_storage: Some(CredentialStorageKind::File),
+            identity_bindings: BTreeMap::new(),
             origin: SourceOrigin::Imported,
         };
         fixture
@@ -897,6 +1071,8 @@ surfaces:
                         openapi_sha256
                     ),
                     bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("import v4 source");
@@ -954,26 +1130,19 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: Vec::new(),
                     credential_storage: None,
+                    identity_bindings: BTreeMap::new(),
                     origin: SourceOrigin::Imported,
                 },
             )
             .expect("persist source");
 
-        let config = fixture
-            .manager
-            .config_store
-            .load_config()
-            .expect("load config");
         let error = fixture
             .manager
-            .load_query_sources(&workspace_name, &config)
+            .load_query_sources(&workspace_name)
             .expect_err("missing materialization should fail closed");
 
         assert!(
-            matches!(
-                error,
-                AppError::MissingOrIncompatibleV4Materialization { .. }
-            ),
+            matches!(error, AppError::SourceUnservable(_)),
             "unexpected error: {error:#}"
         );
     }
@@ -1018,19 +1187,15 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: Vec::new(),
                     credential_storage: None,
+                    identity_bindings: BTreeMap::new(),
                     origin: SourceOrigin::Imported,
                 },
             )
             .expect("persist source");
 
-        let config = fixture
-            .manager
-            .config_store
-            .load_config()
-            .expect("load config");
         let error = fixture
             .manager
-            .load_query_sources(&workspace_name, &config)
+            .load_query_sources(&workspace_name)
             .expect_err("disabled dsl_v4 feature should fail closed");
 
         assert!(
@@ -1057,6 +1222,7 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: vec!["GITHUB_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::Keychain),
+                    identity_bindings: BTreeMap::new(),
                     origin: SourceOrigin::Bundled,
                 },
             )
@@ -1073,10 +1239,8 @@ surfaces:
             dsl_v4_features(),
             Vec::new(),
         );
-        let config = manager.config_store.load_config().expect("load config");
-
         let error = manager
-            .load_query_sources(&workspace_name, &config)
+            .load_query_sources(&workspace_name)
             .expect_err("unavailable keychain should fail closed");
 
         assert!(
@@ -1134,6 +1298,10 @@ surfaces:
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "inlined source/credential setup; PR 9 extracts the shared test helpers that shorten this body"
+    )]
     async fn runtime_config_composes_provider_input_resolver_with_refreshed_inputs() {
         let calls = Arc::new(AtomicUsize::new(0));
         let observed_token = Arc::new(Mutex::new(None));
@@ -1158,6 +1326,7 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: vec!["API_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::File),
+                    identity_bindings: BTreeMap::new(),
                     origin: SourceOrigin::Bundled,
                 },
             )
@@ -1237,5 +1406,130 @@ tables:
                 .as_deref(),
             Some("stored-token")
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_input_resolver_uses_custom_source_registry() {
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("registry_secured_messages").expect("source name");
+        let manifest_yaml = r#"
+name: registry_secured_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://registry.example.com
+  API_TOKEN:
+    kind: secret
+base_url: "{{input.API_BASE}}"
+tables:
+  - name: messages
+    description: Secured messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+"#;
+        let fixture = query_manager_with_source_registry(Arc::new(StaticSourceRegistry {
+            records: vec![SourceRegistryRecord {
+                workspace_id: workspace_name.as_str().to_string(),
+                source_name: source_name.as_str().to_string(),
+                version: Some("0.1.0".to_string()),
+                manifest_yaml: Some(manifest_yaml.to_string()),
+                variables: BTreeMap::new(),
+                secrets: vec!["API_TOKEN".to_string()],
+                credential_storage: Some(SourceRegistryCredentialStorage::File),
+                identity_bindings: BTreeMap::new(),
+                origin: SourceRegistryOrigin::Imported,
+            }],
+        }));
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &workspace_name,
+                &CredentialSetId::for_source(&source_name),
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "registry-token".to_string())]),
+            )
+            .expect("write credential material");
+        let source_spec = parse_source_manifest_yaml(manifest_yaml).expect("parse source manifest");
+        let source = QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new());
+        let runtime = fixture
+            .manager
+            .runtime_config(
+                &workspace_name,
+                std::slice::from_ref(&source),
+                &AppConfig::default(),
+            )
+            .expect("runtime config");
+        let input_resolver = runtime
+            .extensions
+            .source_input_resolver
+            .expect("runtime installs input resolver");
+
+        let resolved_inputs = input_resolver
+            .resolve_inputs(&SourceInputResolutionContext::from_query_source(&source))
+            .await
+            .expect("resolve source inputs");
+
+        assert_eq!(
+            resolved_inputs.get("API_TOKEN").map(String::as_str),
+            Some("registry-token")
+        );
+        assert_eq!(
+            resolved_inputs.get("API_BASE").map(String::as_str),
+            Some("https://registry.example.com")
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_source_registry_loads_imported_manifest_yaml_from_record() {
+        let workspace_name = WorkspaceName::default();
+        let fixture = query_manager_with_source_registry(Arc::new(StaticSourceRegistry {
+            records: vec![SourceRegistryRecord {
+                workspace_id: workspace_name.as_str().to_string(),
+                source_name: "registry_messages".to_string(),
+                version: Some("0.1.0".to_string()),
+                manifest_yaml: Some(
+                    r"
+name: registry_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Registry-backed messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+"
+                    .to_string(),
+                ),
+                variables: BTreeMap::new(),
+                secrets: Vec::new(),
+                credential_storage: None,
+                identity_bindings: BTreeMap::new(),
+                origin: SourceRegistryOrigin::Imported,
+            }],
+        }));
+
+        let tables = fixture
+            .manager
+            .list_tables(&workspace_name, None, None)
+            .await
+            .expect("registry manifest should load");
+
+        assert!(tables.iter().any(|table| {
+            table.schema_name == "registry_messages" && table.table_name == "messages"
+        }));
     }
 }

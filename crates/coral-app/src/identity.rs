@@ -195,10 +195,6 @@ pub enum SourceIdentityOwner {
     Workspace,
 }
 
-#[expect(
-    dead_code,
-    reason = "source identity vocabulary consumed by source lifecycle and query resolution in later PRs"
-)]
 impl SourceIdentityOwner {
     pub(crate) fn as_config_value(self) -> &'static str {
         match self {

@@ -6,6 +6,7 @@ use coral_spec::ManifestInputSpec;
 use serde::{Deserialize, Serialize};
 
 use crate::credentials::CredentialStorageKind;
+use crate::identity::SourceIdentityBinding;
 use crate::sources::SourceName;
 
 /// App-owned description of a source candidate that can be installed.
@@ -43,6 +44,9 @@ pub(crate) struct InstalledSource {
     /// storage until the source is removed and re-added.
     #[serde(default)]
     pub(crate) credential_storage: Option<CredentialStorageKind>,
+    /// Source-local DSL v4 surface identity bindings for this workspace.
+    #[serde(default)]
+    pub(crate) identity_bindings: BTreeMap<String, SourceIdentityBinding>,
     /// Where this installed source came from.
     pub(crate) origin: SourceOrigin,
 }

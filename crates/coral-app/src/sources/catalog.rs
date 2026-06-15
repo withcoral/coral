@@ -58,18 +58,18 @@ pub(crate) fn load_bundled_source(name: &SourceName) -> Result<BundledSourceMani
     })
 }
 
-/// Resolve the effective installed manifest and verify it still matches the
-/// installed source identity in app state.
-pub(crate) fn resolve_installed_manifest(
+pub(crate) fn resolve_installed_manifest_with_imported_yaml(
     workspace_name: &WorkspaceName,
     source: &InstalledSource,
+    imported_manifest_yaml: Option<&str>,
     layout: &AppStateLayout,
 ) -> Result<InstalledSourceManifest, AppError> {
     let manifest_yaml = match source.origin {
         SourceOrigin::Bundled => load_bundled_source(&source.name)?.manifest_yaml,
-        SourceOrigin::Imported => {
-            std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name))?
-        }
+        SourceOrigin::Imported => match imported_manifest_yaml {
+            Some(manifest_yaml) => manifest_yaml.to_string(),
+            None => std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name))?,
+        },
     };
     let source_spec = parse_source_manifest_yaml(&manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;

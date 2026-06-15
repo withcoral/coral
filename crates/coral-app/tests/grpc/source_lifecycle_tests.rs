@@ -4,26 +4,32 @@
     reason = "test code: assertion-style indexing is idiomatic in tests"
 )]
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExplainSqlRequest,
     GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest, ListCatalogRequest,
     ListCatalogResponse, OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest,
-    QueryTestFailure, QueryTestSuccess, Source, SourceCredentialStorage, SourceInfo, SourceOrigin,
-    SourceSecret, SourceVariable, Workspace, catalog_item, query_test_result,
+    QueryTestFailure, QueryTestSuccess, Source, SourceCredentialStorage, SourceIdentityBinding,
+    SourceIdentityOwner, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
+    UserSourceIdentityBinding, Workspace, catalog_item, query_test_result,
     source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::default_workspace;
+use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 use tonic::Request;
 
 use crate::harness::{
-    FailingHttpFixture, GrpcHarness, fixture_function_only_manifest_yaml,
-    fixture_manifest_with_inputs_yaml, fixture_manifest_with_multiple_tables_yaml,
-    fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
-    fixture_manifest_yaml, import_request, invalid_manifest_yaml, secret, source_dir, variable,
+    FailingHttpFixture, GrpcHarness, fixed_token_identity_spec_yaml,
+    fixture_function_only_manifest_yaml, fixture_manifest_with_inputs_yaml,
+    fixture_manifest_with_multiple_tables_yaml, fixture_manifest_with_required_inputs_yaml,
+    fixture_manifest_with_test_queries_yaml, fixture_manifest_yaml, import_request,
+    invalid_manifest_yaml, secret, source_dir, variable,
 };
 
 #[tokio::test]
@@ -70,8 +76,300 @@ async fn import_source_persists_and_lists() {
     );
 }
 
+#[tokio::test]
+async fn import_v4_source_with_identity_bindings_fails_closed_from_grpc() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
+
+    let error = harness
+        .try_import_source(identity_import_request(manifest_yaml, "github_local"))
+        .await
+        .expect_err("identity-backed source import should fail closed");
+
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        error
+            .message()
+            .contains("request identity resolution is not installed"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        harness.list_sources().await.is_empty(),
+        "failed identity-backed import must not install the source"
+    );
+    assert_no_preflight_materialization_dirs(&harness, "github_v4_grpc");
+}
+
+#[tokio::test]
+async fn import_v4_source_rejects_invalid_user_accepted_identity() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
+
+    let error = harness
+        .try_import_source(ImportSourceRequest {
+            identity_bindings: rest_identity_bindings(),
+            user_identity_bindings: rest_user_identity_bindings("github_local", "missing"),
+            ..import_request(manifest_yaml)
+        })
+        .await
+        .expect_err("invalid accepted identity should fail import");
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(
+        error.message().contains(
+            "source 'github_v4_grpc' surface 'rest' user_identity_binding references unknown accepted_identity 'missing'"
+        ),
+        "unexpected error: {error}"
+    );
+    assert_no_preflight_materialization_dirs(&harness, "github_v4_grpc");
+}
+
+#[tokio::test]
+async fn import_v4_source_requires_user_accepted_identity_when_surface_accepts_multiple() {
+    let harness = GrpcHarness::new().await;
+    let (openapi_file, openapi_sha256) = write_v4_openapi(&harness, "http://127.0.0.1:1");
+    let manifest_yaml = format!(
+        r"
+name: github_v4_grpc
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    sha256: {}
+    identity_requirements:
+      accepts:
+        - id: github-device
+          identity_specs:
+            - github_oauth
+          audience:
+            host: github.com
+        - id: github-app
+          identity_specs:
+            - github_oauth_app
+          audience:
+            host: github.com
+",
+        openapi_file.display(),
+        openapi_sha256
+    );
+
+    let error = harness
+        .try_import_source(ImportSourceRequest {
+            identity_bindings: rest_identity_bindings(),
+            user_identity_bindings: rest_user_identity_bindings("github_local", ""),
+            ..import_request(manifest_yaml)
+        })
+        .await
+        .expect_err("ambiguous accepted identity should fail import");
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(
+        error.message().contains(
+            "source 'github_v4_grpc' surface 'rest' user_identity_binding must include accepted_identity because the surface accepts multiple identities"
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn import_v4_source_rejects_incompatible_user_identity_binding() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "gitlab_oauth", "gitlab.com").await;
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "github.com");
+
+    let error = harness
+        .try_import_source(identity_import_request(manifest_yaml, "github_local"))
+        .await
+        .expect_err("incompatible user identity should fail import");
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        error
+            .message()
+            .contains("does not satisfy selected identity requirements"),
+        "unexpected error: {error}"
+    );
+    let listed = harness.list_sources().await;
+    assert!(
+        listed.is_empty(),
+        "invalid user identity selection must not install the source"
+    );
+}
+
+#[tokio::test]
+async fn import_v4_source_rejects_identity_after_spec_force_remove_and_readd() {
+    let harness = GrpcHarness::new().await;
+    create_fixed_token_identity(&harness, "github_local", "github_oauth", "github.com").await;
+    harness.force_delete_identity_spec("github_oauth").await;
+    harness
+        .add_identity_spec(fixed_token_identity_spec_yaml(
+            "github_oauth",
+            "attacker.test",
+        ))
+        .await;
+
+    let manifest_yaml = write_v4_manifest(&harness, "http://127.0.0.1:1", "attacker.test");
+
+    let error = harness
+        .try_import_source(identity_import_request(manifest_yaml, "github_local"))
+        .await
+        .expect_err("changed identity spec should fail import");
+
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        error
+            .message()
+            .contains("has changed since the identity was created"),
+        "unexpected error: {error}"
+    );
+    let listed = harness.list_sources().await;
+    assert!(
+        listed.is_empty(),
+        "orphaned user identity selection must not install the source"
+    );
+}
+
+/// Adds a fixed-token identity spec named `spec_name` for `audience_host` and
+/// creates a user-owned identity bound to it.
+async fn create_fixed_token_identity(
+    harness: &GrpcHarness,
+    identity_name: &str,
+    spec_name: &str,
+    audience_host: &str,
+) {
+    harness
+        .add_identity_spec(fixed_token_identity_spec_yaml(spec_name, audience_host))
+        .await;
+    harness
+        .create_fixed_token_identity(identity_name, spec_name, "identity-token")
+        .await;
+}
+
+/// Import request binding the `rest` surface to a user-owned identity accepted
+/// as `github-rest-read`.
+fn identity_import_request(manifest_yaml: String, identity: &str) -> ImportSourceRequest {
+    ImportSourceRequest {
+        identity_bindings: rest_identity_bindings(),
+        user_identity_bindings: rest_user_identity_bindings(identity, "github-rest-read"),
+        ..import_request(manifest_yaml)
+    }
+}
+
+fn rest_identity_bindings() -> Vec<SourceIdentityBinding> {
+    vec![SourceIdentityBinding {
+        surface_id: "rest".to_string(),
+        owner: SourceIdentityOwner::User as i32,
+        ..Default::default()
+    }]
+}
+
+fn rest_user_identity_bindings(
+    identity: &str,
+    accepted_identity: &str,
+) -> Vec<UserSourceIdentityBinding> {
+    vec![UserSourceIdentityBinding {
+        surface_id: "rest".to_string(),
+        identity: identity.to_string(),
+        accepted_identity: accepted_identity.to_string(),
+    }]
+}
+
 fn read_config(harness: &GrpcHarness) -> String {
     fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config")
+}
+
+fn assert_no_preflight_materialization_dirs(harness: &GrpcHarness, source_name: &str) {
+    let materialized_parent = source_dir(harness.config_dir(), source_name).join("materialized");
+    if !materialized_parent.exists() {
+        return;
+    }
+    let leaked = fs::read_dir(&materialized_parent)
+        .expect("read materialized source dir")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("v4.preflight."))
+        .collect::<Vec<_>>();
+    assert!(
+        leaked.is_empty(),
+        "preflight materialization dirs leaked: {leaked:?}"
+    );
+}
+
+/// Writes the shared `OpenAPI` fixture targeting `base_url`; returns its path
+/// and sha256.
+fn write_v4_openapi(harness: &GrpcHarness, base_url: &str) -> (PathBuf, String) {
+    let openapi_yaml = grpc_identity_openapi_yaml(base_url);
+    let openapi_file = harness.temp_path().join("openapi.yaml");
+    fs::write(&openapi_file, &openapi_yaml).expect("write openapi");
+    let openapi_sha256 = format!("{:x}", Sha256::digest(openapi_yaml.as_bytes()));
+    (openapi_file, openapi_sha256)
+}
+
+/// Writes the `OpenAPI` fixture and returns a `github_v4_grpc` manifest that
+/// accepts `github_oauth` identities for `audience_host`.
+fn write_v4_manifest(harness: &GrpcHarness, base_url: &str, audience_host: &str) -> String {
+    let (openapi_file, openapi_sha256) = write_v4_openapi(harness, base_url);
+    grpc_identity_manifest_yaml_for_host(
+        "github_v4_grpc",
+        &openapi_file,
+        &openapi_sha256,
+        audience_host,
+    )
+}
+
+fn grpc_identity_manifest_yaml_for_host(
+    name: &str,
+    openapi_file: &Path,
+    openapi_sha256: &str,
+    audience_host: &str,
+) -> String {
+    format!(
+        r"
+name: {name}
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    sha256: {}
+    identity_requirements:
+      accepts:
+        - id: github-rest-read
+          identity_specs:
+            - github_oauth
+          audience:
+            host: {audience_host}
+",
+        openapi_file.display(),
+        openapi_sha256
+    )
+}
+
+fn grpc_identity_openapi_yaml(base_url: &str) -> String {
+    format!(
+        r#"
+openapi: 3.0.0
+info:
+  title: Demo
+  version: 1.0.0
+servers:
+  - url: "{base_url}"
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+"#
+    )
 }
 
 #[tokio::test]
@@ -573,14 +871,6 @@ async fn import_source_invalid_inputs_return_invalid_argument() {
                 ..import_request(fixture_manifest_with_inputs_yaml())
             },
             "source secret 'API_TOKEN' is repeated",
-        ),
-        (
-            "unsupported identity import fields should fail",
-            ImportSourceRequest {
-                identity_spec_manifest_yamls: vec!["kind: identity".to_string()],
-                ..import_request(fixture_manifest_yaml(harness.temp_path()))
-            },
-            "identity import fields are not supported",
         ),
     ];
 

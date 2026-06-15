@@ -32,9 +32,17 @@ pub(crate) fn runtime_components_for_v4_source(
         match surface.surface_type {
             SurfaceType::OpenApi => {
                 let http_manifest = http_manifest_for_surface(manifest, materialized, &surface.id)?;
-                components.push(RuntimeSourceComponent::Http(
-                    RuntimeHttpSourceComponent::new(http_manifest),
-                ));
+                let http_component =
+                    if let Some(identity_requirements) = surface.identity_requirements.clone() {
+                        RuntimeHttpSourceComponent::with_identity_requirements(
+                            http_manifest,
+                            surface.id.clone(),
+                            identity_requirements,
+                        )
+                    } else {
+                        RuntimeHttpSourceComponent::new(http_manifest)
+                    };
+                components.push(RuntimeSourceComponent::Http(http_component));
             }
             SurfaceType::Mcp => {
                 components.push(RuntimeSourceComponent::Mcp(mcp_manifest_for_surface(
@@ -159,7 +167,7 @@ fn http_manifest_for_surface(
         rate_limit: openapi_runtime.rate_limit.clone(),
         tables,
         functions,
-        declared_inputs: manifest.declared_inputs.clone(),
+        declared_inputs: surface.inputs.clone(),
     })
 }
 

@@ -1,11 +1,14 @@
 use coral_api::v1::{
-    AddIdentitySpecRequest, DeleteIdentitySpecRequest, GetIdentitySpecRequest, IdentitySpecInput,
-    ListIdentitySpecsRequest,
+    AddIdentitySpecRequest, DeleteIdentitySpecRequest, GetIdentitySpecRequest,
+    IdentitySpecImportInputs, IdentitySpecInput, ImportSourceRequest, ListIdentitySpecsRequest,
 };
 use coral_app::features::{Feature, FeatureOverrides};
 use tonic::{Code, Request};
 
-use crate::harness::{GrpcHarness, fixed_token_identity_spec_yaml};
+use crate::harness::{
+    GrpcHarness, fixed_token_identity_spec_yaml, fixture_manifest_with_inputs_yaml, import_request,
+    secret, variable,
+};
 
 fn oauth_identity_yaml_with_required_secret() -> String {
     r"
@@ -46,6 +49,17 @@ fn client_secret_input() -> IdentitySpecInput {
     IdentitySpecInput {
         key: "DEMO_OAUTH_CLIENT_SECRET".to_string(),
         value: "client-secret".to_string(),
+    }
+}
+
+/// Builds an import request for the fixture source that bundles
+/// `identity_spec_manifest_yamls`.
+fn bundled_import_request(identity_spec_manifest_yamls: Vec<String>) -> ImportSourceRequest {
+    ImportSourceRequest {
+        variables: vec![variable("API_BASE", "https://example.com")],
+        secrets: vec![secret("API_TOKEN", "secret-token")],
+        identity_spec_manifest_yamls,
+        ..import_request(fixture_manifest_with_inputs_yaml())
     }
 }
 
@@ -190,6 +204,28 @@ async fn identity_spec_service_stores_request_inputs_on_identity_spec() {
 }
 
 #[tokio::test]
+async fn source_import_stores_identity_spec_inputs_on_identity_spec() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = oauth_identity_yaml_with_required_secret();
+
+    harness
+        .try_import_source(ImportSourceRequest {
+            identity_spec_inputs: vec![IdentitySpecImportInputs {
+                identity_spec_name: "demo_oauth".to_string(),
+                inputs: vec![client_secret_input()],
+            }],
+            ..bundled_import_request(vec![manifest_yaml.clone()])
+        })
+        .await
+        .expect("source import with identity spec inputs");
+
+    harness
+        .try_add_identity_spec(manifest_yaml, Vec::new())
+        .await
+        .expect("source import should persist identity spec input material");
+}
+
+#[tokio::test]
 async fn identity_spec_service_rejects_replacing_spec_used_by_identity() {
     let harness = GrpcHarness::new().await;
 
@@ -217,4 +253,126 @@ async fn identity_spec_service_rejects_replacing_spec_used_by_identity() {
     let fetched = get_identity_spec_manifest(&harness, "github_pat").await;
     assert!(fetched.contains("host: github.com"));
     assert!(!fetched.contains("attacker.test"));
+}
+
+#[tokio::test]
+async fn source_import_installs_identity_specs_from_bundle_request() {
+    let harness = GrpcHarness::new().await;
+
+    harness
+        .try_import_source(bundled_import_request(vec![
+            fixed_token_identity_spec_yaml("github_oauth", "github.com"),
+        ]))
+        .await
+        .expect("import source");
+
+    let identity_specs = harness.list_identity_specs().await;
+    assert_eq!(identity_specs.len(), 1);
+    assert_eq!(
+        identity_specs
+            .first()
+            .expect("installed identity spec")
+            .name,
+        "github_oauth"
+    );
+}
+
+#[tokio::test]
+async fn source_import_rolls_back_identity_specs_when_source_import_fails() {
+    let harness = GrpcHarness::new().await;
+    let error = harness
+        .try_import_source(ImportSourceRequest {
+            identity_spec_manifest_yamls: vec![fixed_token_identity_spec_yaml(
+                "github_oauth",
+                "github.com",
+            )],
+            variables: vec![variable("API_BASE", "https://example.com")],
+            ..import_request(fixture_manifest_with_inputs_yaml())
+        })
+        .await
+        .expect_err("invalid source import should fail");
+
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(
+        error
+            .message()
+            .contains("missing required source secret 'API_TOKEN'"),
+        "unexpected error: {error}"
+    );
+    assert!(harness.list_identity_specs().await.is_empty());
+}
+
+#[tokio::test]
+async fn source_import_rolls_back_identity_spec_input_material_when_import_fails() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = oauth_identity_yaml_with_required_secret();
+    harness
+        .try_add_identity_spec(manifest_yaml.clone(), vec![client_secret_input()])
+        .await
+        .expect("add original identity spec with material");
+
+    let error = harness
+        .try_import_source(ImportSourceRequest {
+            identity_spec_manifest_yamls: vec![fixed_token_identity_spec_yaml(
+                "demo_oauth",
+                "github.com",
+            )],
+            variables: vec![variable("API_BASE", "https://example.com")],
+            ..import_request(fixture_manifest_with_inputs_yaml())
+        })
+        .await
+        .expect_err("invalid source import should fail");
+
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(
+        error
+            .message()
+            .contains("missing required source secret 'API_TOKEN'"),
+        "unexpected error: {error}"
+    );
+    harness
+        .try_add_identity_spec(manifest_yaml, Vec::new())
+        .await
+        .expect("restored input material should satisfy original required input");
+}
+
+#[tokio::test]
+async fn source_import_rejects_identity_spec_bundle_without_partial_install() {
+    let harness = GrpcHarness::new().await;
+    let error = harness
+        .try_import_source(bundled_import_request(vec![
+            fixed_token_identity_spec_yaml("github_oauth", "github.com"),
+            "kind: identity\nspec_version: 1\nname: broken_identity\n".to_string(),
+        ]))
+        .await
+        .expect_err("invalid identity spec bundle should fail");
+
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(
+        harness.list_identity_specs().await.is_empty(),
+        "valid identity spec before invalid bundle entry must not remain installed"
+    );
+}
+
+#[tokio::test]
+async fn source_import_rejects_duplicate_identity_spec_bundle_without_partial_install() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixed_token_identity_spec_yaml("github_oauth", "github.com");
+    let error = harness
+        .try_import_source(bundled_import_request(vec![
+            manifest_yaml.clone(),
+            manifest_yaml,
+        ]))
+        .await
+        .expect_err("duplicate identity spec bundle should fail");
+
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(
+        error.message().contains("included more than once"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        harness.list_identity_specs().await.is_empty(),
+        "duplicate bundle must not install either identity spec"
+    );
 }

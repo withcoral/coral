@@ -272,6 +272,44 @@ pub trait UserOwnedIdentityStore: Send + Sync + std::fmt::Debug + 'static {
         ))
     }
 
+    /// Snapshots one per-user source identity selection, returning `None` when
+    /// no selection has been stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the store cannot be read.
+    async fn snapshot_source_identity_binding(
+        &self,
+        _user_id: &str,
+        _workspace_name: &str,
+        _source_name: &str,
+        _surface_id: &str,
+    ) -> Result<Option<SourceIdentitySelection>, AppError> {
+        Err(AppError::FailedPrecondition(
+            "user-owned source identity binding storage is not supported by this identity store"
+                .to_string(),
+        ))
+    }
+
+    /// Restores one per-user source identity selection from a snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the store cannot be written.
+    async fn restore_source_identity_binding(
+        &self,
+        _user_id: &str,
+        _workspace_name: &str,
+        _source_name: &str,
+        _surface_id: &str,
+        _selection: Option<&SourceIdentitySelection>,
+    ) -> Result<(), AppError> {
+        Err(AppError::FailedPrecondition(
+            "user-owned source identity binding storage is not supported by this identity store"
+                .to_string(),
+        ))
+    }
+
     /// Loads one per-user source identity selection.
     ///
     /// # Errors
@@ -591,13 +629,6 @@ impl UserOwnedIdentityManager {
         self.store.delete_identity(owner, &identity_name).await
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "consumed by the v4 source lifecycle (sources/service.rs) in a later PR"
-        )
-    )]
     pub(crate) async fn replace_user_owned_source_identity_binding(
         &self,
         principal: &UserPrincipal,
@@ -622,10 +653,49 @@ impl UserOwnedIdentityManager {
             .await
     }
 
-    #[expect(
-        dead_code,
-        reason = "consumed by the v4 source lifecycle (sources/service.rs) in a later PR"
-    )]
+    pub(crate) async fn snapshot_user_owned_source_identity_binding(
+        &self,
+        principal: &UserPrincipal,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        surface_id: &str,
+    ) -> Result<Option<SourceIdentitySelection>, AppError> {
+        let user_id = validate_user_id(principal.user_id())?;
+        let surface_id = validate_source_surface_id(surface_id)?;
+        self.store
+            .snapshot_source_identity_binding(
+                &user_id,
+                workspace_name.as_str(),
+                source_name.as_str(),
+                &surface_id,
+            )
+            .await
+    }
+
+    pub(crate) async fn restore_user_owned_source_identity_binding(
+        &self,
+        principal: &UserPrincipal,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        surface_id: &str,
+        selection: Option<&SourceIdentitySelection>,
+    ) -> Result<(), AppError> {
+        let user_id = validate_user_id(principal.user_id())?;
+        let surface_id = validate_source_surface_id(surface_id)?;
+        if let Some(selection) = selection {
+            selection.validate()?;
+        }
+        self.store
+            .restore_source_identity_binding(
+                &user_id,
+                workspace_name.as_str(),
+                source_name.as_str(),
+                &surface_id,
+                selection,
+            )
+            .await
+    }
+
     pub(crate) async fn validate_user_owned_source_identity_selection(
         &self,
         principal: &UserPrincipal,
@@ -1039,6 +1109,89 @@ impl UserOwnedIdentityStore for FileUserOwnedIdentityStore {
             write_files_transactionally(&[&path], || {
                 let document = UserSourceIdentityBindingDocument::from_selection(&selection);
                 write_file_unlocked(&path, serde_yaml::to_string(&document)?.as_bytes())?;
+                Ok(())
+            })
+        })
+        .await?
+    }
+
+    async fn snapshot_source_identity_binding(
+        &self,
+        user_id: &str,
+        workspace_name: &str,
+        source_name: &str,
+        surface_id: &str,
+    ) -> Result<Option<SourceIdentitySelection>, AppError> {
+        let store = self.clone();
+        let user_id = user_id.to_string();
+        let workspace_name = workspace_name.to_string();
+        let source_name = source_name.to_string();
+        let surface_id = surface_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let user_id = validate_user_id(&user_id)?;
+            let workspace_name = WorkspaceName::parse(&workspace_name)?;
+            let source_name = SourceName::parse(&source_name)?;
+            let surface_id = validate_source_surface_id(&surface_id)?;
+            let _lock = FileLock::shared(store.layout.state_lock())?;
+            let path = store.layout.user_owned_source_identity_binding_file(
+                &user_id,
+                &workspace_name,
+                &source_name,
+                &surface_id,
+            );
+            if !path.exists() {
+                return Ok(None);
+            }
+            let raw = fs::read_to_string(&path)?;
+            let document: UserSourceIdentityBindingDocument = serde_yaml::from_str(&raw)?;
+            document.into_selection().map(Some)
+        })
+        .await?
+    }
+
+    async fn restore_source_identity_binding(
+        &self,
+        user_id: &str,
+        workspace_name: &str,
+        source_name: &str,
+        surface_id: &str,
+        selection: Option<&SourceIdentitySelection>,
+    ) -> Result<(), AppError> {
+        let store = self.clone();
+        let user_id = user_id.to_string();
+        let workspace_name = workspace_name.to_string();
+        let source_name = source_name.to_string();
+        let surface_id = surface_id.to_string();
+        let selection = selection.cloned();
+        tokio::task::spawn_blocking(move || {
+            let user_id = validate_user_id(&user_id)?;
+            let workspace_name = WorkspaceName::parse(&workspace_name)?;
+            let source_name = SourceName::parse(&source_name)?;
+            let surface_id = validate_source_surface_id(&surface_id)?;
+            if let Some(selection) = &selection {
+                selection.validate()?;
+            }
+            let _lock = FileLock::exclusive(store.layout.state_lock())?;
+            let path = store.layout.user_owned_source_identity_binding_file(
+                &user_id,
+                &workspace_name,
+                &source_name,
+                &surface_id,
+            );
+            write_files_transactionally(&[&path], || {
+                match selection {
+                    Some(selection) => {
+                        if let Some(parent) = path.parent() {
+                            storage_fs::ensure_private_dir(parent)?;
+                        }
+                        let document =
+                            UserSourceIdentityBindingDocument::from_selection(&selection);
+                        write_file_unlocked(&path, serde_yaml::to_string(&document)?.as_bytes())?;
+                    }
+                    None => {
+                        remove_file_if_exists_unlocked(&path)?;
+                    }
+                }
                 Ok(())
             })
         })
@@ -2052,10 +2205,50 @@ oauth:
             .expect("resolve source identity binding")
             .expect("selection");
         assert_eq!(resolved, selection);
+        let snapshot = manager
+            .snapshot_user_owned_source_identity_binding(
+                &principal,
+                &workspace_name,
+                &source_name,
+                "rest",
+            )
+            .await
+            .expect("snapshot source identity binding");
+        assert_eq!(snapshot, Some(selection.clone()));
+
+        let replacement =
+            SourceIdentitySelection::new("github_tina", Some("github-rest-read".to_string()))
+                .expect("replacement selection");
+        manager
+            .replace_user_owned_source_identity_binding(
+                &principal,
+                &workspace_name,
+                &source_name,
+                "rest",
+                &replacement,
+            )
+            .await
+            .expect("replace source identity binding");
+        manager
+            .restore_user_owned_source_identity_binding(
+                &principal,
+                &workspace_name,
+                &source_name,
+                "rest",
+                snapshot.as_ref(),
+            )
+            .await
+            .expect("restore source identity binding");
+        let restored = manager
+            .resolve_source_identity_selection(&request)
+            .await
+            .expect("resolve restored source identity binding")
+            .expect("selection");
+        assert_eq!(restored, selection);
 
         let missing_user = SourceIdentitySelectionRequest {
             subject: SourceIdentitySubject::User("tina".to_string()),
-            ..request
+            ..request.clone()
         };
         let error = manager
             .resolve_source_identity_selection(&missing_user)
@@ -2066,6 +2259,20 @@ oauth:
                 .to_string()
                 .contains("user 'tina' has no selected identity")
         );
+        manager
+            .restore_user_owned_source_identity_binding(
+                &principal,
+                &workspace_name,
+                &source_name,
+                "rest",
+                None,
+            )
+            .await
+            .expect("restore missing source identity binding");
+        manager
+            .resolve_source_identity_selection(&request)
+            .await
+            .expect_err("restored missing binding should not resolve");
     }
 
     #[tokio::test]
