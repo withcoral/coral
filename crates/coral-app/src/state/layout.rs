@@ -5,11 +5,17 @@ use std::path::{Path, PathBuf};
 use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, choose_native_strategy};
 
 use crate::bootstrap::AppError;
+use crate::recipes::RecipeName;
 use crate::sources::SourceName;
 use crate::storage::fs::ensure_dir;
 use crate::workspaces::WorkspaceName;
 
 pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
+#[allow(
+    dead_code,
+    reason = "recipe lifecycle wiring consumes this path in a later stack branch"
+)]
+pub(crate) const INSTALLED_RECIPE_FILE_NAME: &str = "recipe.yaml";
 pub(crate) const INSTALLED_SECRETS_FILE_NAME: &str = "secrets.env";
 
 #[derive(Debug, Clone)]
@@ -84,6 +90,39 @@ impl AppStateLayout {
 
     pub(crate) fn feedback_reports_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.feedback_dir(workspace_name).join("reports.jsonl")
+    }
+
+    #[allow(
+        dead_code,
+        reason = "recipe lifecycle wiring consumes this path in a later stack branch"
+    )]
+    pub(crate) fn recipes_root(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.workspace_dir(workspace_name).join("recipes")
+    }
+
+    #[allow(
+        dead_code,
+        reason = "recipe lifecycle wiring consumes this path in a later stack branch"
+    )]
+    pub(crate) fn recipe_dir(
+        &self,
+        workspace_name: &WorkspaceName,
+        recipe_name: &RecipeName,
+    ) -> PathBuf {
+        self.recipes_root(workspace_name).join(recipe_name.as_str())
+    }
+
+    #[allow(
+        dead_code,
+        reason = "recipe lifecycle wiring consumes this path in a later stack branch"
+    )]
+    pub(crate) fn recipe_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        recipe_name: &RecipeName,
+    ) -> PathBuf {
+        self.recipe_dir(workspace_name, recipe_name)
+            .join(INSTALLED_RECIPE_FILE_NAME)
     }
 
     /// Per-workspace episode log (JSONL) for experimental trajectory memory. The
@@ -196,6 +235,7 @@ impl AppStateLayout {
 #[cfg(test)]
 mod tests {
     use super::AppStateLayout;
+    use crate::recipes::RecipeName;
     use crate::sources::SourceName;
     use crate::workspaces::WorkspaceName;
     use tempfile::tempdir;
@@ -207,6 +247,7 @@ mod tests {
         let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let source_name = SourceName::parse("github").expect("source");
+        let recipe_name = RecipeName::parse("review_queue").expect("recipe");
 
         assert_eq!(layout.config_file(), config_dir.join("config.toml"));
         assert_eq!(
@@ -234,6 +275,15 @@ mod tests {
                 .join("default")
                 .join("feedback")
                 .join("reports.jsonl")
+        );
+        assert_eq!(
+            layout.recipe_file(&workspace_name, &recipe_name),
+            config_dir
+                .join("workspaces")
+                .join("default")
+                .join("recipes")
+                .join("review_queue")
+                .join("recipe.yaml")
         );
         assert_eq!(
             layout.episodes_file(&workspace_name),
