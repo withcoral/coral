@@ -29,10 +29,9 @@ use coral_api::v1::{
     ListRecipesResponse, ListSourcesRequest, ListSourcesResponse, PaginationRequest,
     PaginationResponse, QueryPlan, RemoveRecipeRequest, RemoveRecipeResponse, SearchCatalogRequest,
     SearchCatalogResponse, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
-    SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateRecipeRequest,
-    ValidateRecipeResponse, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
-    create_bundled_source_with_o_auth_response, import_source_response,
-    source_input_spec::Input as ProtoSourceInput,
+    SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
+    import_source_response, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
 use tempfile::TempDir;
@@ -838,15 +837,6 @@ impl RecipeService for MockRecipeService {
         Ok(Response::new(ListRecipesResponse {
             recipes: Vec::new(),
         }))
-    }
-
-    async fn validate_recipe(
-        &self,
-        _request: Request<ValidateRecipeRequest>,
-    ) -> Result<Response<ValidateRecipeResponse>, Status> {
-        Err(Status::unimplemented(
-            "mock recipe validation is not implemented",
-        ))
     }
 
     async fn remove_recipe(

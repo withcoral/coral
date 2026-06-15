@@ -408,8 +408,11 @@ implementation:
   query: |
     select 1 as id
 publish:
-  - table_function: recipes.{name}
-  - mcp_tool: {name}
+  table_function:
+    schema: recipes
+    name: {name}
+  mcp:
+    name: {name}
 "
     )
 }
@@ -667,9 +670,15 @@ implementation:
     select text
     from local_messages.messages
     where type = $kind
+validation:
+  args:
+    kind: user
 publish:
-  - table_function: recipes.message_lookup
-  - mcp_tool: message_lookup
+  table_function:
+    schema: recipes
+    name: message_lookup
+  mcp:
+    name: message_lookup
 "
             .to_string(),
         }))
