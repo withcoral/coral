@@ -36,9 +36,9 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 
 - External authoring:
   - create a standalone source spec such as `./my-source.yaml`
-  - when the source depends on DSL v4 identity requirements, the same file may be a YAML stream containing exactly one source spec and one or more `kind: identity` documents separated by `---`
-  - validate structure with `coral source lint ./my-source.yaml`
-  - load it with `coral source add --file ./my-source.yaml` when you need to query it through Coral
+  - when the source depends on DSL v4 identity requirements, the same file may be authored as a YAML stream containing exactly one source spec and one or more `kind: identity` documents separated by `---`
+  - validate structure with `coral source lint ./my-source.yaml`; for YAML streams, first verify the target Coral build supports bundle-aware source linting
+  - load it with `coral source add --file ./my-source.yaml` when you need to query it through Coral; for YAML streams, first verify the target Coral build supports installing bundled identity docs through source import
 - Coral repo contribution:
   - write community source specs to `sources/community/<name>/manifest.yaml`
   - write core source specs to `sources/core/<name>/manifest.yaml` only when the user is intentionally changing bundled core sources
@@ -99,7 +99,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
   table names. Table-function names must start with an ASCII letter or
   underscore and then use only ASCII letters, numbers, or underscores.
 - For DSL v4 OpenAPI surfaces, use `identity_requirements` only when installed source config will bind the surface to an existing user-owned or workspace-owned identity. `identity_requirements.accepts[]` may contain only `id`, `identity_specs`, and optional `audience`; it does not collect source credentials and does not replace `inputs`, `credential.methods`, or runtime `auth` for source-stored tokens.
-- Identity specs are global app state, managed with `coral identity-spec`; `coral source add --file` can install bundled `kind: identity` documents from the same YAML stream as the source. Installing an identity spec alone does not create stored identity records or source bindings. Declared identity `inputs` are collected when the spec is installed and are stored as identity-spec material, not concrete identity material. When a DSL v4 source declares `identity_requirements`, the interactive source-add flow can create or select a compatible user-owned identity and store that local user's source-surface selection.
+- Identity specs are global app state, managed with `coral identity-spec`; builds with bundle-aware source import can also install bundled `kind: identity` documents from the same YAML stream as the source through `coral source add --file`. Installing an identity spec alone does not create stored identity records or source bindings. Declared identity `inputs` are collected when the spec is installed and are stored as identity-spec material, not concrete identity material. When a DSL v4 source declares `identity_requirements`, bundle-aware interactive source-add flows can create or select a compatible user-owned identity and store that local user's source-surface selection.
 - When authoring `identity_requirements`, keep `accepts` non-empty, give each accepted entry a stable `id`, list accepted identity spec names in `identity_specs`, and include an `audience` object when host/tenant/org/account scoping matters. Put provider `issuer`, identity `type`, setup, and capabilities on the corresponding `kind: identity` specs. Built-in HTTP identity specs need a string `audience.host`; Coral injects Authorization headers only for that exact host or its subdomains.
 - Mark filters as required only when the API truly requires them.
 - Use default table functions for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.

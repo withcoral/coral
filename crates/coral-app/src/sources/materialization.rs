@@ -301,6 +301,17 @@ fn validate_fingerprint_surfaces(
                 ),
             ));
         }
+        if let Some(expected_descriptor_sha256) = surface.descriptor.sha256()
+            && fingerprint_surface.descriptor_sha256 != expected_descriptor_sha256
+        {
+            return Err(incompatible_materialization_error(
+                source_name,
+                format!(
+                    "surface '{}' descriptor hash fingerprint does not match installed manifest",
+                    surface.id
+                ),
+            ));
+        }
         let expected = stable_input_declarations_sha256(&surface.inputs)?;
         if fingerprint_surface.input_declarations_sha256 != expected {
             return Err(incompatible_materialization_error(
@@ -668,6 +679,7 @@ fn materialize_surface(
     surface: &coral_spec::v4::V4Surface,
     inputs: &MaterializationInputs,
 ) -> Result<MaterializedSurfaceBuild, AppError> {
+    reject_unsupported_identity_requirements(manifest, surface)?;
     match surface.surface_type {
         SurfaceType::OpenApi => materialize_openapi_surface(manifest, surface),
         SurfaceType::Mcp => materialize_mcp_surface(manifest, surface, inputs),
@@ -679,8 +691,20 @@ fn materialize_openapi_surface(
     surface: &coral_spec::v4::V4Surface,
 ) -> Result<MaterializedSurfaceBuild, AppError> {
     let bytes = read_descriptor(surface)?;
-    validate_materialized_surface_base_url(manifest, surface, &bytes)?;
     let observed_sha256 = sha256_hex(&bytes);
+    let expected_sha256 = surface.descriptor.sha256().ok_or_else(|| {
+        AppError::FailedPrecondition(format!(
+            "OpenAPI descriptor for source '{}' surface '{}' is missing a sha256 pin",
+            manifest.common.name, surface.id
+        ))
+    })?;
+    if observed_sha256 != expected_sha256 {
+        return Err(AppError::FailedPrecondition(format!(
+            "OpenAPI descriptor for source '{}' surface '{}' has sha256 {observed_sha256}; expected {expected_sha256}",
+            manifest.common.name, surface.id
+        )));
+    }
+    validate_materialized_surface_base_url(manifest, surface, &bytes)?;
     let semantic_ir = import_openapi_surface(manifest, surface, &bytes).map_err(|error| {
         AppError::FailedPrecondition(format!(
             "failed to import source '{}' surface '{}': {error}",
@@ -777,6 +801,19 @@ fn app_error_from_core(error: coral_engine::CoreError) -> AppError {
         coral_engine::CoreError::Unavailable(detail) => AppError::Unavailable(detail),
         other => AppError::FailedPrecondition(other.to_string()),
     }
+}
+
+fn reject_unsupported_identity_requirements(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+) -> Result<(), AppError> {
+    if surface.identity_requirements.is_none() {
+        return Ok(());
+    }
+    Err(AppError::FailedPrecondition(format!(
+        "source '{}' surface '{}' declares identity_requirements, but this build does not support DSL v4 identity binding for source import",
+        manifest.common.name, surface.id
+    )))
 }
 
 fn validate_materialized_surface_base_url(
@@ -1567,6 +1604,66 @@ surfaces:
     }
 
     #[test]
+    fn build_v4_materialization_rejects_descriptor_hash_mismatch() {
+        let error = build_materialization(Some(&"a".repeat(64)))
+            .build
+            .expect_err("hash mismatch should fail");
+
+        assert!(
+            error.to_string().contains("expected aaaaaa"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn build_v4_materialization_rejects_identity_requirements_without_binding_support() {
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("openapi.yaml");
+        std::fs::write(&openapi_file, openapi_fixture()).expect("write descriptor");
+        let state_temp = TempDir::new().expect("state temp dir");
+        let layout =
+            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let manifest_yaml = format!(
+            r"
+name: github_v4_materialization_test
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    sha256: {}
+    identity_requirements:
+      accepts:
+        - id: github-rest-read
+          identity_specs: [github_oauth]
+    base_url: https://api.example.com
+",
+            openapi_file.display(),
+            sha256_hex(openapi_fixture().as_bytes())
+        );
+        let manifest = parse_v4_manifest(&manifest_yaml);
+
+        let error = build_v4_materialization_tmp(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+            &MaterializationInputs::default(),
+            "test",
+        )
+        .expect_err("identity requirements should fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not support DSL v4 identity binding"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn load_v4_materialization_rejects_mismatched_manifest_hash() {
         let mut installed = setup_materialization();
         installed.manifest_yaml = format!("description: changed\n{}", installed.manifest_yaml);
@@ -1610,6 +1707,27 @@ surfaces:
         installed.assert_load_rejected(
             "extra surface should fail",
             &["fingerprint surface set mismatch"],
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_descriptor_hash_fingerprint_mismatch() {
+        let installed = setup_materialization();
+        rewrite_fingerprint_surfaces(&installed.layout, |surfaces| {
+            surfaces
+                .first_mut()
+                .expect("first surface")
+                .as_mapping_mut()
+                .expect("surface mapping")
+                .insert(
+                    "descriptor_sha256".into(),
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                );
+        });
+
+        installed.assert_load_rejected(
+            "fingerprint hash mismatch should fail",
+            &["descriptor hash fingerprint does not match"],
         );
     }
 

@@ -276,10 +276,6 @@ fn validate_identity_inputs(
     let IdentitySpecConfig::OAuth(oauth) = config else {
         return Ok(());
     };
-    if inputs.is_empty() {
-        oauth.method.oauth.endpoint_urls(&BTreeMap::new())?;
-        return Ok(());
-    }
     for input in inputs {
         if input.credential.is_some() {
             return Err(ManifestError::validation(format!(
@@ -298,34 +294,39 @@ fn validate_identity_inputs(
         &declared,
         "identity inputs",
     )?;
-    validate_identity_oauth_client_input(name, inputs, &oauth.method.oauth)
+    validate_identity_oauth_client_input(name, &declared, &oauth.method.oauth)
 }
 
 fn validate_identity_oauth_client_input(
     name: &str,
-    inputs: &[ManifestInputSpec],
+    declared: &BTreeMap<&str, &ManifestInputSpec>,
     oauth: &ManifestOAuthCredentialSpec,
 ) -> Result<()> {
-    let declared = inputs
-        .iter()
-        .map(|input| (input.key.as_str(), input))
-        .collect::<BTreeMap<_, _>>();
-    if let Some(input_key) = oauth.client.id.input.as_deref()
-        && let Some(input) = declared.get(input_key)
-        && input.kind != ManifestInputKind::Variable
-    {
-        return Err(ManifestError::validation(format!(
-            "identity '{name}' oauth.client.id.input '{input_key}' must reference a variable input"
-        )));
+    if let Some(input_key) = oauth.client.id.input.as_deref() {
+        let Some(input) = declared.get(input_key) else {
+            return Err(ManifestError::validation(format!(
+                "identity '{name}' oauth.client.id.input '{input_key}' must reference a declared variable input"
+            )));
+        };
+        if input.kind != ManifestInputKind::Variable {
+            return Err(ManifestError::validation(format!(
+                "identity '{name}' oauth.client.id.input '{input_key}' must reference a variable input"
+            )));
+        }
     }
-    if let Some(secret) = oauth.client.secret.as_ref()
-        && let Some(input) = declared.get(secret.input.as_str())
-        && input.kind != ManifestInputKind::Secret
-    {
-        return Err(ManifestError::validation(format!(
-            "identity '{name}' oauth.client.secret.input '{}' must reference a secret input",
-            secret.input
-        )));
+    if let Some(secret) = oauth.client.secret.as_ref() {
+        let Some(input) = declared.get(secret.input.as_str()) else {
+            return Err(ManifestError::validation(format!(
+                "identity '{name}' oauth.client.secret.input '{}' must reference a declared secret input",
+                secret.input
+            )));
+        };
+        if input.kind != ManifestInputKind::Secret {
+            return Err(ManifestError::validation(format!(
+                "identity '{name}' oauth.client.secret.input '{}' must reference a secret input",
+                secret.input
+            )));
+        }
     }
     Ok(())
 }
@@ -490,7 +491,7 @@ oauth:
     label: Connect with GitHub device code
     flow: {type: device_code}
     endpoints: {device_authorization_url: 'https://github.com/login/device/code', token_url: 'https://github.com/login/oauth/access_token'}
-    client: {id: {input: GITHUB_OAUTH_CLIENT_ID}}",
+    client: {id: {default: github-client}}",
         )
     }
 
@@ -599,6 +600,37 @@ oauth:
             error.to_string().contains("looks credential-like")
                 || error.to_string().contains("must reference a secret input"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_oauth_client_secret_input_that_is_not_declared() {
+        expect_validation_error(
+            &demo_oauth(
+                r"oauth:
+  method:
+    flow: {type: authorization_code, pkce: required}
+    redirect_uri: http://127.0.0.1:53682/oauth/callback
+    endpoints: {authorization_url: 'https://provider.example.com/oauth/authorize', token_url: 'https://provider.example.com/oauth/token'}
+    client: {id: {default: demo-client}, secret: {input: OAUTH_CLIENT_SECRET, transport: request_body}}",
+            ),
+            "undeclared client secret input should fail",
+            "must reference a declared secret input",
+        );
+    }
+
+    #[test]
+    fn rejects_oauth_client_id_input_that_is_not_declared() {
+        expect_validation_error(
+            &demo_oauth(
+                r"oauth:
+  method:
+    flow: {type: device_code}
+    endpoints: {device_authorization_url: 'https://provider.example.com/oauth/device', token_url: 'https://provider.example.com/oauth/token'}
+    client: {id: {input: OAUTH_CLIENT_ID}}",
+            ),
+            "undeclared client id input should fail",
+            "must reference a declared variable input",
         );
     }
 

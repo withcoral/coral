@@ -203,17 +203,7 @@ impl V4SourceManifest {
             test_queries,
             surfaces,
         } = raw;
-        if dsl_version != 4 {
-            return Err(ManifestError::validation(format!(
-                "source '{name}' declares dsl_version {dsl_version}; expected 4"
-            )));
-        }
-        if surfaces.is_empty() {
-            return Err(ManifestError::validation(format!(
-                "source '{name}' must declare at least one surface"
-            )));
-        }
-        validate_test_queries(&name, &test_queries)?;
+        validate_manifest_header(&name, dsl_version, &surfaces, &test_queries)?;
         let common = V4SourceCommon {
             dsl_version,
             name: name.clone(),
@@ -304,6 +294,25 @@ impl V4SourceManifest {
             .iter()
             .find(|surface| surface.id == surface_id)
     }
+}
+
+fn validate_manifest_header(
+    name: &str,
+    dsl_version: u32,
+    surfaces: &[RawV4Surface],
+    test_queries: &[String],
+) -> Result<()> {
+    if dsl_version != 4 {
+        return Err(ManifestError::validation(format!(
+            "source '{name}' declares dsl_version {dsl_version}; expected 4"
+        )));
+    }
+    if surfaces.is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{name}' must declare at least one surface"
+        )));
+    }
+    validate_test_queries(name, test_queries)
 }
 
 fn parse_surface(
