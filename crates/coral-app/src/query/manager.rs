@@ -22,7 +22,7 @@ use crate::query::QueryAttribution;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
-use crate::recipes::manager::RecipeManager;
+use crate::recipes::manager::{ListedRecipe, RecipeManager};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{
@@ -369,7 +369,7 @@ impl QueryManager {
     pub(crate) fn list_recipes(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Vec<RecipeRuntimeDefinition>, QueryManagerError> {
+    ) -> Result<Vec<ListedRecipe>, QueryManagerError> {
         self.recipe_manager
             .list_recipes(workspace_name)
             .map_err(QueryManagerError::App)
@@ -617,7 +617,10 @@ mod tests {
 
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
-    use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
+    use crate::recipes::model::RecipeOrigin;
+    use crate::sources::manager::{
+        CreateBundledSourceCommand, ImportSourceCommand, SourceBindings, SourceManager,
+    };
     use crate::sources::model::SourceOrigin;
 
     struct QueryManagerFixture {
@@ -1005,7 +1008,11 @@ publish:
             .expect("recipes");
         assert_eq!(recipes.len(), 1);
         let recipe = recipes.first().expect("recipe");
-        let column = recipe.result_columns.first().expect("text result column");
+        let column = recipe
+            .definition
+            .result_columns
+            .first()
+            .expect("text result column");
         assert_eq!(column.name, "text");
 
         let execution = fixture
@@ -1020,6 +1027,81 @@ publish:
         assert_eq!(
             execution_to_rows(&execution),
             vec![json!({"text": "hello"})]
+        );
+    }
+
+    #[tokio::test]
+    async fn bundled_recipe_sidecar_publishes_and_executes_with_bundled_source() {
+        let fake_home = tempfile::tempdir().expect("fake home");
+        let session_dir = fake_home.path().join(".codex/sessions/2026/06/15");
+        std::fs::create_dir_all(&session_dir).expect("create session dir");
+        std::fs::write(
+            session_dir.join("demo.jsonl"),
+            r#"{"timestamp":"2026-06-15T10:00:00Z","type":"session_config","payload":{"cwd":"/tmp/demo"}}
+{"timestamp":"2026-06-15T10:01:00Z","type":"agent_message","payload":{"text":"hello"}}
+"#,
+        )
+        .expect("write session log");
+
+        let fixture = query_manager_with(
+            QueryRuntimeContext {
+                home_dir: Some(fake_home.path().to_path_buf()),
+                ..QueryRuntimeContext::default()
+            },
+            Vec::new(),
+        );
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_manager = SourceManager::new(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+        );
+        source_manager
+            .create_bundled_source(
+                &workspace_name,
+                &CreateBundledSourceCommand {
+                    name: SourceName::parse("codex").expect("source name"),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("install bundled codex source");
+
+        let recipes = fixture
+            .manager
+            .list_recipes(&workspace_name)
+            .expect("recipes");
+        let listed = recipes
+            .iter()
+            .find(|recipe| recipe.definition.name == "recent_codex_sessions")
+            .expect("bundled recipe should be listed");
+        assert_eq!(listed.origin, RecipeOrigin::Bundled);
+
+        let catalog = fixture
+            .manager
+            .list_catalog(&workspace_name, Some("codex"))
+            .await
+            .expect("codex catalog");
+        assert!(
+            catalog
+                .table_functions
+                .iter()
+                .any(|function| function.function_name == "recent_sessions"),
+            "bundled recipe should publish codex.recent_sessions"
+        );
+
+        let execution = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                "select session_file, event_count from codex.recent_sessions()",
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("bundled recipe query");
+        assert_eq!(
+            execution_to_rows(&execution),
+            vec![json!({"session_file": "demo", "event_count": 2})]
         );
     }
 

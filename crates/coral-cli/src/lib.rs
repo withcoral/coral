@@ -28,8 +28,8 @@ use clap::{
 };
 use clap_complete::{Shell, generate};
 use coral_api::v1::{
-    AddRecipeRequest, ExecuteSqlRequest, ListRecipesRequest, Recipe, RemoveRecipeRequest,
-    ValidateRecipeRequest, recipe_publish,
+    AddRecipeRequest, ExecuteSqlRequest, ListRecipesRequest, Recipe, RecipeOrigin,
+    RemoveRecipeRequest, ValidateRecipeRequest, recipe_publish,
 };
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
@@ -742,11 +742,12 @@ async fn run_recipe(app: &AppClient, args: RecipeArgs) -> Result<(), CliError> {
                 let rows = recipes.into_iter().map(|recipe| {
                     [
                         recipe.name.clone(),
+                        recipe_origin_summary(&recipe).to_string(),
                         recipe_publish_summary(&recipe),
                         recipe_columns_summary(&recipe),
                     ]
                 });
-                print_text_table(["Recipe", "Publish", "Columns"], rows);
+                print_text_table(["Recipe", "Origin", "Publish", "Columns"], rows);
             }
         }
         RecipeCommand::Add { file } => {
@@ -816,6 +817,14 @@ fn recipe_publish_summary(recipe: &Recipe) -> String {
         "-".to_string()
     } else {
         targets.join(", ")
+    }
+}
+
+fn recipe_origin_summary(recipe: &Recipe) -> &'static str {
+    match RecipeOrigin::try_from(recipe.origin).unwrap_or(RecipeOrigin::Unspecified) {
+        RecipeOrigin::Bundled => "bundled",
+        RecipeOrigin::User => "user",
+        RecipeOrigin::Unspecified => "unknown",
     }
 }
 

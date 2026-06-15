@@ -12,7 +12,7 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::query::manager::QueryManager;
-use crate::recipes::manager::RecipeManager;
+use crate::recipes::manager::{ListedRecipe, RecipeManager};
 use crate::recipes::model::{RecipeName, RecipeOrigin};
 use crate::transport::{grpc_span, instrument_grpc, query_status, workspace_name_from_proto};
 
@@ -72,7 +72,7 @@ impl RecipeServiceApi for RecipeService {
                 .list_recipes(&workspace_name)
                 .map_err(query_status)?
                 .into_iter()
-                .map(runtime_recipe_to_proto)
+                .map(listed_recipe_to_proto)
                 .collect();
             Ok(Response::new(ListRecipesResponse { recipes }))
         })
@@ -93,7 +93,7 @@ impl RecipeServiceApi for RecipeService {
                 .await
                 .map_err(query_status)?;
             Ok(Response::new(ValidateRecipeResponse {
-                recipe: Some(runtime_recipe_to_proto(recipe)),
+                recipe: Some(runtime_recipe_to_proto(recipe, RecipeOrigin::User)),
             }))
         })
         .await
@@ -118,7 +118,11 @@ impl RecipeServiceApi for RecipeService {
     }
 }
 
-fn runtime_recipe_to_proto(recipe: RecipeRuntimeDefinition) -> Recipe {
+fn listed_recipe_to_proto(recipe: ListedRecipe) -> Recipe {
+    runtime_recipe_to_proto(recipe.definition, recipe.origin)
+}
+
+fn runtime_recipe_to_proto(recipe: RecipeRuntimeDefinition, origin: RecipeOrigin) -> Recipe {
     Recipe {
         name: recipe.name,
         description: recipe.description,
@@ -147,6 +151,7 @@ fn runtime_recipe_to_proto(recipe: RecipeRuntimeDefinition) -> Recipe {
                 description: column.description,
             })
             .collect(),
+        origin: proto_recipe_origin(origin) as i32,
     }
 }
 

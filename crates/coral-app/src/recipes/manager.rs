@@ -22,9 +22,20 @@ use uuid::Uuid;
 
 use crate::bootstrap::AppError;
 use crate::recipes::model::{InstalledRecipe, RecipeName, RecipeOrigin};
+use crate::sources::catalog::load_bundled_source_recipes;
+use crate::sources::model::SourceOrigin;
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
+
+const RESERVED_MCP_TOOL_NAMES: &[&str] = &[
+    "sql",
+    "list_catalog",
+    "search_catalog",
+    "describe_table",
+    "list_columns",
+    "feedback",
+];
 
 #[derive(Clone)]
 pub(crate) struct RecipeManager {
@@ -36,6 +47,12 @@ struct RecipeArtifact {
     name: RecipeName,
     origin: RecipeOrigin,
     raw_yaml: String,
+    source_label: String,
+}
+
+pub(crate) struct ListedRecipe {
+    pub(crate) definition: RecipeRuntimeDefinition,
+    pub(crate) origin: RecipeOrigin,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -202,7 +219,7 @@ impl RecipeManager {
     pub(crate) fn list_recipes(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Vec<RecipeRuntimeDefinition>, AppError> {
+    ) -> Result<Vec<ListedRecipe>, AppError> {
         let artifacts = self.load_recipe_artifacts(workspace_name)?;
         let mut seen_names = HashSet::new();
         let mut recipes = Vec::new();
@@ -226,7 +243,10 @@ impl RecipeManager {
                 recipe.result_columns =
                     self.cached_recipe_result_columns(workspace_name, &artifact.name);
             }
-            recipes.push(recipe);
+            recipes.push(ListedRecipe {
+                definition: recipe,
+                origin: artifact.origin,
+            });
         }
         Ok(recipes)
     }
@@ -337,6 +357,31 @@ impl RecipeManager {
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<RecipeArtifact>, AppError> {
         let mut artifacts = Vec::new();
+        for source in self.config_store.list_workspace_sources(workspace_name)? {
+            if source.origin != SourceOrigin::Bundled {
+                continue;
+            }
+            let bundled_recipes = match load_bundled_source_recipes(&source.name) {
+                Ok(recipes) => recipes,
+                Err(error) if is_unknown_bundled_source_error(&error) => continue,
+                Err(error) => return Err(error),
+            };
+            for bundled in bundled_recipes {
+                let spec = parse_recipe_yaml(&bundled.recipe_yaml).map_err(|error| {
+                    AppError::FailedPrecondition(format!(
+                        "bundled recipe '{}' for source '{}' is invalid: {error}",
+                        bundled.file_name, source.name
+                    ))
+                })?;
+                artifacts.push(RecipeArtifact {
+                    name: RecipeName::parse(spec.name())?,
+                    origin: RecipeOrigin::Bundled,
+                    raw_yaml: bundled.recipe_yaml,
+                    source_label: format!("bundled source '{}'", source.name),
+                });
+            }
+        }
+
         for installed in self.config_store.list_workspace_recipes(workspace_name)? {
             if !installed.enabled {
                 continue;
@@ -358,6 +403,7 @@ impl RecipeManager {
                 name: installed.name,
                 origin: installed.origin,
                 raw_yaml,
+                source_label: "user-installed".to_string(),
             });
         }
 
@@ -377,7 +423,13 @@ impl RecipeManager {
         let mut seen_names = HashSet::new();
         for artifact in self.load_recipe_artifacts(workspace_name)? {
             if artifact.name == *replacing_recipe {
-                continue;
+                if artifact.origin == RecipeOrigin::User {
+                    continue;
+                }
+                return Err(AppError::FailedPrecondition(format!(
+                    "recipe '{}' is already installed by {}",
+                    artifact.name, artifact.source_label
+                )));
             }
             if !seen_names.insert(artifact.name.clone()) {
                 return Err(AppError::FailedPrecondition(format!(
@@ -572,7 +624,14 @@ fn record_publish_targets(
             RecipeRuntimePublish::TableFunction { schema, name, .. } => {
                 PublishTarget::sql_relation(schema, name)
             }
-            RecipeRuntimePublish::McpTool { .. } => continue,
+            RecipeRuntimePublish::McpTool { name, .. } => {
+                if RESERVED_MCP_TOOL_NAMES.contains(&name.as_str()) {
+                    return Err(AppError::FailedPrecondition(format!(
+                        "recipe publish target '{name}' collides with a built-in MCP tool"
+                    )));
+                }
+                PublishTarget::McpTool { name: name.clone() }
+            }
         };
         if publish_targets.contains(&target) || !recipe_targets.insert(target.clone()) {
             return Err(AppError::FailedPrecondition(format!(
@@ -588,6 +647,7 @@ fn record_publish_targets(
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum PublishTarget {
     SqlRelation { schema: String, name: String },
+    McpTool { name: String },
 }
 
 impl PublishTarget {
@@ -601,6 +661,7 @@ impl PublishTarget {
     fn display_name(&self) -> String {
         match self {
             Self::SqlRelation { schema, name } => format!("{schema}.{name}"),
+            Self::McpTool { name } => name.clone(),
         }
     }
 }
@@ -691,11 +752,22 @@ fn rollback_recipe_runtime_file(
     }
 }
 
+fn is_unknown_bundled_source_error(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::InvalidInput(message) if message.starts_with("unknown bundled source ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use tempfile::TempDir;
 
     use super::*;
+    use crate::sources::SourceName;
+    use crate::sources::model::InstalledSource;
     use crate::state::AppStateLayout;
 
     fn fixture() -> (TempDir, AppStateLayout, RecipeManager) {
@@ -725,6 +797,20 @@ implementation:
   query: select 1 as id
 publish:
   - table_function: {publish_target}
+"
+        )
+    }
+
+    fn recipe_yaml_with_mcp_publish(name: &str, tool_name: &str) -> String {
+        format!(
+            r"
+kind: recipe
+name: {name}
+implementation:
+  kind: coral_sql
+  query: select 1 as id
+publish:
+  - mcp_tool: {tool_name}
 "
         )
     }
@@ -783,8 +869,9 @@ publish:
         let listed = manager.list_recipes(&workspace).expect("list recipes");
         assert_eq!(listed.len(), 1);
         let listed_recipe = listed.first().expect("listed recipe");
-        assert_eq!(listed_recipe.result_columns.len(), 1);
+        assert_eq!(listed_recipe.definition.result_columns.len(), 1);
         let column = listed_recipe
+            .definition
             .result_columns
             .first()
             .expect("id result column");
@@ -858,6 +945,97 @@ publish:
         assert!(matches!(
             error,
             AppError::FailedPrecondition(message) if message.contains("recipes.shared_queue")
+        ));
+    }
+
+    #[tokio::test]
+    async fn validate_user_recipe_yaml_rejects_builtin_mcp_tool_collision() {
+        let (_temp, _layout, manager) = fixture();
+        let workspace = workspace();
+
+        let error = manager
+            .validate_user_recipe_yaml(
+                &workspace,
+                &[],
+                || Ok(QueryRuntimeConfig::default()),
+                &recipe_yaml_with_mcp_publish("bad_tool", "sql"),
+            )
+            .await
+            .expect_err("built-in mcp tool collision should fail validation");
+
+        assert!(matches!(
+            error,
+            AppError::FailedPrecondition(message) if message.contains("built-in MCP tool")
+        ));
+    }
+
+    #[test]
+    fn bundled_source_recipes_appear_in_inventory_without_user_files() {
+        let (_temp, layout, manager) = fixture();
+        let workspace = workspace();
+        let codex = SourceName::parse("codex").expect("source name");
+        manager
+            .config_store
+            .upsert_source(
+                &workspace,
+                InstalledSource {
+                    name: codex,
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: Vec::new(),
+                    credential_storage: None,
+                    origin: SourceOrigin::Bundled,
+                },
+            )
+            .expect("persist bundled source");
+
+        let recipes = manager.list_recipes(&workspace).expect("list recipes");
+        let recipe = recipes
+            .iter()
+            .find(|recipe| recipe.definition.name == "recent_codex_sessions")
+            .expect("bundled codex recipe should be visible");
+
+        assert_eq!(recipe.origin, RecipeOrigin::Bundled);
+        let recipe_name = RecipeName::parse("recent_codex_sessions").expect("recipe name");
+        assert!(
+            !layout.recipe_dir(&workspace, &recipe_name).exists(),
+            "bundled recipes should not be copied into the user recipe directory"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_user_recipe_yaml_rejects_bundled_recipe_name_collision() {
+        let (_temp, _layout, manager) = fixture();
+        let workspace = workspace();
+        manager
+            .config_store
+            .upsert_source(
+                &workspace,
+                InstalledSource {
+                    name: SourceName::parse("codex").expect("source name"),
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: Vec::new(),
+                    credential_storage: None,
+                    origin: SourceOrigin::Bundled,
+                },
+            )
+            .expect("persist bundled source");
+
+        let error = manager
+            .validate_user_recipe_yaml(
+                &workspace,
+                &[],
+                || Ok(QueryRuntimeConfig::default()),
+                &recipe_yaml("recent_codex_sessions"),
+            )
+            .await
+            .expect_err("bundled recipe name collision should fail validation");
+
+        assert!(matches!(
+            error,
+            AppError::FailedPrecondition(message)
+                if message.contains("already installed by bundled source 'codex'")
         ));
     }
 }

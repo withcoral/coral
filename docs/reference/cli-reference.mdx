@@ -162,7 +162,7 @@ coral source remove github
 
 ## `coral recipe`
 
-Manage user-installed recipes. A recipe is a YAML artifact that defines a reusable, typed query and can publish it as SQL under `recipes.*`.
+Manage recipes. A recipe is a YAML artifact that defines a reusable, typed query and can publish it as SQL under `recipes.*`; bundled sources may also ship source-owned recipes.
 
 ### `coral recipe add --file <PATH>`
 
@@ -214,13 +214,13 @@ Use this when you want the runtime check explicitly, for example after a source 
 
 ### `coral recipe list`
 
-List installed recipes.
+List configured recipes.
 
 ```shellscript
 coral recipe list
 ```
 
-The output is inventory-only and does not re-run runtime validation, so it stays fast. For user-installed recipes, Coral shows the result columns cached during the last successful `coral recipe add --file`.
+The output is inventory-only and does not re-run runtime validation, so it stays fast. The `Origin` column shows `user` for recipes installed with `coral recipe add --file` and `bundled` for recipes shipped with an installed bundled source. For user-installed recipes, Coral shows the result columns cached during the last successful `coral recipe add --file`.
 
 If a recipe publishes SQL, call it with named arguments:
 
