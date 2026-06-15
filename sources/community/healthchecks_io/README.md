@@ -43,7 +43,7 @@ Filter checks by tag:
 ```sql
 SELECT name, slug, status, last_ping, badge_url
 FROM healthchecks_io.checks
-WHERE tag_filter = 'production'
+WHERE tag = 'production'
 LIMIT 50;
 ```
 

@@ -230,7 +230,7 @@ tables:
           from: filter
           key: end
     response:
-      rows_path: [flips]
+      rows_path: []
       row_strategy: direct
     pagination:
       mode: none
