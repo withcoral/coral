@@ -1,0 +1,139 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/resources.proto";
+
+// Where a recipe came from.
+enum RecipeOrigin {
+  // Origin was not specified.
+  RECIPE_ORIGIN_UNSPECIFIED = 0;
+  // Recipe shipped with a bundled source.
+  RECIPE_ORIGIN_BUNDLED = 1;
+  // Recipe was installed by the user.
+  RECIPE_ORIGIN_USER = 2;
+}
+
+// One scalar recipe argument.
+message RecipeArgument {
+  // Argument name.
+  string name = 1;
+  // Scalar argument type: string, integer, or boolean.
+  string data_type = 2;
+  // Whether callers must provide this argument.
+  bool required = 3;
+  // User-facing description.
+  string description = 4;
+}
+
+// One recipe result column.
+message RecipeResultColumn {
+  // Column name.
+  string name = 1;
+  // Arrow/DataFusion data type rendered as text.
+  string data_type = 2;
+  // Whether the column can contain null values.
+  bool nullable = 3;
+  // User-facing description.
+  string description = 4;
+}
+
+// SQL table-function publication target.
+message RecipeTableFunctionPublish {
+  // SQL schema.
+  string schema = 1;
+  // SQL table-function name.
+  string name = 2;
+  // User-facing description.
+  string description = 3;
+}
+
+// One public surface requested by a recipe.
+message RecipePublish {
+  // Published target.
+  oneof target {
+    // SQL table-function publication.
+    RecipeTableFunctionPublish table_function = 1;
+  }
+}
+
+// Recipe definition exposed by recipe lifecycle APIs.
+message Recipe {
+  // Stable recipe name.
+  string name = 1;
+  // User-facing description.
+  string description = 2;
+  // Declared arguments.
+  repeated RecipeArgument arguments = 3;
+  // Published surfaces.
+  repeated RecipePublish publish = 4;
+  // Inferred result columns.
+  repeated RecipeResultColumn result_columns = 5;
+}
+
+// Installs or replaces one user recipe.
+message AddRecipeRequest {
+  // Workspace that owns the recipe.
+  Workspace workspace = 1;
+  // Raw recipe YAML.
+  string yaml = 2;
+}
+
+// Persisted recipe install response. Runtime metadata is returned by ListRecipes.
+message AddRecipeResponse {
+  // Stable recipe name.
+  string name = 1;
+  // Where the recipe came from.
+  RecipeOrigin origin = 2;
+  // Whether the recipe is enabled.
+  bool enabled = 3;
+}
+
+// Lists installed recipes in one workspace without runtime validation.
+message ListRecipesRequest {
+  // Workspace that scopes recipes and selected sources.
+  Workspace workspace = 1;
+}
+
+// Installed recipes.
+message ListRecipesResponse {
+  // Recipes visible to the current workspace runtime.
+  repeated Recipe recipes = 1;
+}
+
+// Validates one recipe without installing it.
+message ValidateRecipeRequest {
+  // Workspace that scopes installed sources and recipe collisions.
+  Workspace workspace = 1;
+  // Raw recipe YAML.
+  string yaml = 2;
+}
+
+// Validated recipe metadata.
+message ValidateRecipeResponse {
+  // Runtime-validated recipe definition.
+  Recipe recipe = 1;
+}
+
+// Removes one user recipe.
+message RemoveRecipeRequest {
+  // Workspace that owns the recipe.
+  Workspace workspace = 1;
+  // Recipe name.
+  string name = 2;
+}
+
+// Empty remove response.
+message RemoveRecipeResponse {}
+
+// Recipe lifecycle APIs.
+service RecipeService {
+  // Installs or replaces one user recipe.
+  rpc AddRecipe(AddRecipeRequest) returns (AddRecipeResponse);
+  // Lists installed recipes without runtime validation.
+  rpc ListRecipes(ListRecipesRequest) returns (ListRecipesResponse);
+  // Validates one recipe without installing it.
+  rpc ValidateRecipe(ValidateRecipeRequest) returns (ValidateRecipeResponse);
+  // Removes one user recipe.
+  rpc RemoveRecipe(RemoveRecipeRequest) returns (RemoveRecipeResponse);
+}
