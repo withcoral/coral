@@ -42,6 +42,7 @@ pub mod features;
 mod feedback;
 mod identity;
 mod query;
+mod recipes;
 mod sources;
 mod state;
 mod storage;

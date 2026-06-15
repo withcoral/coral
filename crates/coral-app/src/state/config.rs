@@ -9,6 +9,7 @@ use tracing::{info_span, warn};
 
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialStorageKind;
+use crate::recipes::model::{InstalledRecipe, RecipeName, RecipeOrigin};
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
@@ -20,6 +21,7 @@ pub(crate) struct AppConfig {
     version: u32,
     engine: PersistedEngineConfig,
     catalog: SourceCatalog,
+    recipes: RecipeCatalog,
 }
 
 impl Default for AppConfig {
@@ -28,11 +30,20 @@ impl Default for AppConfig {
             version: default_config_version(),
             engine: PersistedEngineConfig::default(),
             catalog: SourceCatalog::default(),
+            recipes: RecipeCatalog::default(),
         }
     }
 }
 
 impl AppConfig {
+    #[allow(
+        dead_code,
+        reason = "recipe lifecycle wiring consumes inventory reads in a later stack branch"
+    )]
+    pub(crate) fn workspace_recipes(&self, workspace_name: &WorkspaceName) -> Vec<InstalledRecipe> {
+        self.recipes.workspace_recipes(workspace_name)
+    }
+
     pub(crate) fn workspace_sources(&self, workspace_name: &WorkspaceName) -> Vec<InstalledSource> {
         self.catalog.workspace_sources(workspace_name)
     }
@@ -163,6 +174,8 @@ pub(crate) enum RawFeatureValue {
 struct PersistedWorkspaceConfig {
     #[serde(default)]
     sources: BTreeMap<String, PersistedInstalledSource>,
+    #[serde(default)]
+    recipes: BTreeMap<String, PersistedInstalledRecipe>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -201,6 +214,36 @@ impl From<&InstalledSource> for PersistedInstalledSource {
             origin: value.origin,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedInstalledRecipe {
+    origin: RecipeOrigin,
+    #[serde(default = "default_persisted_recipe_enabled")]
+    enabled: bool,
+}
+
+impl PersistedInstalledRecipe {
+    fn into_installed_recipe(self, recipe_name: RecipeName) -> InstalledRecipe {
+        InstalledRecipe {
+            name: recipe_name,
+            origin: self.origin,
+            enabled: self.enabled,
+        }
+    }
+}
+
+impl From<&InstalledRecipe> for PersistedInstalledRecipe {
+    fn from(value: &InstalledRecipe) -> Self {
+        Self {
+            origin: value.origin,
+            enabled: value.enabled,
+        }
+    }
+}
+
+fn default_persisted_recipe_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Default)]
@@ -256,6 +299,65 @@ impl SourceCatalog {
             Some(sources) => {
                 removed = sources.remove(source_name);
                 sources.is_empty()
+            }
+            None => false,
+        };
+
+        if remove_workspace {
+            self.0.remove(workspace_name);
+        }
+
+        removed
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RecipeCatalog(BTreeMap<WorkspaceName, BTreeMap<RecipeName, InstalledRecipe>>);
+
+#[allow(
+    dead_code,
+    reason = "recipe lifecycle wiring consumes inventory mutation in a later stack branch"
+)]
+impl RecipeCatalog {
+    pub(crate) fn workspace_recipes(&self, workspace_name: &WorkspaceName) -> Vec<InstalledRecipe> {
+        self.0
+            .get(workspace_name)
+            .map(|recipes| recipes.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn get_recipe(
+        &self,
+        workspace_name: &WorkspaceName,
+        recipe_name: &RecipeName,
+    ) -> Option<InstalledRecipe> {
+        self.0
+            .get(workspace_name)
+            .and_then(|recipes| recipes.get(recipe_name))
+            .cloned()
+    }
+
+    pub(crate) fn upsert_recipe(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        recipe: InstalledRecipe,
+    ) {
+        self.0
+            .entry(workspace_name.clone())
+            .or_default()
+            .insert(recipe.name.clone(), recipe);
+    }
+
+    pub(crate) fn remove_recipe(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        recipe_name: &RecipeName,
+    ) -> Option<InstalledRecipe> {
+        let mut removed = None;
+        let remove_workspace = match self.0.get_mut(workspace_name) {
+            Some(recipes) => {
+                removed = recipes.remove(recipe_name);
+                recipes.is_empty()
             }
             None => false,
         };
@@ -403,6 +505,12 @@ impl ConfigStore {
         self.load_config().map(|config| config.catalog)
     }
 
+    pub(crate) fn load_recipe_catalog(&self) -> Result<RecipeCatalog, AppError> {
+        let span = info_span!("coral.app.config.load_recipe_catalog");
+        let _guard = span.enter();
+        self.load_config().map(|config| config.recipes)
+    }
+
     fn update_catalog<T>(
         &self,
         update: impl FnOnce(&mut SourceCatalog) -> T,
@@ -410,6 +518,17 @@ impl ConfigStore {
         let _lock = self.lock_exclusive()?;
         let mut config = self.load_unlocked()?;
         let result = update(&mut config.catalog);
+        self.save_unlocked(&config)?;
+        Ok(result)
+    }
+
+    fn update_recipe_catalog<T>(
+        &self,
+        update: impl FnOnce(&mut RecipeCatalog) -> T,
+    ) -> Result<T, AppError> {
+        let _lock = self.lock_exclusive()?;
+        let mut config = self.load_unlocked()?;
+        let result = update(&mut config.recipes);
         self.save_unlocked(&config)?;
         Ok(result)
     }
@@ -447,6 +566,48 @@ impl ConfigStore {
     ) -> Result<(), AppError> {
         self.update_catalog(|catalog| {
             catalog.remove_source(workspace_name, source_name);
+        })
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "recipe lifecycle wiring consumes inventory accessors in a later stack branch"
+)]
+impl ConfigStore {
+    pub(crate) fn list_workspace_recipes(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledRecipe>, AppError> {
+        self.load_recipe_catalog()
+            .map(|catalog| catalog.workspace_recipes(workspace_name))
+    }
+
+    pub(crate) fn get_recipe(
+        &self,
+        workspace_name: &WorkspaceName,
+        recipe_name: &RecipeName,
+    ) -> Result<InstalledRecipe, AppError> {
+        self.load_recipe_catalog()?
+            .get_recipe(workspace_name, recipe_name)
+            .ok_or_else(|| AppError::InvalidInput(format!("recipe '{recipe_name}' not found")))
+    }
+
+    pub(crate) fn upsert_recipe(
+        &self,
+        workspace_name: &WorkspaceName,
+        recipe: InstalledRecipe,
+    ) -> Result<(), AppError> {
+        self.update_recipe_catalog(|catalog| catalog.upsert_recipe(workspace_name, recipe))
+    }
+
+    pub(crate) fn remove_recipe(
+        &self,
+        workspace_name: &WorkspaceName,
+        recipe_name: &RecipeName,
+    ) -> Result<(), AppError> {
+        self.update_recipe_catalog(|catalog| {
+            catalog.remove_recipe(workspace_name, recipe_name);
         })
     }
 }
@@ -496,6 +657,20 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
             }
             source_item["origin"] = value(source.origin.as_config_value());
         }
+
+        for (recipe_name, recipe) in &workspace.recipes {
+            ensure_implicit_table(&mut doc["workspaces"]);
+            ensure_implicit_table(&mut doc["workspaces"][workspace_name]);
+            ensure_implicit_table(&mut doc["workspaces"][workspace_name]["recipes"]);
+
+            let recipe_item = &mut doc["workspaces"][workspace_name]["recipes"][recipe_name];
+            if !recipe_item.is_table() {
+                *recipe_item = toml_edit::table();
+            }
+
+            recipe_item["origin"] = value(recipe.origin.as_config_value());
+            recipe_item["enabled"] = value(recipe.enabled);
+        }
     }
 
     doc.to_string()
@@ -515,17 +690,23 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
 
     fn try_from(value: PersistedAppConfig) -> Result<Self, Self::Error> {
         let mut catalog = SourceCatalog::default();
+        let mut recipes = RecipeCatalog::default();
         for (workspace_name, workspace_config) in value.workspaces {
             let workspace_name = WorkspaceName::parse(&workspace_name)?;
             for (source_name, source) in workspace_config.sources {
                 let source_name = SourceName::parse(&source_name)?;
                 catalog.upsert_source(&workspace_name, source.into_installed_source(source_name));
             }
+            for (recipe_name, recipe) in workspace_config.recipes {
+                let recipe_name = RecipeName::parse(&recipe_name)?;
+                recipes.upsert_recipe(&workspace_name, recipe.into_installed_recipe(recipe_name));
+            }
         }
         Ok(Self {
             version: value.version,
             engine: value.engine,
             catalog,
+            recipes,
         })
     }
 }
@@ -541,6 +722,17 @@ impl From<&AppConfig> for PersistedAppConfig {
                 workspace_config.sources.insert(
                     source.name.as_str().to_string(),
                     PersistedInstalledSource::from(source),
+                );
+            }
+        }
+        for (workspace_name, recipes) in &value.recipes.0 {
+            let workspace_config = workspaces
+                .entry(workspace_name.as_str().to_string())
+                .or_insert_with(PersistedWorkspaceConfig::default);
+            for recipe in recipes.values() {
+                workspace_config.recipes.insert(
+                    recipe.name.as_str().to_string(),
+                    PersistedInstalledRecipe::from(recipe),
                 );
             }
         }
@@ -688,10 +880,11 @@ mod tests {
 
     use super::{
         AppConfig, PersistedAppConfig, PersistedEngineConfig, RawFeatureContainerState,
-        RawFeatureValue, SourceCatalog, load_raw_feature_overrides, render_config,
+        RawFeatureValue, RecipeCatalog, SourceCatalog, load_raw_feature_overrides, render_config,
         set_raw_feature_override,
     };
     use crate::credentials::CredentialStorageKind;
+    use crate::recipes::model::{InstalledRecipe, RecipeName, RecipeOrigin};
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::AppStateLayout;
@@ -712,6 +905,14 @@ mod tests {
             secrets: vec!["GITHUB_TOKEN".to_string()],
             credential_storage: None,
             origin: SourceOrigin::Imported,
+        }
+    }
+
+    fn installed_recipe(name: &str) -> InstalledRecipe {
+        InstalledRecipe {
+            name: RecipeName::parse(name).expect("recipe"),
+            origin: RecipeOrigin::User,
+            enabled: true,
         }
     }
 
@@ -762,6 +963,7 @@ mod tests {
             version: 1,
             engine: PersistedEngineConfig::default(),
             catalog,
+            recipes: RecipeCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -772,6 +974,25 @@ mod tests {
         assert!(!raw.contains("[[sources]]"));
         assert!(!raw.contains("workspace = { name = \"default\" }"));
         assert!(!raw.contains("manifest_file"));
+    }
+
+    #[test]
+    fn renders_recipes_under_workspace_keyed_tables() {
+        let workspace_name = default_workspace();
+        let mut recipes = RecipeCatalog::default();
+        recipes.upsert_recipe(&workspace_name, installed_recipe("review_queue"));
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            catalog: SourceCatalog::default(),
+            recipes,
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+
+        assert!(raw.contains("[workspaces.default.recipes.review_queue]"));
+        assert!(raw.contains("origin = \"user\""));
+        assert!(raw.contains("enabled = true"));
     }
 
     #[test]
@@ -786,6 +1007,7 @@ mod tests {
             version: 1,
             engine: PersistedEngineConfig::default(),
             catalog,
+            recipes: RecipeCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -823,6 +1045,28 @@ origin = "bundled"
             sources[0].effective_credential_storage(),
             CredentialStorageKind::File
         );
+    }
+
+    #[test]
+    fn loads_recipes_from_workspace_keyed_tables() {
+        let raw = r#"
+version = 1
+
+[workspaces.default.recipes.review_queue]
+origin = "user"
+enabled = false
+"#;
+
+        let config = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(raw).expect("workspace-keyed config should parse"),
+        )
+        .expect("config");
+        let recipes = config.workspace_recipes(&default_workspace());
+
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].name.as_str(), "review_queue");
+        assert_eq!(recipes[0].origin, RecipeOrigin::User);
+        assert!(!recipes[0].enabled);
     }
 
     #[test]
@@ -976,6 +1220,7 @@ max_concurrency = 0
             version: 1,
             engine: PersistedEngineConfig::default(),
             catalog,
+            recipes: RecipeCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -1047,6 +1292,23 @@ max_concurrency = 0
     }
 
     #[test]
+    fn recipe_catalog_upsert_and_remove_are_workspace_scoped() {
+        let default_workspace = default_workspace();
+        let other_workspace_name = WorkspaceName::parse("other").expect("workspace");
+        let mut catalog = RecipeCatalog::default();
+        catalog.upsert_recipe(&default_workspace, installed_recipe("review_queue"));
+        catalog.upsert_recipe(&other_workspace_name, installed_recipe("review_queue"));
+
+        catalog.remove_recipe(
+            &default_workspace,
+            &RecipeName::parse("review_queue").expect("recipe"),
+        );
+
+        assert!(catalog.workspace_recipes(&default_workspace).is_empty());
+        assert_eq!(catalog.workspace_recipes(&other_workspace_name).len(), 1);
+    }
+
+    #[test]
     fn preserves_unrelated_sections_when_rendering_with_existing_config() {
         let existing = r#"
 version = 1
@@ -1081,6 +1343,7 @@ origin = "bundled"
             version: 1,
             engine: PersistedEngineConfig::default(),
             catalog,
+            recipes: RecipeCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), Some(existing));
@@ -1162,6 +1425,19 @@ origin = "bundled"
         )
         .expect_err("invalid source key should fail");
         assert!(error.to_string().contains("source name"));
+
+        let invalid_recipe = r#"
+version = 1
+
+[workspaces.default.recipes."bad\\recipe"]
+origin = "user"
+"#;
+        let error = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(invalid_recipe)
+                .expect("quoted recipe key should parse"),
+        )
+        .expect_err("invalid recipe key should fail");
+        assert!(error.to_string().contains("recipe name"));
     }
 
     #[test]
