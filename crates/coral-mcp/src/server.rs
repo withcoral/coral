@@ -3,11 +3,13 @@
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListSourcesRequest, OpenEpisodeRequest, PaginationRequest, SearchCatalogRequest, Source,
-    SubmitFeedbackRequest, TableSummary as ProtoTableSummary, catalog_item,
+    ListRecipesRequest, ListSourcesRequest, PaginationRequest, Recipe, RecipeArgument,
+    SearchCatalogRequest, Source, SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
+    catalog_item, recipe_publish, OpenEpisodeRequest,
 };
 use coral_client::{
-    AppClient, CatalogClient, EpisodeClient, FeedbackClient, QueryClient, SourceClient,
+    AppClient, CatalogClient, EpisodeClient, FeedbackClient, QueryClient, RecipeClient,
+    SourceClient,
     batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
     with_episode_metadata,
 };
@@ -16,7 +18,7 @@ use rmcp::{
     model::{
         CallToolRequestParams, CallToolResult, Implementation, ListResourcesResult,
         ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
-        ResourceContents, ServerCapabilities, ServerInfo,
+        ResourceContents, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
     },
     service::{RequestContext, RoleServer},
 };
@@ -32,11 +34,12 @@ use crate::{
     surface::{
         CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
         describe_table_tool, describe_table_value, feedback_tool, guide_resource,
-        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_tool,
-        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
-        open_episode_arguments, open_episode_tool, optional_episode_id_argument,
-        required_string_argument, search_catalog_arguments, search_catalog_tool,
-        search_catalog_value, sql_tool, status_to_error_data, tables_resource,
+        guide_resource_content, initial_instructions, json_object_schema, list_catalog_arguments,
+        list_catalog_tool, list_catalog_value, list_columns_arguments, list_columns_tool,
+        list_columns_value, open_episode_arguments, open_episode_tool,
+        optional_episode_id_argument, required_string_argument, search_catalog_arguments,
+        search_catalog_tool, search_catalog_value, sql_tool, status_to_error_data,
+        tables_resource,
         tables_resource_content, tool_error_from_status, tool_error_result,
         with_episode_id_argument,
     },
@@ -48,6 +51,14 @@ const LIST_CATALOG_COUNT_LIMIT: u32 = 1;
 const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified;
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
+const BUILT_IN_TOOL_NAMES: &[&str] = &[
+    "sql",
+    "list_catalog",
+    "search_catalog",
+    "describe_table",
+    "list_columns",
+    "feedback",
+];
 
 enum ToolCallOutcome {
     Success(Value),
@@ -138,6 +149,7 @@ pub(crate) struct CoralMcpServer {
     source: SourceClient,
     catalog: CatalogClient,
     query: QueryClient,
+    recipe: RecipeClient,
     feedback: FeedbackClient,
     episode: EpisodeClient,
     options: McpOptions,
@@ -149,6 +161,7 @@ impl CoralMcpServer {
             source: app.source_client(),
             catalog: app.catalog_client(),
             query: app.query_client(),
+            recipe: app.recipe_client(),
             feedback: app.feedback_client(),
             episode: app.episode_client(),
             options,
@@ -164,6 +177,17 @@ impl CoralMcpServer {
             .await?
             .into_inner()
             .sources)
+    }
+
+    async fn load_recipes(&self) -> Result<Vec<Recipe>, tonic::Status> {
+        let mut recipe_client = self.recipe.clone();
+        Ok(recipe_client
+            .list_recipes(Request::new(ListRecipesRequest {
+                workspace: Some(default_workspace()),
+            }))
+            .await?
+            .into_inner()
+            .recipes)
     }
 
     async fn load_catalog(
@@ -484,10 +508,25 @@ impl CoralMcpServer {
                         .await,
                 ))
             }
-            _ => Err(ErrorData::invalid_params(
-                format!("tool '{}' not found", request.name),
-                None,
-            )),
+            name => {
+                let Some(recipe) = self
+                    .load_recipes()
+                    .await
+                    .map_err(|status| status_to_error_data(&status))?
+                    .into_iter()
+                    .find(|recipe| recipe_has_mcp_tool(recipe, name))
+                else {
+                    return Err(ErrorData::invalid_params(
+                        format!("tool '{}' not found", request.name),
+                        None,
+                    ));
+                };
+                let sql = recipe_tool_sql(&recipe, name, request.arguments.as_ref())?;
+                Ok(ToolCallOutcome::from_value_result(
+                    "Recipe execution",
+                    self.execute_sql_value(&sql).await,
+                ))
+            }
         }
     }
 
@@ -542,6 +581,228 @@ impl CoralMcpServer {
             }),
         }
     }
+}
+
+fn recipe_mcp_tools(recipe: &Recipe) -> Vec<Tool> {
+    if recipe_table_function(recipe).is_none() {
+        return Vec::new();
+    }
+    recipe
+        .publish
+        .iter()
+        .filter_map(|publish| match publish.target.as_ref()? {
+            recipe_publish::Target::McpTool(target) if !is_built_in_tool_name(&target.name) => {
+                Some(Tool::new(
+                    target.name.clone(),
+                    recipe_tool_description(recipe, &target.description),
+                    recipe_input_schema(recipe),
+                ))
+            }
+            recipe_publish::Target::McpTool(target) => {
+                tracing::warn!(
+                    recipe = %recipe.name,
+                    tool = %target.name,
+                    "skipping recipe MCP tool because it collides with a built-in tool"
+                );
+                None
+            }
+            recipe_publish::Target::TableFunction(_) => None,
+        })
+        .map(|tool| {
+            tool.with_raw_output_schema(recipe_output_schema())
+                .with_annotations(
+                    ToolAnnotations::with_title("Run Recipe")
+                        .read_only(true)
+                        .destructive(false)
+                        .idempotent(false)
+                        .open_world(true),
+                )
+        })
+        .collect()
+}
+
+fn is_built_in_tool_name(name: &str) -> bool {
+    BUILT_IN_TOOL_NAMES.contains(&name)
+}
+
+fn recipe_has_mcp_tool(recipe: &Recipe, tool_name: &str) -> bool {
+    recipe_table_function(recipe).is_some()
+        && recipe.publish.iter().any(|publish| {
+            matches!(
+                publish.target.as_ref(),
+                Some(recipe_publish::Target::McpTool(target))
+                    if target.name == tool_name && !is_built_in_tool_name(&target.name)
+            )
+        })
+}
+
+fn recipe_tool_description(recipe: &Recipe, publish_description: &str) -> String {
+    if publish_description.trim().is_empty() {
+        recipe.description.clone()
+    } else {
+        publish_description.to_string()
+    }
+}
+
+fn recipe_input_schema(recipe: &Recipe) -> std::sync::Arc<Map<String, Value>> {
+    let mut required = Vec::new();
+    let mut properties = Map::new();
+    for argument in &recipe.arguments {
+        if argument.required {
+            required.push(Value::String(argument.name.clone()));
+        }
+        let mut property = Map::new();
+        let schema_type = if argument.required {
+            Value::String(argument.data_type.clone())
+        } else {
+            Value::Array(vec![
+                Value::String(argument.data_type.clone()),
+                Value::String("null".to_string()),
+            ])
+        };
+        property.insert("type".to_string(), schema_type);
+        if !argument.description.is_empty() {
+            property.insert(
+                "description".to_string(),
+                Value::String(argument.description.clone()),
+            );
+        }
+        properties.insert(argument.name.clone(), Value::Object(property));
+    }
+    json_object_schema(&serde_json::json!({
+        "type": "object",
+        "required": required,
+        "additionalProperties": false,
+        "properties": properties
+    }))
+}
+
+fn recipe_output_schema() -> std::sync::Arc<Map<String, Value>> {
+    json_object_schema(&serde_json::json!({
+        "type": "object",
+        "required": ["rows"],
+        "additionalProperties": false,
+        "properties": {
+            "rows": {
+                "type": "array",
+                "items": { "type": "object" }
+            }
+        }
+    }))
+}
+
+fn recipe_table_function(recipe: &Recipe) -> Option<(&str, &str)> {
+    recipe
+        .publish
+        .iter()
+        .find_map(|publish| match publish.target.as_ref()? {
+            recipe_publish::Target::TableFunction(target) => {
+                Some((target.schema.as_str(), target.name.as_str()))
+            }
+            recipe_publish::Target::McpTool(_) => None,
+        })
+}
+
+fn recipe_tool_sql(
+    recipe: &Recipe,
+    tool_name: &str,
+    arguments: Option<&Map<String, Value>>,
+) -> Result<String, ErrorData> {
+    let (schema, function) = recipe_table_function(recipe).ok_or_else(|| {
+        ErrorData::invalid_params(format!("recipe tool '{tool_name}' is not executable"), None)
+    })?;
+    let supplied = arguments.cloned().unwrap_or_default();
+    reject_unknown_recipe_arguments(recipe, &supplied)?;
+
+    let mut sql_arguments = Vec::new();
+    for argument in &recipe.arguments {
+        let Some(value) = supplied.get(&argument.name) else {
+            if argument.required {
+                return Err(ErrorData::invalid_params(
+                    format!("missing recipe argument '{}'", argument.name),
+                    None,
+                ));
+            }
+            continue;
+        };
+        if argument.required && value.is_null() {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "recipe argument '{}' is required and cannot be null",
+                    argument.name
+                ),
+                None,
+            ));
+        }
+        sql_arguments.push(format!(
+            "{} => {}",
+            argument.name,
+            recipe_sql_literal(argument, value)?
+        ));
+    }
+
+    Ok(format!(
+        "select * from {schema}.{function}({})",
+        sql_arguments.join(", ")
+    ))
+}
+
+fn reject_unknown_recipe_arguments(
+    recipe: &Recipe,
+    supplied: &Map<String, Value>,
+) -> Result<(), ErrorData> {
+    let known = recipe
+        .arguments
+        .iter()
+        .map(|argument| argument.name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    for key in supplied.keys() {
+        if !known.contains(key.as_str()) {
+            return Err(ErrorData::invalid_params(
+                format!("unknown recipe argument '{key}'"),
+                None,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn recipe_sql_literal(argument: &RecipeArgument, value: &Value) -> Result<String, ErrorData> {
+    if value.is_null() {
+        return Ok("NULL".to_string());
+    }
+    match argument.data_type.as_str() {
+        "string" => value
+            .as_str()
+            .map(sql_string_literal)
+            .ok_or_else(|| recipe_argument_type_error(&argument.name, &argument.data_type)),
+        "integer" => value
+            .as_i64()
+            .map(|value| value.to_string())
+            .ok_or_else(|| recipe_argument_type_error(&argument.name, &argument.data_type)),
+        "boolean" => value
+            .as_bool()
+            .map(|value| value.to_string())
+            .ok_or_else(|| recipe_argument_type_error(&argument.name, &argument.data_type)),
+        other => Err(ErrorData::invalid_params(
+            format!(
+                "recipe argument '{}' has unsupported type '{other}'",
+                argument.name
+            ),
+            None,
+        )),
+    }
+}
+
+fn sql_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn recipe_argument_type_error(name: &str, data_type: &str) -> ErrorData {
+    ErrorData::invalid_params(
+        format!("recipe argument '{name}' must be {data_type}"),
+        None,
+    )
 }
 
 impl ServerHandler for CoralMcpServer {
@@ -601,6 +862,19 @@ impl ServerHandler for CoralMcpServer {
                     feedback
                 };
                 tools.push(feedback);
+            }
+            let recipes = self
+                .load_recipes()
+                .await
+                .map_err(|status| status_to_error_data(&status))?;
+            let mut seen_tools = tools
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect::<std::collections::HashSet<_>>();
+            for tool in recipes.iter().flat_map(recipe_mcp_tools) {
+                if seen_tools.insert(tool.name.to_string()) {
+                    tools.push(tool);
+                }
             }
             Ok(ListToolsResult::with_all_items(tools))
         })

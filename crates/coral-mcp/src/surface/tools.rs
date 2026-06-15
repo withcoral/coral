@@ -974,7 +974,7 @@ fn optional_bool_argument(
     })
 }
 
-fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
+pub(crate) fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
     Arc::new(
         value
             .as_object()

@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 
 use coral_api::{
     CORAL_EPISODE_ID_MAX_LEN,
-    v1::{ImportSourceRequest, import_source_response},
+    v1::{AddRecipeRequest, ImportSourceRequest, import_source_response},
 };
 use coral_client::{
-    AppClient, SourceClient, default_workspace,
+    AppClient, RecipeClient, SourceClient, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
 use jsonschema::JSONSchema;
@@ -192,6 +192,7 @@ async fn add_demo_source(source_client: &mut SourceClient, manifest_yaml: String
 
 struct TestSession {
     source_client: SourceClient,
+    recipe_client: RecipeClient,
     client: RunningService<RoleClient, ()>,
     app_server: RunningServer,
     mcp_server_task: tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
@@ -229,6 +230,7 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
         .await
         .expect("connect client");
     let source_client = app.source_client();
+    let recipe_client = app.recipe_client();
 
     let (server_transport, client_transport) = tokio::io::duplex(4096);
     let mcp_server_task = tokio::spawn(async move {
@@ -239,6 +241,7 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
     let client = ().serve(client_transport).await.expect("start rmcp client");
     TestSession {
         source_client,
+        recipe_client,
         client,
         app_server: server,
         mcp_server_task,
@@ -548,6 +551,66 @@ async fn mcp_episode_tool_is_disabled_by_default() {
             .join("coral-config/workspaces/default/episodes/episodes.jsonl")
             .exists()
     );
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_recipe_tool_executes_through_published_table_function() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let mut session = start_session(&temp).await;
+    add_demo_source(&mut session.source_client, manifest_yaml).await;
+    session
+        .recipe_client
+        .add_recipe(Request::new(AddRecipeRequest {
+            workspace: Some(default_workspace()),
+            yaml: r"
+kind: recipe
+name: message_lookup
+description: Messages by type
+inputs:
+  kind:
+    type: string
+    required: true
+implementation:
+  kind: coral_sql
+  query: |
+    select text
+    from local_messages.messages
+    where type = $kind
+publish:
+  - table_function: recipes.message_lookup
+  - mcp_tool: message_lookup
+"
+            .to_string(),
+        }))
+        .await
+        .expect("add recipe");
+
+    let tools = session.client.list_all_tools().await.expect("tools");
+    let recipe_tool = tool_by_name(&tools, "message_lookup");
+    assert!(
+        recipe_tool
+            .description
+            .as_deref()
+            .expect("recipe tool description")
+            .contains("Messages by type")
+    );
+
+    let result = session
+        .client
+        .call_tool(
+            CallToolRequestParams::new("message_lookup").with_arguments(json_object(&json!({
+                "kind": "user"
+            }))),
+        )
+        .await
+        .expect("call recipe tool");
+    let structured = result.structured_content.expect("structured recipe result");
+    assert_eq!(structured["rows"], json!([{"text": "hello"}]));
+    assert_matches_output_schema(recipe_tool, &structured);
 
     session.shutdown().await;
 }
