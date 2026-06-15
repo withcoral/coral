@@ -1,4 +1,4 @@
-//! Build script for bundled source manifests.
+//! Build script for bundled source packages.
 
 #![allow(
     clippy::disallowed_methods,
@@ -19,6 +19,8 @@ fn main() {
     let mut generated = String::new();
     let entries = bundled_entries(&bundled_root);
     write_entries(&mut generated, "BUNDLED_SOURCES", &entries);
+    let recipe_entries = bundled_recipe_entries(&entries);
+    write_recipe_entries(&mut generated, "BUNDLED_SOURCE_RECIPES", &recipe_entries);
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("out dir"));
     fs::write(out_dir.join("bundled_sources.rs"), generated).expect("write bundled source table");
@@ -26,7 +28,14 @@ fn main() {
 
 struct BundledEntry {
     name: String,
+    dir: PathBuf,
     manifest_yaml: String,
+}
+
+struct BundledRecipeEntry {
+    source_name: String,
+    file_name: String,
+    recipe_yaml: String,
 }
 
 fn bundled_entries(root: &Path) -> Vec<BundledEntry> {
@@ -56,12 +65,50 @@ fn bundled_entries(root: &Path) -> Vec<BundledEntry> {
             );
             BundledEntry {
                 name,
+                dir: entry.path(),
                 manifest_yaml: raw,
             }
         })
         .collect::<Vec<_>>();
     entries.sort_by(|left, right| left.name.cmp(&right.name));
     entries
+}
+
+fn bundled_recipe_entries(sources: &[BundledEntry]) -> Vec<BundledRecipeEntry> {
+    let mut recipes = Vec::new();
+    for source in sources {
+        let recipe_dir = source.dir.join("recipes");
+        println!("cargo:rerun-if-changed={}", recipe_dir.display());
+        if !recipe_dir.exists() {
+            continue;
+        }
+        let mut source_recipes = fs::read_dir(&recipe_dir)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "read bundled recipes for source '{}' from '{}': {error}",
+                    source.name,
+                    recipe_dir.display()
+                )
+            })
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+            .filter(|entry| is_recipe_manifest(&entry.path()))
+            .map(|entry| {
+                println!("cargo:rerun-if-changed={}", entry.path().display());
+                BundledRecipeEntry {
+                    source_name: source.name.clone(),
+                    file_name: entry.file_name().to_string_lossy().to_string(),
+                    recipe_yaml: fs::read_to_string(entry.path()).expect("read bundled recipe"),
+                }
+            })
+            .collect::<Vec<_>>();
+        source_recipes.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+        recipes.extend(source_recipes);
+    }
+    recipes.sort_by(|left, right| {
+        (&left.source_name, &left.file_name).cmp(&(&right.source_name, &right.file_name))
+    });
+    recipes
 }
 
 fn write_entries(generated: &mut String, const_name: &str, entries: &[BundledEntry]) {
@@ -81,11 +128,35 @@ fn write_entries(generated: &mut String, const_name: &str, entries: &[BundledEnt
     generated.push_str("];\n");
 }
 
+fn write_recipe_entries(generated: &mut String, const_name: &str, entries: &[BundledRecipeEntry]) {
+    writeln!(
+        generated,
+        "pub(crate) const {const_name}: &[(&str, &str, &str)] = &["
+    )
+    .expect("writing to String is infallible");
+    for entry in entries {
+        writeln!(
+            generated,
+            "    ({:?}, {:?}, {:?}),",
+            entry.source_name, entry.file_name, entry.recipe_yaml
+        )
+        .expect("writing to String is infallible");
+    }
+    generated.push_str("];\n");
+}
+
 fn find_manifest_file(dir: &Path) -> Option<PathBuf> {
     ["manifest.yaml", "manifest.yml"]
         .into_iter()
         .map(|name| dir.join(name))
         .find(|path| path.exists())
+}
+
+fn is_recipe_manifest(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    file_name.ends_with(".recipe.yaml") || file_name.ends_with(".recipe.yml")
 }
 
 fn manifest_name(raw: &str) -> Option<String> {

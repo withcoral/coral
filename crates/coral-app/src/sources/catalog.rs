@@ -18,6 +18,12 @@ pub(crate) struct BundledSourceManifest {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct BundledRecipeManifest {
+    pub(crate) file_name: String,
+    pub(crate) recipe_yaml: String,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct InstalledSourceManifest {
     pub(crate) source_spec: ValidatedSourceManifest,
     pub(crate) candidate: CandidateSource,
@@ -56,6 +62,27 @@ pub(crate) fn load_bundled_source(name: &SourceName) -> Result<BundledSourceMani
     Ok(BundledSourceManifest {
         manifest_yaml: (*manifest_yaml).to_string(),
     })
+}
+
+pub(crate) fn load_bundled_source_recipes(
+    name: &SourceName,
+) -> Result<Vec<BundledRecipeManifest>, AppError> {
+    if !BUNDLED_SOURCES
+        .iter()
+        .any(|(candidate, _)| *candidate == name.as_str())
+    {
+        return Err(AppError::InvalidInput(format!(
+            "unknown bundled source '{name}'"
+        )));
+    }
+    Ok(BUNDLED_SOURCE_RECIPES
+        .iter()
+        .filter(|(source_name, _, _)| *source_name == name.as_str())
+        .map(|(_, file_name, recipe_yaml)| BundledRecipeManifest {
+            file_name: (*file_name).to_string(),
+            recipe_yaml: (*recipe_yaml).to_string(),
+        })
+        .collect())
 }
 
 /// Resolve the effective installed manifest and verify it still matches the
@@ -126,7 +153,9 @@ mod tests {
 
     use coral_spec::ManifestInputKind;
 
-    use super::{describe_manifest, list_bundled_sources, load_bundled_source};
+    use super::{
+        describe_manifest, list_bundled_sources, load_bundled_source, load_bundled_source_recipes,
+    };
     use crate::sources::SourceName;
     use crate::sources::model::SourceOrigin;
 
@@ -160,6 +189,27 @@ mod tests {
 
         let error = load_bundled_source(&github_v4).expect_err("v4 source should not be bundled");
         assert!(error.to_string().contains("unknown bundled source"));
+    }
+
+    #[test]
+    fn bundled_source_recipes_require_known_bundled_source() {
+        let github_v4 = SourceName::parse("github_v4").expect("source");
+
+        let error = load_bundled_source_recipes(&github_v4)
+            .expect_err("preview v4 package recipes should not be bundled");
+        assert!(error.to_string().contains("unknown bundled source"));
+    }
+
+    #[test]
+    fn bundled_source_recipes_load_for_known_source() {
+        let codex = SourceName::parse("codex").expect("source");
+
+        let recipes = load_bundled_source_recipes(&codex).expect("bundled recipes");
+
+        assert!(recipes.iter().any(|recipe| {
+            recipe.file_name == "recent_sessions.recipe.yaml"
+                && recipe.recipe_yaml.contains("name: recent_codex_sessions")
+        }));
     }
 
     #[test]

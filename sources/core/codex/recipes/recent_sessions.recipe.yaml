@@ -1,0 +1,19 @@
+kind: recipe
+name: recent_codex_sessions
+description: Recent Codex sessions from local session logs.
+
+implementation:
+  kind: coral_sql
+  query: |
+    select
+      session_file,
+      max(timestamp) as last_event_at,
+      count(*) as event_count
+    from codex.events
+    group by session_file
+    order by last_event_at desc
+    limit 20
+
+publish:
+  - table_function: codex.recent_sessions
+  - mcp_tool: codex_recent_sessions
