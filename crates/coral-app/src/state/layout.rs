@@ -12,6 +12,7 @@ use crate::workspaces::WorkspaceName;
 
 pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
 pub(crate) const INSTALLED_RECIPE_FILE_NAME: &str = "recipe.yaml";
+pub(crate) const INSTALLED_RECIPE_RUNTIME_FILE_NAME: &str = "runtime.json";
 pub(crate) const INSTALLED_SECRETS_FILE_NAME: &str = "secrets.env";
 
 #[derive(Debug, Clone)]
@@ -107,6 +108,15 @@ impl AppStateLayout {
     ) -> PathBuf {
         self.recipe_dir(workspace_name, recipe_name)
             .join(INSTALLED_RECIPE_FILE_NAME)
+    }
+
+    pub(crate) fn recipe_runtime_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        recipe_name: &RecipeName,
+    ) -> PathBuf {
+        self.recipe_dir(workspace_name, recipe_name)
+            .join(INSTALLED_RECIPE_RUNTIME_FILE_NAME)
     }
 
     /// Per-workspace episode log (JSONL) for experimental trajectory memory. The
@@ -268,6 +278,15 @@ mod tests {
                 .join("recipes")
                 .join("review_queue")
                 .join("recipe.yaml")
+        );
+        assert_eq!(
+            layout.recipe_runtime_file(&workspace_name, &recipe_name),
+            config_dir
+                .join("workspaces")
+                .join("default")
+                .join("recipes")
+                .join("review_queue")
+                .join("runtime.json")
         );
         assert_eq!(
             layout.episodes_file(&workspace_name),
