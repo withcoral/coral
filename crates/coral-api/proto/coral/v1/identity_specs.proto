@@ -30,6 +30,15 @@ message AddIdentitySpecRequest {
   repeated IdentitySpecInput inputs = 2;
 }
 
+// Installs one global identity spec only when no spec with the same name exists.
+message CreateIdentitySpecRequest {
+  // Raw identity spec manifest YAML to validate and install.
+  string manifest_yaml = 1;
+  // Setup input values owned by the installed identity spec. Secret values are
+  // persisted in Coral credential storage for later identity materialization.
+  repeated IdentitySpecInput inputs = 2;
+}
+
 // One setup input value for an installed identity spec.
 message IdentitySpecInput {
   // Declared identity spec input key.
@@ -45,6 +54,12 @@ message AddIdentitySpecResponse {
   IdentitySpec identity_spec = 1;
   // Whether an existing spec with the same name was replaced.
   bool replaced = 2;
+}
+
+// Returns the installed identity spec.
+message CreateIdentitySpecResponse {
+  // The installed identity spec.
+  IdentitySpec identity_spec = 1;
 }
 
 // Lists all globally installed identity specs.
@@ -88,6 +103,8 @@ message DeleteIdentitySpecResponse {
 service IdentitySpecService {
   // Installs one global identity spec, or replaces an unused existing spec.
   rpc AddIdentitySpec(AddIdentitySpecRequest) returns (AddIdentitySpecResponse);
+  // Installs one global identity spec only when no spec with the same name exists.
+  rpc CreateIdentitySpec(CreateIdentitySpecRequest) returns (CreateIdentitySpecResponse);
   // Lists globally installed identity specs.
   rpc ListIdentitySpecs(ListIdentitySpecsRequest) returns (ListIdentitySpecsResponse);
   // Fetches one globally installed identity spec.

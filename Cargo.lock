@@ -1297,6 +1297,7 @@ dependencies = [
  "regex",
  "rmcp",
  "rust-embed",
+ "serde",
  "serde_json",
  "serde_yaml",
  "tempfile",
@@ -1306,6 +1307,7 @@ dependencies = [
  "tonic",
  "tonic-types",
  "url",
+ "uuid",
 ]
 
 [[package]]

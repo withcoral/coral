@@ -22,6 +22,11 @@ The `endpoint` is the OTLP/HTTP base URL. Coral automatically appends `/v1/trace
 
 Coral keeps a local trace history for the UI by default. Local traces include query, source-loading, HTTP, and DataFusion spans. They also include DataFusion optimizer-rule spans so the trace view can show the planning work that happened for a query. This local filter is separate from `trace_filter`, which only controls OTLP span export.
 
+Trace history is local-only. When native gRPC binds a non-loopback address,
+Coral disables the local trace history store and TraceService because trace
+records are not workspace-scoped. Use external OTLP export for shared or
+multi-user deployments.
+
 By default, Coral retains seven days of local spans. To change that window:
 
 ```toml

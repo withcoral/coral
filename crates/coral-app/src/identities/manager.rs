@@ -641,6 +641,18 @@ impl UserOwnedIdentityManager {
         self.list_identities(&owner).await
     }
 
+    pub(crate) async fn delete_user_owned_identity(
+        &self,
+        principal: &UserPrincipal,
+        identity_name: &str,
+    ) -> Result<bool, AppError> {
+        let span = info_span!("coral.app.identities.delete_user_owned");
+        let _guard = span.enter();
+        self.identity_specs.ensure_dsl_v4_enabled()?;
+        let owner = IdentityOwnerKey::for_user_principal(principal)?;
+        self.delete_identity(&owner, identity_name).await
+    }
+
     async fn delete_identity(
         &self,
         owner: &IdentityOwnerKey,

@@ -112,4 +112,8 @@ enabled = true
 retention_days = 7
 ```
 
+Trace history is a local inspection feature. Coral disables the local trace
+history store and TraceService when native gRPC binds a non-loopback address;
+multi-user deployments should export traces through `[otel]` instead.
+
 See [Observe with OpenTelemetry](/guides/observe-with-opentelemetry) for the full telemetry setup guide.

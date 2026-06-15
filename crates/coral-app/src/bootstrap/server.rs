@@ -502,18 +502,20 @@ impl ServerBuilder {
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
         self.ensure_compatible_extension_storage()?;
+        let uses_non_loopback_native_grpc_bind = self.uses_non_loopback_native_grpc_bind();
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config_dir)?;
         layout.ensure()?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
-        let internal_trace_store_dir = telemetry_config
-            .trace_history
-            .enabled
-            .then(|| layout.local_trace_store_dir());
+        let local_trace_history = local_trace_history_setup(
+            &telemetry_config,
+            &layout,
+            uses_non_loopback_native_grpc_bind,
+        );
         let installed_trace_store = crate::telemetry::init_tracing(
             &telemetry_config,
             self.enable_stderr_logs,
-            internal_trace_store_dir.clone(),
+            local_trace_history.store_dir.clone(),
         )?;
         let config_store = ConfigStore::new(layout.clone());
         let source_registry = self
@@ -534,12 +536,9 @@ impl ServerBuilder {
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.feedback_publisher);
         let episode_store = EpisodeStore::new(layout.clone());
-        let body_capture_max_bytes = telemetry_config
-            .trace_history
-            .http_body_recording_max_bytes();
         let query_runtime_context = env
             .query_runtime_context()
-            .with_body_capture_max_bytes(body_capture_max_bytes);
+            .with_body_capture_max_bytes(local_trace_history.body_capture_max_bytes);
         let identity_spec_manager = identity_spec_manager_for_server(
             &layout,
             &credential_store,
@@ -573,7 +572,7 @@ impl ServerBuilder {
             source_identity_providers,
             features,
         );
-        let trace_service = if telemetry_config.trace_history.enabled {
+        let trace_service = if local_trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
         } else {
             None
@@ -595,6 +594,13 @@ impl ServerBuilder {
             extension_context,
         })
         .await
+    }
+
+    fn uses_non_loopback_native_grpc_bind(&self) -> bool {
+        matches!(self.mode, ServerMode::NativeGrpc)
+            && self
+                .native_grpc_bind_addr
+                .is_some_and(|bind_addr| !bind_addr.ip().is_loopback())
     }
 
     fn ensure_compatible_extension_storage(&self) -> Result<(), AppError> {
@@ -626,6 +632,34 @@ impl ServerBuilder {
             ));
         }
         Ok(())
+    }
+}
+
+struct LocalTraceHistorySetup {
+    enabled: bool,
+    store_dir: Option<PathBuf>,
+    body_capture_max_bytes: Option<usize>,
+}
+
+fn local_trace_history_setup(
+    telemetry_config: &TelemetryConfig,
+    layout: &AppStateLayout,
+    uses_non_loopback_native_grpc_bind: bool,
+) -> LocalTraceHistorySetup {
+    let enabled = telemetry_config.trace_history.enabled && !uses_non_loopback_native_grpc_bind;
+    if telemetry_config.trace_history.enabled && uses_non_loopback_native_grpc_bind {
+        tracing::warn!("local trace history is disabled for non-loopback native gRPC servers");
+    }
+    LocalTraceHistorySetup {
+        enabled,
+        store_dir: enabled.then(|| layout.local_trace_store_dir()),
+        body_capture_max_bytes: enabled
+            .then(|| {
+                telemetry_config
+                    .trace_history
+                    .http_body_recording_max_bytes()
+            })
+            .flatten(),
     }
 }
 
@@ -1138,11 +1172,12 @@ mod tests {
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
-        AddIdentitySpecRequest, CreateBundledSourceRequest, DeleteIdentitySpecRequest,
-        ExecuteSqlRequest, ExecuteSqlResponse, ImportSourceRequest, ImportSourceResponse,
-        ListCatalogRequest, ListIdentitySpecsRequest, ListSourcesRequest, ListTracesRequest,
-        ListTracesResponse, ListUserOwnedIdentitiesRequest, OAuthCredentialRetrieval,
-        OpenEpisodeRequest, SubmitFeedbackRequest, Workspace, import_source_response,
+        AddIdentitySpecRequest, CreateBundledSourceRequest, CreateIdentitySpecRequest,
+        DeleteIdentitySpecRequest, ExecuteSqlRequest, ExecuteSqlResponse, ImportSourceRequest,
+        ImportSourceResponse, ListCatalogRequest, ListIdentitySpecsRequest, ListSourcesRequest,
+        ListTracesRequest, ListTracesResponse, ListUserOwnedIdentitiesRequest,
+        OAuthCredentialRetrieval, OpenEpisodeRequest, SubmitFeedbackRequest, Workspace,
+        import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -1204,6 +1239,19 @@ mod tests {
             Err(UserPrincipalError::unauthenticated(
                 "rejected user principal",
             ))
+        }
+    }
+
+    #[derive(Debug)]
+    struct AcceptingUserPrincipalProvider;
+
+    #[tonic::async_trait]
+    impl UserPrincipalProvider for AcceptingUserPrincipalProvider {
+        async fn principal_for_metadata(
+            &self,
+            _metadata: &tonic::metadata::MetadataMap,
+        ) -> Result<UserPrincipal, UserPrincipalError> {
+            Ok(UserPrincipal::for_user("test-user").expect("valid test user principal"))
         }
     }
 
@@ -1707,6 +1755,39 @@ enabled = false
     }
 
     #[tokio::test]
+    async fn trace_history_service_is_unregistered_for_public_native_grpc() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_native_grpc_bind_addr(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+            .allow_unsafe_public_native_grpc_bind()
+            .with_user_principal_provider(Arc::new(AcceptingUserPrincipalProvider))
+            .with_management_authorizer(Arc::new(DenyingManagementAuthorizer))
+            .with_workspace_authorizer(Arc::new(AllowAllNonDefaultWorkspaceAuthorizer))
+            .start()
+            .await
+            .expect("public server should start with explicit auth");
+        let endpoint_uri = server
+            .endpoint_uri()
+            .to_string()
+            .replace("0.0.0.0", "127.0.0.1");
+        let channel = Endpoint::from_shared(endpoint_uri)
+            .expect("endpoint")
+            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
+            .connect()
+            .await
+            .expect("connect");
+        let mut trace_client = TraceServiceClient::new(channel);
+
+        let status = list_traces(&mut trace_client)
+            .await
+            .expect_err("public native gRPC must not expose local trace history");
+
+        assert_eq!(status.code(), Code::Unimplemented);
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
     async fn server_builder_installs_identity_spec_management_authorizer() {
         let temp = TempDir::new().expect("temp dir");
         let server = ServerBuilder::new()
@@ -1717,7 +1798,7 @@ enabled = false
             .expect("start server");
         let mut client = IdentitySpecServiceClient::new(connect(&server).await);
 
-        let status = client
+        let add_status = client
             .add_identity_spec(Request::new(AddIdentitySpecRequest {
                 manifest_yaml: String::new(),
                 inputs: Vec::new(),
@@ -1725,8 +1806,18 @@ enabled = false
             .await
             .expect_err("identity spec mutation should be denied");
 
-        assert_eq!(status.code(), Code::PermissionDenied);
-        assert!(status.message().contains("identity specs are blocked"));
+        let create_status = client
+            .create_identity_spec(Request::new(CreateIdentitySpecRequest {
+                manifest_yaml: String::new(),
+                inputs: Vec::new(),
+            }))
+            .await
+            .expect_err("identity spec create should be denied");
+
+        for status in [add_status, create_status] {
+            assert_eq!(status.code(), Code::PermissionDenied);
+            assert!(status.message().contains("identity specs are blocked"));
+        }
         server.shutdown().await.expect("shutdown");
     }
 

@@ -239,7 +239,6 @@ impl IdentitySpecSnapshot {
 
 #[derive(Debug, Clone)]
 pub(crate) struct IdentitySpecImportInstall {
-    pub(crate) name: String,
     pub(crate) previous: Option<IdentitySpecSnapshot>,
     pub(crate) installed: IdentitySpecSnapshot,
     pub(crate) pre_import_usage_count: u32,
@@ -248,6 +247,7 @@ pub(crate) struct IdentitySpecImportInstall {
 struct IdentitySpecAddOutcome {
     record: IdentitySpecRecord,
     replaced: bool,
+    #[cfg(test)]
     import_install: IdentitySpecImportInstall,
 }
 
@@ -358,24 +358,103 @@ impl IdentitySpecManager {
         manifest_yaml: &str,
         inputs: Vec<IdentitySpecInputValue>,
     ) -> Result<(IdentitySpecRecord, bool), AppError> {
-        let outcome = self.add_identity_spec_with_inputs_inner(manifest_yaml, inputs)?;
+        let outcome = self.add_identity_spec_with_inputs_inner(manifest_yaml, inputs, false)?;
         Ok((outcome.record, outcome.replaced))
     }
 
+    pub(crate) fn add_identity_spec_with_inputs_create_only(
+        &self,
+        manifest_yaml: &str,
+        inputs: Vec<IdentitySpecInputValue>,
+    ) -> Result<IdentitySpecRecord, AppError> {
+        let outcome = self.add_identity_spec_with_inputs_inner(manifest_yaml, inputs, true)?;
+        Ok(outcome.record)
+    }
+
+    #[cfg(test)]
     pub(crate) fn add_identity_spec_with_inputs_for_import(
         &self,
         manifest_yaml: &str,
         inputs: Vec<IdentitySpecInputValue>,
     ) -> Result<IdentitySpecImportInstall, AppError> {
         Ok(self
-            .add_identity_spec_with_inputs_inner(manifest_yaml, inputs)?
+            .add_identity_spec_with_inputs_inner(manifest_yaml, inputs, false)?
             .import_install)
+    }
+
+    pub(crate) fn add_identity_spec_with_inputs_for_import_create_only(
+        &self,
+        manifest_yaml: &str,
+        inputs: Vec<IdentitySpecInputValue>,
+    ) -> Result<Option<IdentitySpecImportInstall>, AppError> {
+        let span = info_span!("coral.app.identity_specs.import_create_only");
+        let _guard = span.enter();
+        self.features.ensure_dsl_v4_enabled()?;
+        let record = parse_identity_spec_record(manifest_yaml)?;
+        let name = record.manifest.name.clone();
+        let _lock = FileLock::exclusive(self.layout.state_lock())?;
+        let previous = self.snapshot_identity_spec_unlocked(&name)?;
+        let pre_import_usage_count = self.count_identities_for_spec_unlocked(&name)?;
+        let provided_inputs = unique_input_map(
+            inputs.into_iter().map(|input| (input.key, input.value)),
+            "identity spec input",
+        )?;
+
+        if let Some(previous) = previous {
+            if previous.record.manifest != record.manifest {
+                return Err(AppError::FailedPrecondition(format!(
+                    "identity spec '{name}' is already installed with a different manifest; remove or update it before importing this source bundle"
+                )));
+            }
+            let merged_input_material = merge_identity_spec_input_material(
+                &record.manifest,
+                &previous.input_material,
+                &provided_inputs,
+            )?;
+            if merged_input_material != previous.input_material {
+                return Err(AppError::FailedPrecondition(format!(
+                    "identity spec '{name}' is already installed; source import cannot update identity spec input material"
+                )));
+            }
+            return Ok(None);
+        }
+
+        let input_material = merge_identity_spec_input_material(
+            &record.manifest,
+            &BTreeMap::new(),
+            &provided_inputs,
+        )?;
+        self.registry.upsert_identity_spec(
+            &record.manifest.name,
+            IdentitySpecRegistryRecord {
+                manifest_yaml: record.manifest_yaml.clone(),
+                input_material,
+            },
+        )?;
+        let installed = match self.snapshot_identity_spec_unlocked(&name) {
+            Ok(Some(installed)) => installed,
+            Ok(None) => {
+                let error = AppError::FailedPrecondition(format!(
+                    "identity spec '{name}' was not available after import"
+                ));
+                return Err(self.restore_identity_spec_import_unlocked_or_error(&name, None, error));
+            }
+            Err(error) => {
+                return Err(self.restore_identity_spec_import_unlocked_or_error(&name, None, error));
+            }
+        };
+        Ok(Some(IdentitySpecImportInstall {
+            previous: None,
+            installed,
+            pre_import_usage_count,
+        }))
     }
 
     fn add_identity_spec_with_inputs_inner(
         &self,
         manifest_yaml: &str,
         inputs: Vec<IdentitySpecInputValue>,
+        create_only: bool,
     ) -> Result<IdentitySpecAddOutcome, AppError> {
         let span = info_span!("coral.app.identity_specs.add");
         let _guard = span.enter();
@@ -385,6 +464,11 @@ impl IdentitySpecManager {
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
         let previous = self.snapshot_identity_spec_unlocked(&name)?;
         let replaced = previous.is_some();
+        if create_only && replaced {
+            return Err(AppError::FailedPrecondition(format!(
+                "identity spec '{name}' is already installed"
+            )));
+        }
         let existing_input_material = previous
             .as_ref()
             .map(|snapshot| snapshot.input_material.clone())
@@ -436,11 +520,13 @@ impl IdentitySpecManager {
                 ));
             }
         };
+        #[cfg(not(test))]
+        let _ = installed;
         Ok(IdentitySpecAddOutcome {
             record,
             replaced,
+            #[cfg(test)]
             import_install: IdentitySpecImportInstall {
-                name,
                 previous,
                 installed,
                 pre_import_usage_count,
@@ -1479,7 +1565,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn assert_failed_precondition(error: &AppError, fragments: [&str; 2]) {
+    fn assert_failed_precondition<const N: usize>(error: &AppError, fragments: [&str; N]) {
         match error {
             AppError::FailedPrecondition(message) => {
                 for fragment in fragments {
@@ -1693,6 +1779,25 @@ oauth:
                 .list_identity_specs()
                 .expect("list again")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn create_only_add_does_not_replace_existing_identity_spec() {
+        let (_temp, manager, _layout) = manager();
+        add_spec(&manager, &identity_yaml("github_oauth", "0.1.0"));
+
+        let error = manager
+            .add_identity_spec_with_inputs_create_only(
+                &identity_yaml("github_oauth", "0.2.0"),
+                Vec::new(),
+            )
+            .expect_err("create-only add should not replace");
+
+        assert_failed_precondition(&error, ["already installed"]);
+        assert_eq!(
+            stored_spec(&manager, "github_oauth").manifest.version,
+            "0.1.0"
         );
     }
 

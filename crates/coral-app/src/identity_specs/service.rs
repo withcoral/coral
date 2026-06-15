@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use coral_api::v1::identity_spec_service_server::IdentitySpecService as IdentitySpecServiceApi;
 use coral_api::v1::{
-    AddIdentitySpecRequest, AddIdentitySpecResponse, DeleteIdentitySpecRequest,
-    DeleteIdentitySpecResponse, GetIdentitySpecRequest, GetIdentitySpecResponse, IdentitySpec,
-    ListIdentitySpecsRequest, ListIdentitySpecsResponse,
+    AddIdentitySpecRequest, AddIdentitySpecResponse, CreateIdentitySpecRequest,
+    CreateIdentitySpecResponse, DeleteIdentitySpecRequest, DeleteIdentitySpecResponse,
+    GetIdentitySpecRequest, GetIdentitySpecResponse, IdentitySpec, ListIdentitySpecsRequest,
+    ListIdentitySpecsResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -70,6 +71,41 @@ impl IdentitySpecServiceApi for IdentitySpecService {
                 Ok(Response::new(AddIdentitySpecResponse {
                     identity_spec: Some(identity_spec_record_to_proto(record)),
                     replaced,
+                }))
+            },
+        )
+        .await
+    }
+
+    async fn create_identity_spec(
+        &self,
+        request: Request<CreateIdentitySpecRequest>,
+    ) -> Result<Response<CreateIdentitySpecResponse>, Status> {
+        let identity_specs = self.identity_specs.clone();
+        let management_authorizer = Arc::clone(&self.management_authorizer);
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |principal, request| async move {
+                management_authorizer
+                    .authorize_identity_spec_mutation(&principal)
+                    .await
+                    .map_err(authorization_status)?;
+                let inputs = request
+                    .inputs
+                    .into_iter()
+                    .map(|input| IdentitySpecInputValue {
+                        key: input.key,
+                        value: input.value,
+                    })
+                    .collect::<Vec<_>>();
+                let record = run_blocking_operation("identity spec operation", move || {
+                    identity_specs
+                        .add_identity_spec_with_inputs_create_only(&request.manifest_yaml, inputs)
+                })
+                .await?;
+                Ok(Response::new(CreateIdentitySpecResponse {
+                    identity_spec: Some(identity_spec_record_to_proto(record)),
                 }))
             },
         )

@@ -18,6 +18,7 @@ mod query_error;
 mod source_ops;
 
 use std::borrow::Cow;
+use std::future::Future;
 use std::path::PathBuf;
 #[cfg(feature = "embedded-ui")]
 use std::sync::Arc;
@@ -27,7 +28,7 @@ use clap::{
     Parser, Subcommand, ValueEnum,
 };
 use clap_complete::{Shell, generate};
-use coral_api::v1::ExecuteSqlRequest;
+use coral_api::v1::{ExecuteSqlRequest, ExecuteSqlResponse, Workspace};
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
 use coral_client::{
@@ -35,6 +36,7 @@ use coral_client::{
     format_batches_table, manifest_input_from_proto,
 };
 use dialoguer::console::measure_text_width;
+use serde::Deserialize as _;
 use tonic::Request;
 
 #[cfg(test)]
@@ -83,6 +85,26 @@ enum Command {
 enum RequiredRuntime {
     AppClient,
     None,
+}
+
+/// Runtime options parsed from the shared CLI surface before an app client is
+/// needed.
+#[derive(Debug, Clone)]
+pub struct SuppliedRuntimeOptions {
+    /// Whether the supplied server should render logs to stderr for this
+    /// invocation.
+    pub enable_stderr_logs: bool,
+    /// Process-local runtime feature overrides parsed from global CLI flags.
+    pub feature_overrides: coral_app::features::FeatureOverrides,
+}
+
+/// Product-specific defaults used by a sibling binary that supplies the app
+/// runtime.
+#[derive(Debug, Clone, Default)]
+pub struct AppRuntimeConfig {
+    /// Baseline process-local feature overrides. Explicit global CLI feature
+    /// flags still take precedence.
+    pub feature_overrides: coral_app::features::FeatureOverrides,
 }
 
 #[cfg(feature = "embedded-ui")]
@@ -291,9 +313,12 @@ enum SourceCommand {
     },
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum OutputFormat {
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+/// Output format for rendered SQL query results.
+pub enum OutputFormat {
+    /// Render query results as an aligned terminal table.
     Table,
+    /// Render query results as JSON.
     Json,
 }
 
@@ -464,6 +489,112 @@ pub async fn run_from_env() -> Result<(), CliError> {
     }
 }
 
+/// Parses CLI arguments and runs them against an app runtime supplied by a
+/// sibling binary.
+///
+/// This keeps shared command parsing, feature override handling, output
+/// rendering, and telemetry classification in `coral-cli` while allowing a
+/// product-specific binary to own server startup and extension composition.
+/// The runtime factory is called only for commands that need an app client, and
+/// receives parsed runtime options before the app client is constructed.
+///
+/// # Errors
+///
+/// Returns an error if runtime startup, command execution, or output formatting
+/// fails.
+pub async fn run_with_app_runtime<Start, StartFuture, RuntimeGuard>(
+    ctx: coral_app::RunContext,
+    start_runtime: Start,
+) -> Result<(), CliError>
+where
+    Start: FnOnce(SuppliedRuntimeOptions) -> StartFuture,
+    StartFuture: Future<Output = Result<(AppClient, RuntimeGuard), anyhow::Error>>,
+{
+    run_with_app_runtime_config(ctx, AppRuntimeConfig::default(), start_runtime).await
+}
+
+/// Parses CLI arguments and runs them against an app runtime supplied by a
+/// sibling binary, applying product-specific runtime defaults before command
+/// execution.
+///
+/// Explicit global CLI feature flags override `config` defaults. This lets a
+/// sibling binary keep no-runtime commands such as `features list` aligned with
+/// the runtime it would supply for app-backed commands.
+///
+/// # Errors
+///
+/// Returns an error if runtime startup, command execution, or output formatting
+/// fails.
+pub async fn run_with_app_runtime_config<Start, StartFuture, RuntimeGuard>(
+    ctx: coral_app::RunContext,
+    config: AppRuntimeConfig,
+    start_runtime: Start,
+) -> Result<(), CliError>
+where
+    Start: FnOnce(SuppliedRuntimeOptions) -> StartFuture,
+    StartFuture: Future<Output = Result<(AppClient, RuntimeGuard), anyhow::Error>>,
+{
+    let Cli {
+        feature_overrides,
+        command,
+    } = Cli::parse();
+    let feature_overrides =
+        feature_overrides_with_defaults(feature_overrides.into_overrides(), &config);
+
+    match command.required_runtime() {
+        RequiredRuntime::AppClient => {
+            let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
+            let (app, _runtime_guard) = start_runtime(SuppliedRuntimeOptions {
+                enable_stderr_logs: command.enables_stderr_logs(),
+                feature_overrides: feature_overrides.clone(),
+            })
+            .await?;
+            if is_mcp_stdio {
+                run_app_command(app, command, Some(&ctx), &feature_overrides).await
+            } else {
+                coral_app::run_with_context(
+                    &ctx,
+                    Box::pin(run_app_command(app, command, None, &feature_overrides)),
+                )
+                .await
+            }
+        }
+        RequiredRuntime::None => {
+            coral_app::run_with_context(
+                &ctx,
+                Box::pin(run_no_runtime_command(command, &feature_overrides)),
+            )
+            .await
+        }
+    }
+}
+
+fn feature_overrides_with_defaults(
+    mut feature_overrides: coral_app::features::FeatureOverrides,
+    config: &AppRuntimeConfig,
+) -> coral_app::features::FeatureOverrides {
+    feature_overrides.apply_defaults_from(&config.feature_overrides);
+    feature_overrides
+}
+
+/// Parses CLI arguments and runs them against an already-configured app client.
+///
+/// Use [`run_with_app_runtime`] instead when parsed feature overrides or stderr
+/// log settings must affect the server that backs the client.
+///
+/// # Errors
+///
+/// Returns an error if command execution or output formatting fails.
+pub async fn run(app: AppClient, ctx: coral_app::RunContext) -> Result<(), CliError> {
+    run_with_app_runtime(ctx, |_| async move { Ok((app, ())) }).await
+}
+
+/// Returns the shared OSS Coral CLI command definition.
+#[must_use]
+pub fn command() -> clap::Command {
+    Cli::command()
+}
+
 /// Returns the embedded Coral UI assets for the local server to serve.
 #[cfg(feature = "embedded-ui")]
 #[must_use]
@@ -538,25 +669,7 @@ async fn run_app_command(
 ) -> Result<(), CliError> {
     match command {
         Command::Sql(args) => {
-            let response = match app
-                .query_client()
-                .execute_sql(Request::new(ExecuteSqlRequest {
-                    workspace: Some(default_workspace()),
-                    sql: args.sql,
-                }))
-                .await
-            {
-                Ok(response) => response.into_inner(),
-                Err(status) => {
-                    return Err(CliError::Query {
-                        error_message: query_error::telemetry_error_message(&status),
-                        error_type: query_error::telemetry_error_type(&status),
-                        rendered_stderr: query_error::render_query_error(&status),
-                    });
-                }
-            };
-            let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
-            print_batches(result.batches(), args.format)?;
+            run_sql(&app, default_workspace(), args.sql, args.format).await?;
         }
         Command::Source(args) => run_source(&app, args, feature_overrides).await?,
         Command::Onboard => {
@@ -690,6 +803,79 @@ async fn run_source(
     Ok(())
 }
 
+/// Build a workspace selector for shared CLI query helpers.
+#[must_use]
+pub fn workspace_with_name(name: impl Into<String>) -> Workspace {
+    Workspace { name: name.into() }
+}
+
+/// Execute a SQL query against the given workspace and return the raw response.
+///
+/// The OSS CLI calls this with [`default_workspace`]. Cloud-specific CLIs can
+/// reuse the same transport path for server-managed workspaces without adding a
+/// workspace selector to the OSS `coral sql` command.
+///
+/// # Errors
+///
+/// Returns the gRPC status from query execution when the server rejects or fails
+/// the request.
+pub async fn execute_sql(
+    app: &AppClient,
+    workspace: Workspace,
+    sql: String,
+) -> Result<ExecuteSqlResponse, tonic::Status> {
+    app.query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(workspace),
+            sql,
+        }))
+        .await
+        .map(tonic::Response::into_inner)
+}
+
+/// Render a SQL response in the same format used by the shared CLI.
+///
+/// # Errors
+///
+/// Returns an error when the response payload cannot be decoded or formatted.
+pub fn print_sql_response(
+    response: &ExecuteSqlResponse,
+    format: OutputFormat,
+) -> Result<(), anyhow::Error> {
+    let result = decode_execute_sql_response(response).map_err(anyhow::Error::from)?;
+    print_batches(result.batches(), format)
+}
+
+/// Execute and render a SQL query using the shared CLI's query diagnostics.
+///
+/// # Errors
+///
+/// Returns [`CliError::Query`] when the server rejects query execution, or
+/// [`CliError::Internal`] when the successful response cannot be decoded or
+/// rendered.
+pub async fn run_sql(
+    app: &AppClient,
+    workspace: Workspace,
+    sql: String,
+    format: OutputFormat,
+) -> Result<(), CliError> {
+    let response = execute_sql(app, workspace, sql)
+        .await
+        .map_err(|status| sql_status_to_cli_error(&status))?;
+    print_sql_response(&response, format)?;
+    Ok(())
+}
+
+/// Convert a query status into the shared CLI's structured query diagnostic.
+#[must_use]
+pub fn sql_status_to_cli_error(status: &tonic::Status) -> CliError {
+    CliError::Query {
+        error_message: query_error::telemetry_error_message(status),
+        error_type: query_error::telemetry_error_type(status),
+        rendered_stderr: query_error::render_query_error(status),
+    }
+}
+
 fn print_batches(
     batches: &[arrow::record_batch::RecordBatch],
     format: OutputFormat,
@@ -817,34 +1003,14 @@ async fn run_source_add(
             }
         }
         (None, Some(file)) => {
-            let raw_manifest_yaml = std::fs::read_to_string(&file).map_err(anyhow::Error::from)?;
-            ensure_source_add_manifest_yaml_features(&raw_manifest_yaml, feature_overrides)?;
-            let (manifest_yaml, manifest) =
-                source_ops::load_validated_manifest_file_yaml(&file, &raw_manifest_yaml)?;
-            ensure_source_add_manifest_features(&manifest, feature_overrides)?;
-            if interactive {
-                let inputs = source_ops::prompt_for_inputs_with_credential_methods(
-                    manifest.declared_inputs(),
-                )?;
-                source_ops::import_source_with_credentials(app, manifest_yaml, inputs).await?
-            } else {
-                let (variables, secrets) = source_ops::collect_inputs_from_env(
-                    manifest.declared_inputs(),
-                    format!(
-                        "coral source add --interactive --file {}",
-                        source_ops::shell_quote_arg(&file.display().to_string())
-                    ),
-                )?;
-                source_ops::import_source(app, manifest_yaml, variables, secrets).await?
-            }
+            add_source_from_file(app, file, interactive, feature_overrides).await?
         }
         _ => unreachable!("clap enforces exactly one of name or file"),
     };
-    println!(
-        "Added source {} (secrets: {})",
-        response.name,
-        source_ops::source_credential_storage_label(response.credential_storage)
-    );
+    match source_ops::added_source_secret_storage_label(response.credential_storage) {
+        Some(label) => println!("Added source {} (secrets: {label})", response.name),
+        None => println!("Added source {}", response.name),
+    }
     source_ops::validate_and_warn(app, &response.name, source_ops::TableDisplayLimit::DEFAULT)
         .await
         .map_err(Into::into)
@@ -864,16 +1030,36 @@ fn ensure_source_add_manifest_yaml_features(
     manifest_yaml: &str,
     feature_overrides: &coral_app::features::FeatureOverrides,
 ) -> Result<(), anyhow::Error> {
-    let manifest_value: serde_yaml::Value = serde_yaml::from_str(manifest_yaml)?;
-    if manifest_value
-        .as_mapping()
-        .and_then(|mapping| mapping.get(serde_yaml::Value::String("dsl_version".to_string())))
-        .and_then(serde_yaml::Value::as_u64)
-        .is_none_or(|dsl_version| dsl_version != 4)
-    {
+    if !source_add_manifest_yaml_requires_dsl_v4(manifest_yaml)? {
         return Ok(());
     }
     ensure_dsl_v4_source_add_enabled(feature_overrides)
+}
+
+fn source_add_manifest_yaml_requires_dsl_v4(manifest_yaml: &str) -> Result<bool, anyhow::Error> {
+    let kind_key = serde_yaml::Value::String("kind".to_string());
+    let dsl_version_key = serde_yaml::Value::String("dsl_version".to_string());
+    for document in serde_yaml::Deserializer::from_str(manifest_yaml) {
+        let value = serde_yaml::Value::deserialize(document)?;
+        let Some(mapping) = value.as_mapping() else {
+            continue;
+        };
+        if mapping
+            .get(&kind_key)
+            .and_then(serde_yaml::Value::as_str)
+            .is_some_and(|kind| kind == "identity")
+        {
+            return Ok(true);
+        }
+        if mapping
+            .get(&dsl_version_key)
+            .and_then(serde_yaml::Value::as_u64)
+            .is_some_and(|dsl_version| dsl_version == 4)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn ensure_dsl_v4_source_add_enabled(
@@ -891,13 +1077,132 @@ fn ensure_dsl_v4_source_add_enabled(
     }
 }
 
+async fn add_source_from_file(
+    app: &AppClient,
+    file: PathBuf,
+    interactive: bool,
+    feature_overrides: &coral_app::features::FeatureOverrides,
+) -> Result<coral_api::v1::Source, CliError> {
+    let raw_manifest_yaml = std::fs::read_to_string(&file).map_err(anyhow::Error::from)?;
+    ensure_source_add_manifest_yaml_features(&raw_manifest_yaml, feature_overrides)?;
+    let bundle = source_ops::load_validated_manifest_bundle_file_yaml(&file, &raw_manifest_yaml)?;
+    ensure_source_add_manifest_features(&bundle.source_manifest, feature_overrides)?;
+    let identity_spec_interactive_command = format!(
+        "coral source add --interactive --file {}",
+        source_ops::shell_quote_arg(&file.display().to_string())
+    );
+    if source_ops::source_has_identity_requirements(&bundle.source_manifest) {
+        return add_source_with_identity_requirements_from_file(
+            app,
+            bundle,
+            interactive,
+            &identity_spec_interactive_command,
+        )
+        .await;
+    }
+    let identity_specs = source_ops::prepare_identity_specs_for_source_import(
+        app,
+        &bundle.identity_manifests,
+        interactive,
+        &identity_spec_interactive_command,
+    )
+    .await?;
+    if interactive {
+        let inputs = source_ops::prompt_for_inputs_with_credential_methods(
+            bundle.source_manifest.declared_inputs(),
+        )?;
+        return Ok(source_ops::import_source_with_credentials(
+            app,
+            bundle.source_manifest_yaml,
+            identity_specs,
+            Vec::new(),
+            Vec::new(),
+            inputs,
+        )
+        .await?);
+    }
+    let (variables, secrets) = source_ops::collect_inputs_from_env(
+        bundle.source_manifest.declared_inputs(),
+        identity_spec_interactive_command,
+    )?;
+    Ok(source_ops::import_source(
+        app,
+        bundle.source_manifest_yaml,
+        identity_specs,
+        Vec::new(),
+        Vec::new(),
+        variables,
+        secrets,
+    )
+    .await?)
+}
+
+async fn add_source_with_identity_requirements_from_file(
+    app: &AppClient,
+    bundle: source_ops::ValidatedManifestBundleFile,
+    interactive: bool,
+    identity_spec_interactive_command: &str,
+) -> Result<coral_api::v1::Source, CliError> {
+    source_ops::require_interactive_for("source identity setup")?;
+    let installed_identity_specs = source_ops::install_identity_specs_for_source_add(
+        app,
+        &bundle.identity_manifests,
+        interactive,
+        identity_spec_interactive_command,
+    )
+    .await?;
+    let inputs = match source_ops::prompt_for_inputs_with_credential_methods(
+        bundle.source_manifest.declared_inputs(),
+    ) {
+        Ok(inputs) => inputs,
+        Err(error) => {
+            source_ops::rollback_identity_specs_for_source_add(installed_identity_specs);
+            return Err(error.into());
+        }
+    };
+    let identity_bindings = match source_ops::prompt_for_source_identity_bindings(
+        app,
+        &bundle.source_manifest,
+        &bundle.identity_manifests,
+    )
+    .await
+    {
+        Ok(identity_bindings) => identity_bindings,
+        Err(error) => {
+            source_ops::rollback_identity_specs_for_source_add(installed_identity_specs);
+            return Err(error.into());
+        }
+    };
+    let source_ops::PromptedSourceIdentityBindings {
+        identity_bindings,
+        user_identity_bindings,
+        created_user_identities,
+    } = identity_bindings;
+    let import_result = source_ops::import_source_with_credentials(
+        app,
+        bundle.source_manifest_yaml,
+        source_ops::ImportSourceIdentitySpecs::default(),
+        identity_bindings,
+        user_identity_bindings,
+        inputs,
+    )
+    .await;
+    if import_result.is_err() {
+        source_ops::rollback_user_owned_identities_for_source_add(created_user_identities);
+        source_ops::rollback_identity_specs_for_source_add(installed_identity_specs);
+    }
+    Ok(import_result?)
+}
+
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
+    use coral_app::features::{Feature, FeatureOverrides};
 
     use super::{
-        Cli, RequiredRuntime, command_enables_stderr_logs, ensure_source_add_manifest_features,
-        ensure_source_add_manifest_yaml_features,
+        AppRuntimeConfig, Cli, RequiredRuntime, command_enables_stderr_logs,
+        ensure_source_add_manifest_features, ensure_source_add_manifest_yaml_features,
+        feature_overrides_with_defaults,
     };
 
     fn v4_manifest_with_required_input() -> coral_spec::ValidatedSourceManifest {
@@ -1029,6 +1334,91 @@ surfaces:
     }
 
     #[test]
+    fn source_add_file_rejects_raw_v4_bundle_before_descriptor_validation_when_feature_disabled() {
+        let mut overrides = coral_app::features::FeatureOverrides::default();
+        overrides.set(coral_app::features::Feature::DslV4, false);
+
+        let error = ensure_source_add_manifest_yaml_features(
+            r"
+---
+kind: identity
+spec_version: 1
+name: github_oauth
+version: 0.1.0
+issuer: github
+type: fixed_token
+---
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /definitely/missing/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+",
+            &overrides,
+        )
+        .expect_err("disabled v4 feature should reject bundle before descriptor validation");
+
+        assert!(
+            error.to_string().contains("DSL v4 sources require"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn source_add_file_rejects_identity_bundle_before_input_collection_when_feature_disabled() {
+        let mut overrides = coral_app::features::FeatureOverrides::default();
+        overrides.set(coral_app::features::Feature::DslV4, false);
+
+        let error = ensure_source_add_manifest_yaml_features(
+            r"
+---
+kind: identity
+spec_version: 1
+name: demo_oauth
+version: 0.1.0
+issuer: demo
+type: oauth
+audience:
+  host: api.example.test
+inputs:
+  DEMO_OAUTH_CLIENT_SECRET:
+    kind: secret
+    required: true
+oauth:
+  method:
+    label: Demo OAuth
+    flow:
+      type: authorization_code
+      pkce: required
+    redirect_uri: http://127.0.0.1:53682/callback
+    endpoints:
+      authorization_url: https://auth.example.test/authorize
+      token_url: https://auth.example.test/token
+    client:
+      id:
+        default: demo-client
+      secret:
+        input: DEMO_OAUTH_CLIENT_SECRET
+---
+name: demo
+dsl_version: 3
+backend: http
+base_url: https://api.example.test
+tables: []
+",
+            &overrides,
+        )
+        .expect_err("disabled v4 feature should reject identity bundle before input collection");
+
+        assert!(
+            error.to_string().contains("DSL v4 sources require"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn source_add_file_accepts_v4_when_feature_enabled() {
         let manifest = v4_manifest_with_required_input();
         let mut overrides = coral_app::features::FeatureOverrides::default();
@@ -1039,6 +1429,14 @@ surfaces:
     }
 
     #[test]
+    fn dsl_v4_feature_override_parse_before_subcommand() {
+        let cli = Cli::try_parse_from(["coral", "--enable-dsl-v4", "source", "discover"])
+            .expect("global dsl v4 feature override should parse before subcommand");
+
+        assert!(matches!(cli.command, super::Command::Source(_)));
+    }
+
+    #[test]
     fn global_feature_overrides_are_hidden_from_help() {
         let mut help = Vec::new();
         Cli::command()
@@ -1046,14 +1444,17 @@ surfaces:
             .expect("help should render");
         let help = String::from_utf8(help).expect("help should be utf8");
 
-        assert!(
-            !help.contains("--enable-feedback"),
-            "feature override flags should not be visible in help: {help}"
-        );
-        assert!(
-            !help.contains("--disable-feedback"),
-            "feature override flags should not be visible in help: {help}"
-        );
+        for flag in [
+            "--enable-feedback",
+            "--disable-feedback",
+            "--enable-dsl-v4",
+            "--disable-dsl-v4",
+        ] {
+            assert!(
+                !help.contains(flag),
+                "feature override flags should not be visible in help: {help}"
+            );
+        }
     }
 
     #[test]
@@ -1067,6 +1468,36 @@ surfaces:
         .expect_err("conflicting feature overrides should fail");
 
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    fn dsl_v4_overrides(enabled: bool) -> FeatureOverrides {
+        let mut overrides = FeatureOverrides::default();
+        overrides.set(Feature::DslV4, enabled);
+        overrides
+    }
+
+    #[test]
+    fn runtime_config_feature_overrides_apply_as_defaults() {
+        let merged = feature_overrides_with_defaults(
+            FeatureOverrides::default(),
+            &AppRuntimeConfig {
+                feature_overrides: dsl_v4_overrides(true),
+            },
+        );
+
+        assert_eq!(merged.get(Feature::DslV4), Some(true));
+    }
+
+    #[test]
+    fn cli_feature_overrides_win_over_runtime_config_defaults() {
+        let merged = feature_overrides_with_defaults(
+            dsl_v4_overrides(false),
+            &AppRuntimeConfig {
+                feature_overrides: dsl_v4_overrides(true),
+            },
+        );
+
+        assert_eq!(merged.get(Feature::DslV4), Some(false));
     }
 
     #[test]

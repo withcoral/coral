@@ -7,8 +7,9 @@ use coral_api::v1::identity_service_server::IdentityService as IdentityServiceAp
 use coral_api::v1::{
     CreateUserOwnedIdentityWithFixedTokenRequest, CreateUserOwnedIdentityWithFixedTokenResponse,
     CreateUserOwnedIdentityWithOAuthRequest, CreateUserOwnedIdentityWithOAuthResponse,
-    CredentialMetadata, Identity, IdentityOwner, ListUserOwnedIdentitiesRequest,
-    ListUserOwnedIdentitiesResponse, create_user_owned_identity_with_o_auth_response,
+    CredentialMetadata, DeleteUserOwnedIdentityRequest, DeleteUserOwnedIdentityResponse, Identity,
+    IdentityOwner, ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse,
+    create_user_owned_identity_with_o_auth_response,
 };
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
@@ -129,6 +130,25 @@ impl IdentityServiceApi for IdentityService {
                 Ok(Response::new(ListUserOwnedIdentitiesResponse {
                     identities: records.into_iter().map(identity_record_to_proto).collect(),
                 }))
+            },
+        )
+        .await
+    }
+
+    async fn delete_user_owned_identity(
+        &self,
+        request: Request<DeleteUserOwnedIdentityRequest>,
+    ) -> Result<Response<DeleteUserOwnedIdentityResponse>, Status> {
+        let identities = self.identities.clone();
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |principal, request| async move {
+                identities
+                    .delete_user_owned_identity(&principal, &request.name)
+                    .await
+                    .map_err(app_status)?;
+                Ok(Response::new(DeleteUserOwnedIdentityResponse {}))
             },
         )
         .await

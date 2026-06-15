@@ -83,6 +83,15 @@ message ListUserOwnedIdentitiesResponse {
   repeated Identity identities = 1;
 }
 
+// Deletes one identity owned by the request Coral user principal.
+message DeleteUserOwnedIdentityRequest {
+  // Stable identity name to delete.
+  string name = 1;
+}
+
+// Empty response for DeleteUserOwnedIdentity.
+message DeleteUserOwnedIdentityResponse {}
+
 // Stored identity APIs.
 service IdentityService {
   // Creates or replaces one OAuth identity owned by the request Coral user principal.
@@ -94,4 +103,7 @@ service IdentityService {
   // Lists user-owned identities.
   rpc ListUserOwnedIdentities(ListUserOwnedIdentitiesRequest)
       returns (ListUserOwnedIdentitiesResponse);
+  // Deletes one user-owned identity.
+  rpc DeleteUserOwnedIdentity(DeleteUserOwnedIdentityRequest)
+      returns (DeleteUserOwnedIdentityResponse);
 }

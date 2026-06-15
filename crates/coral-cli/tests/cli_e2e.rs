@@ -18,8 +18,8 @@ use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
 use assert_cmd::assert::Assert;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, Source,
-    SourceCredentialStorage, SourceInfo, SourceOrigin,
+    DiscoverSourcesResponse, ExecuteSqlResponse, GetIdentitySpecResponse, IdentitySpec,
+    ListSourcesResponse, Source, SourceCredentialStorage, SourceInfo, SourceOrigin,
 };
 use tempfile::{TempDir, tempdir};
 use tonic::Code;
@@ -728,6 +728,73 @@ fn v4_github_source_dir(manifest_suffix: &str) -> (TempDir, PathBuf) {
     (source_dir, manifest_file)
 }
 
+/// Minimal fixed-token identity spec manifest for the given spec name.
+fn fixed_token_spec_yaml(name: &str) -> String {
+    format!(
+        r"
+kind: identity
+spec_version: 1
+name: {name}
+version: 0.1.0
+issuer: github
+type: fixed_token
+"
+    )
+}
+
+/// OAuth identity spec manifest with one install-time input.
+fn oauth_spec_with_required_input_yaml(name: &str, input_key: &str) -> String {
+    format!(
+        r"
+kind: identity
+spec_version: 1
+name: {name}
+version: 0.1.0
+issuer: github
+type: oauth
+audience:
+  host: github.com
+inputs:
+  {input_key}:
+    kind: secret
+    required: true
+oauth:
+  method:
+    label: GitHub OAuth
+    flow:
+      type: authorization_code
+      pkce: required
+    redirect_uri: http://127.0.0.1:53682/oauth/callback
+    endpoints:
+      authorization_url: https://github.com/login/oauth/authorize
+      token_url: https://github.com/login/oauth/access_token
+    client:
+      id:
+        default: github-client
+      secret:
+        input: {input_key}
+        transport: request_body
+"
+    )
+}
+
+fn identity_spec_response(
+    name: &str,
+    identity_type: &str,
+    manifest_yaml: String,
+) -> GetIdentitySpecResponse {
+    GetIdentitySpecResponse {
+        identity_spec: Some(IdentitySpec {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            description: String::new(),
+            issuer: "github".to_string(),
+            identity_type: identity_type.to_string(),
+            manifest_yaml,
+        }),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn source_add_file_resolves_v4_relative_descriptor_from_manifest_dir() {
     let server = MockServer::start().await;
@@ -761,6 +828,406 @@ async fn source_add_file_resolves_v4_relative_descriptor_from_manifest_dir() {
     assert!(
         !manifest_yaml.contains("file: openapi.yaml"),
         "expected relative descriptor to be replaced before import: {manifest_yaml}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_with_v4_identity_requirements_requires_tty() {
+    let server = MockServer::start().await;
+    let (_source_dir, manifest_file) = v4_github_source_dir(
+        r"    identity_requirements:
+      accepts:
+        - id: github-rest-read
+          identity_specs:
+            - github_oauth
+          audience:
+            host: github.com
+",
+    );
+
+    let assert = server
+        .cmd()
+        .args([
+            "--enable-dsl-v4",
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("fixture path utf8"),
+        ])
+        .assert()
+        .failure();
+
+    let stderr = stderr_text(&assert);
+    assert!(
+        stderr.contains("source identity setup requires a TTY"),
+        "expected source identity TTY requirement error: {stderr}"
+    );
+    assert!(
+        server.import_source_requests().is_empty(),
+        "source import must not run before identity setup"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_rejects_identity_spec_bundle_before_server_import_when_dsl_v4_disabled() {
+    let server = MockServer::start().await;
+    let source_dir = tempdir().expect("source dir");
+    let manifest_file = write_yaml(
+        &source_dir,
+        "bundle.yaml",
+        &format!(
+            r"
+---{spec}---
+name: github
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables: []
+",
+            spec = fixed_token_spec_yaml("github_oauth")
+        ),
+    );
+
+    let assert = server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("fixture path utf8"),
+        ])
+        .assert()
+        .failure();
+
+    let stderr = stderr_text(&assert);
+    assert!(
+        stderr.contains("DSL v4 sources require"),
+        "expected dsl_v4 feature error: {stderr}"
+    );
+    assert!(
+        server.import_source_requests().is_empty(),
+        "source import must not run when identity bundle is feature-gated"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_imports_identity_specs_from_manifest_bundle_when_dsl_v4_enabled() {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default()
+            .with_get_identity_spec_error(Code::NotFound, "identity spec not found"),
+    )
+    .await;
+    let source_dir = tempdir().expect("source dir");
+    let manifest_file = write_yaml(
+        &source_dir,
+        "bundle.yaml",
+        &format!(
+            r"
+---{spec}---
+name: github
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: users
+    description: Demo users
+    request:
+      method: GET
+      path: /users
+    columns:
+      - name: id
+        type: Utf8
+",
+            spec = fixed_token_spec_yaml("github_oauth")
+        ),
+    );
+
+    server
+        .cmd()
+        .args([
+            "--enable-dsl-v4",
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("fixture path utf8"),
+        ])
+        .assert()
+        .success();
+
+    let requests = server.import_source_requests();
+    assert_eq!(requests.len(), 1, "expected one import_source call");
+    assert!(
+        requests[0].replace_identity_bindings,
+        "source add should replace source identity bindings on import"
+    );
+    assert_eq!(
+        requests[0].identity_spec_manifest_yamls.len(),
+        1,
+        "expected bundled identity spec to be imported with the source"
+    );
+    assert!(
+        requests[0].identity_spec_manifest_yamls[0].contains("name: github_oauth"),
+        "expected github_oauth identity spec in import request"
+    );
+    assert!(
+        requests[0].identity_spec_inputs.is_empty(),
+        "fixed-token identity spec should not require setup inputs"
+    );
+    assert!(
+        server.add_identity_spec_requests().is_empty(),
+        "source bundle identity specs must not use replace-capable add_identity_spec"
+    );
+    assert_eq!(
+        server.create_identity_spec_requests().len(),
+        0,
+        "source import should own bundled identity spec installation"
+    );
+    assert!(
+        !requests[0].manifest_yaml.contains("kind: identity"),
+        "source manifest sent to import should contain only the source document"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_forwards_identity_spec_inputs_from_env_without_interactive() {
+    let source_dir = tempdir().expect("source dir");
+    let input_key = "CORAL_CLI_TEST_IDENTITY_SPEC_SECRET";
+    let spec = oauth_spec_with_required_input_yaml("github_oauth", input_key);
+    let server = MockServer::start_with_config(
+        MockServerConfig::default()
+            .with_get_identity_spec_error(Code::NotFound, "identity spec not found"),
+    )
+    .await;
+    let manifest_file = write_yaml(
+        &source_dir,
+        "bundle.yaml",
+        &format!(
+            r"
+---{spec}---
+name: github
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: users
+    description: Demo users
+    request:
+      method: GET
+      path: /users
+    columns:
+      - name: id
+        type: Utf8
+"
+        ),
+    );
+
+    server
+        .cmd()
+        .env(input_key, "identity-input-secret")
+        .args([
+            "--enable-dsl-v4",
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("fixture path utf8"),
+        ])
+        .assert()
+        .success();
+
+    let requests = server.import_source_requests();
+    assert_eq!(requests.len(), 1, "expected one import_source call");
+    assert_eq!(
+        requests[0].identity_spec_manifest_yamls.len(),
+        1,
+        "expected bundled identity spec to be imported with the source"
+    );
+    assert!(
+        requests[0].identity_spec_manifest_yamls[0].contains("name: github_oauth"),
+        "expected github_oauth identity spec in import request"
+    );
+    assert_eq!(
+        requests[0].identity_spec_inputs.len(),
+        1,
+        "identity spec setup inputs should be forwarded to source import"
+    );
+    assert_eq!(
+        requests[0].identity_spec_inputs[0].identity_spec_name,
+        "github_oauth"
+    );
+    assert_eq!(requests[0].identity_spec_inputs[0].inputs.len(), 1);
+    assert_eq!(requests[0].identity_spec_inputs[0].inputs[0].key, input_key);
+    assert_eq!(
+        requests[0].identity_spec_inputs[0].inputs[0].value,
+        "identity-input-secret"
+    );
+    assert!(
+        server.add_identity_spec_requests().is_empty(),
+        "source bundle identity specs must not use replace-capable add_identity_spec"
+    );
+    assert_eq!(
+        server.create_identity_spec_requests().len(),
+        0,
+        "source import should own bundled identity spec installation"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_skips_installed_identity_spec_setup_inputs_without_interactive() {
+    let source_dir = tempdir().expect("source dir");
+    let input_key = "CORAL_CLI_TEST_IDENTITY_SPEC_SECRET";
+    let spec = oauth_spec_with_required_input_yaml("github_oauth", input_key);
+    let server = MockServer::start_with_config(MockServerConfig::default().with_get_identity_spec(
+        identity_spec_response("github_oauth", "oauth", spec.clone()),
+    ))
+    .await;
+    let manifest_file = write_yaml(
+        &source_dir,
+        "bundle.yaml",
+        &format!(
+            r"
+---{spec}---
+name: github
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: users
+    description: Demo users
+    request:
+      method: GET
+      path: /users
+    columns:
+      - name: id
+        type: Utf8
+"
+        ),
+    );
+
+    server
+        .cmd()
+        .args([
+            "--enable-dsl-v4",
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("fixture path utf8"),
+        ])
+        .assert()
+        .success();
+
+    assert!(
+        server.create_identity_spec_requests().is_empty(),
+        "matching installed identity spec should not be reinstalled"
+    );
+    assert!(
+        server.add_identity_spec_requests().is_empty(),
+        "matching installed identity spec should not use replace-capable add_identity_spec"
+    );
+    let requests = server.import_source_requests();
+    assert_eq!(requests.len(), 1, "expected one import_source call");
+    assert!(
+        requests[0].identity_spec_manifest_yamls.is_empty(),
+        "matching installed identity spec should not be imported again"
+    );
+    assert!(
+        requests[0].identity_spec_inputs.is_empty(),
+        "matching installed identity spec should not require setup inputs"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_does_not_install_identity_spec_before_later_source_input_failure() {
+    let source_dir = tempdir().expect("source dir");
+    let source_secret = "CORAL_CLI_TEST_SOURCE_ADD_LATER_FAILURE_TOKEN";
+    let spec = fixed_token_spec_yaml("github_oauth");
+    let server = MockServer::start_with_config(
+        MockServerConfig::default()
+            .with_get_identity_spec_error(Code::NotFound, "identity spec not found"),
+    )
+    .await;
+    let manifest_file = write_yaml(
+        &source_dir,
+        "bundle.yaml",
+        &format!(
+            r"
+---{spec}---
+name: github
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+inputs:
+  {source_secret}:
+    kind: secret
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: 'Bearer {{{{input.{source_secret}}}}}'
+tables:
+  - name: users
+    description: Demo users
+    request:
+      method: GET
+      path: /users
+    columns:
+      - name: id
+        type: Utf8
+"
+        ),
+    );
+
+    let assert = server
+        .cmd()
+        .env_remove(source_secret)
+        .args([
+            "--enable-dsl-v4",
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("fixture path utf8"),
+        ])
+        .assert()
+        .failure();
+
+    let stderr = stderr_text(&assert);
+    assert!(
+        stderr.contains("missing required environment variable"),
+        "expected missing source input error: {stderr}"
+    );
+    assert!(
+        !stderr.contains("source add installed identity spec 'github_oauth'"),
+        "identity spec should not be installed before source input collection fails: {stderr}"
+    );
+    assert_eq!(server.create_identity_spec_requests().len(), 0);
+    assert!(
+        server.delete_identity_spec_requests().is_empty(),
+        "source add must not delete identity specs by name during rollback"
+    );
+    assert!(
+        server.delete_user_owned_identity_requests().is_empty(),
+        "source add must not delete user identities by name during rollback"
+    );
+    assert!(
+        server.import_source_requests().is_empty(),
+        "source import must not run after source input collection fails"
     );
 
     server.shutdown().await;

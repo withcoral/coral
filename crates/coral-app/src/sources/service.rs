@@ -48,7 +48,9 @@ use crate::credentials::CredentialStorageKind;
 use crate::credentials::oauth::{OAuthProgressEvent, OAuthProgressEventSender};
 use crate::identities::UserOwnedIdentityManager;
 use crate::identity::{UserPrincipal, UserPrincipalProvider};
-use crate::identity_specs::{IdentitySpecInputValue, IdentitySpecManager, IdentitySpecSnapshot};
+use crate::identity_specs::{
+    IdentitySpecImportInstall, IdentitySpecInputValue, IdentitySpecManager,
+};
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
 use crate::sources::manager::{
@@ -363,11 +365,12 @@ impl SourceServiceApi for SourceService {
                     replace_identity_bindings,
                 } = request;
                 let workspace_name = workspace_name_from_proto(workspace.as_ref())?;
+                let mutation_kind = source_import_mutation_kind(&oauth_credential_retrievals);
                 authorize_import_source_request(
                     management_authorizer.as_ref(),
                     &user_principal,
                     &workspace_name,
-                    !oauth_credential_retrievals.is_empty(),
+                    mutation_kind,
                     !identity_spec_manifest_yamls.is_empty()
                         || !proto_identity_spec_inputs.is_empty(),
                 )
@@ -522,6 +525,16 @@ impl SourceServiceApi for SourceService {
     }
 }
 
+fn source_import_mutation_kind(
+    oauth_credential_retrievals: &[OAuthCredentialRetrieval],
+) -> SourceMutationKind {
+    if oauth_credential_retrievals.is_empty() {
+        SourceMutationKind::Import
+    } else {
+        SourceMutationKind::ImportWithOAuth
+    }
+}
+
 type CreateBundledSourceWithOAuthResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<CreateBundledSourceWithOAuthResponse, Status>> + Send>>;
 type ImportSourceResponseStreamBox =
@@ -564,14 +577,9 @@ async fn authorize_import_source_request(
     management_authorizer: &dyn ManagementAuthorizer,
     user_principal: &UserPrincipal,
     workspace_name: &WorkspaceName,
-    has_oauth_credential_retrievals: bool,
+    mutation_kind: SourceMutationKind,
     has_identity_spec_mutation: bool,
 ) -> Result<(), Status> {
-    let mutation_kind = if has_oauth_credential_retrievals {
-        SourceMutationKind::ImportWithOAuth
-    } else {
-        SourceMutationKind::Import
-    };
     management_authorizer
         .authorize_source_mutation(user_principal, workspace_name.as_str(), mutation_kind)
         .await
@@ -749,13 +757,14 @@ async fn install_and_validate_identity_specs_for_import(
     replace_identity_bindings: bool,
 ) -> Result<IdentitySpecImportRollbackGuard, AppError> {
     let identity_specs = identity_import.identity_specs.clone();
+    let install_identity_specs = identity_specs.clone();
     let manifest_yamls = identity_import.manifest_yamls.to_vec();
     let inputs = identity_import.inputs.to_vec();
     let mut rollback = run_blocking_app_operation("identity spec import", move || {
         let rollback_items =
-            install_identity_specs_for_import(&identity_specs, &manifest_yamls, &inputs)?;
+            install_identity_specs_for_import(&install_identity_specs, &manifest_yamls, &inputs)?;
         Ok(IdentitySpecImportRollbackGuard::new(
-            &identity_specs,
+            install_identity_specs,
             rollback_items,
         ))
     })
@@ -778,14 +787,6 @@ async fn install_and_validate_identity_specs_for_import(
     Ok(rollback)
 }
 
-#[derive(Debug)]
-struct IdentitySpecImportRollback {
-    name: String,
-    previous: Option<IdentitySpecSnapshot>,
-    installed: IdentitySpecSnapshot,
-    pre_import_usage_count: u32,
-}
-
 #[derive(Clone, Debug)]
 struct IdentitySpecImportInputValues {
     identity_spec_name: String,
@@ -794,17 +795,14 @@ struct IdentitySpecImportInputValues {
 
 struct IdentitySpecImportRollbackGuard {
     identity_specs: IdentitySpecManager,
-    rollback: Vec<IdentitySpecImportRollback>,
+    rollback: Vec<IdentitySpecImportInstall>,
     armed: bool,
 }
 
 impl IdentitySpecImportRollbackGuard {
-    fn new(
-        identity_specs: &IdentitySpecManager,
-        rollback: Vec<IdentitySpecImportRollback>,
-    ) -> Self {
+    fn new(identity_specs: IdentitySpecManager, rollback: Vec<IdentitySpecImportInstall>) -> Self {
         Self {
-            identity_specs: identity_specs.clone(),
+            identity_specs,
             rollback,
             armed: true,
         }
@@ -1063,7 +1061,7 @@ fn install_identity_specs_for_import(
     identity_specs: &IdentitySpecManager,
     manifest_yamls: &[String],
     input_groups: &[IdentitySpecImportInputValues],
-) -> Result<Vec<IdentitySpecImportRollback>, AppError> {
+) -> Result<Vec<IdentitySpecImportInstall>, AppError> {
     let parsed = manifest_yamls
         .iter()
         .map(|manifest_yaml| {
@@ -1103,29 +1101,28 @@ fn install_identity_specs_for_import(
     for (manifest_yaml, manifest) in parsed {
         let name = manifest.name;
         let inputs = inputs_by_spec.remove(name.as_str()).unwrap_or_default();
-        let install =
-            match identity_specs.add_identity_spec_with_inputs_for_import(manifest_yaml, inputs) {
-                Ok(install) => install,
-                Err(error) => {
-                    rollback_identity_specs_for_import(identity_specs, rollback);
-                    return Err(error);
-                }
-            };
-        rollback.push(IdentitySpecImportRollback {
-            name: install.name,
-            previous: install.previous,
-            installed: install.installed,
-            pre_import_usage_count: install.pre_import_usage_count,
-        });
+        let install = match identity_specs
+            .add_identity_spec_with_inputs_for_import_create_only(manifest_yaml, inputs)
+        {
+            Ok(install) => install,
+            Err(error) => {
+                rollback_identity_specs_for_import(identity_specs, rollback);
+                return Err(error);
+            }
+        };
+        if let Some(install) = install {
+            rollback.push(install);
+        }
     }
     Ok(rollback)
 }
 
 fn rollback_identity_specs_for_import(
     identity_specs: &IdentitySpecManager,
-    rollback: Vec<IdentitySpecImportRollback>,
+    rollback: Vec<IdentitySpecImportInstall>,
 ) {
     for item in rollback.into_iter().rev() {
+        let identity_spec_name = item.installed.name().to_string();
         match identity_specs.rollback_import_if_current(
             &item.installed,
             item.previous.as_ref(),
@@ -1134,15 +1131,15 @@ fn rollback_identity_specs_for_import(
             Ok(true) => {}
             Ok(false) => {
                 warn!(
-                    identity_spec = item.name,
-                    "skipped identity spec import rollback because current state changed or is in use"
+                    identity_spec = %identity_spec_name,
+                    "left identity spec installed after source import failed because it changed or gained usage after installation"
                 );
             }
             Err(error) => {
                 warn!(
-                    identity_spec = item.name,
+                    identity_spec = %identity_spec_name,
                     error = %error,
-                    "failed to roll back identity spec import"
+                    "failed to roll back identity spec after source import failed"
                 );
             }
         }
@@ -1818,7 +1815,7 @@ mod tests {
 
     use crate::authorization::{AllowAllManagementAuthorizer, AllowAllWorkspaceAuthorizer};
     use crate::credentials::{CredentialManager, CredentialStore};
-    use crate::features::Features;
+    use crate::features::{Feature, FeatureOverrides, Features};
     use crate::identities::{
         IdentityOwnerKey, UserOwnedIdentityMaterialGuard, UserOwnedIdentityRecord,
         UserOwnedIdentityStore,
@@ -1984,10 +1981,61 @@ mod tests {
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("layout");
+        let mut features = Features::default();
+        let mut overrides = FeatureOverrides::default();
+        overrides.set(Feature::DslV4, true);
+        features.apply_overrides(&overrides);
         (
             temp,
-            IdentitySpecManager::new_with_usage_providers(layout, Features::default(), Vec::new()),
+            IdentitySpecManager::new_with_usage_providers(layout, features, Vec::new()),
         )
+    }
+
+    fn fixed_token_identity_spec_yaml(name: &str) -> String {
+        format!(
+            r"
+kind: identity
+spec_version: 1
+name: {name}
+version: 0.1.0
+description: Demo identity.
+issuer: github
+type: fixed_token
+audience:
+  host: github.com
+"
+        )
+    }
+
+    fn source_manifest_with_user_identity_slot() -> &'static str {
+        r"
+name: github_v4
+version: 0.1.0
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/github-openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    identity_requirements:
+      accepts:
+        - id: github-rest-read
+          identity_specs:
+            - github_oauth
+          audience:
+            host: github.com
+"
+    }
+
+    fn user_identity_selection() -> BTreeMap<String, AppSourceIdentitySelection> {
+        BTreeMap::from([(
+            "rest".to_string(),
+            AppSourceIdentitySelection::new("saul_github", None).expect("identity selection"),
+        )])
+    }
+
+    fn user_identity_binding_slot() -> BTreeMap<String, AppSourceIdentityBinding> {
+        BTreeMap::from([("rest".to_string(), AppSourceIdentityBinding::user_owned())])
     }
 
     #[tokio::test]
@@ -2016,6 +2064,109 @@ mod tests {
                 surface_ids,
                 Some("saul".to_string())
             )]
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_source_import_rolls_back_new_identity_specs() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("layout");
+        let sources = SourceManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout,
+        );
+        let store = Arc::new(RecordingUserOwnedIdentityStore::default());
+        let (_identity_temp, identities) = user_owned_identity_manager_with_store(store);
+        let (_spec_temp, identity_specs) = identity_spec_manager();
+        let identity_context = ImportSourceIdentityContext {
+            identity_specs: identity_specs.clone(),
+            user_owned_identities: identities,
+            manifest_yamls: vec![fixed_token_identity_spec_yaml("github_oauth")],
+            inputs: Vec::new(),
+            user_principal: None,
+            user_identity_bindings: user_identity_selection(),
+        };
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+
+        let result = install_and_validate_identity_specs_for_import(
+            &sources,
+            identity_context.as_import_context(),
+            &workspace_name,
+            source_manifest_with_user_identity_slot(),
+            &user_identity_binding_slot(),
+            false,
+        )
+        .await;
+        let Err(error) = result else {
+            panic!("missing principal should fail after identity spec install");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("cannot validate user-owned source identity bindings"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            identity_specs
+                .list_identity_specs()
+                .expect("list identity specs")
+                .is_empty(),
+            "failed import should roll back newly installed identity specs"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_source_import_keeps_existing_identity_specs() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("layout");
+        let sources = SourceManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout,
+        );
+        let store = Arc::new(RecordingUserOwnedIdentityStore::default());
+        let (_identity_temp, identities) = user_owned_identity_manager_with_store(store);
+        let (_spec_temp, identity_specs) = identity_spec_manager();
+        let identity_spec_yaml = fixed_token_identity_spec_yaml("github_oauth");
+        identity_specs
+            .add_identity_spec_with_inputs_create_only(&identity_spec_yaml, Vec::new())
+            .expect("preinstall identity spec");
+        let identity_context = ImportSourceIdentityContext {
+            identity_specs: identity_specs.clone(),
+            user_owned_identities: identities,
+            manifest_yamls: vec![identity_spec_yaml],
+            inputs: Vec::new(),
+            user_principal: None,
+            user_identity_bindings: user_identity_selection(),
+        };
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+
+        let result = install_and_validate_identity_specs_for_import(
+            &sources,
+            identity_context.as_import_context(),
+            &workspace_name,
+            source_manifest_with_user_identity_slot(),
+            &user_identity_binding_slot(),
+            false,
+        )
+        .await;
+        let Err(_error) = result else {
+            panic!("missing principal should fail after identity spec check");
+        };
+
+        assert_eq!(
+            identity_specs
+                .list_identity_specs()
+                .expect("list identity specs")
+                .len(),
+            1,
+            "failed import should not remove an existing identity spec"
         );
     }
 
