@@ -73,15 +73,17 @@ function useTraceDetail(traceId: string | null) {
       return
     }
     let stale = false
-    setDetail(null)
     setLoading(true)
     setError(null)
     getTrace(traceId)
       .then((response) => {
-        if (!stale) setDetail(response)
+        if (stale) return
+        setDetail(response)
       })
       .catch((err) => {
-        if (!stale) setError(formatTraceError(err instanceof Error ? err.message : String(err)))
+        if (stale) return
+        setDetail(null)
+        setError(formatTraceError(err instanceof Error ? err.message : String(err)))
       })
       .finally(() => {
         if (!stale) setLoading(false)
@@ -500,17 +502,15 @@ function TimelineWaterfall({
     // Drag resizing updates both detailPanelRatio and animatedDetailPanelRatio directly.
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [expandedHttpSpanId])
-  useEffect(() => {
-    onNavigableSpanIdsChange(
-      rows.filter((row) => isHttpSpan(row.span)).map((row) => row.span.spanId),
-    )
-  }, [onNavigableSpanIdsChange, rows])
-  const traceStart = BigInt(summary?.startTimeUnixNanos || rows[0]?.span.startTimeUnixNanos || 0)
-  const durationMs = Math.max(nanosToMs(summary?.durationNanos || '0'), 1)
   const navigableSpanIds = useMemo(
     () => rows.filter((row) => isHttpSpan(row.span)).map((row) => row.span.spanId),
     [rows],
   )
+  useEffect(() => {
+    onNavigableSpanIdsChange(navigableSpanIds)
+  }, [onNavigableSpanIdsChange, navigableSpanIds])
+  const traceStart = BigInt(summary?.startTimeUnixNanos || rows[0]?.span.startTimeUnixNanos || 0)
+  const durationMs = Math.max(nanosToMs(summary?.durationNanos || '0'), 1)
   const renderedHttpSpanIndex = renderedHttpSpanId
     ? navigableSpanIds.indexOf(renderedHttpSpanId)
     : -1
@@ -706,6 +706,7 @@ function DetailTabs({
 
 export function TraceDetail({
   extraTabs,
+  initialSummary,
   newerTraceId,
   olderTraceId,
   onClose,
@@ -713,6 +714,7 @@ export function TraceDetail({
   traceId,
 }: {
   extraTabs?: (detail: GetTraceResponse) => ExtraDetailTab[]
+  initialSummary?: GetTraceResponse['summary']
   newerTraceId?: string | null
   olderTraceId?: string | null
   onClose: () => void
@@ -782,11 +784,11 @@ export function TraceDetail({
   const handleSpanArrowShortcut = useCallback(
     (direction: -1 | 1) => (event: KeyboardEvent) => {
       const target = event.target
-      if (target instanceof HTMLElement) {
-        if (target.closest('[data-span-inspector="true"]')) return
-        if (target.isContentEditable || target.matches('input, textarea, select, [role="textbox"]'))
-          return
-      }
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable || target.matches('input, textarea, select, [role="textbox"]'))
+      )
+        return
       if (!expandedHttpSpanId) {
         if (!focusFirstSpan(direction)) return
         event.preventDefault()
@@ -806,7 +808,11 @@ export function TraceDetail({
     () => handleSpanArrowShortcut(1),
     [handleSpanArrowShortcut],
   )
-  const summary = detail?.summary
+  // `detail` here can briefly be the previous trace's response when navigating to a neighbor
+  // (the new fetch is in flight and we don't blank it out). For a frame or two the header/spans
+  // shown are stale. Local fetches resolve in tens of ms, so we accept the flash in exchange for
+  // avoiding a loading spinner on every navigation.
+  const summary = detail?.summary ?? initialSummary
   const httpSpans = useMemo(() => detail?.spans.filter(isHttpSpan) ?? [], [detail?.spans])
   const sources = useMemo(() => sourceNames(detail?.spans ?? []), [detail?.spans])
   const resolvedExtraTabs = useMemo(
@@ -814,7 +820,7 @@ export function TraceDetail({
     [detail, extraTabs],
   )
 
-  if (loading && !detail)
+  if (loading && !detail && !summary)
     return (
       <div className={s.detailEmpty}>
         <Icon name="Loader" className={s.spinner} color="tertiary" />
@@ -827,7 +833,7 @@ export function TraceDetail({
         <EmptyState error={error} />
       </div>
     )
-  if (!detail || !summary) {
+  if (!summary) {
     return (
       <div className={s.detailEmpty}>
         <EmptyState
@@ -921,20 +927,25 @@ export function TraceDetail({
           <div className={s.statGrid}>
             <StatCard label="Duration" value={formatDurationFromNanos(summary.durationNanos)} />
             <StatCard label="Rows" value={formatRows(summary)} />
-            <StatCard label="Table scans" value={sources.length} />
-            <StatCard label="API requests" value={httpSpans.length} />
+            <StatCard label="Table scans" value={detail ? sources.length : '—'} />
+            <StatCard label="API requests" value={detail ? httpSpans.length : '—'} />
           </div>
           <DetailTabs activeTab={activeTab} extraTabs={resolvedExtraTabs} onTab={setActiveTab} />
           <div className={s.tabContent}>
-            {activeTab === 'timeline' && (
-              <TimelineWaterfall
-                expandedHttpSpanId={expandedHttpSpanId}
-                onExpandedHttpSpanIdChange={setExpandedHttpSpanId}
-                onNavigableSpanIdsChange={setNavigableSpanIds}
-                spans={detail.spans}
-                summary={summary}
-              />
-            )}
+            {activeTab === 'timeline' &&
+              (detail ? (
+                <TimelineWaterfall
+                  expandedHttpSpanId={expandedHttpSpanId}
+                  onExpandedHttpSpanIdChange={setExpandedHttpSpanId}
+                  onNavigableSpanIdsChange={setNavigableSpanIds}
+                  spans={detail.spans}
+                  summary={summary}
+                />
+              ) : (
+                <div className={s.detailEmpty}>
+                  <Icon name="Loader" className={s.spinner} color="tertiary" />
+                </div>
+              ))}
             {activeExtraTab?.content}
           </div>
         </div>

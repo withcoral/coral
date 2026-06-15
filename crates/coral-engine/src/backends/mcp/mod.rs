@@ -6,6 +6,7 @@ mod fetch;
 mod function;
 mod provider;
 mod response;
+mod trace;
 mod transport;
 
 pub(crate) use error::McpProviderQueryError;
@@ -14,7 +15,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coral_spec::backends::mcp::McpSourceManifest;
+use coral_spec::SourceBackend;
+use coral_spec::backends::mcp::{McpServerSpec, McpSourceManifest, McpTableSpec};
 use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
@@ -22,58 +24,115 @@ use datafusion::error::Result;
 use self::client::{McpSourceClient, McpToolCaller};
 use self::function::McpSourceTableFunction;
 use self::provider::McpTableProvider;
-use self::transport::StdioMcpToolCaller;
+use self::transport::{StdioMcpToolCaller, StreamableHttpMcpToolCaller};
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    SourceTableFunctions, build_registered_inputs, build_registered_table,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
+    RegisteredSource, SourceTableFunctions, build_registered_inputs, build_registered_table,
     build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
-    required_filter_names,
+    required_filter_names, validate_lookup_key_filter_backend_support,
 };
+use crate::{SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError};
 
 #[derive(Debug, Clone)]
 struct McpCompiledSource {
     manifest: McpSourceManifest,
-    source_secrets: BTreeMap<String, String>,
-    source_variables: BTreeMap<String, String>,
-    resolved_inputs: Arc<BTreeMap<String, String>>,
+    source_input_resolution: SourceInputResolutionContext,
+    source_inputs: Arc<McpSourceInputs>,
     caller: McpSourceClient,
+}
+
+#[derive(Debug, Clone)]
+struct McpSourceInputs {
+    fallback: Arc<BTreeMap<String, String>>,
+    source: Option<SourceInputResolutionContext>,
+    resolver: Option<Arc<dyn SourceInputResolver>>,
+}
+
+impl McpSourceInputs {
+    fn with_resolver(
+        fallback: Arc<BTreeMap<String, String>>,
+        source: SourceInputResolutionContext,
+        resolver: Arc<dyn SourceInputResolver>,
+    ) -> Self {
+        Self {
+            fallback,
+            source: Some(source),
+            resolver: Some(resolver),
+        }
+    }
+
+    pub(super) fn static_inputs(fallback: Arc<BTreeMap<String, String>>) -> Self {
+        Self {
+            fallback,
+            source: None,
+            resolver: None,
+        }
+    }
+
+    async fn resolve_for_request(&self) -> Result<Arc<BTreeMap<String, String>>> {
+        let (Some(resolver), Some(source)) = (&self.resolver, &self.source) else {
+            return Ok(Arc::clone(&self.fallback));
+        };
+        resolver
+            .resolve_inputs(source)
+            .await
+            .map(Arc::new)
+            .map_err(source_input_error)
+    }
 }
 
 pub(crate) fn compile_manifest(
     manifest: &McpSourceManifest,
     request: &BackendCompileRequest<'_>,
 ) -> Box<dyn CompiledBackendSource> {
+    let source_input_resolution = SourceInputResolutionContext::from_query_source(request.source);
     let resolved_inputs = Arc::new(coral_spec::resolve_inputs(
         &manifest.declared_inputs,
-        &request.source_secrets,
-        &request.source_variables,
+        source_input_resolution.secrets(),
+        source_input_resolution.variables(),
     ));
-    let caller = Arc::new(StdioMcpToolCaller {
-        source_name: manifest.common.name.clone(),
-        server: manifest.server.clone(),
-        resolved_inputs: Arc::clone(&resolved_inputs),
+    let source_inputs = Arc::new(match request.source_input_resolver.clone() {
+        Some(resolver) => McpSourceInputs::with_resolver(
+            Arc::clone(&resolved_inputs),
+            source_input_resolution.clone(),
+            resolver,
+        ),
+        None => McpSourceInputs::static_inputs(Arc::clone(&resolved_inputs)),
     });
+    let body_capture =
+        self::trace::McpBodyCapture::new(request.runtime_context.body_capture_max_bytes);
+    let caller: Arc<dyn McpToolCaller> = match &manifest.server {
+        McpServerSpec::Stdio { .. } => Arc::new(StdioMcpToolCaller {
+            source_name: manifest.common.name.clone(),
+            server: manifest.server.clone(),
+            source_inputs: Arc::clone(&source_inputs),
+            body_capture,
+        }),
+        McpServerSpec::StreamableHttp { .. } => Arc::new(StreamableHttpMcpToolCaller {
+            source_name: manifest.common.name.clone(),
+            server: manifest.server.clone(),
+            source_inputs: Arc::clone(&source_inputs),
+            body_capture,
+        }),
+    };
     compile_source_with_caller(
         manifest.clone(),
-        request.source_secrets.clone(),
-        request.source_variables.clone(),
-        resolved_inputs,
+        source_input_resolution,
+        source_inputs,
         caller,
     )
 }
 
 fn compile_source_with_caller(
     manifest: McpSourceManifest,
-    source_secrets: BTreeMap<String, String>,
-    source_variables: BTreeMap<String, String>,
-    resolved_inputs: Arc<BTreeMap<String, String>>,
+    source_input_resolution: SourceInputResolutionContext,
+    source_inputs: Arc<McpSourceInputs>,
     caller: Arc<dyn McpToolCaller>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(McpCompiledSource {
         manifest,
-        source_secrets,
-        source_variables,
-        resolved_inputs,
+        source_input_resolution,
+        source_inputs,
         caller: McpSourceClient::new(caller),
     })
 }
@@ -88,9 +147,22 @@ impl CompiledBackendSource for McpCompiledSource {
         &self.manifest.common.name
     }
 
+    fn validate_runtime_capabilities(&self) -> Result<()> {
+        validate_lookup_key_filter_backend_support(
+            self.source_name(),
+            SourceBackend::Mcp,
+            self.manifest
+                .tables
+                .iter()
+                .flat_map(McpTableSpec::filters)
+                .any(|filter| filter.lookup_key),
+        )
+    }
+
     async fn register(
         &self,
         _ctx: &datafusion::prelude::SessionContext,
+        _registration: &BackendRegistrationContext,
     ) -> Result<BackendRegistration> {
         let mut table_functions =
             SourceTableFunctions::with_capacity(self.manifest.functions.len());
@@ -118,7 +190,7 @@ impl CompiledBackendSource for McpCompiledSource {
             let provider: Arc<dyn TableProvider> = Arc::new(McpTableProvider::new(
                 self.caller.clone(),
                 self.manifest.common.name.clone(),
-                Arc::clone(&self.resolved_inputs),
+                Arc::clone(&self.source_inputs),
                 table.clone(),
             )?);
             tables.insert(table.name().to_string(), provider);
@@ -131,10 +203,15 @@ impl CompiledBackendSource for McpCompiledSource {
             ));
         }
 
-        let secret_keys = self.source_secrets.keys().cloned().collect();
+        let secret_keys = self
+            .source_input_resolution
+            .secrets()
+            .keys()
+            .cloned()
+            .collect();
         let inputs = build_registered_inputs(
-            &self.manifest.declared_inputs,
-            &self.source_variables,
+            self.source_input_resolution.declared_inputs(),
+            self.source_input_resolution.variables(),
             &secret_keys,
         );
 
@@ -149,6 +226,10 @@ impl CompiledBackendSource for McpCompiledSource {
             },
         })
     }
+}
+
+fn source_input_error(error: SourceInputResolverError) -> datafusion::error::DataFusionError {
+    datafusion::error::DataFusionError::External(Box::new(error))
 }
 
 #[cfg(test)]

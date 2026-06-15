@@ -63,13 +63,15 @@ mod runtime;
 pub use composition::{
     EngineExtensions, QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
     RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
-    SourceTables,
+    SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
 };
 pub use contracts::{
-    CatalogInfo, ColumnInfo, CoreError, QueryExecution, QueryPlan, QueryRuntimeConfig,
+    CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
+    DescribeTableInfo, EffectiveDependentJoinConfig, QueryExecution, QueryPlan, QueryRuntimeConfig,
     QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess,
-    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
-    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode,
+    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
+    TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
@@ -117,6 +119,27 @@ impl CoralQuery {
         Ok(runtime::query::build_runtime(sources, runtime)
             .await?
             .catalog_info(schema_filter))
+    }
+
+    /// Describes one table or returns lightweight table metadata for missing-table help.
+    ///
+    /// This builds the runtime once, clones only the matched table on exact
+    /// hits, and clones lightweight table metadata when the table is missing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if credential resolution fails, if any validated
+    /// source spec cannot be compiled, or if the underlying query runtime
+    /// cannot be built.
+    pub async fn describe_table(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        schema_name: &str,
+        table_name: &str,
+    ) -> Result<DescribeTableInfo, CoreError> {
+        Ok(runtime::query::build_runtime(sources, runtime)
+            .await?
+            .describe_table(schema_name, table_name))
     }
 
     /// Executes one `SQL` statement over the provided source set.

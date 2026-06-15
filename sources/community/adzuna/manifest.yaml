@@ -1,0 +1,271 @@
+name: adzuna
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Search active job listings globally across 16+ countries with the Adzuna API.
+  Provides keyword, location, and salary filtering, plus salary distribution histograms
+  and category enumeration.
+base_url: "https://api.adzuna.com/v1/api"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+inputs:
+  ADZUNA_APP_ID:
+    kind: secret
+  ADZUNA_APP_KEY:
+    kind: secret
+
+test_queries:
+  - SELECT id, title, company FROM adzuna.search_jobs(what => 'developer', location_filter => 'London') LIMIT 1
+  - SELECT tag, label FROM adzuna.categories LIMIT 1
+  - SELECT salary_lower_bound, vacancy_count FROM adzuna.salary_histogram LIMIT 1
+
+functions:
+  - name: search_jobs
+    kind: search
+    description: |
+      Search active job listings with keyword, location, category, and salary filters.
+      You can filter by `country` to override the default country.
+    fetch_limit_default: 20
+    search_limits:
+      default_top_k: 20
+      max_top_k: 50
+      max_calls_per_query: 1
+    args:
+      - name: country
+        bind:
+          arg: country
+      - name: what
+        bind:
+          arg: what
+      - name: location_filter
+        bind:
+          arg: location_filter
+      - name: category
+        bind:
+          arg: category
+      - name: salary_min
+        bind:
+          arg: salary_min
+      - name: salary_max
+        bind:
+          arg: salary_max
+      - name: full_time
+        values: ["1"]
+        bind:
+          arg: full_time
+      - name: permanent
+        values: ["1"]
+        bind:
+          arg: permanent
+    request:
+      method: GET
+      path: /jobs/{{arg.country|gb}}/search/1
+      query:
+        - name: app_id
+          from: input
+          key: ADZUNA_APP_ID
+        - name: app_key
+          from: input
+          key: ADZUNA_APP_KEY
+        - name: what
+          from: arg
+          key: what
+        - name: where
+          from: arg
+          key: location_filter
+        - name: category
+          from: arg
+          key: category
+        - name: salary_min
+          from: arg
+          key: salary_min
+        - name: salary_max
+          from: arg
+          key: salary_max
+        - name: full_time
+          from: arg
+          key: full_time
+        - name: permanent
+          from: arg
+          key: permanent
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: none
+      page_size:
+        default: 20
+        max: 50
+        query_param: results_per_page
+
+
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        expr: {kind: path, path: [id]}
+      - name: title
+        type: Utf8
+        nullable: false
+        expr: {kind: path, path: [title]}
+      - name: description
+        type: Utf8
+        nullable: false
+        expr: {kind: path, path: [description]}
+      - name: company
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [company, display_name]}
+      - name: location
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [location, display_name]}
+      - name: location_area
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [location, area, "0"]}
+      - name: category
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [category, label]}
+      - name: category_tag
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [category, tag]}
+      - name: salary_min
+        type: Float64
+        nullable: true
+        expr: {kind: path, path: [salary_min]}
+      - name: salary_max
+        type: Float64
+        nullable: true
+        expr: {kind: path, path: [salary_max]}
+      - name: salary_is_predicted
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [salary_is_predicted]}
+      - name: contract_type
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [contract_type]}
+      - name: contract_time
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [contract_time]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Date and time when the job listing was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created]
+      - name: redirect_url
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [redirect_url]}
+      - name: latitude
+        type: Float64
+        nullable: true
+        expr: {kind: path, path: [latitude]}
+      - name: longitude
+        type: Float64
+        nullable: true
+        expr: {kind: path, path: [longitude]}
+      - name: country
+        type: Utf8
+        nullable: true
+        expr: {kind: from_arg, key: country}
+      - name: what
+        type: Utf8
+        nullable: true
+        expr: {kind: from_arg, key: what}
+      - name: location_filter
+        type: Utf8
+        nullable: true
+        expr: {kind: from_arg, key: location_filter}
+
+tables:
+  - name: categories
+    description: Enumerate available job sectors for a given country.
+    filters:
+      - name: country
+    request:
+      method: GET
+      path: /jobs/{{filter.country|gb}}/categories
+      query:
+        - name: app_id
+          from: input
+          key: ADZUNA_APP_ID
+        - name: app_key
+          from: input
+          key: ADZUNA_APP_KEY
+    response:
+      rows_path:
+        - results
+    columns:
+      - name: tag
+        type: Utf8
+        nullable: false
+        expr: {kind: path, path: [tag]}
+      - name: label
+        type: Utf8
+        nullable: false
+        expr: {kind: path, path: [label]}
+      - name: country
+        type: Utf8
+        nullable: true
+        expr: {kind: from_filter, key: country}
+
+  - name: salary_histogram
+    description: Salary distribution vacancy counts per salary band.
+    filters:
+      - name: country
+      - name: what
+      - name: category
+    request:
+      method: GET
+      path: /jobs/{{filter.country|gb}}/histogram
+      query:
+        - name: app_id
+          from: input
+          key: ADZUNA_APP_ID
+        - name: app_key
+          from: input
+          key: ADZUNA_APP_KEY
+        - name: what
+          from: filter
+          key: what
+        - name: category
+          from: filter
+          key: category
+    response:
+      rows_path:
+        - histogram
+      row_strategy: dict_entries
+    columns:
+      - name: salary_lower_bound
+        type: Float64
+        nullable: false
+        expr: {kind: path, path: [_key]}
+      - name: vacancy_count
+        type: Int64
+        nullable: false
+        expr: {kind: path, path: [_value]}
+      - name: country
+        type: Utf8
+        nullable: true
+        expr: {kind: from_filter, key: country}
+      - name: what
+        type: Utf8
+        nullable: true
+        expr: {kind: from_filter, key: what}
+      - name: category
+        type: Utf8
+        nullable: true
+        expr: {kind: from_filter, key: category}

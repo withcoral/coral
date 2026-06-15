@@ -1,0 +1,30 @@
+name: github_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml
+    inputs:
+      GITHUB_TOKEN:
+        kind: secret
+        hint: |
+          GitHub personal access token used as a bearer token for the live
+          GitHub REST API. Set GITHUB_TOKEN when installing this preview
+          source.
+    auth:
+      type: HeaderAuth
+      headers:
+        - name: Authorization
+          from: template
+          template: Bearer {{input.GITHUB_TOKEN}}
+    request_headers:
+      - name: X-GitHub-Api-Version
+        from: literal
+        value: "2022-11-28"
+      - name: User-Agent
+        from: literal
+        value: coral-dsl-v4
+test_queries:
+  - SELECT id, number, title, state FROM github_v4.repos_issues WHERE owner = 'octocat' AND repo = 'Hello-World' LIMIT 5
+  - SELECT id, number, title FROM github_v4.get_issue(owner => 'octocat', repo => 'Hello-World', issue_number => 1)
+  - SELECT id, number, title FROM github_v4.search_issues(q => 'repo:octocat/Hello-World is:issue') LIMIT 5

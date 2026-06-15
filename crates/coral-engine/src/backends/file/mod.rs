@@ -1,8 +1,10 @@
 //! Native file table provider backed by local files or object-store URLs.
 
 mod error;
+mod file_groups;
 mod json;
 mod listing;
+mod metadata;
 mod parquet_schema;
 mod partitions;
 mod provider;
@@ -21,10 +23,12 @@ use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, build_registered_inputs, build_registered_table,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
+    RegisteredSource, RegisteredTable, build_registered_inputs, build_registered_table,
     registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
+    validate_lookup_key_filter_backend_support,
 };
+use coral_spec::SourceBackend;
 use coral_spec::backends::file::{FileFormat, FileSourceManifest, FileTableSpec};
 
 use self::json::JsonFileTableProvider;
@@ -74,7 +78,23 @@ impl CompiledBackendSource for FileCompiledSource {
         &self.manifest.common.name
     }
 
-    async fn register(&self, ctx: &SessionContext) -> Result<BackendRegistration> {
+    fn validate_runtime_capabilities(&self) -> Result<()> {
+        validate_lookup_key_filter_backend_support(
+            self.source_name(),
+            SourceBackend::File,
+            self.manifest
+                .tables
+                .iter()
+                .flat_map(FileTableSpec::filters)
+                .any(|filter| filter.lookup_key),
+        )
+    }
+
+    async fn register(
+        &self,
+        ctx: &SessionContext,
+        _registration: &BackendRegistrationContext,
+    ) -> Result<BackendRegistration> {
         let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
         let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
         let resolved_inputs = coral_spec::resolve_inputs(
