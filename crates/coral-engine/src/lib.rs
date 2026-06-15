@@ -70,9 +70,11 @@ pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
     DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution, QueryMemoryConfig,
     QueryParameterValue, QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
-    QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeSourceComponent,
-    RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
-    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess, RecipeRuntimeArgument,
+    RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue, RecipeRuntimeDefinition,
+    RecipeRuntimeImplementation, RuntimeSourceComponent, RuntimeSourcePackage,
+    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
+    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
