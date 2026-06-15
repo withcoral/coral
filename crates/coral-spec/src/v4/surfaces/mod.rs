@@ -1,3 +1,4 @@
+mod json_schema;
 mod mcp;
 mod openapi;
 

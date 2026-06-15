@@ -11,6 +11,7 @@ use crate::v4::ir::{
 };
 use crate::v4::manifest::{SurfaceType, V4SourceManifest, V4Surface};
 use crate::v4::naming::normalize_identifier;
+use crate::v4::surfaces::json_schema::{json_schema_scalar_type, json_schema_type_contains};
 use crate::v4::{MCP_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
 use crate::{ManifestError, Result};
 
@@ -147,7 +148,7 @@ impl<'a> McpImporter<'a> {
             .properties
             .iter()
             .map(|(name, property)| {
-                let data_type = schema_scalar_type(property);
+                let data_type = json_schema_scalar_type(property).unwrap_or(IrScalarType::Json);
                 self.ensure_type_for_scalar(data_type);
                 IrOperationInput {
                     name: name.clone(),
@@ -175,7 +176,7 @@ impl<'a> McpImporter<'a> {
                 row_path: Vec::new(),
             };
         };
-        if schema_type_contains(schema, "array") {
+        if json_schema_type_contains(schema, "array") {
             let item_schema = schema.get("items");
             self.insert_row_type_from_schema(&row_type_id, item_schema);
             return IrOperationOutput {
@@ -252,7 +253,7 @@ impl<'a> McpImporter<'a> {
         let mut fields = properties
             .iter()
             .map(|(name, property)| {
-                let data_type = schema_scalar_type(property);
+                let data_type = json_schema_scalar_type(property).unwrap_or(IrScalarType::Json);
                 IrField {
                     name: name.clone(),
                     type_ref: self.ensure_type_for_scalar(data_type),
@@ -467,38 +468,6 @@ fn merge_input_object_shape(
     true
 }
 
-fn schema_scalar_type(schema: &Value) -> IrScalarType {
-    if schema_format(schema).is_some_and(|format| matches!(format, "date-time" | "datetime")) {
-        return IrScalarType::Timestamp;
-    }
-    if schema_type_contains(schema, "integer") {
-        IrScalarType::Integer
-    } else if schema_type_contains(schema, "number") {
-        IrScalarType::Number
-    } else if schema_type_contains(schema, "boolean") {
-        IrScalarType::Boolean
-    } else if schema_type_contains(schema, "string") {
-        IrScalarType::String
-    } else {
-        IrScalarType::Json
-    }
-}
-
-fn schema_type_contains(schema: &Value, expected: &str) -> bool {
-    match schema.get("type") {
-        Some(Value::String(value)) => value == expected,
-        Some(Value::Array(values)) => values
-            .iter()
-            .filter_map(Value::as_str)
-            .any(|value| value == expected),
-        _ => false,
-    }
-}
-
-fn schema_format(schema: &Value) -> Option<&str> {
-    schema.get("format").and_then(Value::as_str)
-}
-
 fn schema_description(schema: &Value) -> String {
     schema
         .get("description")
@@ -516,13 +485,13 @@ fn property_default(schema: &Value) -> Option<String> {
 }
 
 fn wrapped_list_property(schema: &Value) -> Option<(&str, Option<&Value>)> {
-    if !schema_type_contains(schema, "object") {
+    if !json_schema_type_contains(schema, "object") {
         return None;
     }
     let properties = schema.get("properties").and_then(Value::as_object)?;
     let mut arrays = properties
         .iter()
-        .filter(|(_name, property)| schema_type_contains(property, "array"));
+        .filter(|(_name, property)| json_schema_type_contains(property, "array"));
     let (name, property) = arrays.next()?;
     if arrays.next().is_some() {
         return None;
@@ -582,7 +551,7 @@ fn find_response_cursor_path(schema: &Value) -> Option<Vec<String>> {
         }
     }
     for (name, property) in properties {
-        if !schema_type_contains(property, "object") {
+        if !json_schema_type_contains(property, "object") {
             continue;
         }
         if let Some(mut path) = find_response_cursor_path(property) {
@@ -596,7 +565,7 @@ fn find_response_cursor_path(schema: &Value) -> Option<Vec<String>> {
 fn is_response_cursor_property(name: &str, schema: &Value) -> bool {
     const RESPONSE_CURSORS: &[&str] = &["nextcursor", "nextpagetoken", "nexttoken", "endcursor"];
     RESPONSE_CURSORS.contains(&cursor_token(name).as_str())
-        && (schema_type_contains(schema, "string") || schema.get("type").is_none())
+        && (json_schema_type_contains(schema, "string") || schema.get("type").is_none())
 }
 
 fn cursor_token(value: &str) -> String {
