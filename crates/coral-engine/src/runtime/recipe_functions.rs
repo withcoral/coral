@@ -1,14 +1,9 @@
-//! Source-scoped table function relation planning.
+//! Recipe table-function relation planning.
 //!
-//! Coral exposes source functions as scoped SQL relations like
-//! `github.find_issues(...)`. The relation planner intercepts those calls,
-//! validates the named-argument syntax, and parks the call as a
-//! [`SourceFunctionNode`] logical-plan extension. Argument values stay logical
-//! expressions long enough for `DataFusion` query parameters
-//! (`owner => $owner`) to bind into them; [`SourceFunctionAnalyzerRule`] then
-//! resolves each fully-bound node into an ordinary provider table scan before
-//! optimization, so projection and limit pushdown behave exactly as they do
-//! for any registered table.
+//! Recipes publish as ordinary scoped SQL table functions, but their body is
+//! Coral SQL. The planner parks a recipe call until query parameters have been
+//! bound, then expands the call into the recipe body plan with recipe arguments
+//! supplied as `DataFusion` parameter values.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -19,7 +14,6 @@ use std::sync::Arc;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::{DFSchema, DFSchemaRef, TableReference};
-use datafusion::datasource::provider_as_source;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::planner::{
     PlannedRelation, RelationPlanner, RelationPlannerContext, RelationPlanning,
@@ -31,7 +25,12 @@ use datafusion::logical_expr::{
 use datafusion::optimizer::AnalyzerRule;
 use datafusion::prelude::SessionContext;
 
-use crate::backends::{RegisteredTableFunction, SourceFunctionProviderFactory};
+use crate::RecipeRuntimeDefinition;
+use crate::runtime::query::{read_only_sql_options, reject_unknown_parameters};
+use crate::runtime::recipes::{
+    recipe_argument_values, recipe_arrow_schema, recipe_param_values, recipe_query_parameters,
+    recipe_sql,
+};
 use crate::runtime::table_function_calls::{
     FunctionCall, FunctionLookupKey, FunctionSignature, call_parts, find_placeholder,
     lower_named_args_to_positional_exprs, original_relation, qualified_name, reject_settings,
@@ -39,39 +38,35 @@ use crate::runtime::table_function_calls::{
 };
 
 #[derive(Debug)]
-pub(crate) struct SourceFunctionRegistry {
-    functions: HashMap<FunctionLookupKey, SourceFunction>,
-    source_schemas: HashSet<String>,
+pub(crate) struct RecipeFunctionRegistry {
+    functions: HashMap<FunctionLookupKey, RecipeFunction>,
+    recipe_schemas: HashSet<String>,
+    source_function_schemas: HashSet<String>,
 }
 
-impl SourceFunctionRegistry {
-    pub(crate) fn new<'a>(
-        functions: impl IntoIterator<Item = &'a RegisteredTableFunction>,
-    ) -> Self {
-        let mut source_schemas = HashSet::new();
-        let mut functions_by_name = HashMap::new();
+impl RecipeFunctionRegistry {
+    pub(crate) async fn new(
+        ctx: &SessionContext,
+        recipes: &[RecipeRuntimeDefinition],
+        source_function_schemas: HashSet<String>,
+    ) -> Result<Self> {
+        let mut registry = Self {
+            functions: HashMap::new(),
+            recipe_schemas: HashSet::new(),
+            source_function_schemas,
+        };
 
-        for function in functions {
-            let lookup_key = FunctionLookupKey::from_manifest(function);
-            source_schemas.insert(lookup_key.schema.clone());
-            functions_by_name.insert(lookup_key, SourceFunction::from_registered(function));
+        for recipe in recipes {
+            let body_plan = ctx.state().create_logical_plan(recipe_sql(recipe)).await?;
+            read_only_sql_options().verify_plan(&body_plan)?;
+            registry.insert_function(recipe, &body_plan)?;
         }
 
-        Self {
-            functions: functions_by_name,
-            source_schemas,
-        }
+        Ok(registry)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
         self.functions.is_empty()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn install(self, ctx: &SessionContext) -> Result<()> {
-        self.install_relation_planner(ctx)?;
-        Self::install_analyzer(ctx);
-        Ok(())
     }
 
     pub(crate) fn install_relation_planner(self, ctx: &SessionContext) -> Result<()> {
@@ -79,15 +74,39 @@ impl SourceFunctionRegistry {
     }
 
     pub(crate) fn install_analyzer(ctx: &SessionContext) {
-        ctx.add_analyzer_rule(Arc::new(SourceFunctionAnalyzerRule));
+        ctx.add_analyzer_rule(Arc::new(RecipeFunctionAnalyzerRule));
     }
 
-    fn find(&self, call: &FunctionCall) -> Option<&SourceFunction> {
+    fn insert_function(
+        &mut self,
+        recipe: &RecipeRuntimeDefinition,
+        body_plan: &LogicalPlan,
+    ) -> Result<()> {
+        let publish = &recipe.publish.table_function;
+        let key = FunctionLookupKey::from_parts(publish.schema.clone(), publish.name.clone());
+        if self.functions.contains_key(&key) {
+            return Err(DataFusionError::Plan(format!(
+                "duplicate recipe table function {}.{}",
+                key.schema, key.function
+            )));
+        }
+        self.functions.insert(
+            key.clone(),
+            RecipeFunction::new(&publish.schema, &publish.name, recipe, body_plan)?,
+        );
+        self.recipe_schemas.insert(key.schema);
+        Ok(())
+    }
+
+    fn find(&self, call: &FunctionCall) -> Option<&RecipeFunction> {
         self.functions.get(&call.lookup_key)
     }
 
-    fn owns_schema(&self, call: &FunctionCall) -> bool {
-        self.source_schemas.contains(&call.lookup_key.schema)
+    fn owns_recipe_only_schema(&self, call: &FunctionCall) -> bool {
+        self.recipe_schemas.contains(&call.lookup_key.schema)
+            && !self
+                .source_function_schemas
+                .contains(&call.lookup_key.schema)
     }
 
     fn available_functions_hint(&self, schema: &str) -> String {
@@ -108,7 +127,7 @@ impl SourceFunctionRegistry {
     }
 }
 
-impl RelationPlanner for SourceFunctionRegistry {
+impl RelationPlanner for RecipeFunctionRegistry {
     fn plan_relation(
         &self,
         relation: TableFactor,
@@ -119,9 +138,9 @@ impl RelationPlanner for SourceFunctionRegistry {
         };
 
         let Some(function) = self.find(&call) else {
-            if self.owns_schema(&call) {
+            if self.owns_recipe_only_schema(&call) {
                 let hint = self.available_functions_hint(&call.lookup_key.schema);
-                return Err(call.unknown_function_error("source table function", &hint));
+                return Err(call.unknown_function_error("recipe table function", &hint));
             }
             return Ok(original_relation(relation));
         };
@@ -131,14 +150,10 @@ impl RelationPlanner for SourceFunctionRegistry {
         reject_settings(&call, &call_args)?;
 
         let args = lower_named_args_to_positional_exprs(function, &call_args, context)?;
-        let node = SourceFunctionNode::new(function, args)?;
+        let node = RecipeFunctionNode::new(function, args);
 
-        // Fully-literal calls validate eagerly so argument-value errors keep
-        // surfacing at planning time, exactly as they did when binding ran
-        // inside SQL planning. Binding is pure value capture (no I/O), so the
-        // analyzer repeating it later is cheap.
         if !node.has_parameter_placeholders() {
-            node.factory.provider_for_args(&node.args)?;
+            node.validate_arguments()?;
         }
 
         let plan = LogicalPlan::Extension(Extension {
@@ -150,28 +165,49 @@ impl RelationPlanner for SourceFunctionRegistry {
     }
 }
 
-#[derive(Debug)]
-struct SourceFunction {
+#[derive(Debug, Clone)]
+struct RecipeFunction {
     display_name: String,
     table_reference: TableReference,
     arg_names: Vec<String>,
     known_args: HashSet<String>,
-    factory: Arc<dyn SourceFunctionProviderFactory>,
+    recipe: RecipeRuntimeDefinition,
+    body_plan: LogicalPlan,
+    schema: DFSchemaRef,
 }
 
-impl SourceFunction {
-    fn from_registered(function: &RegisteredTableFunction) -> Self {
-        let arg_names = function.arg_names.clone();
-        Self {
-            display_name: qualified_name(&function.schema_name, &function.function_name),
-            table_reference: TableReference::partial(
-                function.schema_name.clone(),
-                function.function_name.clone(),
-            ),
+impl RecipeFunction {
+    fn new(
+        schema: &str,
+        name: &str,
+        recipe: &RecipeRuntimeDefinition,
+        body_plan: &LogicalPlan,
+    ) -> Result<Self> {
+        let table_reference = TableReference::partial(schema.to_string(), name.to_string());
+        let arg_names = recipe
+            .arguments
+            .iter()
+            .map(|argument| argument.name.clone())
+            .collect::<Vec<_>>();
+        let arrow_schema = if recipe.result_columns.is_empty() {
+            Arc::new(body_plan.schema().as_arrow().clone())
+        } else {
+            recipe_arrow_schema(recipe)?
+        };
+        let qualified_schema = Arc::new(DFSchema::try_from_qualified_schema(
+            table_reference.clone(),
+            arrow_schema.as_ref(),
+        )?);
+
+        Ok(Self {
+            display_name: qualified_name(schema, name),
+            table_reference,
             known_args: arg_names.iter().cloned().collect(),
             arg_names,
-            factory: Arc::clone(&function.factory),
-        }
+            recipe: recipe.clone(),
+            body_plan: body_plan.clone(),
+            schema: qualified_schema,
+        })
     }
 
     fn contains(&self, name: &str) -> bool {
@@ -179,7 +215,7 @@ impl SourceFunction {
     }
 }
 
-impl FunctionSignature for SourceFunction {
+impl FunctionSignature for RecipeFunction {
     fn display_name(&self) -> &str {
         &self.display_name
     }
@@ -193,42 +229,28 @@ impl FunctionSignature for SourceFunction {
     }
 }
 
-/// One parked source-function call inside a logical plan.
-///
-/// The call's arguments are exposed through
-/// [`UserDefinedLogicalNodeCore::expressions`], which is what lets
-/// `DataFrame::with_param_values` rewrite `$name` placeholders inside the node
-/// before [`SourceFunctionAnalyzerRule`] binds the call.
-///
-/// The node snapshots everything it needs from its [`SourceFunction`] registry
-/// entry: plans are `'static` and outlive planning, so the node cannot borrow
-/// from the registry.
 #[derive(Debug, Clone)]
-pub(crate) struct SourceFunctionNode {
+struct RecipeFunctionNode {
     display_name: String,
-    /// Two-part `schema.function` reference, so result columns qualify the
-    /// same way table columns do (`github.pulls.id`, `pulls.id`).
     table_reference: TableReference,
     arg_names: Vec<String>,
     args: Vec<Expr>,
     schema: DFSchemaRef,
-    factory: Arc<dyn SourceFunctionProviderFactory>,
+    recipe: RecipeRuntimeDefinition,
+    body_plan: LogicalPlan,
 }
 
-impl SourceFunctionNode {
-    fn new(function: &SourceFunction, args: Vec<Expr>) -> Result<Self> {
-        let schema = Arc::new(DFSchema::try_from_qualified_schema(
-            function.table_reference.clone(),
-            function.factory.schema().as_ref(),
-        )?);
-        Ok(Self {
+impl RecipeFunctionNode {
+    fn new(function: &RecipeFunction, args: Vec<Expr>) -> Self {
+        Self {
             display_name: function.display_name.clone(),
             table_reference: function.table_reference.clone(),
             arg_names: function.arg_names.clone(),
             args,
-            schema,
-            factory: Arc::clone(&function.factory),
-        })
+            schema: Arc::clone(&function.schema),
+            recipe: function.recipe.clone(),
+            body_plan: function.body_plan.clone(),
+        }
     }
 
     fn has_parameter_placeholders(&self) -> bool {
@@ -248,23 +270,27 @@ impl SourceFunctionNode {
         Ok(())
     }
 
-    fn to_provider_scan(&self) -> Result<LogicalPlan> {
+    fn validate_arguments(&self) -> Result<()> {
+        recipe_argument_values(&self.recipe, &self.args)?;
+        Ok(())
+    }
+
+    fn to_expanded_plan(&self) -> Result<LogicalPlan> {
         self.reject_unbound_parameters()?;
-        let provider = self.factory.provider_for_args(&self.args)?;
-        LogicalPlanBuilder::scan(
-            self.table_reference.clone(),
-            provider_as_source(provider),
-            None,
-        )?
-        .build()
+        let arguments = recipe_argument_values(&self.recipe, &self.args)?;
+        let params = recipe_query_parameters(&self.recipe, &arguments)?;
+        reject_unknown_parameters(&self.body_plan, &params)?;
+        let plan = self
+            .body_plan
+            .clone()
+            .with_param_values(recipe_param_values(&params))?;
+        LogicalPlanBuilder::from(plan)
+            .alias(self.table_reference.clone())?
+            .build()
     }
 }
 
-// Node identity is the function name plus its argument expressions; `schema`
-// participates so renamed manifests never compare equal. The remaining fields
-// are derived from the same registry entry as `display_name` (and `factory`
-// cannot implement `PartialEq`), so they are deliberately excluded.
-impl PartialEq for SourceFunctionNode {
+impl PartialEq for RecipeFunctionNode {
     fn eq(&self, other: &Self) -> bool {
         self.display_name == other.display_name
             && self.args == other.args
@@ -272,9 +298,9 @@ impl PartialEq for SourceFunctionNode {
     }
 }
 
-impl Eq for SourceFunctionNode {}
+impl Eq for RecipeFunctionNode {}
 
-impl Hash for SourceFunctionNode {
+impl Hash for RecipeFunctionNode {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.display_name.hash(state);
         self.args.hash(state);
@@ -282,7 +308,7 @@ impl Hash for SourceFunctionNode {
     }
 }
 
-impl PartialOrd for SourceFunctionNode {
+impl PartialOrd for RecipeFunctionNode {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         if self == other {
             return Some(Ordering::Equal);
@@ -291,9 +317,9 @@ impl PartialOrd for SourceFunctionNode {
     }
 }
 
-impl UserDefinedLogicalNodeCore for SourceFunctionNode {
+impl UserDefinedLogicalNodeCore for RecipeFunctionNode {
     fn name(&self) -> &'static str {
-        "CoralSourceFunction"
+        "CoralRecipeFunction"
     }
 
     fn inputs(&self) -> Vec<&LogicalPlan> {
@@ -309,28 +335,24 @@ impl UserDefinedLogicalNodeCore for SourceFunctionNode {
     }
 
     fn fmt_for_explain(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SourceFunction: {}", self.display_name)
+        write!(f, "RecipeFunction: {}", self.display_name)
     }
 
     fn with_exprs_and_inputs(&self, exprs: Vec<Expr>, inputs: Vec<LogicalPlan>) -> Result<Self> {
         if !inputs.is_empty() {
             return Err(DataFusionError::Plan(format!(
-                "source function {} takes no plan inputs",
+                "recipe function {} takes no plan inputs",
                 self.display_name
             )));
         }
         if exprs.len() != self.args.len() {
             return Err(DataFusionError::Plan(format!(
-                "source function {} expected {} argument expressions, got {}",
+                "recipe function {} expected {} argument expressions, got {}",
                 self.display_name,
                 self.args.len(),
                 exprs.len()
             )));
         }
-        // Plan rewrites (parameter substitution in particular) alias rewritten
-        // expressions to preserve their display names. Arguments are
-        // positional here, so the alias carries no meaning -- strip it before
-        // binding sees the value.
         Ok(Self {
             args: exprs.into_iter().map(Expr::unalias).collect(),
             ..self.clone()
@@ -338,32 +360,24 @@ impl UserDefinedLogicalNodeCore for SourceFunctionNode {
     }
 }
 
-/// Resolves parked [`SourceFunctionNode`]s into provider table scans.
-///
-/// Runs after `DataFrame::with_param_values` has bound query parameters and
-/// before the optimizer, so the optimized plan is the same provider scan the
-/// engine has always produced and pushdown rules apply unchanged.
 #[derive(Debug, Default)]
-pub(crate) struct SourceFunctionAnalyzerRule;
+pub(crate) struct RecipeFunctionAnalyzerRule;
 
-impl AnalyzerRule for SourceFunctionAnalyzerRule {
+impl AnalyzerRule for RecipeFunctionAnalyzerRule {
     fn analyze(&self, plan: LogicalPlan, _config: &ConfigOptions) -> Result<LogicalPlan> {
-        // Subquery plans live inside expressions, not in the plan's child
-        // list -- a plain transform_up would never see a source-function call
-        // written inside EXISTS/IN/scalar subqueries.
         plan.transform_up_with_subqueries(|plan| {
             let LogicalPlan::Extension(extension) = &plan else {
                 return Ok(Transformed::no(plan));
             };
-            let Some(node) = extension.node.as_any().downcast_ref::<SourceFunctionNode>() else {
+            let Some(node) = extension.node.as_any().downcast_ref::<RecipeFunctionNode>() else {
                 return Ok(Transformed::no(plan));
             };
-            Ok(Transformed::yes(node.to_provider_scan()?))
+            Ok(Transformed::yes(node.to_expanded_plan()?))
         })
         .map(|transformed| transformed.data)
     }
 
     fn name(&self) -> &'static str {
-        "coral_source_functions"
+        "coral_recipe_functions"
     }
 }

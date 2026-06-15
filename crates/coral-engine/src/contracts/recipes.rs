@@ -1,4 +1,8 @@
-//! Runtime recipe contracts supplied by the app layer.
+//! Engine runtime recipe contracts supplied by the app layer.
+//!
+//! These are not the user-authored recipe file format. The app/spec layers
+//! parse and validate authored recipes, then supply these runtime definitions
+//! to the engine for planning, catalog registration, and execution.
 
 /// One validated recipe made available to the query runtime.
 #[derive(Debug, Clone)]
@@ -12,18 +16,9 @@ pub struct RecipeRuntimeDefinition {
     /// Executable recipe implementation.
     pub implementation: RecipeRuntimeImplementation,
     /// Public surfaces requested by the recipe.
-    pub publish: Vec<RecipeRuntimePublish>,
+    pub publish: RecipeRuntimePublish,
     /// Result columns inferred during app/runtime validation.
     pub result_columns: Vec<RecipeRuntimeResultColumn>,
-}
-
-/// One trusted recipe invocation.
-#[derive(Debug, Clone)]
-pub struct RecipeRuntimeCall {
-    /// Recipe id to call.
-    pub recipe_name: String,
-    /// Argument values keyed by recipe argument name.
-    pub arguments: std::collections::BTreeMap<String, RecipeRuntimeArgumentValue>,
 }
 
 /// One typed recipe argument.
@@ -73,18 +68,22 @@ pub enum RecipeRuntimeImplementation {
     },
 }
 
-/// Public surface requested by one recipe.
+/// Public surfaces requested by one recipe.
 #[derive(Debug, Clone)]
-pub enum RecipeRuntimePublish {
-    /// Public SQL table-function wrapper.
-    TableFunction {
-        /// SQL schema.
-        schema: String,
-        /// SQL function name.
-        name: String,
-        /// Optional publish-target-specific description.
-        description: String,
-    },
+pub struct RecipeRuntimePublish {
+    /// Canonical public SQL table-function wrapper.
+    pub table_function: RecipeRuntimeTableFunctionPublish,
+}
+
+/// Canonical SQL table-function surface for one recipe.
+#[derive(Debug, Clone)]
+pub struct RecipeRuntimeTableFunctionPublish {
+    /// SQL schema.
+    pub schema: String,
+    /// SQL function name.
+    pub name: String,
+    /// Optional publish-target-specific description.
+    pub description: String,
 }
 
 /// One column returned by a recipe.

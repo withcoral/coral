@@ -1,6 +1,6 @@
 //! Concrete `DataFusion` runtime assembly for the data plane.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use datafusion::common::ScalarValue;
@@ -28,7 +28,8 @@ use crate::runtime::error::{
 use crate::runtime::json::register_json_support;
 use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::query_planner::CoralQueryPlanner;
-use crate::runtime::recipes::{published_table_functions, recipe_query_parameters, recipe_sql};
+use crate::runtime::recipe_functions::RecipeFunctionRegistry;
+use crate::runtime::recipes::published_table_functions;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
@@ -37,8 +38,8 @@ use crate::{
     CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, MemorySize, QueryExecution,
     QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan, QueryResultObserver,
     QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    RecipeRuntimeCall, RecipeRuntimeDefinition, RequestAuthenticator, SourceDecorator,
-    SourceInputResolver, TableFunctionInfo, TableInfo,
+    RecipeRuntimeDefinition, RequestAuthenticator, SourceDecorator, SourceInputResolver,
+    TableFunctionInfo, TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -48,7 +49,6 @@ pub(crate) struct QueryRuntimeAdapter {
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
-    recipes: Vec<RecipeRuntimeDefinition>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
 }
 
@@ -73,6 +73,17 @@ struct RegisteredRuntime {
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
+}
+
+struct RegisteredRuntimeBuild<'a> {
+    sources: &'a [QuerySource],
+    runtime_context: &'a QueryRuntimeContext,
+    request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    source_decorators: &'a mut [Box<dyn SourceDecorator>],
+    dependent_join: &'a DependentJoinConfig,
+    memory: &'a QueryMemoryConfig,
+    recipes: &'a [RecipeRuntimeDefinition],
 }
 
 enum SqlExecutionFailure {
@@ -121,16 +132,16 @@ async fn build_runtime_inner(
         })
     });
 
-    let primary = build_registered_runtime(
+    let primary = build_registered_runtime(RegisteredRuntimeBuild {
         sources,
-        &runtime_context,
-        &request_authenticators,
+        runtime_context: &runtime_context,
+        request_authenticators: &request_authenticators,
         source_input_resolver,
-        extensions.source_decorators.as_mut_slice(),
-        &dependent_join,
-        &memory,
-        &recipes,
-    )
+        source_decorators: extensions.source_decorators.as_mut_slice(),
+        dependent_join: &dependent_join,
+        memory: &memory,
+        recipes: &recipes,
+    })
     .await?;
 
     Ok(QueryRuntimeAdapter {
@@ -140,47 +151,63 @@ async fn build_runtime_inner(
         tables: primary.tables,
         table_functions: primary.table_functions,
         failures: primary.failures,
-        recipes,
         query_result_observers: extensions.query_result_observers,
     })
 }
 
 async fn build_registered_runtime(
-    sources: &[QuerySource],
-    runtime_context: &QueryRuntimeContext,
-    request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
-    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    source_decorators: &mut [Box<dyn SourceDecorator>],
-    dependent_join: &DependentJoinConfig,
-    memory: &QueryMemoryConfig,
-    recipes: &[RecipeRuntimeDefinition],
+    config: RegisteredRuntimeBuild<'_>,
 ) -> Result<RegisteredRuntime, CoreError> {
-    let ctx = build_session_context(dependent_join, memory)?;
+    let ctx = build_session_context(config.dependent_join, config.memory)?;
     let registration = register_runtime_sources(
         &ctx,
-        sources,
-        runtime_context,
-        request_authenticators,
-        source_input_resolver,
-        source_decorators,
+        config.sources,
+        config.runtime_context,
+        config.request_authenticators,
+        config.source_input_resolver,
+        config.source_decorators,
     )
     .await?;
     let recipe_table_functions =
-        published_table_functions(recipes).map_err(|err| datafusion_to_core(&err, &[]))?;
-    let catalog_sources =
-        sources_with_recipe_table_functions(&registration.active_sources, recipe_table_functions);
-    catalog::register(&ctx, &catalog_sources).map_err(|err| datafusion_to_core(&err, &[]))?;
+        published_table_functions(config.recipes).map_err(|err| datafusion_to_core(&err, &[]))?;
+    reject_duplicate_table_function_surfaces(&registration.active_sources, &recipe_table_functions)
+        .map_err(|err| datafusion_to_core(&err, &[]))?;
+    catalog::register(&ctx, &registration.active_sources, &recipe_table_functions)
+        .map_err(|err| datafusion_to_core(&err, &[]))?;
     let tables = catalog::collect_tables(&registration.active_sources);
-    let table_functions = catalog::collect_table_functions(&catalog_sources);
+    let table_functions =
+        catalog::collect_table_functions(&registration.active_sources, &recipe_table_functions);
+    let source_function_schemas = registration
+        .active_sources
+        .iter()
+        .flat_map(|source| source.table_functions.iter())
+        .map(|function| function.schema_name.clone())
+        .collect::<HashSet<_>>();
     let source_functions = SourceFunctionRegistry::new(
-        catalog_sources
+        registration
+            .active_sources
             .iter()
             .flat_map(|source| source.table_functions.iter()),
     );
-    if !source_functions.is_empty() {
+    let has_source_functions = !source_functions.is_empty();
+    if has_source_functions {
         source_functions
-            .install(&ctx)
+            .install_relation_planner(&ctx)
             .map_err(|err| datafusion_to_core(&err, &tables))?;
+    }
+    let recipe_functions =
+        RecipeFunctionRegistry::new(&ctx, config.recipes, source_function_schemas)
+            .await
+            .map_err(|err| datafusion_to_core(&err, &tables))?;
+    let has_recipe_functions = !recipe_functions.is_empty();
+    if has_recipe_functions {
+        recipe_functions
+            .install_relation_planner(&ctx)
+            .map_err(|err| datafusion_to_core(&err, &tables))?;
+        RecipeFunctionRegistry::install_analyzer(&ctx);
+    }
+    if has_source_functions {
+        SourceFunctionRegistry::install_analyzer(&ctx);
     }
     for failure in &registration.failures {
         tracing::warn!(
@@ -420,29 +447,6 @@ impl QueryRuntimeAdapter {
         }
     }
 
-    pub(crate) async fn execute_recipe(
-        &self,
-        call: &RecipeRuntimeCall,
-    ) -> Result<QueryExecution, CoreError> {
-        let recipe = self.find_recipe(&call.recipe_name)?;
-        let params = recipe_query_parameters(recipe, &call.arguments).map_err(|err| {
-            datafusion_to_core_with_sql_and_table_functions(
-                &err,
-                &self.tables,
-                &self.table_functions,
-                Some(recipe_sql(recipe)),
-            )
-        })?;
-        self.execute_sql(recipe_sql(recipe), &params).await
-    }
-
-    fn find_recipe(&self, recipe_name: &str) -> Result<&RecipeRuntimeDefinition, CoreError> {
-        self.recipes
-            .iter()
-            .find(|recipe| recipe.name == recipe_name)
-            .ok_or_else(|| CoreError::InvalidInput(format!("unknown recipe '{recipe_name}'")))
-    }
-
     async fn execute_sql_once(
         &self,
         ctx: &SessionContext,
@@ -672,36 +676,19 @@ fn format_memory_limit(limit: MemorySize) -> String {
 impl FallbackRuntimeConfig {
     async fn build_without_dependent_join(&self) -> Result<RegisteredRuntime, CoreError> {
         let mut source_decorators = Vec::new();
-        build_registered_runtime(
-            &self.sources,
-            &self.runtime_context,
-            &self.request_authenticators,
-            self.source_input_resolver.clone(),
-            source_decorators.as_mut_slice(),
-            &self.dependent_join.without_rewrites(),
-            &self.memory,
-            &self.recipes,
-        )
+        let dependent_join = self.dependent_join.without_rewrites();
+        build_registered_runtime(RegisteredRuntimeBuild {
+            sources: &self.sources,
+            runtime_context: &self.runtime_context,
+            request_authenticators: &self.request_authenticators,
+            source_input_resolver: self.source_input_resolver.clone(),
+            source_decorators: source_decorators.as_mut_slice(),
+            dependent_join: &dependent_join,
+            memory: &self.memory,
+            recipes: &self.recipes,
+        })
         .await
     }
-}
-
-fn sources_with_recipe_table_functions(
-    active_sources: &[RegisteredSource],
-    recipe_table_functions: Vec<crate::backends::RegisteredTableFunction>,
-) -> Vec<RegisteredSource> {
-    if recipe_table_functions.is_empty() {
-        return active_sources.to_vec();
-    }
-
-    let mut sources = active_sources.to_vec();
-    sources.push(RegisteredSource {
-        schema_name: "recipes".to_string(),
-        tables: Vec::new(),
-        table_functions: recipe_table_functions,
-        inputs: Vec::new(),
-    });
-    sources
 }
 
 impl FallbackRuntime {
@@ -719,11 +706,48 @@ impl FallbackRuntime {
     }
 }
 
-fn read_only_sql_options() -> SQLOptions {
+pub(crate) fn read_only_sql_options() -> SQLOptions {
     SQLOptions::new()
         .with_allow_ddl(false)
         .with_allow_dml(false)
         .with_allow_statements(false)
+}
+
+fn reject_duplicate_table_function_surfaces(
+    active_sources: &[RegisteredSource],
+    recipe_table_functions: &[catalog::CatalogTableFunction],
+) -> Result<(), DataFusionError> {
+    let mut source_functions = HashMap::new();
+    for source in active_sources {
+        for function in &source.table_functions {
+            source_functions.insert(
+                (
+                    function.schema_name.as_str(),
+                    function.function_name.as_str(),
+                ),
+                function.kind.as_str(),
+            );
+        }
+    }
+
+    for function in recipe_table_functions {
+        if let Some(kind) = source_functions.get(&(
+            function.schema_name.as_str(),
+            function.function_name.as_str(),
+        )) {
+            let existing = if *kind == "table" {
+                "table function".to_string()
+            } else {
+                format!("{kind} table function")
+            };
+            return Err(DataFusionError::Plan(format!(
+                "recipe table function {}.{} conflicts with existing {existing}",
+                function.schema_name, function.function_name
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn table_metadata_without_columns(table: &TableInfo) -> TableInfo {
@@ -784,7 +808,6 @@ mod tests {
             }],
             table_functions: Vec::new(),
             failures: Vec::new(),
-            recipes: Vec::new(),
             query_result_observers: Vec::new(),
         }
     }
@@ -846,6 +869,7 @@ mod tests {
             memory: QueryMemoryConfig {
                 limit: Some(MemorySize::from_str("1Ki").unwrap()),
             },
+            recipes: Vec::new(),
             request_authenticators: HashMap::new(),
             source_input_resolver: None,
         };

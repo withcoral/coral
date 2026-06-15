@@ -72,8 +72,8 @@ pub use contracts::{
     QueryParameterValue, QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
     QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess, RecipeRuntimeArgument,
     RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue, RecipeRuntimeDefinition,
-    RecipeRuntimeCall, RecipeRuntimeImplementation, RecipeRuntimePublish, RecipeRuntimeResultColumn,
-    RuntimeSourceComponent, RuntimeSourcePackage,
+    RecipeRuntimeImplementation, RecipeRuntimePublish, RecipeRuntimeResultColumn,
+    RecipeRuntimeTableFunctionPublish, RuntimeSourceComponent, RuntimeSourcePackage,
     SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
     TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
@@ -184,38 +184,38 @@ impl CoralQuery {
             .await
     }
 
-    /// Executes one validated runtime recipe by name.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoreError`] if source compilation fails, if the named recipe
-    /// is not available in this runtime build, if recipe argument validation
-    /// fails, or if the recipe's read-only SQL cannot execute.
-    pub async fn execute_recipe(
-        sources: &[QuerySource],
-        runtime: QueryRuntimeConfig,
-        call: RecipeRuntimeCall,
-    ) -> Result<QueryExecution, CoreError> {
-        runtime::query::build_runtime(sources, runtime)
-            .await?
-            .execute_recipe(&call)
-            .await
-    }
-
-    /// Infers the Arrow schema for one recipe through parameter-bound read-only SQL samples.
+    /// Infers the Arrow schema for one recipe through parameter-bound read-only SQL.
     ///
     /// # Errors
     ///
     /// Returns [`CoreError`] if source compilation fails, if recipe argument
-    /// samples cannot be bound, or if the recipe SQL cannot plan against the
+    /// values cannot be bound, or if the recipe SQL cannot plan against the
     /// selected sources.
     pub async fn infer_recipe_schema(
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
         recipe: RecipeRuntimeDefinition,
+        arguments: std::collections::BTreeMap<String, RecipeRuntimeArgumentValue>,
     ) -> Result<std::sync::Arc<arrow::datatypes::Schema>, CoreError> {
         let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
-        runtime::recipes::infer_recipe_schema(&query_runtime, &recipe).await
+        runtime::recipes::infer_recipe_schema(&query_runtime, &recipe, &arguments).await
+    }
+
+    /// Validates one recipe against the selected sources using one concrete invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if source compilation fails, if recipe argument
+    /// values cannot be bound, if the recipe SQL cannot plan against the
+    /// selected sources, or if the validation invocation cannot execute.
+    pub async fn validate_recipe(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        recipe: RecipeRuntimeDefinition,
+        arguments: std::collections::BTreeMap<String, RecipeRuntimeArgumentValue>,
+    ) -> Result<std::sync::Arc<arrow::datatypes::Schema>, CoreError> {
+        let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
+        runtime::recipes::validate_recipe(&query_runtime, &recipe, &arguments).await
     }
 
     /// Explains one `SQL` statement with logical and physical plan renderings.

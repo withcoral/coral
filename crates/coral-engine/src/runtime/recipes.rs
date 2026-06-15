@@ -1,31 +1,23 @@
-//! Recipe SQL parameter binding helpers.
+//! Recipe SQL parameter binding and catalog helpers.
 
-use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr as _;
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
-use async_trait::async_trait;
-use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::ScalarValue;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::SessionState;
-use datafusion::logical_expr::{Expr, TableType};
-use datafusion::physical_expr::expressions::Column;
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
+use datafusion::logical_expr::Expr;
 
-use crate::backends::common::{
-    RegisteredTableFunctionArgument, RegisteredTableFunctionResultColumn,
+use crate::runtime::catalog::{
+    CatalogTableFunction, CatalogTableFunctionArgument, CatalogTableFunctionResultColumn,
 };
-use crate::backends::{RegisteredTableFunction, SourceFunctionProviderFactory};
 use crate::runtime::query::QueryRuntimeAdapter;
-use crate::runtime::query::{parameter_scalar_value, reject_unknown_parameters};
+use crate::runtime::query::parameter_scalar_value;
 use crate::{
-    CoreError, QueryParameterValue, QueryParameters, RecipeRuntimeArgument,
+    CoreError, QueryExecution, QueryParameterValue, QueryParameters, RecipeRuntimeArgument,
     RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue, RecipeRuntimeDefinition,
-    RecipeRuntimeImplementation, RecipeRuntimePublish, RecipeRuntimeResultColumn,
+    RecipeRuntimeImplementation, RecipeRuntimeResultColumn,
 };
 
 pub(crate) fn recipe_sql(recipe: &RecipeRuntimeDefinition) -> &str {
@@ -53,73 +45,78 @@ pub(crate) fn recipe_query_parameters(
 pub(crate) async fn infer_recipe_schema(
     query_runtime: &QueryRuntimeAdapter,
     recipe: &RecipeRuntimeDefinition,
+    arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
 ) -> Result<std::sync::Arc<Schema>, CoreError> {
-    let (sample_schema, sample_values) = infer_recipe_sample_schema(query_runtime, recipe).await?;
-    let Some(null_values) = recipe_optional_null_values(recipe, &sample_values) else {
-        return Ok(sample_schema);
-    };
-    let null_schema = infer_recipe_schema_with_values(query_runtime, recipe, &null_values).await?;
-    merge_recipe_inferred_schemas(
-        recipe.name.as_str(),
-        sample_schema.as_ref(),
-        null_schema.as_ref(),
-    )
+    let params = recipe_query_parameters(recipe, arguments)
+        .map_err(|error| CoreError::InvalidInput(error.to_string()))?;
+    query_runtime
+        .infer_sql_schema(recipe_sql(recipe), &params)
+        .await
+}
+
+pub(crate) async fn validate_recipe(
+    query_runtime: &QueryRuntimeAdapter,
+    recipe: &RecipeRuntimeDefinition,
+    arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
+) -> Result<std::sync::Arc<Schema>, CoreError> {
+    let schema = infer_recipe_schema(query_runtime, recipe, arguments).await?;
+    execute_recipe_sql(query_runtime, recipe, arguments).await?;
+    Ok(schema)
+}
+
+pub(crate) async fn execute_recipe_sql(
+    query_runtime: &QueryRuntimeAdapter,
+    recipe: &RecipeRuntimeDefinition,
+    arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
+) -> Result<QueryExecution, CoreError> {
+    let params = recipe_query_parameters(recipe, arguments)
+        .map_err(|error| CoreError::InvalidInput(error.to_string()))?;
+    query_runtime.execute_sql(recipe_sql(recipe), &params).await
 }
 
 pub(crate) fn published_table_functions(
     recipes: &[RecipeRuntimeDefinition],
-) -> Result<Vec<RegisteredTableFunction>> {
+) -> Result<Vec<CatalogTableFunction>> {
     let mut functions = Vec::new();
     let mut seen = BTreeSet::new();
 
     for recipe in recipes {
-        for publish in &recipe.publish {
-            let RecipeRuntimePublish::TableFunction {
-                schema,
-                name,
-                description,
-            } = publish;
-            let key = (schema.clone(), name.clone());
-            if !seen.insert(key.clone()) {
-                return Err(DataFusionError::Plan(format!(
-                    "duplicate recipe table function {}.{}",
-                    key.0, key.1
-                )));
-            }
-
-            functions.push(RegisteredTableFunction {
-                schema_name: schema.clone(),
-                function_name: name.clone(),
-                factory: Arc::new(RecipeTableFunctionFactory::new(recipe)?),
-                kind: "recipe".to_string(),
-                description: publish_description(description, &recipe.description),
-                arguments: recipe
-                    .arguments
-                    .iter()
-                    .map(|argument| RegisteredTableFunctionArgument {
-                        name: argument.name.clone(),
-                        required: argument.required,
-                        values: Vec::new(),
-                    })
-                    .collect(),
-                result_columns: recipe
-                    .result_columns
-                    .iter()
-                    .map(|column| RegisteredTableFunctionResultColumn {
-                        name: column.name.clone(),
-                        data_type: column.data_type.clone(),
-                        nullable: column.nullable,
-                        description: column.description.clone(),
-                    })
-                    .collect(),
-                arg_names: recipe
-                    .arguments
-                    .iter()
-                    .map(|argument| argument.name.clone())
-                    .collect(),
-                search_limits_json: None,
-            });
+        let publish = &recipe.publish.table_function;
+        let key = (publish.schema.clone(), publish.name.clone());
+        if !seen.insert(key.clone()) {
+            return Err(DataFusionError::Plan(format!(
+                "duplicate recipe table function {}.{}",
+                key.0, key.1
+            )));
         }
+
+        recipe_arrow_schema(recipe)?;
+        functions.push(CatalogTableFunction {
+            schema_name: publish.schema.clone(),
+            function_name: publish.name.clone(),
+            kind: "recipe".to_string(),
+            description: publish_description(&publish.description, &recipe.description),
+            arguments: recipe
+                .arguments
+                .iter()
+                .map(|argument| CatalogTableFunctionArgument {
+                    name: argument.name.clone(),
+                    required: argument.required,
+                    values: Vec::new(),
+                })
+                .collect(),
+            result_columns: recipe
+                .result_columns
+                .iter()
+                .map(|column| CatalogTableFunctionResultColumn {
+                    name: column.name.clone(),
+                    data_type: column.data_type.clone(),
+                    nullable: column.nullable,
+                    description: column.description.clone(),
+                })
+                .collect(),
+            search_limits_json: None,
+        });
     }
 
     functions.sort_by(|left, right| {
@@ -128,80 +125,7 @@ pub(crate) fn published_table_functions(
     Ok(functions)
 }
 
-#[derive(Debug, Clone)]
-struct RecipeTableFunctionFactory {
-    recipe: RecipeRuntimeDefinition,
-    schema: Arc<Schema>,
-}
-
-impl RecipeTableFunctionFactory {
-    fn new(recipe: &RecipeRuntimeDefinition) -> Result<Self> {
-        Ok(Self {
-            recipe: recipe.clone(),
-            schema: recipe_arrow_schema(recipe)?,
-        })
-    }
-}
-
-impl SourceFunctionProviderFactory for RecipeTableFunctionFactory {
-    fn schema(&self) -> Arc<Schema> {
-        Arc::clone(&self.schema)
-    }
-
-    fn provider_for_args(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
-        let arguments = recipe_argument_values(&self.recipe, args)?;
-        let params = recipe_query_parameters(&self.recipe, &arguments)?;
-        Ok(Arc::new(RecipeSqlTableProvider {
-            sql: recipe_sql(&self.recipe).to_string(),
-            params,
-            schema: Arc::clone(&self.schema),
-        }))
-    }
-}
-
-#[derive(Debug)]
-struct RecipeSqlTableProvider {
-    sql: String,
-    params: QueryParameters,
-    schema: Arc<Schema>,
-}
-
-#[async_trait]
-impl TableProvider for RecipeSqlTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn schema(&self) -> Arc<Schema> {
-        Arc::clone(&self.schema)
-    }
-
-    fn table_type(&self) -> TableType {
-        TableType::View
-    }
-
-    async fn scan(
-        &self,
-        state: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        _filters: &[Expr],
-        _limit: Option<usize>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        let session_state = state
-            .as_any()
-            .downcast_ref::<SessionState>()
-            .ok_or_else(|| {
-                DataFusionError::Plan("recipe execution requires SessionState".to_string())
-            })?;
-        let logical_plan = session_state.create_logical_plan(&self.sql).await?;
-        reject_unknown_parameters(&logical_plan, &self.params)?;
-        let logical_plan = logical_plan.with_param_values(recipe_param_values(&self.params))?;
-        let plan = state.create_physical_plan(&logical_plan).await?;
-        project_recipe_plan(plan, projection)
-    }
-}
-
-fn recipe_argument_values(
+pub(crate) fn recipe_argument_values(
     recipe: &RecipeRuntimeDefinition,
     args: &[Expr],
 ) -> Result<BTreeMap<String, RecipeRuntimeArgumentValue>> {
@@ -253,7 +177,9 @@ fn recipe_argument_value(
 
 fn scalar_recipe_argument_value(value: &ScalarValue) -> Option<RecipeRuntimeArgumentValue> {
     match value {
-        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) => {
+        ScalarValue::Utf8(Some(value))
+        | ScalarValue::Utf8View(Some(value))
+        | ScalarValue::LargeUtf8(Some(value)) => {
             Some(RecipeRuntimeArgumentValue::String(value.clone()))
         }
         ScalarValue::Int64(Some(value)) => Some(RecipeRuntimeArgumentValue::Integer(*value)),
@@ -284,20 +210,15 @@ fn scalar_recipe_argument_value(value: &ScalarValue) -> Option<RecipeRuntimeArgu
     }
 }
 
-fn recipe_param_values(params: &QueryParameters) -> Vec<(String, ScalarValue)> {
+pub(crate) fn recipe_param_values(params: &QueryParameters) -> Vec<(String, ScalarValue)> {
     params
         .iter()
         .map(|(name, value)| (name.clone(), parameter_scalar_value(value)))
         .collect()
 }
 
-fn recipe_arrow_schema(recipe: &RecipeRuntimeDefinition) -> Result<Arc<Schema>> {
-    if recipe.result_columns.is_empty()
-        && recipe
-            .publish
-            .iter()
-            .any(|publish| matches!(publish, RecipeRuntimePublish::TableFunction { .. }))
-    {
+pub(crate) fn recipe_arrow_schema(recipe: &RecipeRuntimeDefinition) -> Result<Arc<Schema>> {
+    if recipe.result_columns.is_empty() {
         return Err(DataFusionError::Plan(format!(
             "published recipe '{}' requires inferred result columns",
             recipe.name
@@ -322,30 +243,6 @@ fn recipe_result_field(column: &RecipeRuntimeResultColumn) -> Result<Field> {
     Ok(Field::new(&column.name, data_type, column.nullable))
 }
 
-fn project_recipe_plan(
-    plan: Arc<dyn ExecutionPlan>,
-    projection: Option<&Vec<usize>>,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    let Some(projection) = projection else {
-        return Ok(plan);
-    };
-    let input_schema = plan.schema();
-    let mut exprs = Vec::with_capacity(projection.len());
-    for &index in projection {
-        let field = input_schema.fields().get(index).ok_or_else(|| {
-            DataFusionError::Plan(format!(
-                "recipe projection index {index} out of bounds for {} column(s)",
-                input_schema.fields().len()
-            ))
-        })?;
-        exprs.push(ProjectionExpr {
-            expr: Arc::new(Column::new(field.name(), index)),
-            alias: field.name().clone(),
-        });
-    }
-    Ok(Arc::new(ProjectionExec::try_new(exprs, plan)?))
-}
-
 fn publish_description(target_description: &str, recipe_description: &str) -> String {
     if target_description.trim().is_empty() {
         recipe_description.to_string()
@@ -356,7 +253,7 @@ fn publish_description(target_description: &str, recipe_description: &str) -> St
 
 fn scalar_value_name(value: &ScalarValue) -> &'static str {
     match value {
-        ScalarValue::Utf8(_) | ScalarValue::LargeUtf8(_) => "string",
+        ScalarValue::Utf8(_) | ScalarValue::Utf8View(_) | ScalarValue::LargeUtf8(_) => "string",
         ScalarValue::Int64(_)
         | ScalarValue::Int32(_)
         | ScalarValue::Int16(_)
@@ -369,192 +266,6 @@ fn scalar_value_name(value: &ScalarValue) -> &'static str {
         value if value.is_null() => "null",
         _ => "unsupported literal",
     }
-}
-
-async fn infer_recipe_sample_schema(
-    query_runtime: &QueryRuntimeAdapter,
-    recipe: &RecipeRuntimeDefinition,
-) -> Result<
-    (
-        std::sync::Arc<Schema>,
-        BTreeMap<String, RecipeRuntimeArgumentValue>,
-    ),
-    CoreError,
-> {
-    let mut sample_values = recipe_sample_values(recipe);
-    let max_attempts = sample_values.len() + 1;
-    let mut attempts = 0;
-    loop {
-        attempts += 1;
-        match infer_recipe_schema_with_values(query_runtime, recipe, &sample_values).await {
-            Ok(schema) => return Ok((schema, sample_values)),
-            Err(error)
-                if attempts < max_attempts
-                    && update_recipe_sample_from_allowed_value(&error, &mut sample_values) => {}
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-async fn infer_recipe_schema_with_values(
-    query_runtime: &QueryRuntimeAdapter,
-    recipe: &RecipeRuntimeDefinition,
-    values: &BTreeMap<String, RecipeRuntimeArgumentValue>,
-) -> Result<std::sync::Arc<Schema>, CoreError> {
-    let params = recipe_query_parameters(recipe, values)
-        .map_err(|error| CoreError::InvalidInput(error.to_string()))?;
-    query_runtime
-        .infer_sql_schema(recipe_sql(recipe), &params)
-        .await
-}
-
-fn recipe_sample_values(
-    recipe: &RecipeRuntimeDefinition,
-) -> BTreeMap<String, RecipeRuntimeArgumentValue> {
-    recipe
-        .arguments
-        .iter()
-        .map(|argument| {
-            (
-                argument.name.clone(),
-                recipe_sample_value(argument.data_type, &argument.name),
-            )
-        })
-        .collect()
-}
-
-fn recipe_optional_null_values(
-    recipe: &RecipeRuntimeDefinition,
-    sample_values: &BTreeMap<String, RecipeRuntimeArgumentValue>,
-) -> Option<BTreeMap<String, RecipeRuntimeArgumentValue>> {
-    if recipe.arguments.iter().all(|argument| argument.required) {
-        return None;
-    }
-    Some(
-        recipe
-            .arguments
-            .iter()
-            .map(|argument| {
-                let value = if argument.required {
-                    sample_values
-                        .get(&argument.name)
-                        .cloned()
-                        .unwrap_or_else(|| recipe_sample_value(argument.data_type, &argument.name))
-                } else {
-                    RecipeRuntimeArgumentValue::Null
-                };
-                (argument.name.clone(), value)
-            })
-            .collect(),
-    )
-}
-
-fn recipe_sample_value(
-    data_type: RecipeRuntimeArgumentType,
-    argument_name: &str,
-) -> RecipeRuntimeArgumentValue {
-    match data_type {
-        RecipeRuntimeArgumentType::String => {
-            RecipeRuntimeArgumentValue::String(format!("__coral_recipe_sample_{argument_name}"))
-        }
-        RecipeRuntimeArgumentType::Integer => RecipeRuntimeArgumentValue::Integer(0),
-        RecipeRuntimeArgumentType::Boolean => RecipeRuntimeArgumentValue::Boolean(false),
-    }
-}
-
-fn update_recipe_sample_from_allowed_value(
-    error: &CoreError,
-    sample_values: &mut BTreeMap<String, RecipeRuntimeArgumentValue>,
-) -> bool {
-    let message = error.to_string();
-    let Some(allowed_value) = first_allowed_source_function_value(&message) else {
-        return false;
-    };
-    for sample in sample_values.values_mut() {
-        if message.contains(sample_error_value(sample).as_str())
-            && let Some(value) = parse_allowed_value_for_sample(sample, allowed_value)
-        {
-            *sample = value;
-            return true;
-        }
-    }
-    false
-}
-
-fn sample_error_value(sample: &RecipeRuntimeArgumentValue) -> String {
-    match sample {
-        RecipeRuntimeArgumentValue::String(value) => value.clone(),
-        RecipeRuntimeArgumentValue::Integer(value) => value.to_string(),
-        RecipeRuntimeArgumentValue::Boolean(value) => value.to_string(),
-        RecipeRuntimeArgumentValue::Null => "NULL".to_string(),
-    }
-}
-
-fn parse_allowed_value_for_sample(
-    sample: &RecipeRuntimeArgumentValue,
-    allowed_value: &str,
-) -> Option<RecipeRuntimeArgumentValue> {
-    match sample {
-        RecipeRuntimeArgumentValue::String(_) => Some(RecipeRuntimeArgumentValue::String(
-            allowed_value.to_string(),
-        )),
-        RecipeRuntimeArgumentValue::Integer(_) => allowed_value
-            .parse()
-            .ok()
-            .map(RecipeRuntimeArgumentValue::Integer),
-        RecipeRuntimeArgumentValue::Boolean(_) => allowed_value
-            .parse()
-            .ok()
-            .map(RecipeRuntimeArgumentValue::Boolean),
-        RecipeRuntimeArgumentValue::Null => None,
-    }
-}
-
-fn first_allowed_source_function_value(message: &str) -> Option<&str> {
-    let (_, values) = message.split_once("expected one of: ")?;
-    values
-        .split([',', '\n'])
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-}
-
-fn merge_recipe_inferred_schemas(
-    recipe_name: &str,
-    sample_schema: &Schema,
-    null_schema: &Schema,
-) -> Result<std::sync::Arc<Schema>, CoreError> {
-    if sample_schema.fields().len() != null_schema.fields().len() {
-        return Err(CoreError::FailedPrecondition(format!(
-            "recipe '{recipe_name}' inferred different result column counts for sample and omitted optional arguments"
-        )));
-    }
-
-    let fields = sample_schema
-        .fields()
-        .iter()
-        .zip(null_schema.fields())
-        .map(|(sample, null)| {
-            if sample.name() != null.name()
-                || !compatible_recipe_data_type(sample.data_type(), null.data_type())
-            {
-                return Err(CoreError::FailedPrecondition(format!(
-                    "recipe '{recipe_name}' inferred incompatible result column '{}' for omitted optional arguments",
-                    sample.name()
-                )));
-            }
-            Ok(Field::new(
-                sample.name(),
-                sample.data_type().clone(),
-                sample.is_nullable() || null.is_nullable(),
-            ))
-        })
-        .collect::<Result<Vec<_>, CoreError>>()?;
-    Ok(std::sync::Arc::new(Schema::new(fields)))
-}
-
-fn compatible_recipe_data_type(left: &DataType, right: &DataType) -> bool {
-    left == right || matches!(left, DataType::Null) || matches!(right, DataType::Null)
 }
 
 fn reject_unknown_arguments(
@@ -672,7 +383,13 @@ mod tests {
             implementation: RecipeRuntimeImplementation::CoralSql {
                 query: "select * from github.pull_requests where author = $author".to_string(),
             },
-            publish: Vec::new(),
+            publish: crate::RecipeRuntimePublish {
+                table_function: crate::RecipeRuntimeTableFunctionPublish {
+                    schema: "recipes".to_string(),
+                    name: "open_pull_requests".to_string(),
+                    description: String::new(),
+                },
+            },
             result_columns: Vec::new(),
         }
     }
@@ -822,6 +539,27 @@ mod tests {
                 .unwrap_err()
                 .strip_backtrace(),
             "Error during planning: recipe 'open_pull_requests' argument 'author' expected string, got integer"
+        );
+    }
+
+    #[test]
+    fn recipe_argument_values_accepts_utf8_view_literals() {
+        let recipe = recipe();
+        let args = vec![Expr::Literal(
+            ScalarValue::Utf8View(Some("Bradley-Butcher".into())),
+            None,
+        )];
+
+        assert_eq!(
+            recipe_argument_values(&recipe, &args).unwrap(),
+            BTreeMap::from([
+                (
+                    "author".to_string(),
+                    RecipeRuntimeArgumentValue::String("Bradley-Butcher".to_string()),
+                ),
+                ("limit".to_string(), RecipeRuntimeArgumentValue::Null),
+                ("draft".to_string(), RecipeRuntimeArgumentValue::Null),
+            ])
         );
     }
 }

@@ -1,17 +1,18 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use arrow::datatypes::DataType;
 use coral_engine::{
-    CoralQuery, QueryParameterValue, QueryParameters, RecipeRuntimeArgument,
-    RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue, RecipeRuntimeCall,
-    RecipeRuntimeDefinition, RecipeRuntimeImplementation, RecipeRuntimePublish,
-    RecipeRuntimeResultColumn,
+    CoralQuery, CoreError, QueryParameterValue, QueryParameters, RecipeRuntimeArgument,
+    RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue, RecipeRuntimeDefinition,
+    RecipeRuntimeImplementation, RecipeRuntimePublish, RecipeRuntimeResultColumn,
+    RecipeRuntimeTableFunctionPublish,
 };
 use serde_json::{Value, json};
-use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::harness::{build_source, execution_to_rows, test_runtime};
+use crate::harness::{build_source, dir_url, execution_to_rows, test_runtime, write_jsonl_file};
 
 fn search_function_manifest(name: &str, base_url: &str) -> Value {
     json!({
@@ -54,6 +55,37 @@ fn search_function_manifest(name: &str, base_url: &str) -> Value {
     })
 }
 
+fn events_manifest(name: &str, dir: &Path) -> Value {
+    json!({
+        "name": name,
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [{
+            "name": "events",
+            "description": "Event rows",
+            "format": "jsonl",
+            "source": {
+                "location": dir_url(dir),
+                "glob": "**/*.jsonl"
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" }
+            ]
+        }]
+    })
+}
+
+fn recipe_publish(name: &str) -> RecipeRuntimePublish {
+    RecipeRuntimePublish {
+        table_function: RecipeRuntimeTableFunctionPublish {
+            schema: "recipes".to_string(),
+            name: name.to_string(),
+            description: String::new(),
+        },
+    }
+}
+
 fn review_queue_recipe(source_name: &str) -> RecipeRuntimeDefinition {
     RecipeRuntimeDefinition {
         name: "review_queue".to_string(),
@@ -77,18 +109,13 @@ fn review_queue_recipe(source_name: &str) -> RecipeRuntimeDefinition {
                 "select title, score from {source_name}.search_issues(q => $query, mode => $mode)"
             ),
         },
-        publish: Vec::new(),
+        publish: recipe_publish("review_queue"),
         result_columns: Vec::new(),
     }
 }
 
 fn published_review_queue_recipe(source_name: &str) -> RecipeRuntimeDefinition {
     let mut recipe = review_queue_recipe(source_name);
-    recipe.publish = vec![RecipeRuntimePublish::TableFunction {
-        schema: "recipes".to_string(),
-        name: "review_queue".to_string(),
-        description: String::new(),
-    }];
     recipe.result_columns = vec![
         RecipeRuntimeResultColumn {
             name: "title".to_string(),
@@ -106,146 +133,69 @@ fn published_review_queue_recipe(source_name: &str) -> RecipeRuntimeDefinition {
     recipe
 }
 
-#[tokio::test]
-async fn execute_recipe_runs_param_bound_coral_sql() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/api/search/issues"))
-        .and(query_param("q", "repo:withcoral/coral review"))
-        .and(query_param("search_type", "hybrid"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "items": [{
-                "title": "Review needed",
-                "score": 7.5
-            }]
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let source = build_source(search_function_manifest("recipe_search", &server.uri()));
-    let runtime = test_runtime().with_recipes(vec![review_queue_recipe("recipe_search")]);
-    let call = RecipeRuntimeCall {
-        recipe_name: "review_queue".to_string(),
-        arguments: BTreeMap::from([
-            (
-                "query".to_string(),
-                RecipeRuntimeArgumentValue::String("repo:withcoral/coral review".to_string()),
-            ),
-            (
-                "mode".to_string(),
-                RecipeRuntimeArgumentValue::String("hybrid".to_string()),
-            ),
-        ]),
-    };
-
-    let execution = CoralQuery::execute_recipe(&[source], runtime, call)
-        .await
-        .expect("recipe should execute");
-
-    assert_eq!(
-        execution_to_rows(&execution),
-        vec![json!({
-            "title": "Review needed",
-            "score": 7.5
-        })]
-    );
+fn review_queue_recipe_published_as(source_name: &str, schema: &str) -> RecipeRuntimeDefinition {
+    review_queue_recipe_published_at(source_name, schema, "review_queue")
 }
 
-#[tokio::test]
-async fn execute_recipe_binds_missing_optional_argument_as_null() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/api/search/issues"))
-        .and(query_param("q", "repo:withcoral/coral review"))
-        .and(query_param_is_missing("search_type"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "items": [{
-                "title": "Review needed",
-                "score": 7.5
-            }]
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
+fn review_queue_recipe_published_at(
+    source_name: &str,
+    schema: &str,
+    name: &str,
+) -> RecipeRuntimeDefinition {
+    let mut recipe = published_review_queue_recipe(source_name);
+    recipe.publish = RecipeRuntimePublish {
+        table_function: RecipeRuntimeTableFunctionPublish {
+            schema: schema.to_string(),
+            name: name.to_string(),
+            description: String::new(),
+        },
+    };
+    recipe
+}
 
-    let source = build_source(search_function_manifest(
-        "optional_recipe_search",
-        &server.uri(),
-    ));
-    let runtime = test_runtime().with_recipes(vec![review_queue_recipe("optional_recipe_search")]);
-    let call = RecipeRuntimeCall {
-        recipe_name: "review_queue".to_string(),
-        arguments: BTreeMap::from([(
+fn published_limited_events_recipe(source_name: &str) -> RecipeRuntimeDefinition {
+    RecipeRuntimeDefinition {
+        name: "limited_events".to_string(),
+        description: "Limited events".to_string(),
+        arguments: Vec::new(),
+        implementation: RecipeRuntimeImplementation::CoralSql {
+            query: format!("select id from {source_name}.events limit 1"),
+        },
+        publish: recipe_publish("limited_events"),
+        result_columns: vec![RecipeRuntimeResultColumn {
+            name: "id".to_string(),
+            data_type: "Int64".to_string(),
+            nullable: true,
+            description: String::new(),
+        }],
+    }
+}
+
+fn review_queue_args(mode: &str) -> BTreeMap<String, RecipeRuntimeArgumentValue> {
+    BTreeMap::from([
+        (
             "query".to_string(),
             RecipeRuntimeArgumentValue::String("repo:withcoral/coral review".to_string()),
-        )]),
-    };
-
-    let execution = CoralQuery::execute_recipe(&[source], runtime, call)
-        .await
-        .expect("recipe should execute");
-
-    assert_eq!(
-        execution_to_rows(&execution),
-        vec![json!({
-            "title": "Review needed",
-            "score": 7.5
-        })]
-    );
+        ),
+        (
+            "mode".to_string(),
+            RecipeRuntimeArgumentValue::String(mode.to_string()),
+        ),
+    ])
 }
 
-#[tokio::test]
-async fn execute_recipe_rejects_unknown_recipe() {
-    let server = MockServer::start().await;
-    let source = build_source(search_function_manifest(
-        "unknown_recipe_search",
-        &server.uri(),
-    ));
-    let runtime = test_runtime().with_recipes(vec![review_queue_recipe("unknown_recipe_search")]);
-    let call = RecipeRuntimeCall {
-        recipe_name: "missing_recipe".to_string(),
-        arguments: BTreeMap::new(),
+fn assert_invalid_input_contains(error: CoreError, expected: &str) {
+    let CoreError::InvalidInput(detail) = error else {
+        panic!("expected CoreError::InvalidInput, got {error:?}");
     };
-
-    let error = CoralQuery::execute_recipe(&[source], runtime, call)
-        .await
-        .expect_err("unknown recipe should fail");
-
-    assert_eq!(
-        error.to_string(),
-        "invalid input: unknown recipe 'missing_recipe'"
-    );
-}
-
-#[tokio::test]
-async fn execute_recipe_rejects_invalid_arguments() {
-    let server = MockServer::start().await;
-    let source = build_source(search_function_manifest(
-        "invalid_arg_recipe_search",
-        &server.uri(),
-    ));
-    let runtime =
-        test_runtime().with_recipes(vec![review_queue_recipe("invalid_arg_recipe_search")]);
-    let call = RecipeRuntimeCall {
-        recipe_name: "review_queue".to_string(),
-        arguments: BTreeMap::from([("query".to_string(), RecipeRuntimeArgumentValue::Integer(42))]),
-    };
-
-    let error = CoralQuery::execute_recipe(&[source], runtime, call)
-        .await
-        .expect_err("invalid recipe args should fail");
-
     assert!(
-        error
-            .to_string()
-            .contains("recipe 'review_queue' argument 'query' expected string, got integer"),
-        "unexpected error: {error}"
+        detail.contains(expected),
+        "expected error detail to contain {expected:?}, got {detail:?}"
     );
 }
 
 #[tokio::test]
-async fn infer_recipe_schema_uses_param_bound_coral_sql() {
+async fn infer_recipe_schema_uses_explicit_validation_args() {
     let server = MockServer::start().await;
     let source = build_source(search_function_manifest(
         "schema_recipe_search",
@@ -256,6 +206,7 @@ async fn infer_recipe_schema_uses_param_bound_coral_sql() {
         &[source],
         test_runtime(),
         review_queue_recipe("schema_recipe_search"),
+        review_queue_args("lexical"),
     )
     .await
     .expect("recipe schema should infer");
@@ -268,6 +219,65 @@ async fn infer_recipe_schema_uses_param_bound_coral_sql() {
     assert_eq!(title.data_type(), &DataType::Utf8);
     assert_eq!(score.name(), "score");
     assert_eq!(score.data_type(), &DataType::Float64);
+}
+
+#[tokio::test]
+async fn infer_recipe_schema_rejects_missing_validation_args() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest(
+        "missing_arg_schema_recipe_search",
+        &server.uri(),
+    ));
+
+    let error = CoralQuery::infer_recipe_schema(
+        &[source],
+        test_runtime(),
+        review_queue_recipe("missing_arg_schema_recipe_search"),
+        BTreeMap::new(),
+    )
+    .await
+    .expect_err("missing validation args should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("recipe 'review_queue' is missing required argument 'query'"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn validate_recipe_executes_explicit_validation_call() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "repo:withcoral/coral review"))
+        .and(query_param("search_type", "lexical"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Review needed",
+                "score": 7.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest(
+        "validate_recipe_search",
+        &server.uri(),
+    ));
+
+    let schema = CoralQuery::validate_recipe(
+        &[source],
+        test_runtime(),
+        review_queue_recipe("validate_recipe_search"),
+        review_queue_args("lexical"),
+    )
+    .await
+    .expect("recipe validation should infer schema and execute");
+
+    assert_eq!(schema.fields().len(), 2);
 }
 
 #[tokio::test]
@@ -362,6 +372,192 @@ async fn published_recipe_table_function_accepts_query_params() {
             "score": 8.25
         })]
     );
+}
+
+#[tokio::test]
+async fn recipe_function_can_share_source_schema_with_source_functions() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "repo:withcoral/coral review"))
+        .and(query_param("search_type", "hybrid"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{ "title": "Schema-shared recipe", "score": 3.0 }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest(
+        "shared_recipe_schema",
+        &server.uri(),
+    ));
+    let runtime = test_runtime().with_recipes(vec![review_queue_recipe_published_as(
+        "shared_recipe_schema",
+        "shared_recipe_schema",
+    )]);
+
+    let execution = CoralQuery::execute_sql(
+        &[source],
+        runtime,
+        "select title, score from shared_recipe_schema.review_queue(query => 'repo:withcoral/coral review', mode => 'hybrid')",
+    )
+    .await
+    .expect("recipe should plan before source-schema unknown-function handling");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({"title": "Schema-shared recipe", "score": 3.0})]
+    );
+}
+
+#[tokio::test]
+async fn recipe_table_function_rejects_unknown_function_in_recipe_schema() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest(
+        "unknown_recipe_function_search",
+        &server.uri(),
+    ));
+    let runtime = test_runtime().with_recipes(vec![published_review_queue_recipe(
+        "unknown_recipe_function_search",
+    )]);
+
+    let error = CoralQuery::execute_sql(&[source], runtime, "select * from recipes.nope()")
+        .await
+        .expect_err("unknown recipe table function should fail");
+
+    assert_invalid_input_contains(
+        error,
+        "unknown recipe table function recipes.nope; available functions: recipes.review_queue",
+    );
+}
+
+#[tokio::test]
+async fn unknown_function_in_shared_source_schema_keeps_source_diagnostic() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest(
+        "shared_recipe_schema",
+        &server.uri(),
+    ));
+    let runtime = test_runtime().with_recipes(vec![review_queue_recipe_published_as(
+        "shared_recipe_schema",
+        "shared_recipe_schema",
+    )]);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        runtime,
+        "select * from shared_recipe_schema.nope()",
+    )
+    .await
+    .expect_err("unknown source table function should fail");
+
+    assert_invalid_input_contains(
+        error,
+        "unknown source table function shared_recipe_schema.nope; available functions: shared_recipe_schema.search_issues",
+    );
+}
+
+#[tokio::test]
+async fn duplicate_recipe_table_function_publish_fails() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest(
+        "duplicate_recipe_publish_search",
+        &server.uri(),
+    ));
+    let mut duplicate = published_review_queue_recipe("duplicate_recipe_publish_search");
+    duplicate.name = "duplicate_review_queue".to_string();
+    let runtime = test_runtime().with_recipes(vec![
+        published_review_queue_recipe("duplicate_recipe_publish_search"),
+        duplicate,
+    ]);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        runtime,
+        "select * from recipes.review_queue(query => 'repo:withcoral/coral review', mode => 'hybrid')",
+    )
+    .await
+    .expect_err("duplicate recipe publish targets should fail");
+
+    assert_invalid_input_contains(
+        error,
+        "duplicate recipe table function recipes.review_queue",
+    );
+}
+
+#[tokio::test]
+async fn recipe_table_function_cannot_replace_source_table_function() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest(
+        "source_function_collision_search",
+        &server.uri(),
+    ));
+    let runtime = test_runtime().with_recipes(vec![review_queue_recipe_published_at(
+        "source_function_collision_search",
+        "source_function_collision_search",
+        "search_issues",
+    )]);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        runtime,
+        "select * from source_function_collision_search.search_issues(query => 'repo:withcoral/coral review', mode => 'hybrid')",
+    )
+    .await
+    .expect_err("recipe publish target should not replace a source table function");
+
+    assert_invalid_input_contains(
+        error,
+        "recipe table function source_function_collision_search.search_issues conflicts with existing table function",
+    );
+}
+
+#[tokio::test]
+async fn recipe_table_function_rejects_unsupported_modifiers_with_neutral_error() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest(
+        "modifier_recipe_search",
+        &server.uri(),
+    ));
+    let runtime = test_runtime().with_recipes(vec![published_review_queue_recipe(
+        "modifier_recipe_search",
+    )]);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        runtime,
+        "select * from recipes.review_queue(query => 'repo:withcoral/coral review', mode => 'hybrid') WITH ORDINALITY",
+    )
+    .await
+    .expect_err("unsupported recipe table-function modifiers should fail");
+
+    assert_invalid_input_contains(
+        error,
+        "table function recipes.review_queue does not support WITH ORDINALITY",
+    );
+}
+
+#[tokio::test]
+async fn published_recipe_table_function_preserves_inner_limit() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_jsonl_file(temp.path(), "first/events.jsonl", &[json!({"id": 1})]);
+    write_jsonl_file(temp.path(), "second/events.jsonl", &[json!({"id": 2})]);
+
+    let source = build_source(events_manifest("limited_recipe_events", temp.path()));
+    let runtime = test_runtime().with_recipes(vec![published_limited_events_recipe(
+        "limited_recipe_events",
+    )]);
+
+    let execution = CoralQuery::execute_sql(
+        &[source],
+        runtime,
+        "select count(*) as count from recipes.limited_events()",
+    )
+    .await
+    .expect("published recipe table function should preserve inner limit");
+
+    assert_eq!(execution_to_rows(&execution), vec![json!({"count": 1})]);
 }
 
 #[tokio::test]
