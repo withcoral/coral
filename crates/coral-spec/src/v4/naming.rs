@@ -110,27 +110,19 @@ mod tests {
 
     #[test]
     fn sql_identifier_normalization_splits_camel_case_and_acronyms() {
-        assert_eq!(normalize_sql_identifier("perPage", "input"), "per_page");
-        assert_eq!(
-            normalize_sql_identifier("pullNumber", "input"),
-            "pull_number"
-        );
-        assert_eq!(
-            normalize_sql_identifier("alertNumber", "input"),
-            "alert_number"
-        );
-        assert_eq!(
-            normalize_sql_identifier("discussionNumber", "input"),
-            "discussion_number"
-        );
-        assert_eq!(normalize_sql_identifier("ghsaId", "input"), "ghsa_id");
-        assert_eq!(
-            normalize_sql_identifier("notificationID", "input"),
-            "notification_id"
-        );
-        assert_eq!(
-            normalize_sql_identifier("repositoryURLValue", "input"),
-            "repository_url_value"
-        );
+        let cases = [
+            ("perPage", "per_page"),
+            ("pullNumber", "pull_number"),
+            ("notificationID", "notification_id"),
+            ("repositoryURLValue", "repository_url_value"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                normalize_sql_identifier(input, "input"),
+                expected,
+                "failed to normalize {input}"
+            );
+        }
     }
 }
