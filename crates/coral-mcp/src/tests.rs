@@ -7,7 +7,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use coral_api::v1::{ImportSourceRequest, import_source_response};
+use coral_api::{
+    CORAL_EPISODE_ID_MAX_LEN,
+    v1::{ImportSourceRequest, import_source_response},
+};
 use coral_client::{
     AppClient, SourceClient, default_workspace,
     local::{RunningServer, ServerBuilder},
@@ -266,11 +269,30 @@ fn tool_input_properties(tool: &Tool) -> &Map<String, Value> {
 }
 
 fn assert_tool_advertises_episode_id(tool: &Tool) {
+    let episode_id_schema = tool_input_properties(tool)
+        .get("episode_id")
+        .unwrap_or_else(|| panic!("tool '{}' should advertise optional episode_id", tool.name));
+    assert_nullable_episode_id_schema(episode_id_schema, tool.name.as_ref());
+}
+
+fn assert_nullable_episode_id_schema(schema: &Value, label: &str) {
+    let any_of = schema
+        .get("anyOf")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{label} episode id schema should use anyOf"));
+    let string_schema = any_of
+        .iter()
+        .find(|schema| schema.get("type") == Some(&json!("string")))
+        .unwrap_or_else(|| panic!("{label} episode id schema should accept strings"));
     assert!(
-        tool_input_properties(tool).contains_key("episode_id"),
-        "tool '{}' should advertise optional episode_id",
-        tool.name
+        any_of
+            .iter()
+            .any(|schema| schema.get("type") == Some(&json!("null"))),
+        "{label} episode id schema should accept null"
     );
+    assert_eq!(string_schema["minLength"], json!(1));
+    assert_eq!(string_schema["maxLength"], json!(CORAL_EPISODE_ID_MAX_LEN));
+    assert_eq!(string_schema["pattern"], json!("^[!-~]+$"));
 }
 
 fn assert_tool_omits_episode_id(tool: &Tool) {
@@ -345,10 +367,10 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
     }
     let create_episode_tool = tool_by_name(&tools, "create_episode");
     assert!(!tool_input_properties(create_episode_tool).contains_key("episode_id"));
-    assert!(
-        tool_input_properties(create_episode_tool).contains_key("parent_episode_id"),
-        "create_episode should accept an optional parent_episode_id"
-    );
+    let parent_episode_id_schema = tool_input_properties(create_episode_tool)
+        .get("parent_episode_id")
+        .expect("create_episode should accept an optional parent_episode_id");
+    assert_nullable_episode_id_schema(parent_episode_id_schema, "create_episode parent_episode_id");
     let create_annotations = create_episode_tool
         .annotations
         .as_ref()

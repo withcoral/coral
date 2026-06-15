@@ -11,6 +11,7 @@ use coral_api::{CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_INTENT_MAX_CHARS};
 use super::{Pagination, parse_pagination, parse_pagination_with_limits};
 
 const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by create_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
+const EPISODE_ID_JSON_SCHEMA_PATTERN: &str = "^[!-~]+$";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolDescriptionContext {
@@ -569,10 +570,7 @@ fn add_episode_id_property(value: &mut Value) {
 fn nullable_episode_id_schema(description: Option<&str>) -> Value {
     let mut schema = json!({
         "anyOf": [
-            {
-                "type": "string",
-                "maxLength": CORAL_EPISODE_ID_MAX_LEN
-            },
+            episode_id_string_schema(),
             {
                 "type": "null"
             }
@@ -587,16 +585,22 @@ fn nullable_episode_id_schema(description: Option<&str>) -> Value {
     schema
 }
 
+fn episode_id_string_schema() -> Value {
+    json!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": CORAL_EPISODE_ID_MAX_LEN,
+        "pattern": EPISODE_ID_JSON_SCHEMA_PATTERN
+    })
+}
+
 fn create_episode_output_schema() -> Arc<Map<String, Value>> {
     json_object_schema(&json!({
         "type": "object",
         "required": ["episode_id", "parent_episode_id", "message", "instructions"],
         "additionalProperties": false,
         "properties": {
-            "episode_id": {
-                "type": "string",
-                "maxLength": CORAL_EPISODE_ID_MAX_LEN
-            },
+            "episode_id": episode_id_string_schema(),
             "parent_episode_id": nullable_episode_id_schema(None),
             "message": { "type": "string" },
             "instructions": { "type": "string" }
