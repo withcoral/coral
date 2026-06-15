@@ -696,6 +696,69 @@ fn generated_mcp_projection_keeps_pagination_cursor_internal() {
 }
 
 #[test]
+fn generated_mcp_projection_with_only_pagination_cursor_is_table() {
+    let manifest = rest_mcp_collision_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let mcp_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "mcp")
+        .expect("mcp surface");
+    let catalog = McpToolCatalog {
+        tools: vec![McpToolDescriptor {
+            name: "list_items".to_string(),
+            title: None,
+            description: None,
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cursor": {"type": "string"}
+                }
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"}
+                            }
+                        }
+                    },
+                    "meta": {
+                        "type": "object",
+                        "properties": {
+                            "nextCursor": {"type": ["string", "null"]}
+                        }
+                    }
+                }
+            })),
+            read_only_hint: Some(true),
+        }],
+    };
+    let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
+
+    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let projection = projections
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "list_items")
+        .expect("mcp projection");
+
+    assert!(matches!(projection.kind, ProjectionKind::Table));
+    assert_eq!(
+        projection
+            .inputs
+            .iter()
+            .filter(|input| input.sql_exposure != SqlInputExposure::Internal)
+            .count(),
+        0
+    );
+}
+
+#[test]
 fn generated_mcp_projection_snake_cases_camel_input_names() {
     let manifest = rest_mcp_collision_manifest();
     let v4 = manifest.as_v4().expect("v4");

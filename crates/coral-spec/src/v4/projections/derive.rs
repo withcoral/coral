@@ -184,14 +184,21 @@ fn projection_kind(operation: &IrOperation, is_search: bool) -> ProjectionKind {
         {
             Some(SourceTableFunctionKind::Table)
         }
-        IrExecutionAttachment::Mcp(_) if operation.inputs.is_empty() && !is_search => None,
         IrExecutionAttachment::Mcp(_) if is_search => Some(SourceTableFunctionKind::Search),
+        IrExecutionAttachment::Mcp(mcp) if !has_public_mcp_inputs(operation, mcp) => None,
         IrExecutionAttachment::Mcp(_) => Some(SourceTableFunctionKind::Table),
         IrExecutionAttachment::Rest(_) => None,
     };
     function_kind.map_or(ProjectionKind::Table, |function_kind| {
         ProjectionKind::TableFunction { function_kind }
     })
+}
+
+fn has_public_mcp_inputs(operation: &IrOperation, mcp: &crate::v4::McpExecutionAttachment) -> bool {
+    operation
+        .inputs
+        .iter()
+        .any(|input| !mcp_pagination_owns_input(mcp, input))
 }
 
 fn generated_projection_name(operation: &IrOperation, is_search: bool) -> String {
