@@ -739,7 +739,8 @@ surfaces:
                         "query": {"type": ["string", "null"], "description": "Search query"},
                         "limit": {"type": "integer", "default": 10},
                         "exact": {"type": "boolean", "default": true},
-                        "since": {"type": "string", "format": "date-time"}
+                        "since": {"type": "string", "format": "date-time"},
+                        "updated_since": {"format": "date-time"}
                     },
                     "required": ["query"]
                 }),
@@ -781,6 +782,13 @@ surfaces:
             .find(|input| input.name == "since")
             .expect("since input");
         assert_eq!(since.data_type, IrScalarType::Timestamp);
+
+        let updated_since = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "updated_since")
+            .expect("updated_since input");
+        assert_eq!(updated_since.data_type, IrScalarType::Timestamp);
     }
 
     #[test]

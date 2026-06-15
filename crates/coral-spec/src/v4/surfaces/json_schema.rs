@@ -39,6 +39,9 @@ fn json_schema_scalar_type_with_default(
 ) -> Option<IrScalarType> {
     let schema_types = schema_type_values(schema);
     if schema_types.is_empty() {
+        if let Some(scalar) = scalar_for_typeless_schema_format(schema) {
+            return Some(scalar);
+        }
         return missing_type_default
             .and_then(scalar_for_schema_type)
             .map(|scalar| apply_string_format(schema, scalar));
@@ -89,6 +92,16 @@ fn apply_string_format(schema: &Value, scalar: IrScalarType) -> IrScalarType {
     }
 }
 
+fn scalar_for_typeless_schema_format(schema: &Value) -> Option<IrScalarType> {
+    schema
+        .get("format")
+        .and_then(Value::as_str)
+        .and_then(|format| match format {
+            "date-time" | "datetime" => Some(IrScalarType::Timestamp),
+            _ => None,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -115,6 +128,14 @@ mod tests {
     fn scalar_type_maps_string_datetime_formats_to_timestamp() {
         assert_eq!(
             json_schema_scalar_type(&json!({"type": "string", "format": "datetime"})),
+            Some(IrScalarType::Timestamp)
+        );
+    }
+
+    #[test]
+    fn scalar_type_maps_typeless_datetime_formats_to_timestamp() {
+        assert_eq!(
+            json_schema_scalar_type(&json!({"format": "date-time"})),
             Some(IrScalarType::Timestamp)
         );
     }
