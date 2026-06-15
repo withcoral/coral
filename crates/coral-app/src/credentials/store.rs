@@ -123,11 +123,26 @@ trait CredentialMaterialBackend: Send + Sync {
         set: &CredentialSetRef<'_>,
     ) -> Result<CredentialMaterialSnapshot, CredentialsError>;
 
+    fn snapshot_unlocked(
+        &self,
+        set: &CredentialSetRef<'_>,
+    ) -> Result<CredentialMaterialSnapshot, CredentialsError> {
+        self.snapshot(set)
+    }
+
     fn restore(
         &self,
         set: &CredentialSetRef<'_>,
         snapshot: &CredentialMaterialSnapshot,
     ) -> Result<(), CredentialsError>;
+
+    fn restore_unlocked(
+        &self,
+        set: &CredentialSetRef<'_>,
+        snapshot: &CredentialMaterialSnapshot,
+    ) -> Result<(), CredentialsError> {
+        self.restore(set, snapshot)
+    }
 }
 
 #[derive(Clone)]
@@ -322,6 +337,26 @@ impl CredentialStore {
         .map_err(Into::into)
     }
 
+    pub(crate) fn snapshot_material_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
+    ) -> Result<CredentialMaterialSnapshot, AppError> {
+        let set = CredentialSetRef {
+            workspace_name,
+            credential_set_id,
+        };
+        tracing::trace!(%credential_set_id, %storage, "snapshotting credential material without taking a state lock");
+        contextualize_storage_error(
+            self.backend(storage).snapshot_unlocked(&set),
+            "snapshotting",
+            credential_set_id,
+            storage,
+        )
+        .map_err(Into::into)
+    }
+
     pub(crate) fn restore_material(
         &self,
         workspace_name: &WorkspaceName,
@@ -336,6 +371,27 @@ impl CredentialStore {
         tracing::trace!(%credential_set_id, %storage, "restoring credential material");
         contextualize_storage_error(
             self.backend(storage).restore(&set, snapshot),
+            "restoring",
+            credential_set_id,
+            storage,
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn restore_material_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        snapshot: &CredentialMaterialSnapshot,
+    ) -> Result<(), AppError> {
+        let storage = snapshot.storage();
+        let set = CredentialSetRef {
+            workspace_name,
+            credential_set_id,
+        };
+        tracing::trace!(%credential_set_id, %storage, "restoring credential material without taking a state lock");
+        contextualize_storage_error(
+            self.backend(storage).restore_unlocked(&set, snapshot),
             "restoring",
             credential_set_id,
             storage,
@@ -594,8 +650,15 @@ impl CredentialMaterialBackend for FileCredentialBackend {
         &self,
         set: &CredentialSetRef<'_>,
     ) -> Result<CredentialMaterialSnapshot, CredentialsError> {
-        let path = self.material_file(set)?;
         let _lock = FileLock::shared(self.layout.state_lock())?;
+        self.snapshot_unlocked(set)
+    }
+
+    fn snapshot_unlocked(
+        &self,
+        set: &CredentialSetRef<'_>,
+    ) -> Result<CredentialMaterialSnapshot, CredentialsError> {
+        let path = self.material_file(set)?;
         match std::fs::read(path) {
             Ok(bytes) => Ok(CredentialMaterialSnapshot::new(
                 CredentialStorageKind::File,
@@ -619,8 +682,22 @@ impl CredentialMaterialBackend for FileCredentialBackend {
                 requested: CredentialStorageKind::File.as_config_value(),
             });
         }
-        let path = self.material_file(set)?;
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
+        self.restore_unlocked(set, snapshot)
+    }
+
+    fn restore_unlocked(
+        &self,
+        set: &CredentialSetRef<'_>,
+        snapshot: &CredentialMaterialSnapshot,
+    ) -> Result<(), CredentialsError> {
+        if snapshot.storage() != CredentialStorageKind::File {
+            return Err(CredentialsError::SnapshotStorageMismatch {
+                snapshot: snapshot.storage().as_config_value(),
+                requested: CredentialStorageKind::File.as_config_value(),
+            });
+        }
+        let path = self.material_file(set)?;
         match snapshot.material() {
             Some(bytes) => write_file_unlocked(&path, bytes),
             None => remove_file_if_exists_unlocked(&path).map_err(Into::into),

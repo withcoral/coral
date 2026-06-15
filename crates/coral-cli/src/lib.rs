@@ -437,6 +437,7 @@ pub async fn run_from_env() -> Result<(), CliError> {
             let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
             let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
                 enable_stderr_logs: command.enables_stderr_logs(),
+                feature_overrides: feature_overrides.clone(),
             })
             .await
             .map_err(anyhow::Error::from)?;
@@ -481,8 +482,11 @@ pub fn open_url(url: &str) -> Result<(), std::io::Error> {
 }
 
 #[cfg(feature = "embedded-ui")]
-async fn run_ui(args: UiArgs) -> Result<(), anyhow::Error> {
-    let server = bootstrap::start_ui_server(args.port).await?;
+async fn run_ui(
+    args: UiArgs,
+    feature_overrides: &coral_app::features::FeatureOverrides,
+) -> Result<(), anyhow::Error> {
+    let server = bootstrap::start_ui_server(args.port, feature_overrides.clone()).await?;
     let endpoint = server.endpoint_uri().to_string();
 
     println!("Coral UI listening on {endpoint}");
@@ -519,7 +523,7 @@ async fn run_no_runtime_command(
         }
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
-        Command::Ui(args) => run_ui(args).await.map_err(Into::into),
+        Command::Ui(args) => run_ui(args, feature_overrides).await.map_err(Into::into),
         Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
             unreachable!("app client commands are routed through app runtime startup")
         }
@@ -554,7 +558,7 @@ async fn run_app_command(
             let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
             print_batches(result.batches(), args.format)?;
         }
-        Command::Source(args) => run_source(&app, args).await?,
+        Command::Source(args) => run_source(&app, args, feature_overrides).await?,
         Command::Onboard => {
             onboard::run(&app).await?;
         }
@@ -619,7 +623,11 @@ fn run_features(
     Ok(())
 }
 
-async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
+async fn run_source(
+    app: &AppClient,
+    args: SourceArgs,
+    feature_overrides: &coral_app::features::FeatureOverrides,
+) -> Result<(), CliError> {
     match args.command {
         SourceCommand::Discover => {
             let sources = source_ops::discover_sources(app).await?;
@@ -661,7 +669,7 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
         SourceCommand::Info { name, verbose } => {
             source_ops::print_source_info(app, &name, verbose).await?;
         }
-        SourceCommand::Add(args) => run_source_add(app, args).await?,
+        SourceCommand::Add(args) => run_source_add(app, args, feature_overrides).await?,
         SourceCommand::Lint { file } => {
             source_ops::load_validated_manifest_file(&file)?;
             println!("Manifest is valid");
@@ -769,7 +777,11 @@ fn pad_cell(value: &str, width: usize, pad: bool) -> String {
     format!("{value}{}", " ".repeat(padding))
 }
 
-async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliError> {
+async fn run_source_add(
+    app: &AppClient,
+    args: SourceAddArgs,
+    feature_overrides: &coral_app::features::FeatureOverrides,
+) -> Result<(), CliError> {
     let SourceAddArgs {
         name,
         file,
@@ -805,7 +817,11 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
             }
         }
         (None, Some(file)) => {
-            let (manifest_yaml, manifest) = source_ops::load_validated_manifest_file(&file)?;
+            let raw_manifest_yaml = std::fs::read_to_string(&file).map_err(anyhow::Error::from)?;
+            ensure_source_add_manifest_yaml_features(&raw_manifest_yaml, feature_overrides)?;
+            let (manifest_yaml, manifest) =
+                source_ops::load_validated_manifest_file_yaml(&file, &raw_manifest_yaml)?;
+            ensure_source_add_manifest_features(&manifest, feature_overrides)?;
             if interactive {
                 let inputs = source_ops::prompt_for_inputs_with_credential_methods(
                     manifest.declared_inputs(),
@@ -834,11 +850,73 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
         .map_err(Into::into)
 }
 
+fn ensure_source_add_manifest_features(
+    manifest: &coral_spec::ValidatedSourceManifest,
+    feature_overrides: &coral_app::features::FeatureOverrides,
+) -> Result<(), anyhow::Error> {
+    if manifest.as_v4().is_none() {
+        return Ok(());
+    }
+    ensure_dsl_v4_source_add_enabled(feature_overrides)
+}
+
+fn ensure_source_add_manifest_yaml_features(
+    manifest_yaml: &str,
+    feature_overrides: &coral_app::features::FeatureOverrides,
+) -> Result<(), anyhow::Error> {
+    let manifest_value: serde_yaml::Value = serde_yaml::from_str(manifest_yaml)?;
+    if manifest_value
+        .as_mapping()
+        .and_then(|mapping| mapping.get(serde_yaml::Value::String("dsl_version".to_string())))
+        .and_then(serde_yaml::Value::as_u64)
+        .is_none_or(|dsl_version| dsl_version != 4)
+    {
+        return Ok(());
+    }
+    ensure_dsl_v4_source_add_enabled(feature_overrides)
+}
+
+fn ensure_dsl_v4_source_add_enabled(
+    feature_overrides: &coral_app::features::FeatureOverrides,
+) -> Result<(), anyhow::Error> {
+    match feature_overrides.get(coral_app::features::Feature::DslV4) {
+        Some(true) => Ok(()),
+        Some(false) => coral_app::features::Features::default()
+            .ensure_dsl_v4_enabled()
+            .map_err(Into::into),
+        None => coral_app::features::FeatureStore::discover(None)?
+            .load_with_overrides(feature_overrides)?
+            .ensure_dsl_v4_enabled()
+            .map_err(Into::into),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
 
-    use super::{Cli, RequiredRuntime, command_enables_stderr_logs};
+    use super::{
+        Cli, RequiredRuntime, command_enables_stderr_logs, ensure_source_add_manifest_features,
+        ensure_source_add_manifest_yaml_features,
+    };
+
+    fn v4_manifest_with_required_input() -> coral_spec::ValidatedSourceManifest {
+        coral_spec::parse_source_manifest_yaml(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    inputs:
+      DEMO_TENANT:
+        kind: variable
+",
+        )
+        .expect("v4 manifest")
+    }
 
     #[test]
     fn server_command_is_not_available() {
@@ -908,6 +986,56 @@ mod tests {
             .expect("global feature override should parse before subcommand");
 
         assert!(matches!(cli.command, super::Command::McpStdio(_)));
+    }
+
+    #[test]
+    fn source_add_file_rejects_v4_before_input_collection_when_feature_disabled() {
+        let manifest = v4_manifest_with_required_input();
+        let mut overrides = coral_app::features::FeatureOverrides::default();
+        overrides.set(coral_app::features::Feature::DslV4, false);
+
+        let error = ensure_source_add_manifest_features(&manifest, &overrides)
+            .expect_err("v4 source add should require feature");
+
+        assert!(
+            error.to_string().contains("DSL v4 sources require"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn source_add_file_rejects_raw_v4_before_descriptor_validation_when_feature_disabled() {
+        let mut overrides = coral_app::features::FeatureOverrides::default();
+        overrides.set(coral_app::features::Feature::DslV4, false);
+
+        let error = ensure_source_add_manifest_yaml_features(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /definitely/missing/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+",
+            &overrides,
+        )
+        .expect_err("disabled v4 feature should reject before descriptor validation");
+
+        assert!(
+            error.to_string().contains("DSL v4 sources require"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn source_add_file_accepts_v4_when_feature_enabled() {
+        let manifest = v4_manifest_with_required_input();
+        let mut overrides = coral_app::features::FeatureOverrides::default();
+        overrides.set(coral_app::features::Feature::DslV4, true);
+
+        ensure_source_add_manifest_features(&manifest, &overrides)
+            .expect("explicit feature override should allow v4 source add");
     }
 
     #[test]

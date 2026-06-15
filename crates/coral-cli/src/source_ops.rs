@@ -404,10 +404,17 @@ pub(crate) fn load_validated_manifest_file(
     file: &Path,
 ) -> Result<(String, ValidatedSourceManifest), anyhow::Error> {
     let manifest_yaml = std::fs::read_to_string(file)?;
-    let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
+    load_validated_manifest_file_yaml(file, &manifest_yaml)
+}
+
+pub(crate) fn load_validated_manifest_file_yaml(
+    file: &Path,
+    manifest_yaml: &str,
+) -> Result<(String, ValidatedSourceManifest), anyhow::Error> {
+    let manifest = parse_source_manifest_yaml(manifest_yaml)?;
     let manifest_dir = manifest_file_parent_dir(file)?;
     let manifest_yaml =
-        durable_manifest_file_yaml(&manifest_yaml, &manifest, manifest_dir.as_path())?;
+        durable_manifest_file_yaml(manifest_yaml, &manifest, manifest_dir.as_path())?;
     let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
     Ok((manifest_yaml, manifest))
 }

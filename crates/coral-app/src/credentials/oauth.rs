@@ -118,7 +118,17 @@ impl OAuthProgressEventSender {
         Self { tx, closed_message }
     }
 
-    pub(crate) async fn send(&self, event: OAuthProgressEvent) -> Result<(), AppError> {
+    /// Sends an OAuth progress event to the response stream.
+    ///
+    /// The returned future resolves only after the stream consumer has dequeued
+    /// the event, preserving backpressure between the OAuth operation and the
+    /// response stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::FailedPrecondition`] when the response stream closes
+    /// before the event can be delivered.
+    pub async fn send(&self, event: OAuthProgressEvent) -> Result<(), AppError> {
         let (delivered, delivered_rx) = oneshot::channel();
         self.tx
             .send(PendingOAuthProgressEvent { event, delivered })

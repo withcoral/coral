@@ -2,6 +2,7 @@ use coral_api::v1::{
     AddIdentitySpecRequest, DeleteIdentitySpecRequest, GetIdentitySpecRequest, IdentitySpecInput,
     ListIdentitySpecsRequest,
 };
+use coral_app::features::{Feature, FeatureOverrides};
 use tonic::{Code, Request};
 
 use crate::harness::{GrpcHarness, fixed_token_identity_spec_yaml};
@@ -104,6 +105,26 @@ async fn identity_spec_subcommand_requires_dsl_v4_feature() {
             status.message()
         );
     }
+}
+
+#[tokio::test]
+async fn identity_spec_service_honors_process_feature_override() {
+    let mut overrides = FeatureOverrides::default();
+    overrides.set(Feature::DslV4, true);
+    let harness = GrpcHarness::new_without_dsl_v4_with_feature_overrides(overrides).await;
+
+    let added = harness
+        .try_add_identity_spec(
+            fixed_token_identity_spec_yaml("github_oauth", "github.com"),
+            Vec::new(),
+        )
+        .await
+        .expect("process override should enable identity specs");
+
+    assert_eq!(
+        added.identity_spec.expect("added identity spec").name,
+        "github_oauth"
+    );
 }
 
 #[tokio::test]

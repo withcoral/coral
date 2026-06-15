@@ -50,7 +50,7 @@ use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
-use crate::identity_specs::{IdentitySpecManager, IdentitySpecService};
+use crate::identity_specs::{IdentitySpecManager, IdentitySpecService, IdentitySpecUsageProvider};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
@@ -112,8 +112,11 @@ pub struct ServerBuilder {
     // Defaults preserve single-user local-first behavior; see `Self::new`.
     config_dir: Option<PathBuf>,
     mode: ServerMode,
+    feature_overrides: FeatureOverrides,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    management_authorizer: Arc<dyn ManagementAuthorizer>,
+    identity_spec_usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     enable_stderr_logs: bool,
 }
@@ -131,8 +134,11 @@ impl ServerBuilder {
         Self {
             config_dir: None,
             mode: ServerMode::NativeGrpc,
+            feature_overrides: FeatureOverrides::default(),
             engine_extensions_providers: Vec::new(),
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
+            management_authorizer: Arc::new(AllowAllManagementAuthorizer),
+            identity_spec_usage_providers: Vec::new(),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             enable_stderr_logs: false,
         }
@@ -171,6 +177,13 @@ impl ServerBuilder {
     }
 
     #[must_use]
+    /// Applies process-local runtime feature overrides to the local server.
+    pub fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
+        self.feature_overrides = feature_overrides;
+        self
+    }
+
+    #[must_use]
     /// Adds an engine extensions provider used for query runtime builds.
     ///
     /// Providers are evaluated in call order, so later providers can add or
@@ -196,6 +209,31 @@ impl ServerBuilder {
         user_principal_provider: Arc<dyn UserPrincipalProvider>,
     ) -> Self {
         self.user_principal_provider = user_principal_provider;
+        self
+    }
+
+    #[must_use]
+    /// Sets the product-specific management-plane authorizer.
+    ///
+    /// The default authorizer allows all source and identity-spec mutations to
+    /// preserve OSS single-user behavior. Product runtimes can install a
+    /// stricter policy for multi-user control planes.
+    pub fn with_management_authorizer(
+        mut self,
+        management_authorizer: Arc<dyn ManagementAuthorizer>,
+    ) -> Self {
+        self.management_authorizer = management_authorizer;
+        self
+    }
+
+    #[must_use]
+    /// Adds a provider that reports product-owned stored identities for
+    /// identity-spec replacement and deletion checks.
+    pub fn add_identity_spec_usage_provider(
+        mut self,
+        usage_provider: Arc<dyn IdentitySpecUsageProvider>,
+    ) -> Self {
+        self.identity_spec_usage_providers.push(usage_provider);
         self
     }
 
@@ -244,7 +282,7 @@ impl ServerBuilder {
         )?;
         let config_store = ConfigStore::new(layout.clone());
         let features =
-            FeatureStore::new(layout.clone()).load_with_overrides(&FeatureOverrides::default())?;
+            FeatureStore::new(layout.clone()).load_with_overrides(&self.feature_overrides)?;
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
@@ -267,8 +305,8 @@ impl ServerBuilder {
         let identity_spec_manager = IdentitySpecManager::new_with_credential_store(
             layout.clone(),
             credential_store,
-            features,
-            Vec::new(),
+            features.clone(),
+            self.identity_spec_usage_providers,
         );
 
         let query_manager = QueryManager::new(
@@ -276,6 +314,7 @@ impl ServerBuilder {
             credential_manager,
             query_runtime_context,
             layout,
+            features,
             self.engine_extensions_providers,
         );
         let trace_service = if telemetry_config.trace_history.enabled {
@@ -288,7 +327,7 @@ impl ServerBuilder {
             query_manager,
             identity_spec_manager,
             user_principal_provider: self.user_principal_provider,
-            management_authorizer: Arc::new(AllowAllManagementAuthorizer),
+            management_authorizer: self.management_authorizer,
             feedback_manager,
             episode_store,
             trace_service,
@@ -396,6 +435,7 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
         source_manager,
         query_manager.clone(),
         Arc::clone(&user_principal_provider),
+        Arc::clone(&management_authorizer),
     );
     let catalog_service =
         CatalogService::new(query_manager.clone(), Arc::clone(&user_principal_provider));
@@ -666,13 +706,16 @@ mod tests {
     use coral_api::v1::catalog_service_client::CatalogServiceClient;
     use coral_api::v1::episode_service_client::EpisodeServiceClient;
     use coral_api::v1::feedback_service_client::FeedbackServiceClient;
+    use coral_api::v1::identity_spec_service_client::IdentitySpecServiceClient;
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
+        AddIdentitySpecRequest, CreateBundledSourceRequest, DeleteIdentitySpecRequest,
         ExecuteSqlRequest, ExecuteSqlResponse, ImportSourceRequest, ImportSourceResponse,
         ListCatalogRequest, ListSourcesRequest, ListTracesRequest, ListTracesResponse,
-        OpenEpisodeRequest, SubmitFeedbackRequest, Workspace, import_source_response,
+        OAuthCredentialRetrieval, OpenEpisodeRequest, SubmitFeedbackRequest, Workspace,
+        import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -685,11 +728,15 @@ mod tests {
         RunningServer, ServerBuilder, ServerMode, ServerServices, StaticAsset,
         StaticAssetsProvider, is_grpc_web_content_type, is_native_grpc_content_type, start_server,
     };
-    use crate::authorization::AllowAllManagementAuthorizer;
+    use crate::authorization::{
+        AllowAllManagementAuthorizer, AuthorizationError, ManagementAuthorizer, SourceMutationKind,
+    };
+    use crate::bootstrap::AppError;
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::episode::store::EpisodeStore;
+    use crate::features::{Feature, FeatureOverrides};
     use crate::feedback::manager::FeedbackManager;
-    use crate::identity_specs::IdentitySpecManager;
+    use crate::identity_specs::{IdentitySpecManager, IdentitySpecUsageProvider};
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore};
@@ -718,6 +765,85 @@ mod tests {
                 "rejected user principal",
             ))
         }
+    }
+
+    #[derive(Debug)]
+    struct DenyingManagementAuthorizer;
+
+    #[tonic::async_trait]
+    impl ManagementAuthorizer for DenyingManagementAuthorizer {
+        async fn authorize_identity_spec_mutation(
+            &self,
+            _principal: &UserPrincipal,
+        ) -> Result<(), AuthorizationError> {
+            Err(AuthorizationError::forbidden("identity specs are blocked"))
+        }
+
+        async fn authorize_source_mutation(
+            &self,
+            _principal: &UserPrincipal,
+            _workspace_id: &str,
+            _kind: SourceMutationKind,
+        ) -> Result<(), AuthorizationError> {
+            Err(AuthorizationError::forbidden("sources are blocked"))
+        }
+    }
+
+    #[derive(Debug)]
+    struct DenyImportWithOAuthAuthorizer;
+
+    #[tonic::async_trait]
+    impl ManagementAuthorizer for DenyImportWithOAuthAuthorizer {
+        async fn authorize_identity_spec_mutation(
+            &self,
+            _principal: &UserPrincipal,
+        ) -> Result<(), AuthorizationError> {
+            Ok(())
+        }
+
+        async fn authorize_source_mutation(
+            &self,
+            _principal: &UserPrincipal,
+            _workspace_id: &str,
+            kind: SourceMutationKind,
+        ) -> Result<(), AuthorizationError> {
+            if kind == SourceMutationKind::ImportWithOAuth {
+                return Err(AuthorizationError::forbidden("OAuth imports are blocked"));
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct StaticIdentitySpecUsageProvider {
+        identity_spec_name: String,
+        count: u32,
+    }
+
+    impl IdentitySpecUsageProvider for StaticIdentitySpecUsageProvider {
+        fn count_identities_for_spec(&self, identity_spec_name: &str) -> Result<u32, AppError> {
+            if identity_spec_name == self.identity_spec_name {
+                Ok(self.count)
+            } else {
+                Ok(0)
+            }
+        }
+    }
+
+    fn fixed_token_identity_spec_yaml(name: &str) -> String {
+        format!(
+            r"
+kind: identity
+spec_version: 1
+name: {name}
+version: 0.1.0
+description: Demo identity.
+issuer: github
+type: fixed_token
+audience:
+  host: github.com
+"
+        )
     }
 
     fn disable_internal_tracing(config_dir: &Path) {
@@ -758,6 +884,7 @@ enabled = false
                 credential_manager,
                 runtime_context,
                 layout.clone(),
+                crate::features::dsl_v4_features(),
                 vec![Arc::new(NoopEngineExtensionsProvider)],
             ),
             identity_spec_manager,
@@ -939,6 +1066,131 @@ enabled = false
 
         assert!(response.traces.is_empty());
         assert!(response.next_page_token.is_empty());
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn server_builder_installs_identity_spec_management_authorizer() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_management_authorizer(Arc::new(DenyingManagementAuthorizer))
+            .start()
+            .await
+            .expect("start server");
+        let mut client = IdentitySpecServiceClient::new(connect(&server).await);
+
+        let status = client
+            .add_identity_spec(Request::new(AddIdentitySpecRequest {
+                manifest_yaml: String::new(),
+                inputs: Vec::new(),
+            }))
+            .await
+            .expect_err("identity spec mutation should be denied");
+
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert!(status.message().contains("identity specs are blocked"));
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn server_builder_installs_source_management_authorizer() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_management_authorizer(Arc::new(DenyingManagementAuthorizer))
+            .start()
+            .await
+            .expect("start server");
+        let mut client = SourceServiceClient::new(connect(&server).await);
+
+        let status = client
+            .create_bundled_source(Request::new(CreateBundledSourceRequest {
+                workspace: Some(default_workspace()),
+                name: "github".to_string(),
+                variables: Vec::new(),
+                secrets: Vec::new(),
+            }))
+            .await
+            .expect_err("source mutation should be denied");
+
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert!(status.message().contains("sources are blocked"));
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn source_import_with_oauth_uses_distinct_authorization_kind() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_management_authorizer(Arc::new(DenyImportWithOAuthAuthorizer))
+            .start()
+            .await
+            .expect("start server");
+        let mut client = SourceServiceClient::new(connect(&server).await);
+        let mut request = import_source_request("not valid yaml".to_string());
+        request
+            .oauth_credential_retrievals
+            .push(OAuthCredentialRetrieval {
+                input_key: "API_TOKEN".to_string(),
+                method_index: Some(0),
+                credential_inputs: Vec::new(),
+            });
+
+        let status = client
+            .import_source(Request::new(request))
+            .await
+            .expect_err("OAuth import should be denied before import starts");
+
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert!(status.message().contains("OAuth imports are blocked"));
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn server_builder_installs_identity_spec_usage_provider() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut feature_overrides = FeatureOverrides::default();
+        feature_overrides.set(Feature::DslV4, true);
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_feature_overrides(feature_overrides)
+            .add_identity_spec_usage_provider(Arc::new(StaticIdentitySpecUsageProvider {
+                identity_spec_name: "github_oauth".to_string(),
+                count: 4,
+            }))
+            .start()
+            .await
+            .expect("start server");
+        let mut client = IdentitySpecServiceClient::new(connect(&server).await);
+        client
+            .add_identity_spec(Request::new(AddIdentitySpecRequest {
+                manifest_yaml: fixed_token_identity_spec_yaml("github_oauth"),
+                inputs: Vec::new(),
+            }))
+            .await
+            .expect("add identity spec");
+
+        let status = client
+            .delete_identity_spec(Request::new(DeleteIdentitySpecRequest {
+                name: "github_oauth".to_string(),
+                force: false,
+            }))
+            .await
+            .expect_err("usage provider should block non-forced deletion");
+
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert!(status.message().contains("4 stored identities"));
+        let deleted = client
+            .delete_identity_spec(Request::new(DeleteIdentitySpecRequest {
+                name: "github_oauth".to_string(),
+                force: true,
+            }))
+            .await
+            .expect("force delete identity spec")
+            .into_inner();
+        assert_eq!(deleted.orphaned_identities, 4);
         server.shutdown().await.expect("shutdown");
     }
 

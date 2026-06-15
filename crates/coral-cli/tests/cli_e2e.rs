@@ -9,7 +9,7 @@
 
 mod harness;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use arrow::array::{Int64Array, StringArray};
@@ -83,18 +83,6 @@ fn write_yaml(dir: &TempDir, file_name: &str, yaml: &str) -> PathBuf {
     let path = dir.path().join(file_name);
     std::fs::write(&path, yaml).expect("write yaml fixture");
     path
-}
-
-/// Prepares `coral <subcommand> add --file <file>` against the mock server.
-fn add_file_cmd(server: &MockServer, subcommand: &str, file: &Path) -> Command {
-    let mut cmd = server.cmd();
-    cmd.args([
-        subcommand,
-        "add",
-        "--file",
-        file.to_str().expect("fixture path utf8"),
-    ]);
-    cmd
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -745,7 +733,15 @@ async fn source_add_file_resolves_v4_relative_descriptor_from_manifest_dir() {
     let server = MockServer::start().await;
     let (source_dir, manifest_file) = v4_github_source_dir("");
 
-    add_file_cmd(&server, "source", &manifest_file)
+    server
+        .cmd()
+        .args([
+            "--enable-dsl-v4",
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("fixture path utf8"),
+        ])
         .assert()
         .success();
 

@@ -38,6 +38,8 @@ pub enum SourceMutationKind {
     CreateBundledWithOAuth,
     /// Import a source spec.
     Import,
+    /// Import a source spec while retrieving OAuth credentials.
+    ImportWithOAuth,
     /// Remove an installed source from a workspace.
     Delete,
 }

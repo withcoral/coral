@@ -138,6 +138,41 @@ async fn import_invalid_manifest_returns_invalid_argument() {
 }
 
 #[tokio::test]
+async fn disabled_dsl_v4_import_fails_before_file_descriptor_canonicalization() {
+    let harness = GrpcHarness::new_without_dsl_v4().await;
+    let missing_descriptor = harness.temp_path().join("missing-openapi.yaml");
+    let manifest_yaml = format!(
+        r"
+name: disabled_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+",
+        missing_descriptor.display()
+    );
+
+    let error = harness
+        .try_import_source(import_request(manifest_yaml))
+        .await
+        .expect_err("disabled dsl_v4 import should fail before canonicalizing descriptor files");
+
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        error.message().contains("dsl_v4"),
+        "unexpected error: {}",
+        error.message()
+    );
+    assert!(
+        !error.message().contains("missing-openapi"),
+        "disabled feature should fail before probing descriptor path: {}",
+        error.message()
+    );
+}
+
+#[tokio::test]
 async fn delete_source_removes_from_list_and_disk() {
     let harness = GrpcHarness::new().await;
     let manifest_yaml = fixture_manifest_yaml(harness.temp_path());

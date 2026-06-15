@@ -8,6 +8,7 @@ use coral_api::v1::{
     ListSourcesRequest, PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary,
     ValidateSourceRequest, ValidateSourceResponse, catalog_item, import_source_response,
 };
+use coral_app::features::FeatureOverrides;
 use coral_client::{
     AppClient, CatalogClient, IdentitySpecClient, QueryClient, SourceClient, batches_to_json_rows,
     decode_execute_sql_response, default_workspace,
@@ -49,19 +50,37 @@ impl GrpcHarness {
     pub(crate) async fn new_without_dsl_v4() -> Self {
         let temp_dir = TempDir::new().expect("temp dir");
         let config_dir = temp_dir.path().join("coral-config");
-        std::fs::create_dir_all(&config_dir).expect("create config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            "[features]\ndsl_v4 = false\n\n[credentials]\nstorage = \"file\"\n",
-        )
-        .expect("write config without dsl_v4");
+        write_config_without_dsl_v4(&config_dir);
         Self::start_with_parts(temp_dir, config_dir).await
     }
 
+    pub(crate) async fn new_without_dsl_v4_with_feature_overrides(
+        feature_overrides: FeatureOverrides,
+    ) -> Self {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path().join("coral-config");
+        write_config_without_dsl_v4(&config_dir);
+        Self::start_with_parts_with_feature_overrides(temp_dir, config_dir, feature_overrides).await
+    }
+
     async fn start_with_parts(temp_dir: TempDir, config_dir: PathBuf) -> Self {
+        Self::start_with_parts_with_feature_overrides(
+            temp_dir,
+            config_dir,
+            FeatureOverrides::default(),
+        )
+        .await
+    }
+
+    async fn start_with_parts_with_feature_overrides(
+        temp_dir: TempDir,
+        config_dir: PathBuf,
+        feature_overrides: FeatureOverrides,
+    ) -> Self {
         ensure_default_test_config(&config_dir);
         let server = ServerBuilder::new()
             .with_config_dir(&config_dir)
+            .with_feature_overrides(feature_overrides)
             .start()
             .await
             .expect("start server");
@@ -313,6 +332,15 @@ fn ensure_default_test_config(config_dir: &Path) {
         "{raw}{separator}\n[features]\ndsl_v4 = true\n\n[credentials]\nstorage = \"file\"\n"
     );
     std::fs::write(config_file, updated).expect("write default test config");
+}
+
+fn write_config_without_dsl_v4(config_dir: &Path) {
+    std::fs::create_dir_all(config_dir).expect("create config dir");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[features]\ndsl_v4 = false\n\n[credentials]\nstorage = \"file\"\n",
+    )
+    .expect("write config without dsl_v4");
 }
 
 impl FailingHttpFixture {

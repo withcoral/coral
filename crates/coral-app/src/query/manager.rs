@@ -18,6 +18,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::episode::EpisodeId;
+use crate::features::Features;
 use crate::identity::UserPrincipal;
 use crate::query::QueryAttribution;
 use crate::query::extensions::{
@@ -50,6 +51,7 @@ pub(crate) struct QueryManager {
     credential_manager: CredentialManager,
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
+    features: Features,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
 }
 
@@ -59,6 +61,7 @@ impl QueryManager {
         credential_manager: CredentialManager,
         runtime_context: QueryRuntimeContext,
         layout: AppStateLayout,
+        features: Features,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
         Self {
@@ -66,6 +69,7 @@ impl QueryManager {
             credential_manager,
             runtime_context,
             layout,
+            features,
             engine_extensions_providers,
         }
     }
@@ -291,6 +295,7 @@ impl QueryManager {
                 Ok((query_source, _version)) => query_sources.push(query_source),
                 Err(
                     error @ (AppError::Credentials(CredentialsError::Unavailable(_))
+                    | AppError::SourceUnservable(_)
                     | AppError::MissingOrIncompatibleV4Materialization { .. }),
                 ) => {
                     return Err(error);
@@ -316,6 +321,7 @@ impl QueryManager {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
         let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
+            self.features.ensure_dsl_v4_enabled()?;
             let materialized = load_v4_materialization(
                 &self.layout,
                 workspace_name,
@@ -628,6 +634,14 @@ mod tests {
         runtime_context: QueryRuntimeContext,
         providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> QueryManagerFixture {
+        query_manager_with_features(runtime_context, providers, dsl_v4_features())
+    }
+
+    fn query_manager_with_features(
+        runtime_context: QueryRuntimeContext,
+        providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        features: Features,
+    ) -> QueryManagerFixture {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -636,6 +650,7 @@ mod tests {
             CredentialManager::new(CredentialStore::new(layout.clone())),
             runtime_context,
             layout,
+            features,
             providers,
         );
         QueryManagerFixture {
@@ -964,6 +979,67 @@ surfaces:
     }
 
     #[test]
+    fn load_query_sources_fails_closed_when_dsl_v4_is_disabled() {
+        let fixture = query_manager_with_features(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            Features::default(),
+        );
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("github_v4_disabled").expect("source name");
+        let manifest_path = fixture
+            .manager
+            .layout
+            .manifest_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(
+            &manifest_path,
+            r"
+name: github_v4_disabled
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+",
+        )
+        .expect("write manifest");
+        fixture
+            .manager
+            .config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name.clone(),
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: Vec::new(),
+                    credential_storage: None,
+                    origin: SourceOrigin::Imported,
+                },
+            )
+            .expect("persist source");
+
+        let config = fixture
+            .manager
+            .config_store
+            .load_config()
+            .expect("load config");
+        let error = fixture
+            .manager
+            .load_query_sources(&workspace_name, &config)
+            .expect_err("disabled dsl_v4 feature should fail closed");
+
+        assert!(
+            matches!(error, AppError::SourceUnservable(ref message) if message.contains("dsl_v4")),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
     fn load_query_sources_fails_closed_for_unavailable_keychain_source() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
@@ -994,6 +1070,7 @@ surfaces:
             CredentialManager::new(credential_store),
             QueryRuntimeContext::default(),
             layout,
+            dsl_v4_features(),
             Vec::new(),
         );
         let config = manager.config_store.load_config().expect("load config");

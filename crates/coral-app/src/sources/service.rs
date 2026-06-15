@@ -30,6 +30,7 @@ use coral_spec::{
 };
 use tonic::{Request, Response, Status};
 
+use crate::authorization::{ManagementAuthorizer, SourceMutationKind, authorization_status};
 use crate::bootstrap::{AppError, app_status};
 use crate::credentials::CredentialStorageKind;
 use crate::credentials::oauth::{OAuthProgressEvent, OAuthProgressEventSender};
@@ -56,6 +57,7 @@ pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    management_authorizer: Arc<dyn ManagementAuthorizer>,
 }
 
 impl SourceService {
@@ -63,11 +65,13 @@ impl SourceService {
         source_manager: SourceManager,
         query_manager: QueryManager,
         user_principal_provider: Arc<dyn UserPrincipalProvider>,
+        management_authorizer: Arc<dyn ManagementAuthorizer>,
     ) -> Self {
         Self {
             sources: source_manager,
             queries: query_manager,
             user_principal_provider,
+            management_authorizer,
         }
     }
 }
@@ -170,11 +174,20 @@ impl SourceServiceApi for SourceService {
         request: Request<CreateBundledSourceRequest>,
     ) -> Result<Response<CreateBundledSourceResponse>, Status> {
         let sources = self.sources.clone();
+        let management_authorizer = Arc::clone(&self.management_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                management_authorizer
+                    .authorize_source_mutation(
+                        &principal,
+                        workspace_name.as_str(),
+                        SourceMutationKind::CreateBundled,
+                    )
+                    .await
+                    .map_err(authorization_status)?;
                 let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
                 let command = CreateBundledSourceCommand {
                     name: bundled_name,
@@ -201,12 +214,21 @@ impl SourceServiceApi for SourceService {
         request: Request<CreateBundledSourceWithOAuthRequest>,
     ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
         let sources = self.sources.clone();
+        let management_authorizer = Arc::clone(&self.management_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |principal, request| async move {
                 let span = tracing::Span::current();
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                management_authorizer
+                    .authorize_source_mutation(
+                        &principal,
+                        workspace_name.as_str(),
+                        SourceMutationKind::CreateBundledWithOAuth,
+                    )
+                    .await
+                    .map_err(authorization_status)?;
                 let response_workspace_name = workspace_name.clone();
                 let command = CreateBundledSourceWithOAuthCommand {
                     name: SourceName::parse(&request.name).map_err(app_status)?,
@@ -245,12 +267,22 @@ impl SourceServiceApi for SourceService {
         request: Request<ImportSourceRequest>,
     ) -> Result<Response<Self::ImportSourceStream>, Status> {
         let sources = self.sources.clone();
+        let management_authorizer = Arc::clone(&self.management_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |principal, request| async move {
                 let span = tracing::Span::current();
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                let mutation_kind = if request.oauth_credential_retrievals.is_empty() {
+                    SourceMutationKind::Import
+                } else {
+                    SourceMutationKind::ImportWithOAuth
+                };
+                management_authorizer
+                    .authorize_source_mutation(&principal, workspace_name.as_str(), mutation_kind)
+                    .await
+                    .map_err(authorization_status)?;
                 let response_workspace_name = workspace_name.clone();
                 reject_unsupported_import_identity_fields(&request).map_err(app_status)?;
                 if request.oauth_credential_retrievals.is_empty() {
@@ -301,11 +333,20 @@ impl SourceServiceApi for SourceService {
         request: Request<DeleteSourceRequest>,
     ) -> Result<Response<DeleteSourceResponse>, Status> {
         let sources = self.sources.clone();
+        let management_authorizer = Arc::clone(&self.management_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                management_authorizer
+                    .authorize_source_mutation(
+                        &principal,
+                        workspace_name.as_str(),
+                        SourceMutationKind::Delete,
+                    )
+                    .await
+                    .map_err(authorization_status)?;
                 let source_name = SourceName::parse(&request.name).map_err(app_status)?;
                 run_blocking_operation("source operation", move || {
                     sources.delete_source(&workspace_name, &source_name)

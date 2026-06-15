@@ -173,7 +173,11 @@ impl Features {
     /// while `dsl_v4` is off, so the source-install, identity-spec-install, and
     /// query-load paths share this single gate and its canonical remediation
     /// message.
-    pub(crate) fn ensure_dsl_v4_enabled(&self) -> Result<(), AppError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::SourceUnservable`] when `dsl_v4` is disabled.
+    pub fn ensure_dsl_v4_enabled(&self) -> Result<(), AppError> {
         if self.enabled(Feature::DslV4) {
             return Ok(());
         }
