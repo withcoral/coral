@@ -177,14 +177,15 @@ fn initial_projection_visibility(
 
 fn projection_kind(operation: &IrOperation, is_search: bool) -> ProjectionKind {
     let function_kind = match &operation.execution {
-        IrExecutionAttachment::Rest(_) if is_search => Some(SourceTableFunctionKind::Search),
+        IrExecutionAttachment::Rest(_) | IrExecutionAttachment::Mcp(_) if is_search => {
+            Some(SourceTableFunctionKind::Search)
+        }
         IrExecutionAttachment::Rest(_)
             if operation.output.cardinality == OutputCardinality::Singleton
                 && operation.inputs.iter().any(|input| input.required) =>
         {
             Some(SourceTableFunctionKind::Table)
         }
-        IrExecutionAttachment::Mcp(_) if is_search => Some(SourceTableFunctionKind::Search),
         IrExecutionAttachment::Mcp(mcp) if !has_public_mcp_inputs(operation, mcp) => None,
         IrExecutionAttachment::Mcp(_) => Some(SourceTableFunctionKind::Table),
         IrExecutionAttachment::Rest(_) => None,

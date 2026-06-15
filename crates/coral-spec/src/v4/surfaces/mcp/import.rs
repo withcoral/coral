@@ -341,16 +341,14 @@ fn input_object_shape(
     let mut shape = direct_input_object_shape(schema);
     if let Some(all_of) = schema.get("allOf").and_then(Value::as_array) {
         for item in all_of {
-            let Some(item_shape) = input_object_shape(
+            let item_shape = input_object_shape(
                 root,
                 item,
                 surface_id,
                 operation_id,
                 resolving_refs,
                 diagnostics,
-            ) else {
-                return None;
-            };
+            )?;
             if !merge_input_object_shape(
                 &mut shape,
                 item_shape,
