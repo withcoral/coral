@@ -592,6 +592,7 @@ fn is_http_status_response(detail: &str) -> bool {
 mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use opentelemetry::Value as OtelValue;
     use opentelemetry::trace::{SpanKind, Status, TracerProvider};
@@ -738,6 +739,47 @@ mod tests {
             }))
     }
 
+    fn json_rpc_result_response(id: Value, result: Value) -> ResponseTemplate {
+        let mut body = serde_json::Map::new();
+        body.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+        body.insert("id".to_string(), id);
+        body.insert("result".to_string(), result);
+        ResponseTemplate::new(200)
+            .append_header("Content-Type", "application/json")
+            .set_body_json(Value::Object(body))
+    }
+
+    fn json_rpc_request_id(body: &Value) -> Value {
+        body.get("id").cloned().unwrap_or(Value::Null)
+    }
+
+    fn tool_result(name: &str) -> Value {
+        json!({
+            "name": name,
+            "description": format!("Tool {name}"),
+            "inputSchema": { "type": "object", "properties": {} }
+        })
+    }
+
+    async fn mount_streamable_http_tools_list_responder(
+        server: &MockServer,
+        tools_list_response: impl Fn(&Value) -> ResponseTemplate + Send + Sync + 'static,
+    ) {
+        Mock::given(method("POST"))
+            .respond_with(move |request: &wiremock::Request| {
+                let body: Value = request.body_json().expect("JSON-RPC request body");
+                match body.get("method").and_then(Value::as_str) {
+                    Some("initialize") => initialize_response(),
+                    Some("notifications/initialized") => ResponseTemplate::new(202),
+                    Some("tools/list") => tools_list_response(&body),
+                    other => ResponseTemplate::new(404)
+                        .set_body_string(format!("unexpected MCP method {other:?}")),
+                }
+            })
+            .mount(server)
+            .await;
+    }
+
     #[tokio::test]
     async fn streamable_http_caller_sends_bearer_token_and_decodes_tool_result() {
         let server = MockServer::start().await;
@@ -811,6 +853,114 @@ mod tests {
             .and_then(|issue| issue.get("title"))
             .and_then(Value::as_str);
         assert_eq!(title, Some("Bug A"));
+    }
+
+    #[tokio::test]
+    async fn streamable_http_list_tools_bounded_follows_cursor_pages() {
+        let server = MockServer::start().await;
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        let responder_calls = Arc::clone(&list_calls);
+        mount_streamable_http_tools_list_responder(&server, move |body| {
+            responder_calls.fetch_add(1, Ordering::SeqCst);
+            match body.pointer("/params/cursor").and_then(Value::as_str) {
+                None => json_rpc_result_response(
+                    json_rpc_request_id(body),
+                    json!({
+                        "tools": [tool_result("first_page_tool")],
+                        "nextCursor": "second-page"
+                    }),
+                ),
+                Some("second-page") => json_rpc_result_response(
+                    json_rpc_request_id(body),
+                    json!({
+                        "tools": [tool_result("second_page_tool")]
+                    }),
+                ),
+                other => ResponseTemplate::new(400)
+                    .set_body_string(format!("unexpected cursor {other:?}")),
+            }
+        })
+        .await;
+        let manifest = streamable_http_manifest(&server.uri());
+        let caller = make_caller(manifest, McpBodyCapture::default());
+
+        let tools = caller
+            .list_tools()
+            .await
+            .expect("tools/list should succeed");
+
+        let tool_names = tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(tool_names, ["first_page_tool", "second_page_tool"]);
+        assert_eq!(list_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn streamable_http_list_tools_bounded_rejects_repeated_cursor() {
+        let server = MockServer::start().await;
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        let responder_calls = Arc::clone(&list_calls);
+        mount_streamable_http_tools_list_responder(&server, move |body| {
+            responder_calls.fetch_add(1, Ordering::SeqCst);
+            json_rpc_result_response(
+                json_rpc_request_id(body),
+                json!({
+                    "tools": [tool_result("looping_tool")],
+                    "nextCursor": "same-cursor"
+                }),
+            )
+        })
+        .await;
+        let manifest = streamable_http_manifest(&server.uri());
+        let caller = make_caller(manifest, McpBodyCapture::default());
+
+        let error = caller
+            .list_tools()
+            .await
+            .expect_err("repeated cursor should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("MCP tools/list returned repeated next cursor 'same-cursor'"),
+            "unexpected repeated-cursor error: {error}"
+        );
+        assert_eq!(list_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn streamable_http_list_tools_bounded_rejects_max_page_overrun() {
+        let server = MockServer::start().await;
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        let responder_calls = Arc::clone(&list_calls);
+        mount_streamable_http_tools_list_responder(&server, move |body| {
+            let page = responder_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            json_rpc_result_response(
+                json_rpc_request_id(body),
+                json!({
+                    "tools": [tool_result(&format!("tool_{page}"))],
+                    "nextCursor": format!("page-{page}")
+                }),
+            )
+        })
+        .await;
+        let manifest = streamable_http_manifest(&server.uri());
+        let caller = make_caller(manifest, McpBodyCapture::default());
+
+        let error = caller
+            .list_tools()
+            .await
+            .expect_err("max page overrun should fail");
+
+        assert!(
+            error.to_string().contains(&format!(
+                "MCP tools/list exceeded max_pages={MAX_MCP_DISCOVERY_PAGES}"
+            )),
+            "unexpected max-page error: {error}"
+        );
+        assert_eq!(list_calls.load(Ordering::SeqCst), MAX_MCP_DISCOVERY_PAGES);
     }
 
     /// Helper: wire up a wiremock server that successfully serves

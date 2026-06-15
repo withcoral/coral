@@ -1066,7 +1066,10 @@ pub(crate) fn new_materialization_suffix(prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use coral_spec::parse_source_manifest_yaml;
+    use serde_json::{Value, json};
     use tempfile::TempDir;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
 
@@ -1098,74 +1101,76 @@ paths:
 "
     }
 
-    fn mcp_server_script(dir: &TempDir) -> PathBuf {
-        let script = dir.path().join("mcp_server.py");
-        std::fs::write(
-            &script,
-            r#"
-import json
-import sys
+    fn json_rpc_result_response(id: Value, result: Value) -> ResponseTemplate {
+        let mut body = serde_json::Map::new();
+        body.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+        body.insert("id".to_string(), id);
+        body.insert("result".to_string(), result);
+        ResponseTemplate::new(200)
+            .append_header("Content-Type", "application/json")
+            .set_body_json(Value::Object(body))
+    }
 
-TOOLS = [{
-    "name": "list_items",
-    "description": "List items",
-    "inputSchema": {
-        "type": "object",
-        "properties": {
-            "cursor": {"type": "string"}
-        }
-    },
-    "outputSchema": {
-        "type": "object",
-        "properties": {
-            "items": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string"}
-                    }
-                }
-            },
-            "meta": {
-                "type": "object",
-                "properties": {
-                    "nextCursor": {"type": ["string", "null"]}
-                }
-            }
-        }
-    },
-    "annotations": {"readOnlyHint": True}
-}]
+    fn json_rpc_request_id(body: &Value) -> Value {
+        body.get("id").cloned().unwrap_or(Value::Null)
+    }
 
-for line in sys.stdin:
-    if not line.strip():
-        continue
-    message = json.loads(line)
-    request_id = message.get("id")
-    if request_id is None:
-        continue
-    method = message.get("method")
-    if method == "initialize":
-        result = {
-            "protocolVersion": "2025-03-26",
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "test-mcp", "version": "1.0.0"}
-        }
-    elif method == "tools/list":
-        result = {"tools": TOOLS}
-    else:
-        result = {}
-    sys.stdout.write(json.dumps({
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "result": result
-    }) + "\n")
-    sys.stdout.flush()
-"#,
-        )
-        .expect("write MCP server script");
-        script
+    async fn mount_mcp_materialization_server(server: &MockServer) {
+        Mock::given(method("POST"))
+            .respond_with(|request: &wiremock::Request| {
+                let body: Value = request.body_json().expect("JSON-RPC request body");
+                match body.get("method").and_then(Value::as_str) {
+                    Some("initialize") => json_rpc_result_response(
+                        json_rpc_request_id(&body),
+                        json!({
+                            "protocolVersion": "2025-03-26",
+                            "capabilities": { "tools": {} },
+                            "serverInfo": { "name": "test-mcp", "version": "1.0.0" }
+                        }),
+                    ),
+                    Some("notifications/initialized") => ResponseTemplate::new(202),
+                    Some("tools/list") => json_rpc_result_response(
+                        json_rpc_request_id(&body),
+                        json!({
+                            "tools": [{
+                                "name": "list_items",
+                                "description": "List items",
+                                "inputSchema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "cursor": { "type": "string" }
+                                    }
+                                },
+                                "outputSchema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "items": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "id": { "type": "string" }
+                                                }
+                                            }
+                                        },
+                                        "meta": {
+                                            "type": "object",
+                                            "properties": {
+                                                "nextCursor": { "type": ["string", "null"] }
+                                            }
+                                        }
+                                    }
+                                },
+                                "annotations": { "readOnlyHint": true }
+                            }]
+                        }),
+                    ),
+                    other => ResponseTemplate::new(404)
+                        .set_body_string(format!("unexpected MCP method {other:?}")),
+                }
+            })
+            .mount(server)
+            .await;
     }
 
     fn setup_materialization() -> (TempDir, TempDir, AppStateLayout, String, V4SourceManifest) {
@@ -1209,28 +1214,26 @@ surfaces:
         (state_temp, descriptor_temp, layout, manifest_yaml, manifest)
     }
 
-    #[test]
-    fn build_v4_materialization_tmp_materializes_mcp_surface() {
-        let script_temp = TempDir::new().expect("script temp dir");
-        let script = mcp_server_script(&script_temp);
+    #[tokio::test]
+    async fn build_v4_materialization_tmp_materializes_mcp_surface() {
+        let server = MockServer::start().await;
+        mount_mcp_materialization_server(&server).await;
         let state_temp = TempDir::new().expect("state temp dir");
         let layout =
             AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
         let manifest_yaml = format!(
-            r"
+            r#"
 name: mcp_materialization_test
 dsl_version: 4
 surfaces:
   - id: mcp
     type: mcp
     server:
-      transport: stdio
-      command: python3
-      args:
-        - {}
-",
-            script.display()
+      transport: streamable_http
+      url: "{}"
+"#,
+            server.uri()
         );
         let manifest = parse_source_manifest_yaml(&manifest_yaml)
             .expect("parse v4 manifest")
