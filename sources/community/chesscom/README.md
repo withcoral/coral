@@ -12,16 +12,13 @@ Adds a read-only community source for the [Chess.com Public API](https://www.che
 | `clubs` | Chess clubs the player is a member of | `/player/{username}/clubs` |
 
 ## Setup
-No authentication is required. You only need to provide the variables when adding the source:
+No authentication is required. Simply add the source:
 
 ```bash
 coral source add --file sources/community/chesscom/manifest.yaml
 ```
 
-**Variables:**
-- `CHESSCOM_USERNAME`: Your Chess.com username (e.g. `anish789098`).
-- `YEAR`: Year for game archive (e.g. `2024`).
-- `MONTH`: Month for game archive, zero-padded (e.g. `05`).
+All tables accept a required `username` filter. The `games` table also requires `year` and `month` filters. You pass these as SQL `WHERE` clauses — no install-time configuration needed.
 
 ## Verification
 You can verify the source using the provided test queries:
@@ -34,13 +31,15 @@ coral source test chesscom
 
 ```sql
 SELECT chess_blitz__last__rating, chess_rapid__last__rating, chess_blitz__record__win
-FROM chesscom.stats;
+FROM chesscom.stats
+WHERE username = 'hikaru';
 ```
 
 ### Live Query - Recent Games
 
 ```sql
 SELECT url, time_class, white__username, white__result, black__username, black__result
-FROM chesscom.games 
+FROM chesscom.games
+WHERE username = 'hikaru' AND year = '2026' AND month = '01'
 LIMIT 5;
 ```
