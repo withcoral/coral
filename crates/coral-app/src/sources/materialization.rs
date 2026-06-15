@@ -1151,10 +1151,12 @@ paths:
             .set_body_json(Value::Object(body))
     }
 
-    fn json_rpc_request_id(body: &Value) -> std::result::Result<Value, ResponseTemplate> {
-        body.get("id").cloned().ok_or_else(|| {
-            ResponseTemplate::new(400).set_body_string("JSON-RPC request is missing id")
-        })
+    fn json_rpc_request_id(body: &Value) -> Option<Value> {
+        body.get("id").cloned()
+    }
+
+    fn missing_json_rpc_request_id_response() -> ResponseTemplate {
+        ResponseTemplate::new(400).set_body_string("JSON-RPC request is missing id")
     }
 
     async fn mount_mcp_materialization_server(server: &MockServer) {
@@ -1162,8 +1164,9 @@ paths:
             .respond_with(|request: &wiremock::Request| {
                 let body: Value = request.body_json().expect("JSON-RPC request body");
                 match body.get("method").and_then(Value::as_str) {
-                    Some("initialize") => json_rpc_request_id(&body)
-                        .map(|id| {
+                    Some("initialize") => json_rpc_request_id(&body).map_or_else(
+                        missing_json_rpc_request_id_response,
+                        |id| {
                             json_rpc_result_response(
                                 id,
                                 json!({
@@ -1172,11 +1175,12 @@ paths:
                                     "serverInfo": { "name": "test-mcp", "version": "1.0.0" }
                                 }),
                             )
-                        })
-                        .unwrap_or_else(|response| response),
+                        },
+                    ),
                     Some("notifications/initialized") => ResponseTemplate::new(202),
-                    Some("tools/list") => json_rpc_request_id(&body)
-                        .map(|id| {
+                    Some("tools/list") => json_rpc_request_id(&body).map_or_else(
+                        missing_json_rpc_request_id_response,
+                        |id| {
                             json_rpc_result_response(
                                 id,
                                 json!({
@@ -1213,8 +1217,8 @@ paths:
                                     }]
                                 }),
                             )
-                        })
-                        .unwrap_or_else(|response| response),
+                        },
+                    ),
                     other => ResponseTemplate::new(404)
                         .set_body_string(format!("unexpected MCP method {other:?}")),
                 }
@@ -1230,7 +1234,7 @@ paths:
             "method": "tools/list"
         }));
 
-        assert!(result.is_err(), "request methods must include an id");
+        assert!(result.is_none(), "request methods must include an id");
     }
 
     fn setup_materialization() -> (TempDir, TempDir, AppStateLayout, String, V4SourceManifest) {
