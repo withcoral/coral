@@ -129,6 +129,13 @@ impl EpisodeStore {
     /// no-op; a different intent/parent returns [`EpisodeStoreError::Conflict`]
     /// (intent is immutable per episode — a change is a new child/sibling).
     ///
+    /// The conflict guarantee covers records still **retained** in the log. Because
+    /// the byte ceiling evicts the oldest records (below), an id whose record has been
+    /// evicted is treated as new rather than conflicting — bounding the log without
+    /// unbounded id-tracking inherently means forgetting old ids. Episode ids are
+    /// client-minted and unique per attempt (ULID/UUID), so an evicted id is never
+    /// reused in practice and the guarantee holds for all real callers.
+    ///
     /// A new record is appended within the per-workspace byte ceiling: if it would
     /// push the log over, the oldest records are evicted to make room (the log is a
     /// byte-bounded FIFO; the newest record is always kept). The shared state lock is
