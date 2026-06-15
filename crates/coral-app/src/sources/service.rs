@@ -252,6 +252,7 @@ impl SourceServiceApi for SourceService {
                 let span = tracing::Span::current();
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let response_workspace_name = workspace_name.clone();
+                reject_unsupported_import_identity_fields(&request).map_err(app_status)?;
                 if request.oauth_credential_retrievals.is_empty() {
                     let command = ImportSourceCommand {
                         manifest_yaml: request.manifest_yaml,
@@ -342,6 +343,22 @@ impl SourceServiceApi for SourceService {
         )
         .await
     }
+}
+
+fn reject_unsupported_import_identity_fields(
+    request: &ImportSourceRequest,
+) -> Result<(), AppError> {
+    if request.identity_spec_manifest_yamls.is_empty()
+        && request.identity_bindings.is_empty()
+        && request.user_identity_bindings.is_empty()
+        && !request.replace_identity_bindings
+        && request.identity_spec_inputs.is_empty()
+    {
+        return Ok(());
+    }
+    Err(AppError::InvalidInput(
+        "ImportSourceRequest identity import fields are not supported by this build".to_string(),
+    ))
 }
 
 type CreateBundledSourceWithOAuthResponseStreamBox =

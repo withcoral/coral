@@ -539,6 +539,14 @@ async fn import_source_invalid_inputs_return_invalid_argument() {
             },
             "source secret 'API_TOKEN' is repeated",
         ),
+        (
+            "unsupported identity import fields should fail",
+            ImportSourceRequest {
+                identity_spec_manifest_yamls: vec!["kind: identity".to_string()],
+                ..import_request(fixture_manifest_yaml(harness.temp_path()))
+            },
+            "identity import fields are not supported",
+        ),
     ];
 
     for (label, request, expected_message) in cases {
