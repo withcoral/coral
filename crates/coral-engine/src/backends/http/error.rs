@@ -30,7 +30,7 @@ pub(crate) enum ProviderQueryError {
 
     #[error(
         "{schema}.{table} filter '{column}' cannot be applied: the selected request does not \
-         consume it and the '{column}' column only echoes the filter value"
+         consume it and the '{column}' column is not backed by response data that can enforce it"
     )]
     UnenforceableFilter {
         schema: String,
@@ -253,9 +253,9 @@ fn unenforceable_filter_to_structured(
         format!("{schema}.{table} filter `{column}` cannot be applied to this query"),
         format!(
             "{schema}.{table}: the request selected for this query does not consume \
-             filter `{column}`, and the `{column}` column merely echoes the filter \
-             value instead of carrying response data, so the predicate cannot be \
-             enforced"
+             filter `{column}`, and the `{column}` column is not backed by response \
+             data that can prove which returned rows match that filter, so the \
+             predicate cannot be enforced"
         ),
         Some(format!(
             "Add filters that select a request consuming `{column}` (inspect \
@@ -629,7 +629,18 @@ mod tests {
         assert_eq!(error.metadata().get("column").unwrap(), "owner");
         assert!(error.summary().contains("owner"));
         assert!(error.detail().contains("does not consume"));
+        assert!(error.detail().contains("not backed by response data"));
+        assert!(!error.detail().contains("merely echoes"));
         assert!(error.hint().is_some());
+
+        let rendered = ProviderQueryError::UnenforceableFilter {
+            schema: "github".to_string(),
+            table: "issues".to_string(),
+            column: "owner".to_string(),
+        }
+        .to_string();
+        assert!(rendered.contains("not backed by response data"));
+        assert!(!rendered.contains("echoes the filter"));
     }
 
     #[test]

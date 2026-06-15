@@ -677,6 +677,12 @@ fn assert_filter_not_applicable(error: &CoreError, column: &str) {
     );
     let rendered = structured.to_string();
     assert!(rendered.contains("cannot be applied"), "{rendered}");
+    assert!(
+        rendered.contains("not backed by response data"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("echoes the filter"), "{rendered}");
+    assert!(!rendered.contains("merely echoes"), "{rendered}");
 }
 
 #[tokio::test]
