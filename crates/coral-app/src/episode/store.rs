@@ -233,9 +233,15 @@ fn append_within_budget(
 ) -> Result<(), EpisodeStoreError> {
     let line_len = serde_json::to_vec(&record)?.len() as u64 + 1;
     // Fast path: it fits on top of what's already on disk. `file_len` counts physical
-    // bytes (so any torn-record bytes are included conservatively), avoiding a rewrite
-    // in the common case.
-    if file_len(path)?.saturating_add(line_len) <= max_bytes {
+    // bytes (so any torn-record bytes are included conservatively); add the separator
+    // newline `append_record` will prepend when the file lacks a trailing one, so a
+    // torn-tailed file at the boundary doesn't slip one byte over the ceiling.
+    let leading = u64::from(file_needs_leading_newline(path)?);
+    if file_len(path)?
+        .saturating_add(line_len)
+        .saturating_add(leading)
+        <= max_bytes
+    {
         return append_record(path, &record);
     }
 
@@ -691,6 +697,38 @@ mod tests {
             .unwrap()
             .expect("present");
         assert_eq!(read.intent, "new intent");
+    }
+
+    #[test]
+    fn byte_ceiling_holds_when_the_log_has_a_torn_tail() {
+        // Regression: the fast-path budget must account for the separator newline
+        // `append_record` prepends to a file with no trailing newline, or a torn-tailed
+        // file sitting at the boundary slips one byte over the ceiling.
+        let (_dir, layout) = layout();
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        let one = record_bytes(&workspace, "ep_1", "task");
+        let path = layout.episodes_file(&workspace);
+
+        // Seed a single valid record with NO trailing newline (a torn tail), so its
+        // on-disk size is `one - 1`.
+        let seed = serde_json::to_vec(&PersistedEpisode::from_episode(
+            &episode(&workspace, "ep_1", "task", None),
+            "task",
+        ))
+        .expect("serialize");
+        fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        fs::write(&path, &seed).expect("seed torn-tail log");
+
+        // Ceiling = exactly the torn record + one new record. The old fast path would
+        // append (adding a leading newline) and land at `2*one`, one over.
+        let store = EpisodeStore::new(layout).with_max_bytes(2 * one - 1);
+        store
+            .open_episode(&episode(&workspace, "ep_2", "task", None))
+            .expect("open within budget");
+        assert!(
+            fs::metadata(&path).unwrap().len() < 2 * one,
+            "the log must not exceed the ceiling even when it had a torn tail"
+        );
     }
 
     #[test]
