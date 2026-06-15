@@ -74,6 +74,24 @@ USGS limits query responses and broad historical scans can fail upstream even wh
 
 For very broad recent-event use cases, USGS also publishes real-time feeds outside the catalog query endpoint.
 
+USGS is a shared public API: it can return `429 Too Many Requests` under load and its responses may be cached, so avoid polling aggressively. Prefer narrow filters and let cached results serve repeated reads rather than re-querying in a tight loop. See the USGS guidance on [real-time feed rate and cache behavior](https://geohazards.usgs.gov/pipermail/realtime-feeds/2022-January/000028.html).
+
+### Ordering and top-N queries
+
+`order_by` pushes ordering down to USGS (`orderby`), which matters for top-N questions because USGS truncates the result set on the server before Coral sees it. A SQL `ORDER BY ... LIMIT n` only sorts the page that was already fetched, so it can miss the true top results across the full catalog. To get the largest or most recent events overall, push the order to USGS with `order_by` and combine it with `LIMIT`:
+
+```sql
+-- Largest events in a window (ask USGS for magnitude ordering)
+SELECT event_time, place, magnitude
+FROM usgs_earthquakes.events
+WHERE start_time = '2026-05-01'
+  AND end_time = '2026-05-27'
+  AND order_by = 'magnitude'
+LIMIT 5;
+```
+
+Supported `order_by` values are `time` (newest first, the default), `time-asc`, `magnitude` (largest first), and `magnitude-asc`. Use SQL `ORDER BY` only for re-sorting within an already-narrowed result set; use `order_by` whenever the ranking itself must reflect the full catalog.
+
 Common filters include:
 
 - `start_time`, `end_time`, `updated_after`
