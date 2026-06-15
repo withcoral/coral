@@ -529,8 +529,10 @@ fn query_error_message(error: &QueryManagerError) -> String {
 fn app_error_type(error: &AppError) -> &'static str {
     match error {
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
+        AppError::IdentitySpecNotFound(_) => "IDENTITY_SPEC_NOT_FOUND",
+        AppError::IdentityNotFound(_) => "IDENTITY_NOT_FOUND",
         AppError::InvalidInput(_) => "INVALID_INPUT",
-        AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::FailedPrecondition(_) | AppError::SourceUnservable(_) => "FAILED_PRECONDITION",
         AppError::MissingOrIncompatibleV4Materialization { .. } => {
             "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
         }
@@ -611,6 +613,7 @@ mod tests {
 
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
+    use crate::features::dsl_v4_features;
     use crate::identity::SingleUserPrincipalProvider;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::materialization::sha256_hex;
@@ -825,10 +828,11 @@ tables:
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
         fixture.manager.layout.ensure().expect("ensure layout");
-        let source_manager = SourceManager::new(
+        let source_manager = SourceManager::new_with_features(
             fixture.manager.config_store.clone(),
             fixture.manager.credential_manager.clone(),
             fixture.manager.layout.clone(),
+            dsl_v4_features(),
         );
         let workspace_name = WorkspaceName::default();
         let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");

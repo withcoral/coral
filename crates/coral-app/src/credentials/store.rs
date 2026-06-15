@@ -222,10 +222,6 @@ impl CredentialStore {
         Ok(())
     }
 
-    #[expect(
-        dead_code,
-        reason = "consumed by the identity-spec manager in a later PR"
-    )]
     pub(crate) fn replace_material_unlocked(
         &self,
         workspace_name: &WorkspaceName,
@@ -367,10 +363,6 @@ impl CredentialStore {
         Ok(())
     }
 
-    #[expect(
-        dead_code,
-        reason = "consumed by the identity-spec manager in a later PR"
-    )]
     pub(crate) fn remove_material_unlocked(
         &self,
         workspace_name: &WorkspaceName,

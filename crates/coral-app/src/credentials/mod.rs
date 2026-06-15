@@ -106,10 +106,6 @@ impl CredentialSetId {
 
     /// Build the identity-spec-backed credential-set id used for spec-owned
     /// input material.
-    #[expect(
-        dead_code,
-        reason = "consumed by the identity-spec manager in a later PR"
-    )]
     pub(crate) fn for_identity_spec(identity_spec_name: &str) -> Self {
         Self(format!("identity-spec.{identity_spec_name}"))
     }

@@ -2,12 +2,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::{
-    ExecuteSqlRequest, ExecuteSqlResponse, ImportSourceRequest, ListCatalogRequest,
+    AddIdentitySpecRequest, AddIdentitySpecResponse, DeleteIdentitySpecRequest,
+    DeleteIdentitySpecResponse, ExecuteSqlRequest, ExecuteSqlResponse, IdentitySpec,
+    IdentitySpecInput, ImportSourceRequest, ListCatalogRequest, ListIdentitySpecsRequest,
     ListSourcesRequest, PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary,
     ValidateSourceRequest, ValidateSourceResponse, catalog_item, import_source_response,
 };
 use coral_client::{
-    AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
+    AppClient, CatalogClient, IdentitySpecClient, QueryClient, SourceClient, batches_to_json_rows,
     decode_execute_sql_response, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
@@ -39,8 +41,25 @@ impl GrpcHarness {
         Self::start_with_parts(temp_dir, config_dir).await
     }
 
+    /// Starts a server with the `dsl_v4` feature explicitly disabled.
+    ///
+    /// Pre-writing the config (with the credentials block present) makes
+    /// `ensure_default_test_config` leave it untouched, so the default
+    /// `dsl_v4 = true` is not applied.
+    pub(crate) async fn new_without_dsl_v4() -> Self {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[features]\ndsl_v4 = false\n\n[credentials]\nstorage = \"file\"\n",
+        )
+        .expect("write config without dsl_v4");
+        Self::start_with_parts(temp_dir, config_dir).await
+    }
+
     async fn start_with_parts(temp_dir: TempDir, config_dir: PathBuf) -> Self {
-        ensure_file_credentials_config(&config_dir);
+        ensure_default_test_config(&config_dir);
         let server = ServerBuilder::new()
             .with_config_dir(&config_dir)
             .start()
@@ -67,6 +86,10 @@ impl GrpcHarness {
 
     pub(crate) fn source_client(&self) -> SourceClient {
         self.app.source_client()
+    }
+
+    pub(crate) fn identity_spec_client(&self) -> IdentitySpecClient {
+        self.app.identity_spec_client()
     }
 
     pub(crate) fn catalog_client(&self) -> CatalogClient {
@@ -191,6 +214,44 @@ impl GrpcHarness {
             .await?
             .into_inner())
     }
+
+    pub(crate) async fn try_add_identity_spec(
+        &self,
+        manifest_yaml: String,
+        inputs: Vec<IdentitySpecInput>,
+    ) -> Result<AddIdentitySpecResponse, tonic::Status> {
+        Ok(self
+            .identity_spec_client()
+            .add_identity_spec(Request::new(AddIdentitySpecRequest {
+                manifest_yaml,
+                inputs,
+            }))
+            .await?
+            .into_inner())
+    }
+
+    pub(crate) async fn list_identity_specs(&self) -> Vec<IdentitySpec> {
+        self.identity_spec_client()
+            .list_identity_specs(Request::new(ListIdentitySpecsRequest {}))
+            .await
+            .expect("list identity specs")
+            .into_inner()
+            .identity_specs
+    }
+
+    pub(crate) async fn force_delete_identity_spec(
+        &self,
+        name: &str,
+    ) -> DeleteIdentitySpecResponse {
+        self.identity_spec_client()
+            .delete_identity_spec(Request::new(DeleteIdentitySpecRequest {
+                name: name.to_string(),
+                force: true,
+            }))
+            .await
+            .expect("force remove identity spec")
+            .into_inner()
+    }
 }
 
 /// Builds an `ImportSourceRequest` for the default workspace with every other
@@ -217,7 +278,23 @@ pub(crate) fn secret(key: &str, value: &str) -> SourceSecret {
     }
 }
 
-fn ensure_file_credentials_config(config_dir: &Path) {
+pub(crate) fn fixed_token_identity_spec_yaml(spec_name: &str, audience_host: &str) -> String {
+    format!(
+        r"
+kind: identity
+spec_version: 1
+name: {spec_name}
+version: 0.1.0
+description: Test token identity.
+issuer: github
+type: fixed_token
+audience:
+  host: {audience_host}
+"
+    )
+}
+
+fn ensure_default_test_config(config_dir: &Path) {
     std::fs::create_dir_all(config_dir).expect("create config dir");
     let config_file = config_dir.join("config.toml");
     let raw = std::fs::read_to_string(&config_file).unwrap_or_default();
@@ -229,8 +306,13 @@ fn ensure_file_credentials_config(config_dir: &Path) {
     } else {
         "\n"
     };
-    let updated = format!("{raw}{separator}\n[credentials]\nstorage = \"file\"\n");
-    std::fs::write(config_file, updated).expect("write test credential config");
+    // DSL v4 (and its identity specs) are gated behind the `dsl_v4` feature, so
+    // enable it in the baseline test config; tests that need it off install
+    // their own config via `start_with_config_dir`.
+    let updated = format!(
+        "{raw}{separator}\n[features]\ndsl_v4 = true\n\n[credentials]\nstorage = \"file\"\n"
+    );
+    std::fs::write(config_file, updated).expect("write default test config");
 }
 
 impl FailingHttpFixture {

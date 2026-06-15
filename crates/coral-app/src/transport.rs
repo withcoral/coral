@@ -295,7 +295,6 @@ fn decode_grpc_error(status: &Status) -> GrpcErrorTelemetry {
 }
 
 /// One OAuth progress event mapped onto the shared credential proto pair.
-#[expect(unreachable_pub, reason = "re-exported from lib.rs in a later PR")]
 pub enum OAuthProgressProto {
     /// Authorization URL or device-code details.
     Authorization(coral_api::v1::OAuthCredentialAuthorization),
@@ -340,7 +339,6 @@ impl From<OAuthProgressEvent> for OAuthProgressProto {
 ///
 /// `closed_message` is the error reported to the operation when it emits an
 /// event after the stream consumer went away.
-#[expect(unreachable_pub, reason = "re-exported from lib.rs in a later PR")]
 pub fn oauth_operation_response_stream<T, R, F, Fut>(
     closed_message: &'static str,
     operation: F,

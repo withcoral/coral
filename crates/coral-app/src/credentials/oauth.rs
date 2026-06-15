@@ -71,7 +71,6 @@ pub(crate) enum OAuthClientMaterialPersistence {
 
 /// Progress event emitted while an OAuth credential authorization runs.
 #[derive(Debug, Clone)]
-#[expect(unreachable_pub, reason = "re-exported from lib.rs in a later PR")]
 pub enum OAuthProgressEvent {
     /// OAuth authorization URL or device-code details are ready for the user.
     OAuthAuthorization {
@@ -101,7 +100,6 @@ pub enum OAuthProgressEvent {
 /// operation to its gRPC response stream. `send` resolves only once the
 /// consumer dequeued the event, so progress cannot outrun the stream.
 #[derive(Clone)]
-#[expect(unreachable_pub, reason = "re-exported from lib.rs in a later PR")]
 pub struct OAuthProgressEventSender {
     tx: mpsc::Sender<PendingOAuthProgressEvent>,
     closed_message: &'static str,

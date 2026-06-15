@@ -33,6 +33,7 @@
 //! - `coral-engine` owns the data plane: backend registration, `DataFusion`
 //!   runtime assembly, and `SQL` execution over validated specs.
 //!
+mod authorization;
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
 mod catalog;
@@ -42,6 +43,7 @@ pub mod features;
 mod feedback;
 mod identities;
 mod identity;
+mod identity_specs;
 mod query;
 mod sources;
 mod state;
@@ -50,10 +52,14 @@ pub mod telemetry;
 mod transport;
 mod workspaces;
 
+pub use authorization::{
+    AllowAllManagementAuthorizer, AuthorizationError, ManagementAuthorizer, SourceMutationKind,
+};
 pub use bootstrap::{
     AppError, RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
 };
 pub use coral_engine::{EngineExtensions, QuerySource};
+pub use credentials::oauth::{OAuthProgressEvent, OAuthProgressEventSender};
 pub use identities::{
     IdentityOwnerKey, UserOwnedIdentityMaterialGuard, UserOwnedIdentityRecord,
     UserOwnedIdentityStore,
@@ -61,8 +67,14 @@ pub use identities::{
 pub use identity::{
     SingleUserPrincipalProvider, UserPrincipal, UserPrincipalError, UserPrincipalProvider,
 };
+pub use identity_specs::{
+    IdentitySpecManifestMetadata, IdentitySpecRegistry, IdentitySpecRegistryRecord,
+    IdentitySpecUsageProvider, identity_spec_input_material_from_manifest,
+    identity_spec_input_material_from_manifest_with_existing, identity_spec_manifest_metadata,
+};
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
 pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
+pub use transport::{OAuthProgressProto, oauth_operation_response_stream};
 pub use workspaces::DEFAULT_WORKSPACE_ID;

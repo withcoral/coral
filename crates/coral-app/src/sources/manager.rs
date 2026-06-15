@@ -15,6 +15,7 @@ use crate::credentials::{
     CORAL_INTERNAL_KEY_PREFIX, CredentialManager, CredentialMaterialGuard,
     CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind, CredentialsError,
 };
+use crate::features::Features;
 use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
@@ -39,6 +40,7 @@ pub(crate) struct SourceManager {
     credential_manager: CredentialManager,
     oauth_credential_service: OAuthCredentialService,
     layout: AppStateLayout,
+    features: Features,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -128,16 +130,32 @@ fn materialization_inputs_from_bindings(
 }
 
 impl SourceManager {
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
         layout: AppStateLayout,
+    ) -> Self {
+        Self::new_with_features(
+            config_store,
+            credential_manager,
+            layout,
+            Features::default(),
+        )
+    }
+
+    pub(crate) fn new_with_features(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        layout: AppStateLayout,
+        features: Features,
     ) -> Self {
         Self {
             config_store,
             credential_manager,
             oauth_credential_service: OAuthCredentialService::new(),
             layout,
+            features,
         }
     }
 
@@ -316,6 +334,7 @@ impl SourceManager {
     ) -> Result<InstalledSource, AppError> {
         let manifest = parse_source_manifest_yaml(request.materialization_manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        self.ensure_dsl_v4_feature_enabled(&manifest)?;
         self.validate_runtime_schema_names_available(
             workspace_name,
             &request.candidate.name,
@@ -372,6 +391,7 @@ impl SourceManager {
     ) -> Result<InstalledSource, AppError> {
         let manifest = parse_source_manifest_yaml(request.materialization_manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        self.ensure_dsl_v4_feature_enabled(&manifest)?;
         self.validate_runtime_schema_names_available(
             workspace_name,
             &request.candidate.name,
@@ -686,6 +706,7 @@ impl SourceManager {
         let Some(v4) = manifest.as_v4() else {
             return Ok(None);
         };
+        self.features.ensure_dsl_v4_enabled()?;
         if matches!(origin, SourceOrigin::Bundled)
             && v4.surfaces.iter().any(|surface| {
                 matches!(
@@ -734,6 +755,16 @@ impl SourceManager {
                     installed.name
                 )));
             }
+        }
+        Ok(())
+    }
+
+    fn ensure_dsl_v4_feature_enabled(
+        &self,
+        manifest: &ValidatedSourceManifest,
+    ) -> Result<(), AppError> {
+        if manifest.as_v4().is_some() {
+            self.features.ensure_dsl_v4_enabled()?;
         }
         Ok(())
     }
@@ -1429,6 +1460,7 @@ mod tests {
         CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
         CredentialStore, CredentialsError,
     };
+    use crate::features::{Features, dsl_v4_features};
     use crate::sources::SourceName;
     use crate::sources::materialization::sha256_hex;
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
@@ -1658,6 +1690,23 @@ surfaces:
         manifest_v4(openapi_file, sha256, "")
     }
 
+    fn manifest_v4_with_variable_input() -> String {
+        r#"
+name: secured_messages_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    inputs:
+      API_BASE:
+        kind: variable
+    base_url: "{{input.API_BASE}}"
+"#
+        .to_string()
+    }
+
     /// Authored-descriptor state plus a source manager over a fresh app
     /// layout.
     struct V4ImportFixture {
@@ -1687,6 +1736,12 @@ surfaces:
     }
 
     fn v4_import_fixture(openapi_yaml: &str) -> V4ImportFixture {
+        v4_import_fixture_with_features(openapi_yaml, dsl_v4_features())
+    }
+
+    /// As [`v4_import_fixture`], but with the given feature set (so tests can
+    /// exercise the `dsl_v4` feature gate).
+    fn v4_import_fixture_with_features(openapi_yaml: &str, features: Features) -> V4ImportFixture {
         let temp = TempDir::new().expect("temp dir");
         let descriptor_temp = TempDir::new().expect("descriptor temp dir");
         let layout =
@@ -1694,10 +1749,11 @@ surfaces:
         layout.ensure().expect("ensure layout");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         std::fs::write(&openapi_file, openapi_yaml).expect("write fixture");
-        let manager = SourceManager::new(
+        let manager = SourceManager::new_with_features(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout.clone(),
+            features,
         );
         V4ImportFixture {
             _temp: temp,
@@ -2083,10 +2139,11 @@ surfaces:
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         let openapi_yaml = v4_openapi_fixture();
         std::fs::write(&openapi_file, &openapi_yaml).expect("write fixture");
-        let manager = SourceManager::new(
+        let manager = SourceManager::new_with_features(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout.clone(),
+            dsl_v4_features(),
         );
 
         manager
@@ -2130,6 +2187,42 @@ surfaces:
                 .v4_materialized_dir(&default_workspace(), &rejected_source)
                 .exists(),
             "rejected source should not materialize artifacts"
+        );
+    }
+
+    #[test]
+    fn import_v4_source_requires_dsl_v4_feature() {
+        let fixture = v4_import_fixture_with_features(&v4_openapi_fixture(), Features::default());
+
+        let error = fixture
+            .import(manifest_v4_with_file_descriptor)
+            .expect_err("disabled v4 feature should reject import");
+
+        assert_error_contains(&error, "dsl_v4");
+    }
+
+    #[tokio::test]
+    async fn import_v4_with_credentials_requires_feature_before_import() {
+        let ManagerFixture { _temp, manager, .. } = manager_fixture();
+        let (event_tx, mut event_rx) = import_event_channel();
+
+        let error = manager
+            .import_source_with_credentials(
+                &default_workspace(),
+                credentials_import_command(
+                    manifest_v4_with_variable_input(),
+                    bindings(&[("API_BASE", "https://api.example.test")], &[]),
+                    Vec::new(),
+                ),
+                event_tx,
+            )
+            .await
+            .expect_err("disabled v4 feature should reject before import");
+
+        assert_error_contains(&error, "dsl_v4");
+        assert!(
+            event_rx.try_recv().is_err(),
+            "feature gate should fail before import events"
         );
     }
 

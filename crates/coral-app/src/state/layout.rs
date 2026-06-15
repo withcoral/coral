@@ -105,10 +105,6 @@ impl AppStateLayout {
         self.identity_specs_root().join(identity_spec_name)
     }
 
-    #[expect(
-        dead_code,
-        reason = "consumed by the identity-spec manager in a later PR"
-    )]
     pub(crate) fn identity_spec_manifest_file(&self, identity_spec_name: &str) -> PathBuf {
         self.identity_spec_dir(identity_spec_name)
             .join(INSTALLED_MANIFEST_FILE_NAME)
@@ -152,7 +148,10 @@ impl AppStateLayout {
         self.user_owned_identities_root(user_id).join(identity_name)
     }
 
-    #[expect(dead_code, reason = "consumed by the identity manager in a later PR")]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "consumed by the identity manager in a later PR")
+    )]
     pub(crate) fn user_owned_identity_manifest_file(
         &self,
         user_id: &str,

@@ -17,6 +17,7 @@ use axum::response::Response as AxumResponse;
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
 use coral_api::v1::episode_service_server::EpisodeServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
+use coral_api::v1::identity_spec_service_server::IdentitySpecServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
@@ -37,16 +38,19 @@ use tower::{Layer, Service};
 
 use super::env::AppEnvironment;
 use super::error::AppError;
+use crate::authorization::{AllowAllManagementAuthorizer, ManagementAuthorizer};
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::episode::service::EpisodeService;
 use crate::episode::store::EpisodeStore;
+use crate::features::{FeatureOverrides, FeatureStore};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
+use crate::identity_specs::{IdentitySpecManager, IdentitySpecService};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
@@ -239,14 +243,17 @@ impl ServerBuilder {
             internal_trace_store_dir.clone(),
         )?;
         let config_store = ConfigStore::new(layout.clone());
+        let features =
+            FeatureStore::new(layout.clone()).load_with_overrides(&FeatureOverrides::default())?;
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
-        let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
+        let credential_manager = CredentialManager::new(credential_store.clone());
+        let source_manager = SourceManager::new_with_features(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            features.clone(),
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.feedback_publisher);
@@ -257,6 +264,12 @@ impl ServerBuilder {
         let query_runtime_context = env
             .query_runtime_context()
             .with_body_capture_max_bytes(body_capture_max_bytes);
+        let identity_spec_manager = IdentitySpecManager::new_with_credential_store(
+            layout.clone(),
+            credential_store,
+            features,
+            Vec::new(),
+        );
 
         let query_manager = QueryManager::new(
             config_store,
@@ -273,7 +286,9 @@ impl ServerBuilder {
         start_server(ServerServices {
             source_manager,
             query_manager,
+            identity_spec_manager,
             user_principal_provider: self.user_principal_provider,
+            management_authorizer: Arc::new(AllowAllManagementAuthorizer),
             feedback_manager,
             episode_store,
             trace_service,
@@ -356,7 +371,9 @@ impl Drop for RunningServer {
 struct ServerServices {
     source_manager: SourceManager,
     query_manager: QueryManager,
+    identity_spec_manager: IdentitySpecManager,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    management_authorizer: Arc<dyn ManagementAuthorizer>,
     feedback_manager: FeedbackManager,
     episode_store: EpisodeStore,
     trace_service: Option<TraceService>,
@@ -367,7 +384,9 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
     let ServerServices {
         source_manager,
         query_manager,
+        identity_spec_manager,
         user_principal_provider,
+        management_authorizer,
         feedback_manager,
         episode_store,
         trace_service,
@@ -381,6 +400,11 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
     let catalog_service =
         CatalogService::new(query_manager.clone(), Arc::clone(&user_principal_provider));
     let query_service = QueryService::new(query_manager, Arc::clone(&user_principal_provider));
+    let identity_spec_service = IdentitySpecService::new(
+        identity_spec_manager,
+        Arc::clone(&user_principal_provider),
+        Arc::clone(&management_authorizer),
+    );
     let feedback_service =
         FeedbackService::new(feedback_manager, Arc::clone(&user_principal_provider));
     let episode_service = EpisodeService::new(episode_store);
@@ -388,6 +412,9 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
         .add_service(GrpcMethodAnnotatedService::new(SourceServiceServer::new(
             source_service,
         )))
+        .add_service(GrpcMethodAnnotatedService::new(
+            IdentitySpecServiceServer::new(identity_spec_service),
+        ))
         .add_service(GrpcMethodAnnotatedService::new(
             CatalogServiceServer::new(catalog_service)
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
@@ -658,9 +685,11 @@ mod tests {
         RunningServer, ServerBuilder, ServerMode, ServerServices, StaticAsset,
         StaticAssetsProvider, is_grpc_web_content_type, is_native_grpc_content_type, start_server,
     };
+    use crate::authorization::AllowAllManagementAuthorizer;
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::episode::store::EpisodeStore;
     use crate::feedback::manager::FeedbackManager;
+    use crate::identity_specs::IdentitySpecManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore};
@@ -717,6 +746,7 @@ enabled = false
         layout.ensure().expect("layout dirs");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let identity_spec_manager = IdentitySpecManager::new(layout.clone());
         let server = start_server(ServerServices {
             source_manager: SourceManager::new(
                 config_store.clone(),
@@ -730,7 +760,9 @@ enabled = false
                 layout.clone(),
                 vec![Arc::new(NoopEngineExtensionsProvider)],
             ),
+            identity_spec_manager,
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
+            management_authorizer: Arc::new(AllowAllManagementAuthorizer),
             feedback_manager: FeedbackManager::new(layout.clone()),
             episode_store: EpisodeStore::new(layout.clone()),
             trace_service,
