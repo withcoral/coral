@@ -101,20 +101,6 @@ message ListRecipesResponse {
   repeated Recipe recipes = 1;
 }
 
-// Validates one recipe without installing it.
-message ValidateRecipeRequest {
-  // Workspace that scopes installed sources and recipe collisions.
-  Workspace workspace = 1;
-  // Raw recipe YAML.
-  string yaml = 2;
-}
-
-// Validated recipe metadata.
-message ValidateRecipeResponse {
-  // Runtime-validated recipe definition.
-  Recipe recipe = 1;
-}
-
 // Removes one user recipe.
 message RemoveRecipeRequest {
   // Workspace that owns the recipe.
@@ -132,8 +118,6 @@ service RecipeService {
   rpc AddRecipe(AddRecipeRequest) returns (AddRecipeResponse);
   // Lists installed recipes without runtime validation.
   rpc ListRecipes(ListRecipesRequest) returns (ListRecipesResponse);
-  // Validates one recipe without installing it.
-  rpc ValidateRecipe(ValidateRecipeRequest) returns (ValidateRecipeResponse);
   // Removes one user recipe.
   rpc RemoveRecipe(RemoveRecipeRequest) returns (RemoveRecipeResponse);
 }

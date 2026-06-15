@@ -5,17 +5,18 @@
     reason = "recipe manager is exposed through API/CLI surfaces in later stack branches"
 )]
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::io::ErrorKind;
 
 use coral_engine::{
     CoralQuery, QueryRuntimeConfig, QuerySource, RecipeRuntimeArgument, RecipeRuntimeArgumentType,
-    RecipeRuntimeDefinition, RecipeRuntimeImplementation, RecipeRuntimePublish,
-    RecipeRuntimeResultColumn,
+    RecipeRuntimeArgumentValue, RecipeRuntimeDefinition, RecipeRuntimeImplementation,
+    RecipeRuntimePublish, RecipeRuntimeResultColumn, RecipeRuntimeTableFunctionPublish,
 };
 use coral_spec::{
-    RecipeArgumentType, RecipeImplementationSpec, RecipePublishSpec, RecipeSpec, parse_recipe_yaml,
+    RecipeArgumentType, RecipeImplementationSpec, RecipePublishSpec, RecipeSpec,
+    RecipeValidationValue, parse_recipe_yaml,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -41,7 +42,29 @@ struct RecipeArtifact {
 #[derive(Debug, Serialize, Deserialize)]
 struct RecipeRuntimeMetadata {
     version: u32,
+    #[serde(default)]
+    validation_args: BTreeMap<String, CachedRecipeArgumentValue>,
     result_columns: Vec<CachedRecipeResultColumn>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum CachedRecipeArgumentValue {
+    String(String),
+    Integer(i64),
+    Boolean(bool),
+    Null(()),
+}
+
+impl From<&RecipeRuntimeArgumentValue> for CachedRecipeArgumentValue {
+    fn from(value: &RecipeRuntimeArgumentValue) -> Self {
+        match value {
+            RecipeRuntimeArgumentValue::String(value) => Self::String(value.clone()),
+            RecipeRuntimeArgumentValue::Integer(value) => Self::Integer(*value),
+            RecipeRuntimeArgumentValue::Boolean(value) => Self::Boolean(*value),
+            RecipeRuntimeArgumentValue::Null => Self::Null(()),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -83,18 +106,6 @@ impl RecipeManager {
         }
     }
 
-    pub(crate) fn install_user_recipe(
-        &self,
-        workspace_name: &WorkspaceName,
-        raw_yaml: &str,
-    ) -> Result<InstalledRecipe, AppError> {
-        let recipe = parse_recipe_yaml(raw_yaml).map_err(|error| {
-            AppError::InvalidInput(format!("recipe validation failed: {error}"))
-        })?;
-        let recipe_name = RecipeName::parse(recipe.name())?;
-        self.install_user_recipe_artifact(workspace_name, &recipe_name, raw_yaml, None)
-    }
-
     pub(crate) fn install_validated_user_recipe(
         &self,
         workspace_name: &WorkspaceName,
@@ -105,6 +116,7 @@ impl RecipeManager {
             AppError::InvalidInput(format!("recipe validation failed: {error}"))
         })?;
         let recipe_name = RecipeName::parse(recipe.name())?;
+        let validation_arguments = runtime_validation_arguments(&recipe);
         if recipe_name.as_str() != runtime_recipe.name {
             return Err(AppError::FailedPrecondition(format!(
                 "validated recipe '{}' does not match installed recipe '{}'",
@@ -116,6 +128,7 @@ impl RecipeManager {
             &recipe_name,
             raw_yaml,
             Some(runtime_recipe),
+            &validation_arguments,
         )
     }
 
@@ -125,6 +138,7 @@ impl RecipeManager {
         recipe_name: &RecipeName,
         raw_yaml: &str,
         runtime_recipe: Option<&RecipeRuntimeDefinition>,
+        validation_arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
     ) -> Result<InstalledRecipe, AppError> {
         let installed = InstalledRecipe {
             name: recipe_name.clone(),
@@ -148,7 +162,11 @@ impl RecipeManager {
 
         fs::ensure_private_dir(&recipe_dir)?;
         fs::write_atomic(&recipe_file, raw_yaml.as_bytes())?;
-        if let Err(error) = write_recipe_runtime_metadata(&recipe_runtime_file, runtime_recipe) {
+        if let Err(error) = write_recipe_runtime_metadata(
+            &recipe_runtime_file,
+            runtime_recipe,
+            validation_arguments,
+        ) {
             rollback_recipe_install(
                 &recipe_dir,
                 &recipe_file,
@@ -194,7 +212,7 @@ impl RecipeManager {
             &mut publish_targets,
         )?;
         let runtime_recipe =
-            infer_runtime_recipe(selected_sources, runtime_config()?, &spec).await?;
+            validate_runtime_recipe(selected_sources, runtime_config()?, &spec).await?;
         record_publish_targets(&runtime_recipe, &mut publish_targets)?;
         Ok(runtime_recipe)
     }
@@ -261,17 +279,18 @@ impl RecipeManager {
                     continue;
                 }
             };
-            let runtime_recipe =
-                match infer_runtime_recipe(selected_sources, runtime_config()?, &spec).await {
-                    Ok(runtime_recipe) => runtime_recipe,
-                    Err(error) => {
-                        skip_recipe(
-                            &artifact,
-                            format_args!("recipe failed runtime validation: {error}"),
-                        );
-                        continue;
-                    }
-                };
+            let mut runtime_recipe = runtime_recipe_without_columns(&spec);
+            if artifact.origin == RecipeOrigin::User {
+                runtime_recipe.result_columns =
+                    self.cached_recipe_result_columns(workspace_name, &artifact.name);
+            }
+            if runtime_recipe.result_columns.is_empty() {
+                skip_recipe(
+                    &artifact,
+                    format_args!("recipe is missing cached runtime metadata; re-add the recipe"),
+                );
+                continue;
+            }
             if let Err(error) = record_publish_targets(&runtime_recipe, &mut publish_targets) {
                 skip_recipe(&artifact, format_args!("{error}"));
                 continue;
@@ -472,18 +491,40 @@ fn runtime_recipe_without_columns(spec: &RecipeSpec) -> RecipeRuntimeDefinition 
     runtime_recipe_with_result_columns(spec, Vec::new())
 }
 
-async fn infer_runtime_recipe(
+async fn validate_runtime_recipe(
     selected_sources: &[QuerySource],
     runtime_config: QueryRuntimeConfig,
     spec: &RecipeSpec,
 ) -> Result<RecipeRuntimeDefinition, AppError> {
     let runtime_recipe = runtime_recipe_without_columns(spec);
-    let schema = CoralQuery::infer_recipe_schema(selected_sources, runtime_config, runtime_recipe)
-        .await
-        .map_err(|error| {
-            AppError::FailedPrecondition(format!("recipe failed runtime validation: {error}"))
-        })?;
+    let schema = CoralQuery::validate_recipe(
+        selected_sources,
+        runtime_config,
+        runtime_recipe,
+        runtime_validation_arguments(spec),
+    )
+    .await
+    .map_err(|error| {
+        AppError::FailedPrecondition(format!("recipe failed runtime validation: {error}"))
+    })?;
     Ok(runtime_recipe_with_schema(spec, schema.as_ref()))
+}
+
+fn runtime_validation_arguments(spec: &RecipeSpec) -> BTreeMap<String, RecipeRuntimeArgumentValue> {
+    spec.validation()
+        .args
+        .iter()
+        .map(|(name, value)| (name.clone(), runtime_validation_argument_value(value)))
+        .collect()
+}
+
+fn runtime_validation_argument_value(value: &RecipeValidationValue) -> RecipeRuntimeArgumentValue {
+    match value {
+        RecipeValidationValue::String(value) => RecipeRuntimeArgumentValue::String(value.clone()),
+        RecipeValidationValue::Integer(value) => RecipeRuntimeArgumentValue::Integer(*value),
+        RecipeValidationValue::Boolean(value) => RecipeRuntimeArgumentValue::Boolean(*value),
+        RecipeValidationValue::Null(()) => RecipeRuntimeArgumentValue::Null,
+    }
 }
 
 fn runtime_recipe_with_schema(
@@ -541,22 +582,14 @@ fn runtime_implementation(spec: &RecipeImplementationSpec) -> RecipeRuntimeImple
     }
 }
 
-fn runtime_publish(specs: &[RecipePublishSpec]) -> Vec<RecipeRuntimePublish> {
-    specs
-        .iter()
-        .filter_map(|spec| match spec {
-            RecipePublishSpec::TableFunction {
-                schema,
-                name,
-                description,
-            } => Some(RecipeRuntimePublish::TableFunction {
-                schema: schema.clone(),
-                name: name.clone(),
-                description: description.clone(),
-            }),
-            RecipePublishSpec::McpTool { .. } => None,
-        })
-        .collect()
+fn runtime_publish(spec: &RecipePublishSpec) -> RecipeRuntimePublish {
+    RecipeRuntimePublish {
+        table_function: RecipeRuntimeTableFunctionPublish {
+            schema: spec.table_function.schema.clone(),
+            name: spec.table_function.name.clone(),
+            description: spec.table_function.description.clone(),
+        },
+    }
 }
 
 fn record_publish_targets(
@@ -564,18 +597,15 @@ fn record_publish_targets(
     publish_targets: &mut HashSet<PublishTarget>,
 ) -> Result<(), AppError> {
     let mut recipe_targets = HashSet::new();
-    for publish in &recipe.publish {
-        let target = match publish {
-            RecipeRuntimePublish::TableFunction { schema, name, .. } => {
-                PublishTarget::sql_relation(schema, name)
-            }
-        };
-        if publish_targets.contains(&target) || !recipe_targets.insert(target.clone()) {
-            return Err(AppError::FailedPrecondition(format!(
-                "recipe publish target '{}' is installed more than once",
-                target.display_name()
-            )));
-        }
+    let target = PublishTarget::sql_relation(
+        &recipe.publish.table_function.schema,
+        &recipe.publish.table_function.name,
+    );
+    if publish_targets.contains(&target) || !recipe_targets.insert(target.clone()) {
+        return Err(AppError::FailedPrecondition(format!(
+            "recipe publish target '{}' is installed more than once",
+            target.display_name()
+        )));
     }
     publish_targets.extend(recipe_targets);
     Ok(())
@@ -611,10 +641,15 @@ fn origin_sort_key(origin: RecipeOrigin) -> u8 {
 fn write_recipe_runtime_metadata(
     recipe_runtime_file: &std::path::Path,
     runtime_recipe: Option<&RecipeRuntimeDefinition>,
+    validation_arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
 ) -> Result<(), AppError> {
     if let Some(runtime_recipe) = runtime_recipe {
         let metadata = RecipeRuntimeMetadata {
             version: 1,
+            validation_args: validation_arguments
+                .iter()
+                .map(|(name, value)| (name.clone(), CachedRecipeArgumentValue::from(value)))
+                .collect(),
             result_columns: runtime_recipe
                 .result_columns
                 .iter()
@@ -712,6 +747,9 @@ mod tests {
     }
 
     fn recipe_yaml_with_publish(name: &str, publish_target: &str) -> String {
+        let (schema, function) = publish_target
+            .split_once('.')
+            .expect("publish target should be schema.name");
         format!(
             r"
 kind: recipe
@@ -720,19 +758,44 @@ implementation:
   kind: coral_sql
   query: select 1 as id
 publish:
-  - table_function: {publish_target}
+  table_function:
+    schema: {schema}
+    name: {function}
 "
         )
     }
 
+    fn validated_recipe(raw_yaml: &str) -> RecipeRuntimeDefinition {
+        let spec = parse_recipe_yaml(raw_yaml).expect("recipe spec");
+        runtime_recipe_with_result_columns(
+            &spec,
+            vec![RecipeRuntimeResultColumn {
+                name: "id".to_string(),
+                data_type: "Int64".to_string(),
+                nullable: false,
+                description: String::new(),
+            }],
+        )
+    }
+
+    fn install_fixture_recipe(
+        manager: &RecipeManager,
+        workspace: &WorkspaceName,
+        raw_yaml: &str,
+    ) -> InstalledRecipe {
+        let runtime_recipe = validated_recipe(raw_yaml);
+        manager
+            .install_validated_user_recipe(workspace, raw_yaml, &runtime_recipe)
+            .expect("install recipe")
+    }
+
     #[test]
-    fn install_user_recipe_persists_yaml_and_config() {
+    fn install_validated_user_recipe_persists_yaml_and_config() {
         let (_temp, layout, manager) = fixture();
         let workspace = workspace();
+        let raw_yaml = recipe_yaml("review_queue");
 
-        let installed = manager
-            .install_user_recipe(&workspace, &recipe_yaml("review_queue"))
-            .expect("install recipe");
+        let installed = install_fixture_recipe(&manager, &workspace, &raw_yaml);
 
         assert_eq!(installed.name.as_str(), "review_queue");
         assert_eq!(installed.origin, RecipeOrigin::User);
@@ -791,9 +854,8 @@ publish:
     fn remove_user_recipe_removes_yaml_and_config() {
         let (_temp, layout, manager) = fixture();
         let workspace = workspace();
-        manager
-            .install_user_recipe(&workspace, &recipe_yaml("review_queue"))
-            .expect("install recipe");
+        let raw_yaml = recipe_yaml("review_queue");
+        install_fixture_recipe(&manager, &workspace, &raw_yaml);
         let recipe_name = RecipeName::parse("review_queue").expect("recipe name");
 
         manager
@@ -834,10 +896,12 @@ publish:
     async fn validate_user_recipe_yaml_rejects_installed_publish_collision() {
         let (_temp, _layout, manager) = fixture();
         let workspace = workspace();
+        let existing_yaml = recipe_yaml_with_publish("existing_queue", "recipes.shared_queue");
         manager
-            .install_user_recipe(
+            .install_validated_user_recipe(
                 &workspace,
-                &recipe_yaml_with_publish("existing_queue", "recipes.shared_queue"),
+                &existing_yaml,
+                &validated_recipe(&existing_yaml),
             )
             .expect("install existing recipe");
 
