@@ -18,7 +18,7 @@ pub(crate) use resources::{
 };
 pub(crate) use tools::{
     CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
-    describe_table_tool, feedback_tool, list_catalog_arguments, list_catalog_tool,
-    list_columns_arguments, list_columns_tool, required_string_argument, search_catalog_arguments,
-    search_catalog_tool, sql_tool,
+    describe_table_tool, feedback_tool, json_object_schema, list_catalog_arguments,
+    list_catalog_tool, list_columns_arguments, list_columns_tool, required_string_argument,
+    search_catalog_arguments, search_catalog_tool, sql_tool,
 };

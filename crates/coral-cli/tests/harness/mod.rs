@@ -15,19 +15,22 @@ use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
 use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer};
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
+use coral_api::v1::recipe_service_server::{RecipeService, RecipeServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
-    CatalogCounts, CatalogItem, CatalogSearchResult, Column, ColumnSearchResult,
-    CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DeleteSourceResponse,
-    DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
-    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
-    GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
-    ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
-    ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
-    PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
-    Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
-    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    AddRecipeRequest, AddRecipeResponse, CatalogCounts, CatalogItem, CatalogSearchResult, Column,
+    ColumnSearchResult, CreateBundledSourceRequest, CreateBundledSourceResponse,
+    CreateBundledSourceWithOAuthRequest, CreateBundledSourceWithOAuthResponse, DeleteSourceRequest,
+    DeleteSourceResponse, DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest,
+    DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest,
+    ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
+    GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListCatalogRequest,
+    ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, ListRecipesRequest,
+    ListRecipesResponse, ListSourcesRequest, ListSourcesResponse, PaginationRequest,
+    PaginationResponse, QueryPlan, RemoveRecipeRequest, RemoveRecipeResponse, SearchCatalogRequest,
+    SearchCatalogResponse, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
+    SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateRecipeRequest,
+    ValidateRecipeResponse, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
     create_bundled_source_with_o_auth_response, import_source_response,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -816,6 +819,46 @@ struct MockSourceService {
     captured: Arc<Captured>,
 }
 
+#[derive(Clone)]
+struct MockRecipeService;
+
+#[tonic::async_trait]
+impl RecipeService for MockRecipeService {
+    async fn add_recipe(
+        &self,
+        _request: Request<AddRecipeRequest>,
+    ) -> Result<Response<AddRecipeResponse>, Status> {
+        Err(Status::unimplemented("mock recipe add is not implemented"))
+    }
+
+    async fn list_recipes(
+        &self,
+        _request: Request<ListRecipesRequest>,
+    ) -> Result<Response<ListRecipesResponse>, Status> {
+        Ok(Response::new(ListRecipesResponse {
+            recipes: Vec::new(),
+        }))
+    }
+
+    async fn validate_recipe(
+        &self,
+        _request: Request<ValidateRecipeRequest>,
+    ) -> Result<Response<ValidateRecipeResponse>, Status> {
+        Err(Status::unimplemented(
+            "mock recipe validation is not implemented",
+        ))
+    }
+
+    async fn remove_recipe(
+        &self,
+        _request: Request<RemoveRecipeRequest>,
+    ) -> Result<Response<RemoveRecipeResponse>, Status> {
+        Err(Status::unimplemented(
+            "mock recipe remove is not implemented",
+        ))
+    }
+}
+
 type MockBundledSourceStream =
     Pin<Box<dyn Stream<Item = Result<CreateBundledSourceWithOAuthResponse, Status>> + Send>>;
 type MockImportSourceStream =
@@ -1008,6 +1051,7 @@ impl MockServer {
                     config,
                     captured: source_captured,
                 }))
+                .add_service(RecipeServiceServer::new(MockRecipeService))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     drop(shutdown_rx.await);
                 })
