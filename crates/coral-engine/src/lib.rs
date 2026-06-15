@@ -200,6 +200,22 @@ impl CoralQuery {
             .await
     }
 
+    /// Infers the Arrow schema for one recipe through parameter-bound read-only SQL samples.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if source compilation fails, if recipe argument
+    /// samples cannot be bound, or if the recipe SQL cannot plan against the
+    /// selected sources.
+    pub async fn infer_recipe_schema(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        recipe: RecipeRuntimeDefinition,
+    ) -> Result<std::sync::Arc<arrow::datatypes::Schema>, CoreError> {
+        let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
+        runtime::recipes::infer_recipe_schema(&query_runtime, &recipe).await
+    }
+
     /// Explains one `SQL` statement with logical and physical plan renderings.
     ///
     /// The explanation is built against the provided source set and current

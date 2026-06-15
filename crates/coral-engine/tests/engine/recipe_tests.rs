@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use arrow::datatypes::DataType;
 use coral_engine::{
     CoralQuery, RecipeRuntimeArgument, RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue,
     RecipeRuntimeCall, RecipeRuntimeDefinition, RecipeRuntimeImplementation,
@@ -213,4 +214,30 @@ async fn execute_recipe_rejects_invalid_arguments() {
             .contains("recipe 'review_queue' argument 'query' expected string, got integer"),
         "unexpected error: {error}"
     );
+}
+
+#[tokio::test]
+async fn infer_recipe_schema_uses_param_bound_coral_sql() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest(
+        "schema_recipe_search",
+        &server.uri(),
+    ));
+
+    let schema = CoralQuery::infer_recipe_schema(
+        &[source],
+        test_runtime(),
+        review_queue_recipe("schema_recipe_search"),
+    )
+    .await
+    .expect("recipe schema should infer");
+
+    let fields = schema.fields();
+    assert_eq!(fields.len(), 2);
+    let title = fields.first().expect("title field");
+    let score = fields.get(1).expect("score field");
+    assert_eq!(title.name(), "title");
+    assert_eq!(title.data_type(), &DataType::Utf8);
+    assert_eq!(score.name(), "score");
+    assert_eq!(score.data_type(), &DataType::Float64);
 }
