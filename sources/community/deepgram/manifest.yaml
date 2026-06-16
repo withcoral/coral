@@ -1,0 +1,386 @@
+name: deepgram
+version: 0.2.0
+dsl_version: 3
+backend: http
+description: Query Deepgram speech-to-text models and run audio transcription through SQL.
+base_url: https://api.deepgram.com
+inputs:
+  DEEPGRAM_API_KEY:
+    kind: secret
+    hint: |
+      Deepgram API key.
+
+      Create or copy an API key from your Deepgram console:
+      https://console.deepgram.com/
+
+      The key is sent as a Token header to Deepgram's API.
+      API keys are project-scoped. Use a project API key with a role
+      that can call the Models and Listen APIs.
+      See: https://developers.deepgram.com/docs/create-additional-api-keys
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Token {{input.DEEPGRAM_API_KEY}}"
+test_queries:
+  - SELECT name, architecture, version FROM deepgram.models LIMIT 5
+  - SELECT name, canonical_name, languages FROM deepgram.models WHERE architecture = 'polaris' LIMIT 5
+tables:
+  - name: models
+    description: Available Deepgram speech-to-text models from GET /v1/models.
+    request:
+      method: GET
+      path: /v1/models
+    response:
+      rows_path:
+        - stt
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Model name used in Deepgram API calls.
+      - name: canonical_name
+        type: Utf8
+        nullable: true
+        description: Canonical model name.
+      - name: architecture
+        type: Utf8
+        nullable: true
+        description: Model architecture type (e.g., base, polaris, nova-2).
+      - name: languages
+        type: Json
+        nullable: true
+        description: Array of supported language codes.
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Model version identifier.
+      - name: uuid
+        type: Utf8
+        nullable: true
+        description: Unique model UUID.
+      - name: batch
+        type: Boolean
+        nullable: true
+        description: Whether batch processing is supported.
+      - name: streaming
+        type: Boolean
+        nullable: true
+        description: Whether streaming is supported.
+      - name: formatted_output
+        type: Boolean
+        nullable: true
+        description: Whether formatted output is available.
+      - name: multilingual
+        type: Boolean
+        nullable: true
+        description: Whether the model supports multiple languages.
+
+  - name: transcriptions
+    description: >
+      Transcribe audio from a URL using Deepgram POST /v1/listen. One SQL row per
+      transcription request; preserves top-level response metadata.
+    guide: |
+      The `transcriptions` table requires a publicly accessible audio URL and a valid Deepgram model.
+      Use `nova-3` for general-purpose transcription; fall back to `nova-2` if unavailable. The `model` filter is required
+      and should match an available model from `deepgram.models`. Results include transcript text,
+      confidence scores, word-level timing, and response metadata. Optional filters include booleans
+      (`diarize`, `smart_format`, `summarize`, `topics`, `intents`, `sentiment`, `multichannel`,
+      `paragraphs`), strings
+      (`language`, `search`, `replace`, `redact`, `encoding`), and numeric (`sample_rate`).
+      Channel-specific columns use `channels[0]`; use the `channels_raw` JSON column to inspect
+      all channels when `multichannel` is enabled.
+    fetch_limit_default: 1
+    filters:
+      - name: model
+        required: true
+      - name: url
+        required: true
+      - name: language
+        required: false
+      - name: punctuate
+        required: false
+      - name: smart_format
+        required: false
+      - name: diarize
+        required: false
+      - name: detect_entities
+        required: false
+      - name: multichannel
+        required: false
+      - name: numerals
+        required: false
+      - name: sample_rate
+        required: false
+      - name: encoding
+        required: false
+      - name: search
+        required: false
+      - name: replace
+        required: false
+      - name: paragraphs
+        required: false
+      - name: profanity_filter
+        required: false
+      - name: redact
+        required: false
+      - name: summarize
+        required: false
+      - name: topics
+        required: false
+      - name: intents
+        required: false
+      - name: sentiment
+        required: false
+    request:
+      method: POST
+      path: /v1/listen
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      query:
+        - name: model
+          from: filter
+          key: model
+        - name: language
+          from: filter
+          key: language
+        - name: punctuate
+          from: filter
+          key: punctuate
+        - name: smart_format
+          from: filter
+          key: smart_format
+        - name: diarize
+          from: filter
+          key: diarize
+        - name: detect_entities
+          from: filter
+          key: detect_entities
+        - name: multichannel
+          from: filter
+          key: multichannel
+        - name: numerals
+          from: filter
+          key: numerals
+        - name: sample_rate
+          from: filter
+          key: sample_rate
+        - name: encoding
+          from: filter
+          key: encoding
+        - name: search
+          from: filter
+          key: search
+        - name: replace
+          from: filter
+          key: replace
+        - name: paragraphs
+          from: filter
+          key: paragraphs
+        - name: profanity_filter
+          from: filter
+          key: profanity_filter
+        - name: redact
+          from: filter
+          key: redact
+        - name: summarize
+          from: filter
+          key: summarize
+        - name: topics
+          from: filter
+          key: topics
+        - name: intents
+          from: filter
+          key: intents
+        - name: sentiment
+          from: filter
+          key: sentiment
+      body:
+        - path:
+            - url
+          from: filter
+          key: url
+    response:
+      row_strategy: direct
+      error_path:
+        - err_msg
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Model name supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model
+      - name: url
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Audio URL supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: url
+      - name: language
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Language code supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: language
+      - name: request_id
+        type: Utf8
+        nullable: true
+        description: Deepgram request ID for the transcription.
+        expr:
+          kind: path
+          path:
+            - metadata
+            - request_id
+      - name: channels
+        type: Int64
+        nullable: true
+        description: Number of audio channels.
+        expr:
+          kind: path
+          path:
+            - metadata
+            - channels
+      - name: channels_raw
+        type: Json
+        nullable: true
+        description: Full per-channel results when multichannel is enabled; use this to inspect channel 1+ data.
+        expr:
+          kind: path
+          path:
+            - results
+            - channels
+      - name: duration
+        type: Float64
+        nullable: true
+        description: Audio duration in seconds.
+        expr:
+          kind: path
+          path:
+            - metadata
+            - duration
+      - name: transcript
+        type: Utf8
+        nullable: true
+        description: Transcribed text.
+        expr:
+          kind: path
+          path:
+            - results
+            - channels
+            - "0"
+            - alternatives
+            - "0"
+            - transcript
+      - name: confidence
+        type: Float64
+        nullable: true
+        description: Transcription confidence score.
+        expr:
+          kind: path
+          path:
+            - results
+            - channels
+            - "0"
+            - alternatives
+            - "0"
+            - confidence
+      - name: words
+        type: Json
+        nullable: true
+        description: Word-level metadata including timing and confidence.
+        expr:
+          kind: path
+          path:
+            - results
+            - channels
+            - "0"
+            - alternatives
+            - "0"
+            - words
+      - name: paragraphs
+        type: Json
+        nullable: true
+        description: Paragraph-level transcription when available.
+        expr:
+          kind: path
+          path:
+            - results
+            - channels
+            - "0"
+            - alternatives
+            - "0"
+            - paragraphs
+      - name: search
+        type: Json
+        nullable: true
+        description: Search term hits when search filter is used.
+        expr:
+          kind: path
+          path:
+            - results
+            - channels
+            - "0"
+            - search
+      - name: entities
+        type: Json
+        nullable: true
+        description: Detected entities when detect_entities is enabled.
+        expr:
+          kind: path
+          path:
+            - results
+            - channels
+            - "0"
+            - alternatives
+            - "0"
+            - entities
+      - name: summary
+        type: Json
+        nullable: true
+        description: Summary object when summarize is enabled.
+        expr:
+          kind: path
+          path:
+            - results
+            - summary
+      - name: topics
+        type: Json
+        nullable: true
+        description: Topic detection results when topics is enabled.
+        expr:
+          kind: path
+          path:
+            - results
+            - topics
+      - name: intent
+        type: Json
+        nullable: true
+        description: Intent detection results when intents is enabled.
+        expr:
+          kind: path
+          path:
+            - results
+            - intents
+      - name: sentiment
+        type: Json
+        nullable: true
+        description: Sentiment analysis results when sentiment is enabled.
+        expr:
+          kind: path
+          path:
+            - results
+            - sentiments

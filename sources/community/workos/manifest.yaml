@@ -1,0 +1,444 @@
+name: workos
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query WorkOS organizations, user-management users, organization memberships,
+  directory sync directories, and environment events.
+base_url: https://api.workos.com
+
+inputs:
+  WORKOS_API_KEY:
+    kind: secret
+    hint: |
+      WorkOS secret API key. Create it in the WorkOS dashboard for the intended
+      environment and treat it as privileged because WorkOS secret keys are not
+      inherently read-only.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.WORKOS_API_KEY}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name FROM workos.organizations LIMIT 1
+  - SELECT id, email FROM workos.users LIMIT 1
+  - SELECT id, name FROM workos.directories LIMIT 1
+
+tables:
+  - name: organizations
+    description: WorkOS organizations in the current environment.
+    guide: |
+      Uses WorkOS list pagination with `limit` and `after`. Filter locally in
+      SQL for organization inventory and ownership workflows.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /organizations
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [list_metadata, after]
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: WorkOS organization ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Organization display name.
+      - name: domains
+        type: Json
+        nullable: true
+        description: Organization domains.
+      - name: metadata
+        type: Json
+        nullable: true
+        description: Organization metadata.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Organization creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Organization update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: users
+    description: WorkOS User Management users.
+    guide: |
+      Lists AuthKit/User Management users visible to the API key. Use
+      `organization_id` when you want membership-scoped user inventory.
+    filters:
+      - name: organization_id
+      - name: email
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /user_management/users
+      query:
+        - name: organization_id
+          from: filter
+          key: organization_id
+        - name: email
+          from: filter
+          key: email
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [list_metadata, after]
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: WorkOS user ID.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: User first name.
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: User last name.
+      - name: email_verified
+        type: Boolean
+        nullable: true
+        description: Whether the user email is verified.
+      - name: profile_picture_url
+        type: Utf8
+        nullable: true
+        description: User profile picture URL when returned.
+      - name: metadata
+        type: Json
+        nullable: true
+        description: User metadata.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: User creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: User update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+      - name: organization_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional organization filter.
+        expr: {kind: from_filter, key: organization_id}
+
+  - name: organization_memberships_by_organization
+    description: WorkOS User Management organization memberships scoped by organization.
+    guide: |
+      Requires `organization_id` from `workos.organizations`. Use this table
+      to inspect all user memberships for one organization. WorkOS returns
+      active memberships by default; pass `statuses` to include states such as
+      pending or inactive.
+    filters:
+      - name: organization_id
+        required: true
+      - name: statuses
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /user_management/organization_memberships
+      query:
+        - name: organization_id
+          from: filter
+          key: organization_id
+        - name: statuses
+          from: filter
+          key: statuses
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [list_metadata, after]
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Organization membership ID.
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: WorkOS user ID.
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: WorkOS organization ID.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Membership status.
+      - name: role_slug
+        type: Utf8
+        nullable: true
+        description: Role slug from the nested membership role object.
+        expr: {kind: path, path: [role, slug]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Membership creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Membership update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: organization_memberships_by_user
+    description: WorkOS User Management organization memberships scoped by user.
+    guide: |
+      Requires `user_id` from `workos.users`. Use this table to inspect all
+      organization memberships for one user. WorkOS returns active memberships
+      by default; pass `statuses` to include states such as pending or inactive.
+    filters:
+      - name: user_id
+        required: true
+      - name: statuses
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /user_management/organization_memberships
+      query:
+        - name: user_id
+          from: filter
+          key: user_id
+        - name: statuses
+          from: filter
+          key: statuses
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [list_metadata, after]
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Organization membership ID.
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: WorkOS user ID.
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: WorkOS organization ID.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Membership status.
+      - name: role_slug
+        type: Utf8
+        nullable: true
+        description: Role slug from the nested membership role object.
+        expr: {kind: path, path: [role, slug]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Membership creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Membership update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: directories
+    description: WorkOS Directory Sync directories.
+    guide: |
+      Lists Directory Sync directories and their provider/status metadata.
+      Directory users and groups are intentionally not included in v1 to keep
+      the source surface small and predictable.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /directories
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [list_metadata, after]
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Directory ID.
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: Associated organization ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Directory name.
+      - name: domain
+        type: Utf8
+        nullable: true
+        description: Directory domain when returned.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Directory provider type.
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Directory state.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Directory creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Directory update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: events
+    description: WorkOS environment events.
+    guide: |
+      Lists WorkOS Events for the current environment. Use event type and
+      organization filters to keep event queries bounded and relevant.
+    filters:
+      - name: organization_id
+      - name: event
+      - name: range_start
+      - name: range_end
+      - name: order
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /events
+      query:
+        - name: organization_id
+          from: filter
+          key: organization_id
+        - name: events
+          from: filter
+          key: event
+        - name: range_start
+          from: filter
+          key: range_start
+        - name: range_end
+          from: filter
+          key: range_end
+        - name: order
+          from: filter
+          key: order
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [list_metadata, after]
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Event ID.
+      - name: event
+        type: Utf8
+        nullable: true
+        description: WorkOS event type.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Event creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: data
+        type: Json
+        nullable: true
+        description: Event payload.
+      - name: context
+        type: Json
+        nullable: true
+        description: Event context.
