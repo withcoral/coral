@@ -27,6 +27,9 @@ impl McpImporter<'_> {
             &output,
             tool.output_schema.as_ref(),
             &tool.input_schema,
+            &self.surface.id,
+            operation_id,
+            &mut diagnostics,
         );
         Some(IrOperation {
             id: operation_id.to_string(),

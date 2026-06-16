@@ -9,7 +9,7 @@ use crate::v4::surfaces::json_schema::{json_schema_scalar_type, json_schema_type
 
 use super::import::McpImporter;
 use super::input_schema::schema_description;
-use super::pagination::find_response_cursor_path;
+use super::pagination::{CursorPathSearch, find_response_cursor_path};
 
 impl McpImporter<'_> {
     pub(super) fn import_output(
@@ -148,8 +148,11 @@ fn wrapped_list_property(schema: &Value) -> Option<(&str, Option<&Value>)> {
         return None;
     }
     if properties.len() != 1
-        && find_response_cursor_path(schema).is_none()
         && !is_offset_pagination_envelope(properties)
+        && matches!(
+            find_response_cursor_path(schema),
+            CursorPathSearch::NotFound
+        )
     {
         return None;
     }

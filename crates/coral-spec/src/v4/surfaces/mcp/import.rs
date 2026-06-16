@@ -9,6 +9,8 @@ use crate::{ManifestError, Result};
 
 use super::model::McpToolCatalog;
 
+pub(super) const MAX_SCHEMA_DEPTH: usize = 64;
+
 pub fn normalize_mcp_tool_catalog(catalog: &McpToolCatalog) -> Result<Vec<u8>> {
     let mut normalized = catalog.clone();
     normalized
@@ -231,6 +233,37 @@ surfaces:
             .expect("field")
     }
 
+    fn nested_cursor_schema(depth: usize) -> Value {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "nextCursor": {"type": "string"}
+            }
+        });
+        for _ in 0..depth {
+            schema = json!({
+                "type": "object",
+                "properties": {
+                    "child": schema
+                }
+            });
+        }
+        schema
+    }
+
+    fn nested_input_property_schema(depth: usize) -> Value {
+        let mut schema = json!({"type": "string"});
+        for _ in 0..depth {
+            schema = json!({
+                "type": "object",
+                "properties": {
+                    "child": schema
+                }
+            });
+        }
+        schema
+    }
+
     #[test]
     fn imports_input_schema_types_required_flags_and_defaults() {
         let catalog = McpToolCatalog {
@@ -373,6 +406,39 @@ surfaces:
     }
 
     #[test]
+    fn input_schema_ref_cycles_through_all_of_are_not_exposed() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "$defs": {
+                        "A": {
+                            "allOf": [
+                                {"$ref": "#/$defs/B"}
+                            ]
+                        },
+                        "B": {
+                            "allOf": [
+                                {"$ref": "#/$defs/A"}
+                            ]
+                        }
+                    },
+                    "$ref": "#/$defs/A"
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        assert!(ir.operations.is_empty());
+        assert!(ir.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "MCP_INPUT_SCHEMA_REF_UNSUPPORTED"
+                && diagnostic.message.contains("reference cycle")
+        }));
+    }
+
+    #[test]
     fn imports_all_of_properties_with_metadata_only_differences() {
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(
@@ -501,6 +567,47 @@ surfaces:
             ir.diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_CONFLICT")
+        );
+    }
+
+    #[test]
+    fn all_of_duplicate_property_comparison_uses_depth_budget() {
+        let deep_property_schema = nested_input_property_schema(MAX_SCHEMA_DEPTH + 1);
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "allOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "filter": deep_property_schema.clone()
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "filter": deep_property_schema
+                            }
+                        }
+                    ]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        assert!(ir.operations.is_empty());
+        assert!(
+            ir.diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.code == "MCP_INPUT_SCHEMA_DEPTH_EXCEEDED" })
+        );
+        assert!(
+            !ir.diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.code == "MCP_INPUT_SCHEMA_CONFLICT" })
         );
     }
 
@@ -810,6 +917,104 @@ surfaces:
                 }
             }
         }));
+    }
+
+    #[test]
+    fn deeply_nested_cursor_discovery_preserves_wrapped_list_row_path() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "list-items",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "cursor": {"type": "string"}
+                    }
+                }),
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string"}
+                                }
+                            }
+                        },
+                        "meta": nested_cursor_schema(MAX_SCHEMA_DEPTH + 1)
+                    }
+                })),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "list_items");
+        assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
+        assert_eq!(operation.output.row_path, vec!["items".to_string()]);
+        assert!(
+            operation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.code == "MCP_RESPONSE_SCHEMA_DEPTH_EXCEEDED" })
+        );
+        let IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
+            panic!("expected MCP execution");
+        };
+        assert!(mcp.pagination.is_none());
+    }
+
+    #[test]
+    fn cursor_discovery_continues_after_deep_sibling_branch() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "list-items",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "cursor": {"type": "string"}
+                    }
+                }),
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "aaa_deep": nested_cursor_schema(MAX_SCHEMA_DEPTH + 1),
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string"}
+                                }
+                            }
+                        },
+                        "zzz_meta": {
+                            "type": "object",
+                            "properties": {
+                                "nextCursor": {"type": ["string", "null"]}
+                            }
+                        }
+                    }
+                })),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "list_items");
+        assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
+        assert!(
+            !operation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "MCP_RESPONSE_SCHEMA_DEPTH_EXCEEDED")
+        );
+        let IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
+            panic!("expected MCP execution");
+        };
+        let pagination = mcp.pagination.as_ref().expect("pagination");
+        assert_eq!(pagination.response_cursor_path, ["zzz_meta", "nextCursor"]);
     }
 
     #[test]

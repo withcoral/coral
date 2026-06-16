@@ -1,16 +1,29 @@
 use serde_json::Value;
 
 use crate::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec};
+use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrOperationInput, IrOperationOutput, IrScalarType, OutputCardinality};
 use crate::v4::surfaces::json_schema::json_schema_type_contains;
+
+use super::import::MAX_SCHEMA_DEPTH;
 
 pub(super) fn infer_mcp_pagination_contracts(
     inputs: &[IrOperationInput],
     output: &IrOperationOutput,
     output_schema: Option<&Value>,
     input_schema: &Value,
+    surface_id: &str,
+    operation_id: &str,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> (Option<McpPaginationSpec>, Option<McpOffsetPaginationSpec>) {
-    let pagination = infer_mcp_pagination(inputs, output, output_schema);
+    let pagination = infer_mcp_pagination(
+        inputs,
+        output,
+        output_schema,
+        surface_id,
+        operation_id,
+        diagnostics,
+    );
     let offset_pagination = pagination
         .is_none()
         .then(|| infer_mcp_offset_pagination(inputs, output, input_schema))
@@ -22,6 +35,9 @@ fn infer_mcp_pagination(
     inputs: &[IrOperationInput],
     output: &IrOperationOutput,
     output_schema: Option<&Value>,
+    surface_id: &str,
+    operation_id: &str,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<McpPaginationSpec> {
     if !matches!(
         output.cardinality,
@@ -30,7 +46,8 @@ fn infer_mcp_pagination(
         return None;
     }
     let cursor_arg = cursor_input_name(inputs)?;
-    let response_cursor_path = find_response_cursor_path(output_schema?)?;
+    let response_cursor_path =
+        find_response_cursor_path_or_warn(output_schema?, surface_id, operation_id, diagnostics)?;
     Some(McpPaginationSpec {
         cursor_arg: cursor_arg.to_string(),
         response_cursor_path,
@@ -139,23 +156,70 @@ fn cursor_input_name(inputs: &[IrOperationInput]) -> Option<&str> {
         .map(|input| input.name.as_str())
 }
 
-pub(super) fn find_response_cursor_path(schema: &Value) -> Option<Vec<String>> {
-    let properties = schema.get("properties").and_then(Value::as_object)?;
-    for (name, property) in properties {
-        if is_response_cursor_property(name, property) {
-            return Some(vec![name.clone()]);
+pub(super) fn find_response_cursor_path_or_warn(
+    schema: &Value,
+    surface_id: &str,
+    operation_id: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Vec<String>> {
+    match find_response_cursor_path(schema) {
+        CursorPathSearch::Found(path) => Some(path),
+        CursorPathSearch::NotFound => None,
+        CursorPathSearch::DepthExceeded => {
+            diagnostics.push(Diagnostic::warning(
+                "MCP_RESPONSE_SCHEMA_DEPTH_EXCEEDED",
+                format!("MCP response schema exceeds maximum depth of {MAX_SCHEMA_DEPTH}"),
+                surface_id.to_string(),
+                Some(operation_id.to_string()),
+            ));
+            None
         }
     }
+}
+
+pub(super) enum CursorPathSearch {
+    Found(Vec<String>),
+    NotFound,
+    DepthExceeded,
+}
+
+pub(super) fn find_response_cursor_path(schema: &Value) -> CursorPathSearch {
+    find_response_cursor_path_at_depth(schema, 0)
+}
+
+fn find_response_cursor_path_at_depth(schema: &Value, depth: usize) -> CursorPathSearch {
+    if depth > MAX_SCHEMA_DEPTH {
+        return CursorPathSearch::DepthExceeded;
+    }
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return CursorPathSearch::NotFound;
+    };
+    for (name, property) in properties {
+        if is_response_cursor_property(name, property) {
+            return CursorPathSearch::Found(vec![name.clone()]);
+        }
+    }
+    let mut depth_exceeded = false;
     for (name, property) in properties {
         if !json_schema_type_contains(property, "object") {
             continue;
         }
-        if let Some(mut path) = find_response_cursor_path(property) {
-            path.insert(0, name.clone());
-            return Some(path);
+        match find_response_cursor_path_at_depth(property, depth + 1) {
+            CursorPathSearch::Found(mut path) => {
+                path.insert(0, name.clone());
+                return CursorPathSearch::Found(path);
+            }
+            CursorPathSearch::NotFound => {}
+            CursorPathSearch::DepthExceeded => {
+                depth_exceeded = true;
+            }
         }
     }
-    None
+    if depth_exceeded {
+        CursorPathSearch::DepthExceeded
+    } else {
+        CursorPathSearch::NotFound
+    }
 }
 
 fn is_response_cursor_property(name: &str, schema: &Value) -> bool {
