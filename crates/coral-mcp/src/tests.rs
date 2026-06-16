@@ -454,6 +454,21 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
             .contains("argument 'episode_id' must be graphic ASCII")
     );
 
+    let invalid_open_episode_id = client
+        .call_tool(
+            CallToolRequestParams::new("open_episode").with_arguments(json_object(&json!({
+                "intent": "Open a child task",
+                "episode_id": "has space"
+            }))),
+        )
+        .await
+        .expect_err("invalid stray episode_id should fail before opening an episode");
+    assert!(
+        invalid_open_episode_id
+            .to_string()
+            .contains("argument 'episode_id' must be graphic ASCII")
+    );
+
     let episodes_path = temp
         .path()
         .join("coral-config/workspaces/default/episodes/episodes.jsonl");

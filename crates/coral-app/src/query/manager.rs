@@ -690,10 +690,9 @@ mod tests {
             }),
             sql: "SELECT 1".to_string(),
         });
-        request.metadata_mut().insert(
-            "coral-episode-id",
-            "ep_trace_1".parse().expect("ascii value"),
-        );
+        request
+            .extensions_mut()
+            .insert(crate::episode::EpisodeId::parse("ep_trace_1").expect("episode id"));
 
         // The query may fail (the fixture has no installed sources); the
         // `coral.query` span is created and stamped before execution regardless.
@@ -802,10 +801,9 @@ mod tests {
 
     fn tagged_catalog_request<T>(message: T) -> tonic::Request<T> {
         let mut request = tonic::Request::new(message);
-        request.metadata_mut().insert(
-            "coral-episode-id",
-            "ep_catalog_trace".parse().expect("ascii value"),
-        );
+        request
+            .extensions_mut()
+            .insert(crate::episode::EpisodeId::parse("ep_catalog_trace").expect("episode id"));
         request
     }
 

@@ -18,8 +18,8 @@ use crate::query::QueryAttribution;
 use crate::query::manager::QueryManager;
 use crate::transport::{
     catalog_item_to_proto, catalog_search_result_to_proto, column_search_result_to_proto,
-    describe_table_response_to_proto, episode_id_from_metadata, grpc_span, instrument_grpc,
-    pagination_to_proto, query_status, workspace_name_from_proto,
+    describe_table_response_to_proto, grpc_span, instrument_grpc, pagination_to_proto,
+    query_status, workspace_name_from_proto,
 };
 
 #[derive(Clone)]
@@ -43,9 +43,7 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<ListCatalogResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
-        let attribution = QueryAttribution {
-            episode_id: episode_id_from_metadata(request.metadata()),
-        };
+        let attribution = QueryAttribution::from_extensions(request.extensions());
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
@@ -86,9 +84,7 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<SearchCatalogResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
-        let attribution = QueryAttribution {
-            episode_id: episode_id_from_metadata(request.metadata()),
-        };
+        let attribution = QueryAttribution::from_extensions(request.extensions());
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -135,9 +131,7 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<DescribeTableResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
-        let attribution = QueryAttribution {
-            episode_id: episode_id_from_metadata(request.metadata()),
-        };
+        let attribution = QueryAttribution::from_extensions(request.extensions());
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -165,9 +159,7 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<ListColumnsResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
-        let attribution = QueryAttribution {
-            episode_id: episode_id_from_metadata(request.metadata()),
-        };
+        let attribution = QueryAttribution::from_extensions(request.extensions());
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;

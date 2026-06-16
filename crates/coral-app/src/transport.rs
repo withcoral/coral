@@ -56,12 +56,13 @@ pub(crate) fn extract_trace_context(
     opentelemetry::global::get_text_map_propagator(|p| p.extract(&MetadataExtractor(metadata)))
 }
 
-/// Wraps a generated tonic service and stores the inbound gRPC path on the request.
+/// Wraps a generated tonic service and stores inbound request context on the request.
 ///
 /// Tonic preserves `http::Request` extensions when it decodes the protobuf
 /// message into a `tonic::Request`, but generated server wrappers do not insert
 /// `tonic::GrpcMethod` the way generated clients do. This keeps the method
-/// data at the transport boundary and lets handlers read it from the request.
+/// data and Coral request metadata at the transport boundary and lets handlers
+/// read typed context from the request.
 #[derive(Clone)]
 pub(crate) struct GrpcMethodAnnotatedService<S> {
     inner: S,
@@ -89,9 +90,7 @@ where
     }
 
     fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
-        if let Some(method) = GrpcServerMethod::from_path(request.uri().path()) {
-            request.extensions_mut().insert(method);
-        }
+        annotate_request_context(&mut request);
         self.inner.call(request)
     }
 }
@@ -173,6 +172,30 @@ fn grpc_method<T>(request: &Request<T>) -> GrpcMethodMetadata {
     )
 }
 
+fn annotate_request_context<B>(request: &mut http::Request<B>) {
+    if let Some(method) = GrpcServerMethod::from_path(request.uri().path()) {
+        request.extensions_mut().insert(method);
+    }
+    if let Some(episode_id) = request
+        .headers()
+        .get(CORAL_EPISODE_ID_METADATA_KEY)
+        .and_then(episode_id_from_header_value)
+    {
+        request.extensions_mut().insert(episode_id);
+    }
+}
+
+fn episode_id_from_header_value(value: &http::HeaderValue) -> Option<EpisodeId> {
+    let value = value.to_str().ok()?;
+    match EpisodeId::parse(value) {
+        Ok(episode_id) => Some(episode_id),
+        Err(error) => {
+            tracing::debug!(%error, "ignoring malformed coral-episode-id metadata");
+            None
+        }
+    }
+}
+
 pub(crate) async fn instrument_grpc<T, F>(span: tracing::Span, future: F) -> Result<T, Status>
 where
     F: Future<Output = Result<T, Status>>,
@@ -249,24 +272,6 @@ pub(crate) fn workspace_name_from_proto(
 pub(crate) fn workspace_to_proto(workspace_name: &WorkspaceName) -> Workspace {
     Workspace {
         name: workspace_name.as_str().to_string(),
-    }
-}
-
-/// Extracts and validates the originating episode from request metadata.
-///
-/// Episode attribution is best-effort: a missing `coral-episode-id` yields
-/// `None`, and a present-but-malformed value is ignored (debug-logged) rather
-/// than failing the call — the query is valid regardless of its trajectory tag.
-pub(crate) fn episode_id_from_metadata(
-    metadata: &tonic::metadata::MetadataMap,
-) -> Option<EpisodeId> {
-    let value = metadata.get(CORAL_EPISODE_ID_METADATA_KEY)?.to_str().ok()?;
-    match EpisodeId::parse(value) {
-        Ok(episode_id) => Some(episode_id),
-        Err(error) => {
-            tracing::debug!(%error, "ignoring malformed coral-episode-id metadata");
-            None
-        }
     }
 }
 
@@ -484,17 +489,18 @@ mod tests {
     )]
 
     use coral_api::{
-        grpc_response_status_code,
+        CORAL_EPISODE_ID_METADATA_KEY, grpc_response_status_code,
         v1::{QueryTestFailure, Workspace, query_test_result},
     };
     use tonic::{Code, Request};
 
     use super::{
-        GrpcMethodMetadata, GrpcServerMethod, episode_id_from_metadata, grpc_method, query_status,
+        GrpcMethodMetadata, GrpcServerMethod, annotate_request_context, grpc_method, query_status,
         query_test_result_to_proto, table_summary_to_proto, table_to_proto,
         workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
+    use crate::episode::EpisodeId;
     use crate::query::manager::QueryManagerError;
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
@@ -581,30 +587,42 @@ mod tests {
     }
 
     #[test]
-    fn episode_id_from_metadata_extracts_valid_id() {
-        let mut metadata = tonic::metadata::MetadataMap::new();
-        metadata.insert("coral-episode-id", "ep_123".parse().expect("ascii value"));
+    fn annotate_request_context_extracts_valid_episode_id() {
+        let mut request = tonic::codegen::http::Request::builder()
+            .uri("/coral.v1.QueryService/ExecuteSql")
+            .header(CORAL_EPISODE_ID_METADATA_KEY, "ep_123")
+            .body(())
+            .expect("request");
 
-        let episode_id = episode_id_from_metadata(&metadata).expect("valid id is extracted");
+        annotate_request_context(&mut request);
 
+        let episode_id = request
+            .extensions()
+            .get::<EpisodeId>()
+            .expect("episode id extension");
         assert_eq!(episode_id.as_str(), "ep_123");
     }
 
     #[test]
-    fn episode_id_from_metadata_ignores_absent_and_malformed() {
-        let absent = tonic::metadata::MetadataMap::new();
+    fn annotate_request_context_ignores_absent_and_malformed_episode_id() {
+        let mut absent = tonic::codegen::http::Request::builder()
+            .uri("/coral.v1.QueryService/ExecuteSql")
+            .body(())
+            .expect("request");
+        annotate_request_context(&mut absent);
         assert!(
-            episode_id_from_metadata(&absent).is_none(),
+            absent.extensions().get::<EpisodeId>().is_none(),
             "a missing coral-episode-id yields no attribution"
         );
 
-        let mut malformed = tonic::metadata::MetadataMap::new();
-        malformed.insert(
-            "coral-episode-id",
-            "has space".parse().expect("ascii value"),
-        );
+        let mut malformed = tonic::codegen::http::Request::builder()
+            .uri("/coral.v1.QueryService/ExecuteSql")
+            .header(CORAL_EPISODE_ID_METADATA_KEY, "has space")
+            .body(())
+            .expect("request");
+        annotate_request_context(&mut malformed);
         assert!(
-            episode_id_from_metadata(&malformed).is_none(),
+            malformed.extensions().get::<EpisodeId>().is_none(),
             "a malformed id is ignored, not surfaced"
         );
     }

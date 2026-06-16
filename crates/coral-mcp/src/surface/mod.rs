@@ -21,5 +21,5 @@ pub(crate) use tools::{
     describe_table_tool, feedback_tool, list_catalog_arguments, list_catalog_tool,
     list_columns_arguments, list_columns_tool, open_episode_arguments, open_episode_tool,
     optional_episode_id_argument, required_string_argument, search_catalog_arguments,
-    search_catalog_tool, sql_tool,
+    search_catalog_tool, sql_tool, with_episode_id_argument,
 };

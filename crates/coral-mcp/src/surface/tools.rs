@@ -17,7 +17,6 @@ const EPISODE_ID_JSON_SCHEMA_PATTERN: &str = "^[!-~]+$";
 pub(crate) struct ToolDescriptionContext {
     pub(crate) visible_table_count: usize,
     pub(crate) visible_function_count: usize,
-    pub(crate) episodes_enabled: bool,
     connected_source_names: Vec<String>,
 }
 
@@ -32,15 +31,8 @@ impl ToolDescriptionContext {
         Self {
             visible_table_count,
             visible_function_count,
-            episodes_enabled: false,
             connected_source_names,
         }
-    }
-
-    #[must_use]
-    pub(crate) fn with_episodes_enabled(mut self, episodes_enabled: bool) -> Self {
-        self.episodes_enabled = episodes_enabled;
-        self
     }
 
     fn connected_sources_sentence(&self) -> String {
@@ -94,8 +86,7 @@ pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "sql",
         sql_tool_description(context),
-        tool_input_schema(
-            json!({
+        json_object_schema(&json!({
             "type": "object",
             "required": ["sql"],
             "properties": {
@@ -104,9 +95,7 @@ pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
                     "description": "One read-only SQL statement to execute against the Coral database and its configured connected source schemas."
                 }
             }
-        }),
-            context.episodes_enabled,
-        ),
+        })),
     )
     .with_annotations(
         ToolAnnotations::with_title("Run SQL")
@@ -126,8 +115,7 @@ pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
             context.visible_table_count,
             context.visible_function_count
         ),
-        tool_input_schema(
-            json!({
+        json_object_schema(&json!({
             "type": "object",
             "properties": {
                 "schema": {
@@ -161,9 +149,7 @@ pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
                     "default": 0
                 }
             }
-        }),
-            context.episodes_enabled,
-        ),
+        })),
     )
     .with_raw_output_schema(list_catalog_output_schema())
     .with_annotations(
@@ -179,8 +165,7 @@ pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "search_catalog",
         search_catalog_description(context),
-        tool_input_schema(
-            json!({
+        json_object_schema(&json!({
             "type": "object",
             "required": ["pattern"],
             "properties": {
@@ -223,9 +208,7 @@ pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
                     "default": 0
                 }
             }
-        }),
-            context.episodes_enabled,
-        ),
+        })),
     )
     .with_raw_output_schema(search_catalog_output_schema())
     .with_annotations(
@@ -237,27 +220,24 @@ pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
     )
 }
 
-pub(crate) fn describe_table_tool(context: &ToolDescriptionContext) -> Tool {
+pub(crate) fn describe_table_tool() -> Tool {
     Tool::new(
         "describe_table",
         "Describe one database table without returning full column definitions.",
-        tool_input_schema(
-            json!({
-                "type": "object",
-                "required": ["schema", "table"],
-                "properties": {
-                    "schema": {
-                        "type": "string",
-                        "description": "Exact SQL schema name."
-                    },
-                    "table": {
-                        "type": "string",
-                        "description": "Exact table name within the SQL schema."
-                    }
+        json_object_schema(&json!({
+            "type": "object",
+            "required": ["schema", "table"],
+            "properties": {
+                "schema": {
+                    "type": "string",
+                    "description": "Exact SQL schema name."
+                },
+                "table": {
+                    "type": "string",
+                    "description": "Exact table name within the SQL schema."
                 }
-            }),
-            context.episodes_enabled,
-        ),
+            }
+        })),
     )
     .with_annotations(
         ToolAnnotations::with_title("Describe Table")
@@ -268,12 +248,11 @@ pub(crate) fn describe_table_tool(context: &ToolDescriptionContext) -> Tool {
     )
 }
 
-pub(crate) fn list_columns_tool(context: &ToolDescriptionContext) -> Tool {
+pub(crate) fn list_columns_tool() -> Tool {
     Tool::new(
         "list_columns",
         "List columns for one database table with optional regex and required-filter narrowing.",
-        tool_input_schema(
-            json!({
+        json_object_schema(&json!({
             "type": "object",
             "required": ["schema", "table"],
             "properties": {
@@ -312,9 +291,7 @@ pub(crate) fn list_columns_tool(context: &ToolDescriptionContext) -> Tool {
                     "default": 0
                 }
             }
-        }),
-            context.episodes_enabled,
-        ),
+        })),
     )
     .with_raw_output_schema(list_columns_output_schema())
     .with_annotations(
@@ -326,12 +303,11 @@ pub(crate) fn list_columns_tool(context: &ToolDescriptionContext) -> Tool {
     )
 }
 
-pub(crate) fn feedback_tool(context: &ToolDescriptionContext) -> Tool {
+pub(crate) fn feedback_tool() -> Tool {
     Tool::new(
         "feedback",
         "Submit feedback when you are blocked. Coral stores the report locally and uploads an anonymous copy, without user identifiers, to Coral's hosted feedback service to improve Coral's performance.",
-        tool_input_schema(
-            json!({
+        json_object_schema(&json!({
             "type": "object",
             "required": ["trying_to_do", "tried", "stuck"],
             "properties": {
@@ -348,9 +324,7 @@ pub(crate) fn feedback_tool(context: &ToolDescriptionContext) -> Tool {
                     "description": "Where you got blocked."
                 }
             }
-        }),
-            context.episodes_enabled,
-        ),
+        })),
     )
     .with_annotations(
         ToolAnnotations::with_title("Store Feedback Report")
@@ -549,17 +523,13 @@ fn connected_source_names_text(source_names: &[String]) -> Option<String> {
     Some(source_names.join(", "))
 }
 
-fn tool_input_schema(mut value: Value, episodes_enabled: bool) -> Arc<Map<String, Value>> {
-    if episodes_enabled {
-        add_episode_id_property(&mut value);
-    }
-    json_object_schema(&value)
+pub(crate) fn with_episode_id_argument(mut tool: Tool) -> Tool {
+    add_episode_id_property(Arc::make_mut(&mut tool.input_schema));
+    tool
 }
 
-fn add_episode_id_property(value: &mut Value) {
-    value
-        .as_object_mut()
-        .expect("tool input schema is an object")
+fn add_episode_id_property(schema: &mut Map<String, Value>) {
+    schema
         .entry("properties")
         .or_insert_with(|| json!({}))
         .as_object_mut()
@@ -1018,8 +988,9 @@ mod tests {
     use serde_json::{Map, Value, json};
 
     use super::{
-        ToolDescriptionContext, build_tool_result, connected_source_names_text,
-        list_catalog_arguments, search_catalog_arguments, search_catalog_tool, sql_tool,
+        EPISODE_ID_ARGUMENT_DESCRIPTION, ToolDescriptionContext, build_tool_result,
+        connected_source_names_text, list_catalog_arguments, search_catalog_arguments,
+        search_catalog_tool, sql_tool, with_episode_id_argument,
     };
 
     #[test]
@@ -1092,6 +1063,31 @@ mod tests {
             .expect("search description");
         assert!(search_description.contains("Connected sources/schemas include: github, linear"));
         assert!(search_description.contains("42 table(s) and 3 table function(s)"));
+    }
+
+    #[test]
+    fn with_episode_id_argument_decorates_tool_schema() {
+        let context = ToolDescriptionContext::new(1, 0, Vec::new());
+        let tool = sql_tool(&context);
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("input properties");
+        assert!(!properties.contains_key("episode_id"));
+
+        let tool = with_episode_id_argument(tool);
+        let episode_id_schema = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|properties| properties.get("episode_id"))
+            .expect("episode_id schema");
+
+        assert_eq!(
+            episode_id_schema.get("description").and_then(Value::as_str),
+            Some(EPISODE_ID_ARGUMENT_DESCRIPTION)
+        );
     }
 
     #[test]
