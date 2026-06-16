@@ -334,12 +334,12 @@ impl SourceServiceApi for SourceService {
                 };
                 let bindings = source_bindings_from_proto(variables, secrets);
                 if oauth_credential_retrievals.is_empty() {
-                    let command = ImportSourceCommand {
+                    let command = import_source_command(
                         manifest_yaml,
                         bindings,
                         identity_bindings,
                         replace_identity_bindings,
-                    };
+                    );
                     return import_source_without_credentials(
                         sources,
                         identity_context,
@@ -349,17 +349,14 @@ impl SourceServiceApi for SourceService {
                     )
                     .await;
                 }
-                let command = ImportSourceWithCredentialsCommand {
+                let command = import_source_with_credentials_command(
                     manifest_yaml,
                     bindings,
-                    oauth_credential_retrievals: oauth_credential_retrievals
-                        .into_iter()
-                        .map(oauth_credential_retrieval_from_proto)
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(app_status)?,
+                    oauth_credential_retrievals,
                     identity_bindings,
                     replace_identity_bindings,
-                };
+                )
+                .map_err(app_status)?;
                 let stream =
                     import_source_response_stream(response_workspace_name, move |event_sender| {
                         instrument_grpc(span, async move {
@@ -497,6 +494,43 @@ async fn import_source_with_identity_specs(
             Err(error)
         }
     }
+}
+
+fn import_source_command(
+    manifest_yaml: String,
+    bindings: SourceBindings,
+    identity_bindings: BTreeMap<String, AppSourceIdentityBinding>,
+    replace_identity_bindings: bool,
+) -> ImportSourceCommand {
+    ImportSourceCommand {
+        source_name: None,
+        source_spec_id: None,
+        manifest_yaml,
+        bindings,
+        identity_bindings,
+        replace_identity_bindings,
+    }
+}
+
+fn import_source_with_credentials_command(
+    manifest_yaml: String,
+    bindings: SourceBindings,
+    oauth_credential_retrievals: Vec<OAuthCredentialRetrieval>,
+    identity_bindings: BTreeMap<String, AppSourceIdentityBinding>,
+    replace_identity_bindings: bool,
+) -> Result<ImportSourceWithCredentialsCommand, AppError> {
+    Ok(ImportSourceWithCredentialsCommand {
+        source_name: None,
+        source_spec_id: None,
+        manifest_yaml,
+        bindings,
+        oauth_credential_retrievals: oauth_credential_retrievals
+            .into_iter()
+            .map(oauth_credential_retrieval_from_proto)
+            .collect::<Result<Vec<_>, _>>()?,
+        identity_bindings,
+        replace_identity_bindings,
+    })
 }
 
 async fn import_source_with_credentials_and_identity_specs(

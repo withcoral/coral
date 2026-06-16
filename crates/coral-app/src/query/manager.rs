@@ -400,14 +400,23 @@ impl QueryManager {
                 v4,
             )?;
             Some(
-                runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
-                    incompatible_materialization_error(
-                        &source.name,
-                        format!("failed to assemble runtime package: {error}"),
-                    )
-                })?,
+                runtime_components_for_v4_source(v4, &materialized, source.name.as_str()).map_err(
+                    |error| {
+                        incompatible_materialization_error(
+                            &source.name,
+                            format!("failed to assemble runtime package: {error}"),
+                        )
+                    },
+                )?,
             )
         } else {
+            if source.name.as_str() != source_spec.schema_name() {
+                return Err(AppError::FailedPrecondition(format!(
+                    "installed source alias '{}' for source spec '{}' requires DSL v4",
+                    source.name,
+                    source_spec.schema_name()
+                )));
+            }
             None
         };
         validate_required_variables(source, source_spec.declared_inputs())?;
@@ -447,7 +456,7 @@ impl QueryManager {
         let query_source = if let Some(components) = v4_runtime_components {
             QuerySource::from_runtime_components(
                 RuntimeSourcePackage {
-                    source_name: source_spec.schema_name().to_string(),
+                    source_name: source.name.as_str().to_string(),
                     authored_version: source_spec.source_version().map(ToString::to_string),
                     description: source_spec.description().to_string(),
                     declared_inputs: source_spec.declared_inputs().to_vec(),
@@ -1246,6 +1255,26 @@ paths:
         identity_accepts_yaml: Option<&str>,
         identity_bindings: BTreeMap<String, SourceIdentityBinding>,
     ) {
+        import_v4_source_as(
+            source_manager,
+            workspace_name,
+            source_name,
+            source_name,
+            server,
+            identity_accepts_yaml,
+            identity_bindings,
+        );
+    }
+
+    fn import_v4_source_as(
+        source_manager: &SourceManager,
+        workspace_name: &WorkspaceName,
+        source_spec_id: &str,
+        source_name: &str,
+        server: &MockServer,
+        identity_accepts_yaml: Option<&str>,
+        identity_bindings: BTreeMap<String, SourceIdentityBinding>,
+    ) {
         let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         let openapi_yaml = issues_openapi_yaml(server);
@@ -1258,9 +1287,12 @@ paths:
             .import_source(
                 workspace_name,
                 &ImportSourceCommand {
+                    source_name: (source_name != source_spec_id)
+                        .then(|| SourceName::parse(source_name).expect("source alias")),
+                    source_spec_id: Some(SourceName::parse(source_spec_id).expect("source spec")),
                     manifest_yaml: format!(
                         r"
-name: {source_name}
+name: {source_spec_id}
 dsl_version: 4
 surfaces:
   - id: rest
@@ -1332,6 +1364,7 @@ surfaces:
     fn imported_source(source_name: &SourceName) -> InstalledSource {
         InstalledSource {
             name: source_name.clone(),
+            source_spec_id: None,
             version: None,
             variables: BTreeMap::new(),
             secrets: Vec::new(),
@@ -1553,6 +1586,45 @@ tables:
         assert_eq!(
             execution_to_rows(&execution),
             vec![json!({"id": 1, "title": "Generated runtime package"})]
+        );
+    }
+
+    #[tokio::test]
+    async fn aliased_v4_source_queries_through_installed_source_name() {
+        let server = MockServer::start().await;
+        mount_issues_endpoint(
+            &server,
+            false,
+            json!([{"id": 7, "title": "Aliased runtime package"}]),
+        )
+        .await;
+
+        let fixture = query_manager_with_features(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            dsl_v4_features(),
+        );
+        import_v4_source_as(
+            &v4_source_manager(&fixture),
+            &WorkspaceName::default(),
+            "github_v4_query",
+            "github_alias",
+            &server,
+            None,
+            BTreeMap::new(),
+        );
+
+        let execution = run_sql(
+            &fixture,
+            &local_request_principal(),
+            "SELECT id, title FROM github_alias.issues",
+        )
+        .await
+        .expect("query executes through installed alias");
+
+        assert_eq!(
+            execution_to_rows(&execution),
+            vec![json!({"id": 7, "title": "Aliased runtime package"})]
         );
     }
 

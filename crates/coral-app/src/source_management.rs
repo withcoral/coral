@@ -12,6 +12,11 @@ use crate::workspaces::WorkspaceName;
 
 /// Source import command accepted by [`SourceManagementHandle`].
 pub struct ImportManagedSourceCommand {
+    /// Optional workspace-installed source name. When omitted, the manifest's
+    /// source-spec id is used as the installed name.
+    pub source_name: Option<String>,
+    /// Optional source-spec id expected in `manifest_yaml`.
+    pub source_spec_id: Option<String>,
     /// Source manifest YAML to install into the workspace.
     pub manifest_yaml: String,
     /// Non-secret source variables.
@@ -53,9 +58,19 @@ impl SourceManagementHandle {
         command: ImportManagedSourceCommand,
     ) -> Result<ManagedSource, AppError> {
         let workspace_name = WorkspaceName::parse(workspace_id)?;
+        let source_name = command
+            .source_name
+            .map(|name| SourceName::parse(&name))
+            .transpose()?;
+        let source_spec_id = command
+            .source_spec_id
+            .map(|id| SourceName::parse(&id))
+            .transpose()?;
         let installed = self.sources.import_source(
             &workspace_name,
             &ManagerImportSourceCommand {
+                source_name,
+                source_spec_id,
                 manifest_yaml: command.manifest_yaml,
                 bindings: SourceBindings {
                     variables: command

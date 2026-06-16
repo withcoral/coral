@@ -218,6 +218,11 @@ pub struct SourceRegistryRecord {
     pub workspace_id: String,
     /// Installed source name.
     pub source_name: String,
+    /// Authored source-spec id declared by the imported manifest.
+    ///
+    /// When absent, registries should treat `source_name` as the source-spec id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_spec_id: Option<String>,
     /// Persisted source version, when applicable.
     pub version: Option<String>,
     /// Imported source manifest YAML.
@@ -268,6 +273,7 @@ pub(crate) fn record_from_installed_source(
     SourceRegistryRecord {
         workspace_id: workspace_name.as_str().to_string(),
         source_name: source.name.as_str().to_string(),
+        source_spec_id: source.source_spec_id,
         version: source.version,
         manifest_yaml: None,
         variables: source.variables,
@@ -289,9 +295,14 @@ pub(crate) fn installed_source_from_record(
         )));
     }
     let source_name = SourceName::parse(&record.source_name)?;
+    let source_spec_id = record
+        .source_spec_id
+        .map(|id| SourceName::parse(&id).map(|parsed| parsed.as_str().to_string()))
+        .transpose()?;
     validate_registry_identity_bindings(source_name.as_str(), &record.identity_bindings)?;
     Ok(InstalledSource {
         name: source_name,
+        source_spec_id,
         version: record.version,
         variables: record.variables,
         secrets: record.secrets,

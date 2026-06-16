@@ -16,13 +16,15 @@ use crate::bootstrap::AppError;
 pub(crate) fn runtime_components_for_v4_source(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
+    runtime_source_name: &str,
 ) -> Result<Vec<RuntimeSourceComponent>, AppError> {
     let mut components = Vec::new();
     for surface in &manifest.surfaces {
         if !has_published_projection(materialized, &surface.id) {
             continue;
         }
-        let http_manifest = http_manifest_for_surface(manifest, materialized, &surface.id)?;
+        let http_manifest =
+            http_manifest_for_surface(manifest, materialized, &surface.id, runtime_source_name)?;
         let http_component =
             if let Some(identity_requirements) = surface.identity_requirements.clone() {
                 RuntimeHttpSourceComponent::with_identity_requirements(
@@ -53,6 +55,7 @@ fn http_manifest_for_surface(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
     surface_id: &str,
+    runtime_source_name: &str,
 ) -> Result<HttpSourceManifest, AppError> {
     let surface = manifest.surface(surface_id).ok_or_else(|| {
         AppError::FailedPrecondition(format!("DSL v4 manifest is missing surface '{surface_id}'"))
@@ -141,7 +144,7 @@ fn http_manifest_for_surface(
     Ok(HttpSourceManifest {
         common: SourceManifestCommon {
             dsl_version: manifest.common.dsl_version,
-            name: manifest.common.name.clone(),
+            name: runtime_source_name.to_string(),
             version: String::new(),
             description: manifest.common.description.clone(),
             test_queries: Vec::new(),
