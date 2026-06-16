@@ -113,6 +113,18 @@ pub trait IdentitySpecRegistry: Send + Sync + std::fmt::Debug + 'static {
     fn get_identity_spec(&self, name: &str)
     -> Result<Option<IdentitySpecRegistryRecord>, AppError>;
 
+    /// Fetches one identity spec manifest by name without hydrating stored
+    /// setup input material.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the registry cannot be read.
+    fn get_identity_spec_manifest_yaml(&self, name: &str) -> Result<Option<String>, AppError> {
+        Err(AppError::FailedPrecondition(format!(
+            "identity spec registry does not support manifest-only lookup for '{name}'"
+        )))
+    }
+
     /// Inserts or replaces one identity spec.
     ///
     /// # Errors
@@ -319,6 +331,17 @@ impl IdentitySpecManager {
         self.load_identity_spec_unlocked(&name)
     }
 
+    pub(crate) fn get_identity_spec_manifest(
+        &self,
+        name: &str,
+    ) -> Result<IdentitySpecRecord, AppError> {
+        let span = info_span!("coral.app.identity_specs.get_manifest");
+        let _guard = span.enter();
+        let name = validate_identity_spec_name(name)?;
+        let _lock = FileLock::shared(self.layout.state_lock())?;
+        self.load_identity_spec_manifest_unlocked(&name)
+    }
+
     pub(crate) fn snapshot_identity_spec(
         &self,
         name: &str,
@@ -397,14 +420,32 @@ impl IdentitySpecManager {
         let Some(stored) = self.registry.get_identity_spec(&name)? else {
             return Err(AppError::IdentitySpecNotFound(name));
         };
-        let record = parse_identity_spec_record(&stored.manifest_yaml)?;
-        if record.manifest.name != name {
-            return Err(AppError::FailedPrecondition(format!(
-                "identity spec registry record '{name}' contains identity spec '{}'",
-                record.manifest.name
-            )));
+        Self::parse_identity_spec_manifest_unlocked(&name, &stored.manifest_yaml)
+    }
+
+    fn load_identity_spec_manifest_unlocked(
+        &self,
+        name: &str,
+    ) -> Result<IdentitySpecRecord, AppError> {
+        let name = validate_identity_spec_name(name)?;
+        let Some(manifest_yaml) = self.registry.get_identity_spec_manifest_yaml(&name)? else {
+            return Err(AppError::IdentitySpecNotFound(name));
+        };
+        Self::parse_identity_spec_manifest_unlocked(&name, &manifest_yaml)
+    }
+
+    fn parse_identity_spec_manifest_unlocked(
+        name: &str,
+        manifest_yaml: &str,
+    ) -> Result<IdentitySpecRecord, AppError> {
+        let record = parse_identity_spec_record(manifest_yaml)?;
+        if record.manifest.name == name {
+            return Ok(record);
         }
-        Ok(record)
+        Err(AppError::FailedPrecondition(format!(
+            "identity spec registry record '{name}' contains identity spec '{}'",
+            record.manifest.name
+        )))
     }
 
     fn count_identities_for_spec_unlocked(
@@ -606,12 +647,10 @@ impl IdentitySpecRegistry for FileIdentitySpecRegistry {
         &self,
         name: &str,
     ) -> Result<Option<IdentitySpecRegistryRecord>, AppError> {
-        let name = validate_identity_spec_name(name)?;
-        let path = self.layout.identity_spec_manifest_file(&name);
-        if !path.exists() {
+        let Some(manifest_yaml) = self.get_identity_spec_manifest_yaml(name)? else {
             return Ok(None);
-        }
-        let manifest_yaml = fs::read_to_string(&path)?;
+        };
+        let name = validate_identity_spec_name(name)?;
         let state = self.load_input_material_state(&name)?;
         let input_material = match state.credential_storage {
             Some(storage) => self.read_input_material(&name, storage)?,
@@ -621,6 +660,15 @@ impl IdentitySpecRegistry for FileIdentitySpecRegistry {
             manifest_yaml,
             input_material,
         }))
+    }
+
+    fn get_identity_spec_manifest_yaml(&self, name: &str) -> Result<Option<String>, AppError> {
+        let name = validate_identity_spec_name(name)?;
+        let path = self.layout.identity_spec_manifest_file(&name);
+        if !path.exists() {
+            return Ok(None);
+        }
+        fs::read_to_string(&path).map(Some).map_err(Into::into)
     }
 
     fn upsert_identity_spec(
