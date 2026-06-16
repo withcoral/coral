@@ -270,18 +270,17 @@ fn dynamic_client_registration_auth_method_from_proto(
     method: i32,
 ) -> Result<ManifestOAuthDynamicClientRegistrationAuthMethod, SourceInputDecodeError> {
     match OauthDynamicClientRegistrationAuthMethod::try_from(method) {
-        Ok(OauthDynamicClientRegistrationAuthMethod::None) => {
-            Ok(ManifestOAuthDynamicClientRegistrationAuthMethod::None)
-        }
+        Ok(
+            OauthDynamicClientRegistrationAuthMethod::None
+            | OauthDynamicClientRegistrationAuthMethod::Unspecified,
+        ) => Ok(ManifestOAuthDynamicClientRegistrationAuthMethod::None),
         Ok(OauthDynamicClientRegistrationAuthMethod::ClientSecretBasic) => {
             Ok(ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretBasic)
         }
         Ok(OauthDynamicClientRegistrationAuthMethod::ClientSecretPost) => {
             Ok(ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretPost)
         }
-        Ok(OauthDynamicClientRegistrationAuthMethod::Unspecified) | Err(_) => {
-            Err(SourceInputDecodeError::UnknownOAuthDynamicClientRegistrationAuthMethod)
-        }
+        Err(_) => Err(SourceInputDecodeError::UnknownOAuthDynamicClientRegistrationAuthMethod),
     }
 }
 
@@ -316,8 +315,8 @@ mod tests {
 
     use coral_api::v1::{
         OAuthCredentialClient, OAuthCredentialClientId, OAuthCredentialEndpoints,
-        OAuthCredentialMethod, SourceConfigCredentialMethod, SourceSecretInput,
-        source_credential_method::Method as ProtoCredentialMethod,
+        OAuthCredentialMethod, OAuthDynamicClientRegistration, SourceConfigCredentialMethod,
+        SourceSecretInput, source_credential_method::Method as ProtoCredentialMethod,
         source_input_spec::Input as ProtoSourceInput,
     };
 
@@ -353,6 +352,32 @@ mod tests {
                 },
             ))),
         }
+    }
+
+    fn decode_first_oauth_method(
+        method: SourceCredentialMethod,
+    ) -> Result<ManifestOAuthCredentialSpec, SourceInputDecodeError> {
+        let input = SourceInputSpec {
+            key: "API_TOKEN".to_string(),
+            required: true,
+            hint: String::new(),
+            input: Some(ProtoSourceInput::Secret(SourceSecretInput {
+                credential: Some(SourceCredential {
+                    methods: vec![method],
+                }),
+            })),
+        };
+        manifest_input_from_proto(&input).map(|input| {
+            input
+                .credential
+                .expect("credential")
+                .methods
+                .into_iter()
+                .next()
+                .expect("method")
+                .oauth
+                .expect("oauth")
+        })
     }
 
     #[test]
@@ -427,6 +452,102 @@ mod tests {
             credential.methods[1].kind,
             ManifestCredentialMethodKind::SourceConfig
         );
+    }
+
+    #[test]
+    fn manifest_input_from_proto_preserves_oauth_resource_and_dynamic_registration() {
+        let mut method = authorization_code_oauth_method_proto();
+        let Some(ProtoCredentialMethod::Oauth(oauth)) = method.method.as_mut() else {
+            panic!("expected oauth method");
+        };
+        oauth.resource = "https://mcp.example.com/mcp".to_string();
+        let client = oauth.client.as_mut().expect("oauth client");
+        client.id = None;
+        client.dynamic_registration = Some(OAuthDynamicClientRegistration {
+            registration_url: "https://provider.example.com/oauth/register".to_string(),
+            client_name: "Coral MCP".to_string(),
+            token_endpoint_auth_method: OauthDynamicClientRegistrationAuthMethod::ClientSecretPost
+                as i32,
+            request_refresh_token_grant: true,
+        });
+
+        let oauth = decode_first_oauth_method(method).expect("oauth method");
+
+        assert_eq!(
+            oauth.resource.as_deref(),
+            Some("https://mcp.example.com/mcp")
+        );
+        assert!(oauth.client.id.default.is_none());
+        assert!(oauth.client.id.input.is_none());
+        let registration = oauth
+            .client
+            .dynamic_registration
+            .expect("dynamic registration");
+        assert_eq!(
+            registration.registration_url,
+            "https://provider.example.com/oauth/register"
+        );
+        assert_eq!(registration.client_name.as_deref(), Some("Coral MCP"));
+        assert_eq!(
+            registration.token_endpoint_auth_method,
+            ManifestOAuthDynamicClientRegistrationAuthMethod::ClientSecretPost
+        );
+        assert!(registration.request_refresh_token_grant);
+    }
+
+    #[test]
+    fn manifest_input_from_proto_defaults_unspecified_dynamic_registration_auth_method_to_none() {
+        let mut method = authorization_code_oauth_method_proto();
+        let Some(ProtoCredentialMethod::Oauth(oauth)) = method.method.as_mut() else {
+            panic!("expected oauth method");
+        };
+        oauth
+            .client
+            .as_mut()
+            .expect("oauth client")
+            .dynamic_registration = Some(OAuthDynamicClientRegistration {
+            registration_url: "https://provider.example.com/oauth/register".to_string(),
+            client_name: String::new(),
+            token_endpoint_auth_method: OauthDynamicClientRegistrationAuthMethod::Unspecified
+                as i32,
+            request_refresh_token_grant: false,
+        });
+
+        let oauth = decode_first_oauth_method(method).expect("omitted auth method should decode");
+        let registration = oauth
+            .client
+            .dynamic_registration
+            .expect("dynamic registration");
+
+        assert_eq!(
+            registration.token_endpoint_auth_method,
+            ManifestOAuthDynamicClientRegistrationAuthMethod::None
+        );
+    }
+
+    #[test]
+    fn manifest_input_from_proto_rejects_unknown_dynamic_registration_auth_method() {
+        let mut method = authorization_code_oauth_method_proto();
+        let Some(ProtoCredentialMethod::Oauth(oauth)) = method.method.as_mut() else {
+            panic!("expected oauth method");
+        };
+        oauth
+            .client
+            .as_mut()
+            .expect("oauth client")
+            .dynamic_registration = Some(OAuthDynamicClientRegistration {
+            registration_url: "https://provider.example.com/oauth/register".to_string(),
+            client_name: String::new(),
+            token_endpoint_auth_method: 999,
+            request_refresh_token_grant: false,
+        });
+
+        let error = decode_first_oauth_method(method).expect_err("unknown auth method should fail");
+
+        assert!(matches!(
+            error,
+            SourceInputDecodeError::UnknownOAuthDynamicClientRegistrationAuthMethod
+        ));
     }
 
     fn source_input_with_oauth_flow(

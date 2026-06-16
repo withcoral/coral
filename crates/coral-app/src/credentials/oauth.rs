@@ -14,7 +14,7 @@ use coral_spec::{
     ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec,
     ManifestOAuthDynamicClientRegistrationAuthMethod, ManifestOAuthEndpointUrls,
     ManifestOAuthFlowKind, ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort,
-    ManifestOAuthScopeDelimiter,
+    ManifestOAuthScopeDelimiter, ParsedTemplate,
 };
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use serde_json::{Value, json};
@@ -1715,11 +1715,8 @@ fn oauth_refresh_config(
         .filter(|value| !value.is_empty())
         .cloned()
         .unwrap_or_else(|| oauth.token_url.clone());
-    let resource = material
-        .get(&format!("{metadata_prefix}resource"))
-        .filter(|value| !value.is_empty())
-        .cloned()
-        .or_else(|| oauth.resource.clone());
+    let resource =
+        oauth_refresh_resource(access_token_material_key, metadata_prefix, oauth, material)?;
     let client_secret_transport = material
         .get(&format!("{metadata_prefix}client_secret_transport"))
         .map(|value| {
@@ -1748,6 +1745,41 @@ fn oauth_refresh_config(
         refresh_token,
         resource,
     }))
+}
+
+fn oauth_refresh_resource(
+    access_token_material_key: &str,
+    metadata_prefix: &str,
+    oauth: &ManifestOAuthCredentialSpec,
+    material: &BTreeMap<String, String>,
+) -> Result<Option<String>, AppError> {
+    if let Some(resource) = material
+        .get(&format!("{metadata_prefix}resource"))
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(Some(resource.clone()));
+    }
+
+    let Some(resource_template) = oauth.resource.as_deref().filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let template = ParsedTemplate::parse(resource_template).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because OAuth resource metadata is missing and the manifest resource is invalid: {error}"
+        ))
+    })?;
+    if template.tokens().next().is_some() {
+        return Err(AppError::FailedPrecondition(format!(
+            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because rendered OAuth resource metadata is missing; reconnect the source"
+        )));
+    }
+
+    oauth.resource(&BTreeMap::new()).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because OAuth resource metadata is missing and the manifest resource is invalid: {error}"
+        ))
+    })
 }
 
 fn apply_refreshed_token(
@@ -2011,6 +2043,114 @@ mod tests {
             Some("rotated-refresh-token")
         );
         assert!(captured.authorization.is_none());
+    }
+
+    #[tokio::test]
+    async fn oauth_refresh_uses_stored_rendered_resource_metadata() {
+        let fixture = OAuthFixture::new(Some(
+            r#"{"access_token":"refreshed-token","token_type":"Bearer","expires_in":3600}"#,
+        ));
+        let mut oauth = oauth_spec(
+            &fixture.token_url,
+            free_loopback_port(),
+            ManifestOAuthPkceMode::Disabled,
+            ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("default-client".to_string()),
+                    input: None,
+                },
+                secret: None,
+                dynamic_registration: None,
+            },
+        );
+        oauth.resource = Some("https://{{input.MCP_HOST}}/mcp".to_string());
+        let prefix = oauth_metadata_prefix("API_TOKEN");
+        let mut material = BTreeMap::from([
+            ("API_TOKEN".to_string(), "expired-token".to_string()),
+            (format!("{prefix}method"), "oauth".to_string()),
+            (
+                format!("{prefix}access_token_expires_at"),
+                (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+            ),
+            (
+                format!("{prefix}refresh_token"),
+                "stored-refresh-token".to_string(),
+            ),
+            (format!("{prefix}client_id"), "stored-client".to_string()),
+            (format!("{prefix}token_url"), fixture.token_url.clone()),
+            (
+                format!("{prefix}resource"),
+                "https://mcp.example.com/mcp".to_string(),
+            ),
+        ]);
+        let service = OAuthCredentialService::new();
+
+        let refreshed = service
+            .refresh_if_needed(
+                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", &oauth),
+                &mut material,
+            )
+            .await
+            .expect("refresh oauth material");
+        let captured = fixture.token_server.await.expect("token server");
+
+        assert!(refreshed);
+        assert_eq!(
+            captured.form.get("resource").map(String::as_str),
+            Some("https://mcp.example.com/mcp")
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_refresh_rejects_template_resource_without_stored_metadata() {
+        let mut oauth = oauth_spec(
+            "http://127.0.0.1:9/token",
+            53682,
+            ManifestOAuthPkceMode::Disabled,
+            ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("default-client".to_string()),
+                    input: None,
+                },
+                secret: None,
+                dynamic_registration: None,
+            },
+        );
+        oauth.resource = Some("https://{{input.MCP_HOST}}/mcp".to_string());
+        let prefix = oauth_metadata_prefix("API_TOKEN");
+        let mut material = BTreeMap::from([
+            ("API_TOKEN".to_string(), "expired-token".to_string()),
+            (format!("{prefix}method"), "oauth".to_string()),
+            (
+                format!("{prefix}access_token_expires_at"),
+                (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+            ),
+            (
+                format!("{prefix}refresh_token"),
+                "stored-refresh-token".to_string(),
+            ),
+            (format!("{prefix}client_id"), "stored-client".to_string()),
+            (
+                format!("{prefix}token_url"),
+                "http://127.0.0.1:9/token".to_string(),
+            ),
+        ]);
+        let service = OAuthCredentialService::new();
+
+        let error = service
+            .refresh_if_needed(
+                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", &oauth),
+                &mut material,
+            )
+            .await
+            .expect_err("templated resource without stored metadata should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("rendered OAuth resource metadata is missing"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

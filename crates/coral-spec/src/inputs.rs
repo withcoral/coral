@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Map, Value};
 use url::Url;
 
-use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
+use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace, TemplatePart};
 
 const RESERVED_INPUT_KEY_PREFIXES: &[&str] = &["__coral"];
 
@@ -153,7 +153,7 @@ impl ManifestOAuthCredentialSpec {
     pub fn resource(&self, source_inputs: &BTreeMap<String, String>) -> Result<Option<String>> {
         self.resource
             .as_deref()
-            .map(|template| render_oauth_url_template("resource", template, source_inputs))
+            .map(|template| render_oauth_resource_template(template, source_inputs))
             .transpose()
     }
 }
@@ -165,6 +165,7 @@ impl ManifestOAuthDynamicClientRegistrationSpec {
             "dynamic client registration",
             &self.registration_url,
             source_inputs,
+            OAuthUrlFragmentPolicy::Allow,
         )
     }
 }
@@ -174,13 +175,31 @@ fn render_oauth_endpoint_url(
     raw_template: &str,
     source_inputs: &BTreeMap<String, String>,
 ) -> Result<String> {
-    render_oauth_url_template(&format!("{label} URL"), raw_template, source_inputs)
+    render_oauth_url_template(
+        &format!("{label} URL"),
+        raw_template,
+        source_inputs,
+        OAuthUrlFragmentPolicy::Allow,
+    )
+}
+
+fn render_oauth_resource_template(
+    raw_template: &str,
+    source_inputs: &BTreeMap<String, String>,
+) -> Result<String> {
+    render_oauth_url_template(
+        "resource",
+        raw_template,
+        source_inputs,
+        OAuthUrlFragmentPolicy::Forbid,
+    )
 }
 
 fn render_oauth_url_template(
     label: &str,
     raw_template: &str,
     source_inputs: &BTreeMap<String, String>,
+    fragment_policy: OAuthUrlFragmentPolicy,
 ) -> Result<String> {
     let template = ParsedTemplate::parse(raw_template)?;
     let mut rendered = String::with_capacity(template.raw().len());
@@ -210,9 +229,29 @@ fn render_oauth_url_template(
             }
         }
     }
-    Url::parse(&rendered)
+    let url = Url::parse(&rendered)
         .map_err(|error| ManifestError::validation(format!("invalid OAuth {label}: {error}")))?;
+    validate_oauth_url_fragment_policy(&format!("OAuth {label}"), &url, fragment_policy)?;
     Ok(rendered)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OAuthUrlFragmentPolicy {
+    Allow,
+    Forbid,
+}
+
+fn validate_oauth_url_fragment_policy(
+    context: &str,
+    url: &Url,
+    fragment_policy: OAuthUrlFragmentPolicy,
+) -> Result<()> {
+    if fragment_policy == OAuthUrlFragmentPolicy::Forbid && url.fragment().is_some() {
+        return Err(ManifestError::validation(format!(
+            "{context} must not include a fragment"
+        )));
+    }
+    Ok(())
 }
 
 /// Supported loopback redirect URI port binding modes.
@@ -616,7 +655,7 @@ fn validate_oauth_endpoint_templates_for_method(
         )?;
     }
     if let Some(template) = oauth.resource.as_deref() {
-        validate_oauth_endpoint_template(input_key, "resource", template, declared, input_scope)?;
+        validate_oauth_resource_template(input_key, template, declared, input_scope)?;
     }
     if let Some(dynamic_registration) = oauth.client.dynamic_registration.as_ref() {
         validate_oauth_endpoint_template(
@@ -643,7 +682,48 @@ fn validate_oauth_endpoint_template(
     declared: &BTreeMap<&str, &ManifestInputSpec>,
     input_scope: &str,
 ) -> Result<()> {
+    validate_oauth_url_template(
+        input_key,
+        field,
+        raw_template,
+        declared,
+        input_scope,
+        OAuthUrlFragmentPolicy::Allow,
+    )
+}
+
+fn validate_oauth_resource_template(
+    input_key: &str,
+    raw_template: &str,
+    declared: &BTreeMap<&str, &ManifestInputSpec>,
+    input_scope: &str,
+) -> Result<()> {
+    validate_oauth_url_template(
+        input_key,
+        "resource",
+        raw_template,
+        declared,
+        input_scope,
+        OAuthUrlFragmentPolicy::Forbid,
+    )
+}
+
+fn validate_oauth_url_template(
+    input_key: &str,
+    field: &str,
+    raw_template: &str,
+    declared: &BTreeMap<&str, &ManifestInputSpec>,
+    input_scope: &str,
+    fragment_policy: OAuthUrlFragmentPolicy,
+) -> Result<()> {
     let template = ParsedTemplate::parse(raw_template)?;
+    let context = format!("manifest input '{input_key}' oauth.{field}");
+    if fragment_policy == OAuthUrlFragmentPolicy::Forbid && template_has_literal_fragment(&template)
+    {
+        return Err(ManifestError::validation(format!(
+            "{context} must not include a fragment"
+        )));
+    }
     let mut rendered = String::with_capacity(template.raw().len());
     let mut has_required_variable = false;
 
@@ -685,14 +765,22 @@ fn validate_oauth_endpoint_template(
     }
 
     if !has_required_variable {
-        Url::parse(&rendered).map_err(|error| {
+        let url = Url::parse(&rendered).map_err(|error| {
             ManifestError::validation(format!(
                 "manifest input '{input_key}' oauth.{field} is invalid: {error}"
             ))
         })?;
+        validate_oauth_url_fragment_policy(&context, &url, fragment_policy)?;
     }
 
     Ok(())
+}
+
+fn template_has_literal_fragment(template: &ParsedTemplate) -> bool {
+    template.parts().iter().any(|part| match part {
+        TemplatePart::Literal(literal) => literal.contains('#'),
+        TemplatePart::Token(_) => false,
+    })
 }
 
 fn parse_credential(input_key: &str, value: &Value) -> Result<ManifestCredentialSpec> {
@@ -1844,6 +1932,30 @@ tables: []
     }
 
     #[test]
+    fn rejects_oauth_resource_with_fragment() {
+        let error = collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "          oauth:\n",
+                "          oauth:\n            resource: https://mcp.example.com/mcp#fragment\n",
+            ),
+        )
+        .expect_err("resource fragments should fail validation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("oauth.resource must not include a fragment"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn parses_confidential_oauth_client_with_basic_auth() {
         let inputs = collect(&oauth_input(
             r"
@@ -2335,6 +2447,46 @@ tables: []
         assert_eq!(
             endpoints.token_url,
             "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
+        );
+    }
+
+    #[test]
+    fn resource_rendering_rejects_rendered_fragments_from_source_inputs() {
+        let oauth = ManifestOAuthCredentialSpec {
+            flow: ManifestOAuthFlowSpec {
+                kind: ManifestOAuthFlowKind::AuthorizationCode,
+                pkce: ManifestOAuthPkceMode::Disabled,
+            },
+            resource: Some("https://{{input.MCP_HOST}}/mcp".to_string()),
+            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
+            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
+            authorization_url: Some("https://provider.example.com/oauth/authorize".to_string()),
+            device_authorization_url: None,
+            token_url: "https://provider.example.com/oauth/token".to_string(),
+            client: ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("default-client".to_string()),
+                    input: None,
+                },
+                secret: None,
+                dynamic_registration: None,
+            },
+            scopes: None,
+        };
+        let source_inputs = BTreeMap::from([(
+            "MCP_HOST".to_string(),
+            "mcp.example.com#fragment".to_string(),
+        )]);
+
+        let error = oauth
+            .resource(&source_inputs)
+            .expect_err("rendered resource fragments should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("OAuth resource must not include a fragment"),
+            "unexpected error: {error}"
         );
     }
 
