@@ -132,7 +132,7 @@ pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
             "properties": {
                 "schema": {
                     "type": "string",
-                    "description": "Optional exact SQL schema/source name to list."
+                    "description": "Optional exact SQL schema name to list."
                 },
                 "kind": {
                     "description": "Optional item kind to list. Omit or pass null to list all catalog items.",
@@ -190,7 +190,7 @@ pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
                 },
                 "schema": {
                     "type": "string",
-                    "description": "Optional exact SQL schema/source name to search."
+                    "description": "Optional exact SQL schema name to search."
                 },
                 "kind": {
                     "description": "Optional item kind to search. Omit or pass null to search all catalog items.",
@@ -248,7 +248,7 @@ pub(crate) fn describe_table_tool(context: &ToolDescriptionContext) -> Tool {
                 "properties": {
                     "schema": {
                         "type": "string",
-                        "description": "Exact SQL schema/source name."
+                        "description": "Exact SQL schema name."
                     },
                     "table": {
                         "type": "string",
@@ -279,7 +279,7 @@ pub(crate) fn list_columns_tool(context: &ToolDescriptionContext) -> Tool {
             "properties": {
                 "schema": {
                     "type": "string",
-                    "description": "Exact SQL schema/source name."
+                    "description": "Exact SQL schema name."
                 },
                 "table": {
                     "type": "string",

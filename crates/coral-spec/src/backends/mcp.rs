@@ -7,7 +7,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
@@ -19,7 +20,7 @@ use crate::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
     validate_columns, validate_declared_relation_namespace, validate_filters_and_column_exprs,
-    validate_identifier, validate_test_queries, validate_unique_values,
+    validate_identifier, validate_source_name, validate_test_queries, validate_unique_values,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -53,7 +54,7 @@ struct RawMcpSourceManifest {
 }
 
 /// MCP server connection settings.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "transport", rename_all = "snake_case", deny_unknown_fields)]
 pub enum McpServerSpec {
     Stdio {
@@ -71,7 +72,7 @@ pub enum McpServerSpec {
 }
 
 /// Supported MCP transports.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum McpTransport {
     Stdio,
@@ -79,7 +80,7 @@ pub enum McpTransport {
 }
 
 /// One environment variable passed to a stdio MCP server process.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct McpEnvSpec {
     pub name: String,
     #[serde(flatten)]
@@ -87,7 +88,7 @@ pub struct McpEnvSpec {
 }
 
 /// HTTP authentication for Streamable HTTP MCP servers.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct McpHttpAuthSpec {
     #[serde(rename = "type")]
     kind: McpHttpAuthKind,
@@ -96,7 +97,7 @@ pub struct McpHttpAuthSpec {
 }
 
 /// Supported Streamable HTTP MCP auth schemes.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum McpHttpAuthKind {
     Bearer,
@@ -176,7 +177,7 @@ pub struct McpTableSpec {
 }
 
 /// How `LIMIT` pushes into an MCP tool argument.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpLimitBinding {
     pub tool_arg: String,
@@ -185,7 +186,7 @@ pub struct McpLimitBinding {
 }
 
 /// Cursor pagination for MCP tool results.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct McpPaginationSpec {
     pub cursor_arg: String,
@@ -398,8 +399,9 @@ impl McpSourceManifest {
                 "source '{name}' must define at least one function or table"
             )));
         }
+        validate_source_name(&name)?;
         validate_test_queries(&name, &test_queries)?;
-        validate_server(&name, &server, &declared_inputs)?;
+        validate_mcp_server(&name, &server, &declared_inputs)?;
         validate_declared_relation_namespace(
             &name,
             tables
@@ -432,7 +434,7 @@ impl McpSourceManifest {
     }
 }
 
-fn validate_server(
+pub(crate) fn validate_mcp_server(
     source_name: &str,
     server: &McpServerSpec,
     declared_inputs: &[ManifestInputSpec],

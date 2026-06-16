@@ -1,15 +1,17 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use arrow::array::{RecordBatch, UInt32Array};
-use arrow::compute::take;
+use arrow::array::{BooleanArray, RecordBatch, UInt32Array};
+use arrow::compute::{filter_record_batch, take};
 use arrow::datatypes::{Schema, SchemaRef};
 use coral_spec::backends::http::HttpTableSpec;
 use datafusion::common::{DataFusionError, Result};
 
 use crate::backends::schema_from_columns;
 use crate::backends::shared::mapping::convert_items;
-use crate::runtime::dependent_join::bindings::filter_values_for_tuple;
+use crate::runtime::dependent_join::bindings::{
+    Tuple, extract_binding_value, filter_values_for_tuple,
+};
 use crate::runtime::dependent_join::state::DependentJoinRuntimeState;
 
 #[derive(Clone, Copy)]
@@ -63,6 +65,16 @@ pub(crate) fn build_joined_batches(
             &HashMap::new(),
             rows,
         )?;
+        // The rewrite replaced the Join node, so nothing downstream re-applies
+        // the ON condition. APIs can resolve keyed lookups loosely (rename
+        // redirects, case-insensitive identifiers), so enforce the join
+        // equality here: keep only rows whose key columns match the binding,
+        // exactly as the unrewritten hash join would.
+        let dependent_batch =
+            filter_rows_matching_binding(&dependent_batch, binding_filters, tuple)?;
+        if dependent_batch.num_rows() == 0 {
+            continue;
+        }
         let dependent_batch = project_dependent_batch(&dependent_batch, dependent_projection)?;
 
         let mut resolver_rows_by_batch = BTreeMap::<usize, Vec<usize>>::new();
@@ -154,6 +166,47 @@ fn join_for_resolver_rows(
             Some("building dependent join output".into()),
         )
     })
+}
+
+/// Keeps only fetched rows whose join-key columns equal the binding tuple's
+/// values. `from_filter` echo columns are stamped with the binding value
+/// during conversion and pass trivially; path-backed columns carry real
+/// response data and can diverge when the API resolves a lookup loosely. A
+/// NULL key never matches, mirroring SQL join semantics.
+fn filter_rows_matching_binding(
+    batch: &RecordBatch,
+    binding_filters: &[String],
+    tuple: &Tuple,
+) -> Result<RecordBatch> {
+    let schema = batch.schema();
+    let mut key_columns = Vec::with_capacity(binding_filters.len());
+    for (filter, expected) in binding_filters.iter().zip(tuple.values()) {
+        let index = schema.index_of(filter).map_err(|error| {
+            DataFusionError::Internal(format!(
+                "dependent join key column '{filter}' missing from dependent schema: {error}"
+            ))
+        })?;
+        key_columns.push((batch.column(index), expected));
+    }
+
+    let mut mask = Vec::with_capacity(batch.num_rows());
+    for row in 0..batch.num_rows() {
+        let mut matches = true;
+        for (array, expected) in &key_columns {
+            if array.is_null(row) {
+                matches = false;
+                break;
+            }
+            let actual = extract_binding_value(array.as_ref(), row)?;
+            if !expected.join_matches(&actual) {
+                matches = false;
+                break;
+            }
+        }
+        mask.push(matches);
+    }
+
+    filter_record_batch(batch, &BooleanArray::from(mask)).map_err(arrow_error)
 }
 
 fn project_dependent_batch(batch: &RecordBatch, projection: &[usize]) -> Result<RecordBatch> {

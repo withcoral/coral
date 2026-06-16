@@ -100,6 +100,10 @@ pub(crate) struct RegisteredSource {
 }
 
 pub(crate) struct BackendRegistration {
+    pub(crate) schemas: Vec<BackendSchemaRegistration>,
+}
+
+pub(crate) struct BackendSchemaRegistration {
     pub(crate) tables: HashMap<String, Arc<dyn TableProvider>>,
     pub(crate) table_functions: SourceTableFunctions,
     pub(crate) source: RegisteredSource,

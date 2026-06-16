@@ -10,11 +10,11 @@ use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
-    RegisteredSource, RegisteredTable, SourceTableFunctions, build_registered_inputs,
-    build_registered_table, build_registered_table_function, internal_table_function_name,
-    registered_columns_from_specs, required_filter_names,
-    validate_lookup_key_filter_backend_support,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
+    BackendSchemaRegistration, CompiledBackendSource, RegisteredSource, RegisteredTable,
+    SourceTableFunctions, build_registered_inputs, build_registered_table,
+    build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
+    required_filter_names, validate_lookup_key_filter_backend_support,
 };
 use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
 use coral_spec::SourceBackend;
@@ -170,15 +170,18 @@ impl CompiledBackendSource for HttpCompiledSource {
             &secret_keys,
         );
 
+        let schema_name = self.manifest.common.name.clone();
         Ok(BackendRegistration {
-            tables,
-            table_functions,
-            source: RegisteredSource {
-                schema_name: self.manifest.common.name.clone(),
-                tables: table_infos,
-                table_functions: table_function_infos,
-                inputs,
-            },
+            schemas: vec![BackendSchemaRegistration {
+                tables,
+                table_functions,
+                source: RegisteredSource {
+                    schema_name,
+                    tables: table_infos,
+                    table_functions: table_function_infos,
+                    inputs,
+                },
+            }],
         })
     }
 }

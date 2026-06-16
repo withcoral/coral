@@ -28,8 +28,8 @@ async fn multi_component_source_executes_across_component_tables() {
         .mount(&server)
         .await;
 
-    let issues = http_component(&server.uri(), "issues", "/issues");
-    let pulls = http_component(&server.uri(), "pulls", "/pulls");
+    let issues = http_component(&server.uri(), "github", "issues", "/issues");
+    let pulls = http_component(&server.uri(), "github", "pulls", "/pulls");
     let source = QuerySource::from_runtime_components(
         RuntimeSourcePackage {
             source_name: "github".to_string(),
@@ -96,10 +96,160 @@ async fn composite_source_rejects_unsupported_lookup_key_component_backend() {
     );
 }
 
-fn http_component(base_url: &str, table_name: &str, path: &str) -> HttpSourceManifest {
+#[tokio::test]
+async fn multi_component_source_can_register_multiple_schemas() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 1, "title": "Issue"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/pulls"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 2, "title": "Pull"}
+        ])))
+        .mount(&server)
+        .await;
+
+    let issues = http_component(&server.uri(), "github_rest", "issues", "/issues");
+    let pulls = http_component(&server.uri(), "github_mcp", "pulls", "/pulls");
+    let source = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github".to_string(),
+            authored_version: None,
+            description: "Composite GitHub runtime package".to_string(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            components: vec![
+                RuntimeSourceComponent::Http(issues),
+                RuntimeSourceComponent::Http(pulls),
+            ],
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("runtime package");
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT 'issue' AS kind, id, title FROM github_rest.issues UNION ALL SELECT 'pull' AS kind, id, title FROM github_mcp.pulls ORDER BY kind",
+        )
+        .await
+        .expect("query should execute"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"kind": "issue", "id": 1, "title": "Issue"}),
+            json!({"kind": "pull", "id": 2, "title": "Pull"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn selected_sources_reject_runtime_schema_collisions() {
+    let server = MockServer::start().await;
+    let first = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github_v4".to_string(),
+            authored_version: None,
+            description: "Composite GitHub runtime package".to_string(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            components: vec![RuntimeSourceComponent::Http(http_component(
+                &server.uri(),
+                "github_v4_rest",
+                "issues",
+                "/issues",
+            ))],
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("first runtime package");
+    let second = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github_v4_rest".to_string(),
+            authored_version: None,
+            description: "Conflicting runtime package".to_string(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            components: vec![RuntimeSourceComponent::Http(http_component(
+                &server.uri(),
+                "github_v4_rest",
+                "pulls",
+                "/pulls",
+            ))],
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("second runtime package");
+
+    let error = CoralQuery::list_catalog(&[first, second], test_runtime(), None)
+        .await
+        .expect_err("duplicate selected schemas should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("runtime schema name 'github_v4_rest' conflicts"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn validate_source_reports_only_component_schemas_for_multi_schema_source() {
+    let server = MockServer::start().await;
+    let issues = http_component(&server.uri(), "github_rest", "issues", "/issues");
+    let pulls = http_component(&server.uri(), "github_mcp", "pulls", "/pulls");
+    let source = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github".to_string(),
+            authored_version: None,
+            description: "Composite GitHub runtime package".to_string(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            components: vec![
+                RuntimeSourceComponent::Http(issues),
+                RuntimeSourceComponent::Http(pulls),
+            ],
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("runtime package");
+
+    let report = CoralQuery::validate_source(&source, test_runtime(), &[])
+        .await
+        .expect("source should validate");
+
+    assert_eq!(
+        report
+            .tables
+            .iter()
+            .map(|table| (table.schema_name.as_str(), table.table_name.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("github_mcp", "pulls"), ("github_rest", "issues")]
+    );
+    assert!(report.table_functions.is_empty());
+}
+
+fn http_component(
+    base_url: &str,
+    schema_name: &str,
+    table_name: &str,
+    path: &str,
+) -> HttpSourceManifest {
     let manifest = parse_source_manifest_yaml(&format!(
         r"
-name: github
+name: {schema_name}
 version: 1.0.0
 dsl_version: 3
 backend: http
