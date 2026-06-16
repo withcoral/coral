@@ -1,0 +1,164 @@
+# Lynx — 100% local semantic code search, as a Coral source.
+# Repo: https://github.com/lorenzo-cambiaghi/LynxMCP
+#
+# Exposes Lynx's local API as SQL: `lynx.sources` (a table) and
+# `lynx.search(q => '...')` (a ranked search function), so agents can JOIN
+# semantic code search with live data from other Coral sources — all local.
+#
+# Prerequisite: the Lynx local API must be running on the same machine:
+#   lynx manager ui --port 8765 --no-browser
+# Everything stays on localhost; no credentials involved.
+name: lynx
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  100% local semantic code search over your codebases, library docs, and
+  PDFs (Lynx MCP server). Hybrid dense + BM25 retrieval with AST-aware
+  chunks: every row carries file, symbol, line range, and the code itself.
+
+inputs:
+  LYNX_PORT:
+    kind: variable
+    default: "8765"
+    hint: >-
+      Port of the local Lynx API, started with
+      `lynx manager ui --port 8765 --no-browser`.
+
+base_url: "http://127.0.0.1:{{input.LYNX_PORT}}"
+
+test_queries:
+  - SELECT name, type, chunk_count FROM lynx.sources
+  - SELECT file, symbol, score FROM lynx.search(q => 'where passwords are hashed') LIMIT 5
+
+tables:
+  - name: sources
+    description: Sources configured in the local Lynx index (codebases, docs sites, PDF folders).
+    request:
+      method: GET
+      path: /api/v1/sources
+    response:
+      rows_path:
+        - sources
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Source name — pass it as the `source` argument of lynx.search.
+        expr: {kind: path, path: [name]}
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Source type (codebase | webdoc | pdf).
+        expr: {kind: path, path: [type]}
+      - name: location
+        type: Utf8
+        nullable: true
+        description: Indexed path or crawled URL.
+        expr: {kind: path, path: [location]}
+      - name: chunk_count
+        type: Int64
+        nullable: true
+        description: Number of indexed chunks.
+        expr: {kind: path, path: [chunk_count]}
+      - name: last_update
+        type: Utf8
+        nullable: true
+        description: Timestamp of the last index update.
+        expr: {kind: path, path: [last_update]}
+
+functions:
+  # Ranked retrieval surface → a `kind: search` function (called as
+  # lynx.search(q => '...')), not a table with filters.
+  - name: search
+    kind: search
+    description: >-
+      Semantic + lexical hybrid search over the indexed sources. Phrase the
+      query as what the code DOES ("method that clamps camera zoom"), not as
+      an identifier. Omit `source` to search every source at once. Call it as
+      a function: lynx.search(q => '...').
+    search_limits:
+      default_top_k: 8
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind: {arg: q}
+      - name: source
+        required: false
+        bind: {arg: source}
+      - name: top_k
+        required: false
+        bind: {arg: top_k}
+    request:
+      method: GET
+      path: /api/v1/search
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: source
+          from: arg
+          key: source
+        - name: top_k
+          from: arg_int
+          key: top_k
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: none
+    columns:
+      - name: source
+        type: Utf8
+        nullable: false
+        description: Which Lynx source produced this hit.
+        expr: {kind: path, path: [source]}
+      - name: file
+        type: Utf8
+        nullable: false
+        description: File name of the hit.
+        expr: {kind: path, path: [file]}
+      - name: file_path
+        type: Utf8
+        nullable: true
+        description: Full path of the file inside the indexed tree.
+        expr: {kind: path, path: [file_path]}
+      - name: symbol
+        type: Utf8
+        nullable: true
+        description: Qualified symbol of the AST chunk (e.g. MyClass.handle_click).
+        expr: {kind: path, path: [symbol]}
+      - name: kind
+        type: Utf8
+        nullable: true
+        description: Symbol kind (function, class, method, ...).
+        expr: {kind: path, path: [kind]}
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Programming language of the chunk.
+        expr: {kind: path, path: [language]}
+      - name: start_line
+        type: Int64
+        nullable: true
+        description: First line of the chunk (1-based).
+        expr: {kind: path, path: [start_line]}
+      - name: end_line
+        type: Int64
+        nullable: true
+        description: Last line of the chunk.
+        expr: {kind: path, path: [end_line]}
+      - name: score
+        type: Float64
+        nullable: false
+        description: Relevance score (hybrid RRF — ~0.03 is already a strong match).
+        expr: {kind: path, path: [score]}
+      - name: content
+        type: Utf8
+        nullable: true
+        description: The code chunk itself.
+        expr: {kind: path, path: [content]}
