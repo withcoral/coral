@@ -112,9 +112,6 @@
   should mention the skill token, such as `$coral-create-source-spec`.
 - When proposing or updating a PR title, use Conventional Commits:
   `type(scope): summary`.
-- Keep public GitHub issue intake simple: use bug reports and feature requests
-  as the tracked routes; route setup help, troubleshooting, and open-ended
-  questions through issue contact links.
 - When using a scope, prefer one that matches the primary area changed,
   usually the crate name minus the `coral-` prefix, `docs`,
   `sources/core/<name>`, or `sources/community/<name>`.
