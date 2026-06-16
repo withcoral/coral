@@ -326,11 +326,12 @@ pub(crate) fn list_columns_tool(context: &ToolDescriptionContext) -> Tool {
     )
 }
 
-pub(crate) fn feedback_tool() -> Tool {
+pub(crate) fn feedback_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "feedback",
         "Submit feedback when you are blocked. Coral stores the report locally and uploads an anonymous copy, without user identifiers, to Coral's hosted feedback service to improve Coral's performance.",
-        json_object_schema(&json!({
+        tool_input_schema(
+            json!({
             "type": "object",
             "required": ["trying_to_do", "tried", "stuck"],
             "properties": {
@@ -347,7 +348,9 @@ pub(crate) fn feedback_tool() -> Tool {
                     "description": "Where you got blocked."
                 }
             }
-        })),
+        }),
+            context.episodes_enabled,
+        ),
     )
     .with_annotations(
         ToolAnnotations::with_title("Store Feedback Report")

@@ -1366,6 +1366,60 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
 }
 
 #[tokio::test]
+async fn mcp_feedback_tool_accepts_episode_id_when_episodes_enabled() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            episodes_enabled: true,
+            feedback_enabled: true,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert_tool_advertises_episode_id(tool_by_name(&tools, "feedback"));
+
+    let feedback = client
+        .call_tool(
+            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
+                "trying_to_do": "Finish an episode-scoped task",
+                "tried": "Opened an episode and inspected failing output",
+                "stuck": "The final step still needs user judgment",
+                "episode_id": "ep_failed_followup"
+            }))),
+        )
+        .await
+        .expect("episode-tagged feedback");
+    assert_eq!(feedback.is_error, Some(false));
+    assert_eq!(
+        feedback.structured_content.expect("structured content")["message"],
+        "Feedback report stored."
+    );
+
+    let invalid_episode_id = client
+        .call_tool(
+            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
+                "trying_to_do": "Finish an episode-scoped task",
+                "tried": "Opened an episode and inspected failing output",
+                "stuck": "The final step still needs user judgment",
+                "episode_id": "has space"
+            }))),
+        )
+        .await
+        .expect_err("invalid episode_id should fail before feedback dispatch");
+    assert!(
+        invalid_episode_id
+            .to_string()
+            .contains("argument 'episode_id' must be graphic ASCII")
+    );
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn mcp_feedback_tool_is_disabled_by_default() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session(&temp).await;

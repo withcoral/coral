@@ -331,10 +331,11 @@ impl CoralMcpServer {
         trying_to_do: &str,
         tried: &str,
         stuck: &str,
+        episode_tag: &EpisodeTag,
     ) -> Result<Value, tonic::Status> {
         let mut feedback_client = self.feedback.clone();
         let response = feedback_client
-            .submit_feedback(Request::new(SubmitFeedbackRequest {
+            .submit_feedback(episode_tag.request(SubmitFeedbackRequest {
                 workspace: Some(default_workspace()),
                 trying_to_do: trying_to_do.to_string(),
                 tried: tried.to_string(),
@@ -492,7 +493,7 @@ impl CoralMcpServer {
                 let stuck = required_string_argument(request.arguments.as_ref(), "stuck")?;
                 Ok(ToolCallOutcome::from_value_result(
                     "Feedback submission",
-                    self.submit_feedback_value(&trying_to_do, &tried, &stuck)
+                    self.submit_feedback_value(&trying_to_do, &tried, &stuck, episode_tag)
                         .await,
                 ))
             }
@@ -607,7 +608,7 @@ impl ServerHandler for CoralMcpServer {
                 tools.push(open_episode_tool());
             }
             if self.options.feedback_enabled {
-                tools.push(feedback_tool());
+                tools.push(feedback_tool(&tool_context));
             }
             Ok(ListToolsResult::with_all_items(tools))
         })
