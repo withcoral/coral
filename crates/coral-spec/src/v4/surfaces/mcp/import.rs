@@ -571,6 +571,57 @@ surfaces:
     }
 
     #[test]
+    fn all_of_conflicts_when_nested_property_annotations_differ() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "allOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "filter": {
+                                    "type": "object",
+                                    "properties": {
+                                        "value": {
+                                            "type": "string",
+                                            "description": "First meaning"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "filter": {
+                                    "type": "object",
+                                    "properties": {
+                                        "value": {
+                                            "type": "string",
+                                            "description": "Second meaning"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        assert!(ir.operations.is_empty());
+        assert!(
+            ir.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_CONFLICT")
+        );
+    }
+
+    #[test]
     fn all_of_duplicate_property_comparison_uses_depth_budget() {
         let deep_property_schema = nested_input_property_schema(MAX_SCHEMA_DEPTH + 1);
         let catalog = McpToolCatalog {

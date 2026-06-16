@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrInputLocation, IrOperationInput, IrScalarType};
@@ -13,6 +13,8 @@ use crate::v4::surfaces::json_schema::json_schema_scalar_type;
 
 use super::import::{MAX_SCHEMA_DEPTH, McpImporter};
 use super::model::McpToolDescriptor;
+
+const ANNOTATION_KEYS: &[&str] = &["$comment", "description", "examples", "title"];
 
 impl McpImporter<'_> {
     pub(super) fn import_inputs(
@@ -238,11 +240,9 @@ fn merge_input_object_shape(
 ) -> bool {
     for (name, property) in source.properties {
         if let Some(existing) = target.properties.get_mut(&name) {
-            match compare_input_property_schemas(existing, &property) {
-                InputPropertySchemaComparison::Equivalent => {
-                    merge_input_property_metadata(existing, &property);
-                }
-                InputPropertySchemaComparison::Conflict => {
+            match merge_allof_property(existing, &property) {
+                AllOfPropertyMerge::Merged => {}
+                AllOfPropertyMerge::Conflict => {
                     *schema_complete = false;
                     diagnostics.push(Diagnostic::warning(
                         "MCP_INPUT_SCHEMA_CONFLICT",
@@ -252,7 +252,7 @@ fn merge_input_object_shape(
                     ));
                     return false;
                 }
-                InputPropertySchemaComparison::DepthExceeded => {
+                AllOfPropertyMerge::DepthExceeded => {
                     *schema_complete = false;
                     warn_input_schema_depth_exceeded(surface_id, operation_id, diagnostics);
                     return false;
@@ -266,71 +266,120 @@ fn merge_input_object_shape(
     true
 }
 
-enum InputPropertySchemaComparison {
-    Equivalent,
+enum AllOfPropertyMerge {
+    Merged,
     Conflict,
     DepthExceeded,
 }
 
-fn compare_input_property_schemas(
+fn merge_allof_property(existing: &mut Value, candidate: &Value) -> AllOfPropertyMerge {
+    let Some(matches) = property_schemas_match_without_top_level_annotations(existing, candidate)
+    else {
+        return AllOfPropertyMerge::DepthExceeded;
+    };
+    if !matches {
+        return AllOfPropertyMerge::Conflict;
+    }
+    merge_input_property_metadata(existing, candidate);
+    AllOfPropertyMerge::Merged
+}
+
+fn property_schemas_match_without_top_level_annotations(
     existing: &Value,
     candidate: &Value,
-) -> InputPropertySchemaComparison {
-    let Some(existing) = schema_without_annotation_metadata(existing) else {
-        return InputPropertySchemaComparison::DepthExceeded;
+) -> Option<bool> {
+    let (Some(existing), Some(candidate)) = (existing.as_object(), candidate.as_object()) else {
+        return values_match_with_depth(existing, candidate, 0);
     };
-    let Some(candidate) = schema_without_annotation_metadata(candidate) else {
-        return InputPropertySchemaComparison::DepthExceeded;
-    };
-    if existing == candidate {
-        InputPropertySchemaComparison::Equivalent
-    } else {
-        InputPropertySchemaComparison::Conflict
+    let existing_keys = existing
+        .keys()
+        .filter(|key| !ANNOTATION_KEYS.contains(&key.as_str()))
+        .collect::<BTreeSet<_>>();
+    let candidate_keys = candidate
+        .keys()
+        .filter(|key| !ANNOTATION_KEYS.contains(&key.as_str()))
+        .collect::<BTreeSet<_>>();
+    if existing_keys != candidate_keys {
+        return Some(false);
     }
+    for key in existing_keys {
+        let Some(existing_value) = existing.get(key) else {
+            return Some(false);
+        };
+        let Some(candidate_value) = candidate.get(key) else {
+            return Some(false);
+        };
+        let matches = if key == "type" {
+            type_values_match(existing_value, candidate_value)?
+        } else {
+            values_match_with_depth(existing_value, candidate_value, 1)?
+        };
+        if !matches {
+            return Some(false);
+        }
+    }
+    Some(true)
 }
 
-fn schema_without_annotation_metadata(schema: &Value) -> Option<Value> {
-    schema_without_annotation_metadata_at_key(None, schema, 0)
+fn type_values_match(existing: &Value, candidate: &Value) -> Option<bool> {
+    let (Some(existing), Some(candidate)) = (existing.as_array(), candidate.as_array()) else {
+        return values_match_with_depth(existing, candidate, 0);
+    };
+    let Some(mut existing_types) = existing
+        .iter()
+        .map(Value::as_str)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return arrays_match_with_depth(existing, candidate, 0);
+    };
+    let Some(mut candidate_types) = candidate
+        .iter()
+        .map(Value::as_str)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return arrays_match_with_depth(existing, candidate, 0);
+    };
+    existing_types.sort_unstable();
+    candidate_types.sort_unstable();
+    Some(existing_types == candidate_types)
 }
 
-fn schema_without_annotation_metadata_at_key(
-    key: Option<&str>,
-    schema: &Value,
-    depth: usize,
-) -> Option<Value> {
-    const ANNOTATION_KEYS: &[&str] = &["$comment", "description", "examples", "title"];
+fn values_match_with_depth(existing: &Value, candidate: &Value, depth: usize) -> Option<bool> {
     if depth > MAX_SCHEMA_DEPTH {
         return None;
     }
-    match schema {
-        Value::Object(object) => {
-            let is_schema_name_map = matches!(
-                key,
-                Some("$defs" | "definitions" | "patternProperties" | "properties")
-            );
-            let mut normalized = Map::new();
-            for (key, value) in object.iter().filter(|(key, _value)| {
-                is_schema_name_map || !ANNOTATION_KEYS.contains(&key.as_str())
-            }) {
-                normalized.insert(
-                    key.clone(),
-                    schema_without_annotation_metadata_at_key(Some(key), value, depth + 1)?,
-                );
+    match (existing, candidate) {
+        (Value::Object(existing), Value::Object(candidate)) => {
+            if existing.len() != candidate.len() {
+                return Some(false);
             }
-            Some(Value::Object(normalized))
-        }
-        Value::Array(values) => {
-            let mut values = values
-                .iter()
-                .map(|value| schema_without_annotation_metadata_at_key(None, value, depth + 1))
-                .collect::<Option<Vec<_>>>()?;
-            if key == Some("type") {
-                values.sort_by_key(Value::to_string);
+            for (key, existing_value) in existing {
+                let Some(candidate_value) = candidate.get(key) else {
+                    return Some(false);
+                };
+                if !values_match_with_depth(existing_value, candidate_value, depth + 1)? {
+                    return Some(false);
+                }
             }
-            Some(Value::Array(values))
+            Some(true)
         }
-        other => Some(other.clone()),
+        (Value::Array(existing), Value::Array(candidate)) => {
+            arrays_match_with_depth(existing, candidate, depth)
+        }
+        _ => Some(existing == candidate),
     }
+}
+
+fn arrays_match_with_depth(existing: &[Value], candidate: &[Value], depth: usize) -> Option<bool> {
+    if existing.len() != candidate.len() {
+        return Some(false);
+    }
+    for (existing_value, candidate_value) in existing.iter().zip(candidate) {
+        if !values_match_with_depth(existing_value, candidate_value, depth + 1)? {
+            return Some(false);
+        }
+    }
+    Some(true)
 }
 
 fn warn_input_schema_depth_exceeded(
@@ -347,7 +396,6 @@ fn warn_input_schema_depth_exceeded(
 }
 
 fn merge_input_property_metadata(existing: &mut Value, candidate: &Value) {
-    const ANNOTATION_KEYS: &[&str] = &["$comment", "description", "examples", "title"];
     let (Some(existing), Some(candidate)) = (existing.as_object_mut(), candidate.as_object())
     else {
         return;
