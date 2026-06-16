@@ -129,13 +129,13 @@ coral sql "SELECT login, name, email FROM youtrack.users LIMIT 3;"
 ```
 
 ```text
-+---------------+-------------+--------------------+
-| login         | name        | email              |
-+---------------+-------------+--------------------+
-| admin         | admin       | admin@example.com  |
-| guest         | guest       |                    |
-| ravindhar1108 | Ravindhar G |                    |
-+---------------+-------------+--------------------+
++--------------+----------------+-------------------+
+| login        | name           | email             |
++--------------+----------------+-------------------+
+| admin        | admin          | admin@example.com |
+| guest        | guest          |                   |
+| <user_login> | <display_name> | <email>           |
++--------------+----------------+-------------------+
 ```
 
 ```bash
