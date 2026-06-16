@@ -77,11 +77,12 @@ functions:
     description: >-
       Semantic + lexical hybrid search over the indexed sources. Phrase the
       query as what the code DOES ("method that clamps camera zoom"), not as
-      an identifier. Omit `source` to search every source at once. Call it as
-      a function: lynx.search(q => '...').
+      an identifier. Omit `source` to search every source at once. Control the
+      result count with SQL `LIMIT` (Coral maps it to the `top_k` request
+      param). Call it as a function: lynx.search(q => '...').
     search_limits:
       default_top_k: 8
-      max_top_k: 100
+      max_top_k: 50
       max_calls_per_query: 1
     args:
       - name: q
@@ -90,9 +91,6 @@ functions:
       - name: source
         required: false
         bind: {arg: source}
-      - name: top_k
-        required: false
-        bind: {arg: top_k}
     request:
       method: GET
       path: /api/v1/search
@@ -103,14 +101,17 @@ functions:
         - name: source
           from: arg
           key: source
-        - name: top_k
-          from: arg_int
-          key: top_k
     response:
       rows_path:
         - results
+    # SQL `LIMIT` → the Lynx `top_k` query param. Lynx clamps top_k to [1, 50]
+    # (GET /api/v1/search), so a larger LIMIT is capped at 50 server-side.
     pagination:
       mode: none
+      page_size:
+        default: 8
+        max: 50
+        query_param: top_k
     columns:
       - name: source
         type: Utf8
