@@ -40,20 +40,44 @@ impl McpImporter<'_> {
                 schema_complete: false,
             };
         };
+        validate_required_properties(
+            &shape,
+            &self.surface.id,
+            operation_id,
+            diagnostics,
+            &mut schema_complete,
+        );
+        if !schema_complete {
+            return ImportedInputs {
+                inputs: Vec::new(),
+                schema_complete: false,
+            };
+        }
+        let mut resolving_refs = BTreeSet::new();
         let inputs = shape
             .properties
             .iter()
-            .map(|(name, property)| {
-                let data_type = json_schema_scalar_type(property).unwrap_or(IrScalarType::Json);
+            .filter_map(|(name, property)| {
+                let property = resolved_input_schema_value(
+                    &tool.input_schema,
+                    property,
+                    &self.surface.id,
+                    operation_id,
+                    &mut resolving_refs,
+                    diagnostics,
+                    &mut schema_complete,
+                    0,
+                )?;
+                let data_type = json_schema_scalar_type(&property).unwrap_or(IrScalarType::Json);
                 self.ensure_type_for_scalar(data_type);
-                IrOperationInput {
+                Some(IrOperationInput {
                     name: name.clone(),
                     location: IrInputLocation::ToolArg,
                     required: shape.required.contains(name.as_str()),
                     data_type,
-                    default_value: property_default(property),
-                    description: schema_description(property),
-                }
+                    default_value: property_default(&property),
+                    description: schema_description(&property),
+                })
             })
             .collect();
         ImportedInputs {
@@ -128,12 +152,15 @@ fn input_object_shape(
                 depth + 1,
             )?;
             if !merge_input_object_shape(
+                root,
                 &mut shape,
                 item_shape,
                 surface_id,
                 operation_id,
+                resolving_refs,
                 diagnostics,
                 schema_complete,
+                depth + 1,
             ) {
                 return None;
             }
@@ -231,18 +258,31 @@ fn direct_input_object_shape(schema: &Value) -> InputObjectShape {
 }
 
 fn merge_input_object_shape(
+    root: &Value,
     target: &mut InputObjectShape,
     source: InputObjectShape,
     surface_id: &str,
     operation_id: &str,
+    resolving_refs: &mut BTreeSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
     schema_complete: &mut bool,
+    depth: usize,
 ) -> bool {
     for (name, property) in source.properties {
         if let Some(existing) = target.properties.get_mut(&name) {
-            match merge_allof_property(existing, &property) {
-                AllOfPropertyMerge::Merged => {}
-                AllOfPropertyMerge::Conflict => {
+            match merge_allof_property(
+                root,
+                existing,
+                &property,
+                surface_id,
+                operation_id,
+                resolving_refs,
+                diagnostics,
+                schema_complete,
+                depth,
+            ) {
+                MergeAllOfProperty::Merged => {}
+                MergeAllOfProperty::Conflict => {
                     *schema_complete = false;
                     diagnostics.push(Diagnostic::warning(
                         "MCP_INPUT_SCHEMA_CONFLICT",
@@ -252,11 +292,7 @@ fn merge_input_object_shape(
                     ));
                     return false;
                 }
-                AllOfPropertyMerge::DepthExceeded => {
-                    *schema_complete = false;
-                    warn_input_schema_depth_exceeded(surface_id, operation_id, diagnostics);
-                    return false;
-                }
+                MergeAllOfProperty::Incomplete => return false,
             }
         } else {
             target.properties.insert(name, property);
@@ -266,22 +302,81 @@ fn merge_input_object_shape(
     true
 }
 
-enum AllOfPropertyMerge {
+enum MergeAllOfProperty {
     Merged,
     Conflict,
-    DepthExceeded,
+    Incomplete,
 }
 
-fn merge_allof_property(existing: &mut Value, candidate: &Value) -> AllOfPropertyMerge {
-    let Some(matches) = property_schemas_match_without_top_level_annotations(existing, candidate)
+fn merge_allof_property(
+    root: &Value,
+    existing: &mut Value,
+    candidate: &Value,
+    surface_id: &str,
+    operation_id: &str,
+    resolving_refs: &mut BTreeSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+    schema_complete: &mut bool,
+    depth: usize,
+) -> MergeAllOfProperty {
+    let Some(existing_schema) = comparable_property_schema(
+        root,
+        existing,
+        surface_id,
+        operation_id,
+        resolving_refs,
+        diagnostics,
+        schema_complete,
+        depth,
+    ) else {
+        return MergeAllOfProperty::Incomplete;
+    };
+    let Some(candidate_schema) = comparable_property_schema(
+        root,
+        candidate,
+        surface_id,
+        operation_id,
+        resolving_refs,
+        diagnostics,
+        schema_complete,
+        depth,
+    ) else {
+        return MergeAllOfProperty::Incomplete;
+    };
+    let Some(matches) =
+        property_schemas_match_without_top_level_annotations(&existing_schema, &candidate_schema)
     else {
-        return AllOfPropertyMerge::DepthExceeded;
+        *schema_complete = false;
+        warn_input_schema_depth_exceeded(surface_id, operation_id, diagnostics);
+        return MergeAllOfProperty::Incomplete;
     };
     if !matches {
-        return AllOfPropertyMerge::Conflict;
+        return MergeAllOfProperty::Conflict;
     }
     merge_input_property_metadata(existing, candidate);
-    AllOfPropertyMerge::Merged
+    MergeAllOfProperty::Merged
+}
+
+fn comparable_property_schema(
+    root: &Value,
+    schema: &Value,
+    surface_id: &str,
+    operation_id: &str,
+    resolving_refs: &mut BTreeSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+    schema_complete: &mut bool,
+    depth: usize,
+) -> Option<Value> {
+    resolved_input_schema_value(
+        root,
+        schema,
+        surface_id,
+        operation_id,
+        resolving_refs,
+        diagnostics,
+        schema_complete,
+        depth,
+    )
 }
 
 fn property_schemas_match_without_top_level_annotations(
@@ -395,6 +490,246 @@ fn warn_input_schema_depth_exceeded(
     diagnostics.push(Diagnostic::warning(
         "MCP_INPUT_SCHEMA_DEPTH_EXCEEDED",
         format!("MCP input schema exceeds maximum depth of {MAX_SCHEMA_DEPTH}"),
+        surface_id.to_string(),
+        Some(operation_id.to_string()),
+    ));
+}
+
+fn resolved_input_schema_value(
+    root: &Value,
+    schema: &Value,
+    surface_id: &str,
+    operation_id: &str,
+    resolving_refs: &mut BTreeSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+    schema_complete: &mut bool,
+    depth: usize,
+) -> Option<Value> {
+    if depth > MAX_SCHEMA_DEPTH {
+        *schema_complete = false;
+        diagnostics.push(Diagnostic::warning(
+            "MCP_INPUT_SCHEMA_DEPTH_EXCEEDED",
+            format!("MCP input schema exceeds maximum depth of {MAX_SCHEMA_DEPTH}"),
+            surface_id.to_string(),
+            Some(operation_id.to_string()),
+        ));
+        return None;
+    }
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+        let mut resolved = resolved_input_schema_ref_value(
+            root,
+            reference,
+            surface_id,
+            operation_id,
+            resolving_refs,
+            diagnostics,
+            schema_complete,
+            depth,
+        )?;
+        merge_input_property_metadata(&mut resolved, schema);
+        return Some(resolved);
+    }
+    let Some(object) = schema.as_object() else {
+        return Some(schema.clone());
+    };
+    let mut resolved = object.clone();
+    for key in ["patternProperties", "properties"] {
+        if let Some(value) = object.get(key) {
+            resolved.insert(
+                key.to_string(),
+                resolved_schema_name_map(
+                    root,
+                    value,
+                    surface_id,
+                    operation_id,
+                    resolving_refs,
+                    diagnostics,
+                    schema_complete,
+                    depth + 1,
+                )?,
+            );
+        }
+    }
+    for key in ["allOf", "anyOf", "oneOf"] {
+        if let Some(value) = object.get(key) {
+            resolved.insert(
+                key.to_string(),
+                resolved_schema_array(
+                    root,
+                    value,
+                    surface_id,
+                    operation_id,
+                    resolving_refs,
+                    diagnostics,
+                    schema_complete,
+                    depth + 1,
+                )?,
+            );
+        }
+    }
+    for key in ["additionalProperties", "items", "not"] {
+        if let Some(value) = object.get(key) {
+            resolved.insert(
+                key.to_string(),
+                resolved_input_schema_value(
+                    root,
+                    value,
+                    surface_id,
+                    operation_id,
+                    resolving_refs,
+                    diagnostics,
+                    schema_complete,
+                    depth + 1,
+                )?,
+            );
+        }
+    }
+    Some(Value::Object(resolved))
+}
+
+fn resolved_input_schema_ref_value(
+    root: &Value,
+    reference: &str,
+    surface_id: &str,
+    operation_id: &str,
+    resolving_refs: &mut BTreeSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+    schema_complete: &mut bool,
+    depth: usize,
+) -> Option<Value> {
+    if !reference.starts_with("#/") {
+        *schema_complete = false;
+        diagnostics.push(Diagnostic::warning(
+            "MCP_INPUT_SCHEMA_REF_UNSUPPORTED",
+            format!("MCP input schema external reference '{reference}' is unsupported"),
+            surface_id.to_string(),
+            Some(operation_id.to_string()),
+        ));
+        return None;
+    }
+    let reference = reference.to_string();
+    if !resolving_refs.insert(reference.clone()) {
+        *schema_complete = false;
+        diagnostics.push(Diagnostic::warning(
+            "MCP_INPUT_SCHEMA_REF_UNSUPPORTED",
+            format!("MCP input schema reference cycle includes '{reference}'"),
+            surface_id.to_string(),
+            Some(operation_id.to_string()),
+        ));
+        return None;
+    }
+    let pointer = reference.strip_prefix('#').unwrap_or(&reference);
+    let result = if let Some(resolved) = root.pointer(pointer) {
+        resolved_input_schema_value(
+            root,
+            resolved,
+            surface_id,
+            operation_id,
+            resolving_refs,
+            diagnostics,
+            schema_complete,
+            depth + 1,
+        )
+    } else {
+        *schema_complete = false;
+        diagnostics.push(Diagnostic::warning(
+            "MCP_INPUT_SCHEMA_REF_NOT_FOUND",
+            format!("MCP input schema reference '{reference}' was not found"),
+            surface_id.to_string(),
+            Some(operation_id.to_string()),
+        ));
+        None
+    };
+    resolving_refs.remove(&reference);
+    result
+}
+
+fn resolved_schema_name_map(
+    root: &Value,
+    value: &Value,
+    surface_id: &str,
+    operation_id: &str,
+    resolving_refs: &mut BTreeSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+    schema_complete: &mut bool,
+    depth: usize,
+) -> Option<Value> {
+    let Some(object) = value.as_object() else {
+        return Some(value.clone());
+    };
+    let mut resolved = serde_json::Map::with_capacity(object.len());
+    for (name, schema) in object {
+        resolved.insert(
+            name.clone(),
+            resolved_input_schema_value(
+                root,
+                schema,
+                surface_id,
+                operation_id,
+                resolving_refs,
+                diagnostics,
+                schema_complete,
+                depth,
+            )?,
+        );
+    }
+    Some(Value::Object(resolved))
+}
+
+fn resolved_schema_array(
+    root: &Value,
+    value: &Value,
+    surface_id: &str,
+    operation_id: &str,
+    resolving_refs: &mut BTreeSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+    schema_complete: &mut bool,
+    depth: usize,
+) -> Option<Value> {
+    let Some(values) = value.as_array() else {
+        return Some(value.clone());
+    };
+    values
+        .iter()
+        .map(|schema| {
+            resolved_input_schema_value(
+                root,
+                schema,
+                surface_id,
+                operation_id,
+                resolving_refs,
+                diagnostics,
+                schema_complete,
+                depth,
+            )
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(Value::Array)
+}
+
+fn validate_required_properties(
+    shape: &InputObjectShape,
+    surface_id: &str,
+    operation_id: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+    schema_complete: &mut bool,
+) {
+    let missing = shape
+        .required
+        .iter()
+        .filter(|name| !shape.properties.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return;
+    }
+    *schema_complete = false;
+    diagnostics.push(Diagnostic::warning(
+        "MCP_INPUT_SCHEMA_REQUIRED_PROPERTY_MISSING",
+        format!(
+            "MCP input schema marks required properties that are not declared: {}",
+            missing.join(", ")
+        ),
         surface_id.to_string(),
         Some(operation_id.to_string()),
     ));

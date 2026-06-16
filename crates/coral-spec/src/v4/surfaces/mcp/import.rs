@@ -379,6 +379,143 @@ surfaces:
     }
 
     #[test]
+    fn imports_property_level_refs_and_nested_object_refs() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "$defs": {
+                        "Query": {
+                            "type": "string",
+                            "description": "Search query"
+                        },
+                        "UserId": {
+                            "type": "string"
+                        },
+                        "Filter": {
+                            "type": "object",
+                            "description": "Structured filter",
+                            "properties": {
+                                "owner": {"$ref": "#/$defs/UserId"}
+                            }
+                        }
+                    },
+                    "type": "object",
+                    "properties": {
+                        "query": {"$ref": "#/$defs/Query"},
+                        "filter": {"$ref": "#/$defs/Filter"}
+                    },
+                    "required": ["query", "filter"]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "search_items");
+        assert!(operation.diagnostics.is_empty());
+
+        let query = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "query")
+            .expect("query input");
+        assert_eq!(query.data_type, IrScalarType::String);
+        assert_eq!(query.description, "Search query");
+
+        let filter = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "filter")
+            .expect("filter input");
+        assert_eq!(filter.data_type, IrScalarType::Json);
+        assert!(filter.required);
+        assert_eq!(filter.description, "Structured filter");
+    }
+
+    #[test]
+    fn missing_required_input_properties_hide_tool() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"}
+                    },
+                    "required": ["query", "missing"]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        assert!(ir.operations.is_empty());
+        assert!(ir.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "MCP_INPUT_SCHEMA_REQUIRED_PROPERTY_MISSING"
+                && diagnostic.message.contains("missing")
+        }));
+    }
+
+    #[test]
+    fn imports_mixed_all_of_and_property_ref_input_schemas() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "$defs": {
+                        "Query": {"type": "string"},
+                        "BaseInput": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"$ref": "#/$defs/Query"}
+                            }
+                        }
+                    },
+                    "allOf": [
+                        {"$ref": "#/$defs/BaseInput"},
+                        {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "Search query"
+                                },
+                                "limit": {"type": "integer"}
+                            },
+                            "required": ["query"]
+                        }
+                    ]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "search_items");
+        assert!(operation.diagnostics.is_empty());
+
+        let query = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "query")
+            .expect("query input");
+        assert_eq!(query.data_type, IrScalarType::String);
+        assert!(query.required);
+
+        let limit = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "limit")
+            .expect("limit input");
+        assert_eq!(limit.data_type, IrScalarType::Integer);
+        assert!(!limit.required);
+    }
+
+    #[test]
     fn unresolved_input_schema_refs_means_tool_is_not_exposed() {
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(
