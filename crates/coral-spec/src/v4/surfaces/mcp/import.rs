@@ -76,9 +76,9 @@ impl<'a> McpImporter<'a> {
                     operation_id
                 )));
             }
+            operation_ids.insert(operation_id.clone(), tool.name.as_str());
             if let Some(operation) = self.import_tool(tool, &operation_id) {
                 operations.push(operation);
-                operation_ids.insert(operation_id, tool.name.as_str());
             }
         }
         Ok(SemanticIr {
@@ -1259,6 +1259,34 @@ surfaces:
 
         let error = import_mcp_surface(v4, surface, &catalog)
             .expect_err("normalized collision should fail");
+        let message = error.to_string();
+        assert!(message.contains("foo-bar"), "{message}");
+        assert!(message.contains("foo_bar"), "{message}");
+        assert!(
+            message.contains("normalize to operation id 'foo_bar'"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn rejects_mcp_tools_that_collide_even_when_one_tool_is_not_exposed() {
+        let manifest = manifest();
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("surface");
+        let catalog = McpToolCatalog {
+            tools: vec![
+                tool_with_schemas(
+                    "foo-bar",
+                    json!({"$ref": "#/$defs/MissingInputSchema"}),
+                    Some(json!({"type": "object", "properties": {}})),
+                    Some(true),
+                ),
+                tool("foo_bar", Some(true)),
+            ],
+        };
+
+        let error = import_mcp_surface(v4, surface, &catalog)
+            .expect_err("normalized collision should fail before exposure filtering");
         let message = error.to_string();
         assert!(message.contains("foo-bar"), "{message}");
         assert!(message.contains("foo_bar"), "{message}");
