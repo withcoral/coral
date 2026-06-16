@@ -499,21 +499,34 @@ fn input_property_schemas_conflict(existing: &Value, candidate: &Value) -> bool 
 }
 
 fn schema_without_annotation_metadata(schema: &Value) -> Value {
+    schema_without_annotation_metadata_at_key(None, schema)
+}
+
+fn schema_without_annotation_metadata_at_key(key: Option<&str>, schema: &Value) -> Value {
     const ANNOTATION_KEYS: &[&str] = &["$comment", "description", "examples", "title"];
     match schema {
         Value::Object(object) => Value::Object(
             object
                 .iter()
                 .filter(|(key, _value)| !ANNOTATION_KEYS.contains(&key.as_str()))
-                .map(|(key, value)| (key.clone(), schema_without_annotation_metadata(value)))
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        schema_without_annotation_metadata_at_key(Some(key), value),
+                    )
+                })
                 .collect(),
         ),
-        Value::Array(values) => Value::Array(
-            values
+        Value::Array(values) => {
+            let mut values = values
                 .iter()
-                .map(schema_without_annotation_metadata)
-                .collect(),
-        ),
+                .map(|value| schema_without_annotation_metadata_at_key(None, value))
+                .collect::<Vec<_>>();
+            if key == Some("type") {
+                values.sort_by_key(Value::to_string);
+            }
+            Value::Array(values)
+        }
         other => other.clone(),
     }
 }
@@ -914,6 +927,46 @@ surfaces:
         assert_eq!(query.data_type, IrScalarType::String);
         assert!(query.required);
         assert_eq!(query.description, "Search query");
+    }
+
+    #[test]
+    fn imports_all_of_properties_with_equivalent_type_union_ordering() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "allOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": ["string", "null"]}
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": ["null", "string"]}
+                            },
+                            "required": ["query"]
+                        }
+                    ]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "search_items");
+        assert!(operation.diagnostics.is_empty());
+
+        let query = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "query")
+            .expect("query input");
+        assert_eq!(query.data_type, IrScalarType::String);
+        assert!(query.required);
     }
 
     #[test]
