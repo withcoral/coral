@@ -505,18 +505,26 @@ fn schema_without_annotation_metadata(schema: &Value) -> Value {
 fn schema_without_annotation_metadata_at_key(key: Option<&str>, schema: &Value) -> Value {
     const ANNOTATION_KEYS: &[&str] = &["$comment", "description", "examples", "title"];
     match schema {
-        Value::Object(object) => Value::Object(
-            object
-                .iter()
-                .filter(|(key, _value)| !ANNOTATION_KEYS.contains(&key.as_str()))
-                .map(|(key, value)| {
-                    (
-                        key.clone(),
-                        schema_without_annotation_metadata_at_key(Some(key), value),
-                    )
-                })
-                .collect(),
-        ),
+        Value::Object(object) => {
+            let is_schema_name_map = matches!(
+                key,
+                Some("$defs" | "definitions" | "patternProperties" | "properties")
+            );
+            Value::Object(
+                object
+                    .iter()
+                    .filter(|(key, _value)| {
+                        is_schema_name_map || !ANNOTATION_KEYS.contains(&key.as_str())
+                    })
+                    .map(|(key, value)| {
+                        (
+                            key.clone(),
+                            schema_without_annotation_metadata_at_key(Some(key), value),
+                        )
+                    })
+                    .collect(),
+            )
+        }
         Value::Array(values) => {
             let mut values = values
                 .iter()
@@ -967,6 +975,51 @@ surfaces:
             .expect("query input");
         assert_eq!(query.data_type, IrScalarType::String);
         assert!(query.required);
+    }
+
+    #[test]
+    fn all_of_conflicts_on_nested_property_named_like_annotation() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "allOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "filter": {
+                                    "type": "object",
+                                    "properties": {
+                                        "description": {"type": "string"}
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "filter": {
+                                    "type": "object",
+                                    "properties": {
+                                        "description": {"type": "integer"}
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        assert!(ir.operations.is_empty());
+        assert!(
+            ir.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_CONFLICT")
+        );
     }
 
     #[test]
