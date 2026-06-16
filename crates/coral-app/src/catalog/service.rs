@@ -12,13 +12,14 @@ use tonic::{Request, Response, Status};
 use crate::bootstrap::app_status;
 use crate::catalog::discovery::{
     CatalogDiscovery, CatalogItemKind, CatalogTableRef, ListColumnsQuery, Pagination,
-    column_pagination, search_pagination,
+    SearchCatalogQuery, column_pagination, search_pagination,
 };
+use crate::query::QueryAttribution;
 use crate::query::manager::QueryManager;
 use crate::transport::{
     catalog_item_to_proto, catalog_search_result_to_proto, column_search_result_to_proto,
-    describe_table_response_to_proto, grpc_span, instrument_grpc, pagination_to_proto,
-    query_status, workspace_name_from_proto,
+    describe_table_response_to_proto, episode_id_from_metadata, grpc_span, instrument_grpc,
+    pagination_to_proto, query_status, workspace_name_from_proto,
 };
 
 #[derive(Clone)]
@@ -42,6 +43,9 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<ListCatalogResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
+        let attribution = QueryAttribution {
+            episode_id: episode_id_from_metadata(request.metadata()),
+        };
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
@@ -49,7 +53,7 @@ impl CatalogServiceApi for CatalogService {
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
             let catalog_page = catalog
-                .list_catalog(&workspace_name, schema_name, kind, pagination)
+                .list_catalog(&workspace_name, schema_name, kind, pagination, &attribution)
                 .await
                 .map_err(query_status)?;
             let page = catalog_page.items;
@@ -82,6 +86,9 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<SearchCatalogResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
+        let attribution = QueryAttribution {
+            episode_id: episode_id_from_metadata(request.metadata()),
+        };
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -92,11 +99,14 @@ impl CatalogServiceApi for CatalogService {
             let page = catalog
                 .search_catalog(
                     &workspace_name,
-                    &request.pattern,
-                    schema_name,
-                    kind,
-                    request.ignore_case,
-                    pagination,
+                    SearchCatalogQuery {
+                        pattern: &request.pattern,
+                        schema_name,
+                        kind,
+                        ignore_case: request.ignore_case,
+                        pagination,
+                    },
+                    &attribution,
                 )
                 .await
                 .map_err(query_status)?;
@@ -125,6 +135,9 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<DescribeTableResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
+        let attribution = QueryAttribution {
+            episode_id: episode_id_from_metadata(request.metadata()),
+        };
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -134,6 +147,7 @@ impl CatalogServiceApi for CatalogService {
                 .describe_table(
                     &workspace_name,
                     CatalogTableRef::new(&schema_name, &table_name),
+                    &attribution,
                 )
                 .await
                 .map_err(query_status)?;
@@ -151,6 +165,9 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<ListColumnsResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
+        let attribution = QueryAttribution {
+            episode_id: episode_id_from_metadata(request.metadata()),
+        };
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -168,6 +185,7 @@ impl CatalogServiceApi for CatalogService {
                         required_only: request.required_only,
                         pagination,
                     },
+                    &attribution,
                 )
                 .await
                 .map_err(query_status)?
