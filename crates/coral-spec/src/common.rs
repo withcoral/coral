@@ -505,6 +505,8 @@ pub enum ValueSourceSpec {
 pub struct ResponseSpec {
     #[serde(default)]
     pub format: ResponseBodyFormat,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xml: Option<XmlResponseSpec>,
     #[serde(default)]
     pub rows_path: Vec<String>,
     #[serde(default)]
@@ -528,6 +530,86 @@ pub enum ResponseBodyFormat {
     /// Each non-empty line is parsed as one JSON value and collected into an
     /// array before row extraction.
     JsonEachRow,
+    /// XML document normalized through a schema-derived response plan.
+    Xml,
+}
+
+/// Schema-derived instructions for normalizing an XML response into JSON.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct XmlResponseSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_name: Option<String>,
+    pub root: XmlValueSpec,
+}
+
+/// One node in a schema-derived XML normalization plan.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case", tag = "type", content = "value")]
+pub enum XmlValueSpec {
+    Scalar(XmlScalarSpec),
+    Object(XmlObjectSpec),
+    List(XmlListSpec),
+    Json(XmlJsonSpec),
+}
+
+/// XML scalar normalization.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct XmlScalarSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xml_name: Option<String>,
+    pub scalar_type: XmlScalarType,
+}
+
+/// XML object normalization.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct XmlObjectSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xml_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<XmlFieldSpec>,
+}
+
+/// XML array normalization.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct XmlListSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xml_name: Option<String>,
+    #[serde(default = "default_true")]
+    pub wrapped: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_xml_name: Option<String>,
+    pub item: Box<XmlValueSpec>,
+}
+
+/// Opaque XML-to-JSON fallback for schema branches that cannot be planned.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct XmlJsonSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xml_name: Option<String>,
+}
+
+/// One field on a normalized XML object.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct XmlFieldSpec {
+    pub name: String,
+    pub xml_name: String,
+    #[serde(default)]
+    pub attribute: bool,
+    pub value: XmlValueSpec,
+}
+
+/// Scalar target used while normalizing XML text.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum XmlScalarType {
+    String,
+    Integer,
+    Number,
+    Boolean,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// How the engine converts a selected response value into logical rows.

@@ -18,6 +18,28 @@ pub fn normalize_identifier(value: &str, prefix: &str) -> String {
     }
 }
 
+pub(crate) fn normalize_schema_identifier(value: &str, prefix: &str) -> String {
+    normalize_identifier(&entity_identifier_seed(value), prefix)
+}
+
+fn entity_identifier_seed(raw: &str) -> String {
+    let mut seed = String::new();
+    let mut previous_was_lowercase_or_digit = false;
+    for ch in raw.chars() {
+        if ch.is_ascii_uppercase() && previous_was_lowercase_or_digit {
+            seed.push('_');
+        }
+        if ch == '-' || ch == ' ' {
+            seed.push('_');
+            previous_was_lowercase_or_digit = false;
+        } else {
+            seed.push(ch.to_ascii_lowercase());
+            previous_was_lowercase_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        }
+    }
+    seed
+}
+
 pub(crate) fn singularize(value: &str) -> String {
     if let Some(stem) = value.strip_suffix("ies")
         && !stem.is_empty()

@@ -37,6 +37,7 @@ mod test_support;
 mod trace;
 mod transport;
 mod url;
+mod xml;
 
 pub(crate) use client::{HttpSourceClient, HttpSourceClientRuntime};
 pub(crate) use error::ProviderQueryError;

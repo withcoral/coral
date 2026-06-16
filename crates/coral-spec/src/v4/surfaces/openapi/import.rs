@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrType, SemanticIr};
@@ -67,15 +67,17 @@ impl<'a> OpenApiImporter<'a> {
                 let Some(operation_value) = path_item.get(method_name) else {
                     continue;
                 };
-                let operation =
+                let imported_operations =
                     self.import_operation(path, path_item, method_name, operation_value)?;
-                if !operation_ids.insert(operation.id.clone()) {
-                    return Err(ManifestError::validation(format!(
-                        "source '{}' surface '{}' imports duplicate operation id '{}'",
-                        self.manifest.common.name, self.surface.id, operation.id
-                    )));
+                for operation in imported_operations {
+                    if !operation_ids.insert(operation.id.clone()) {
+                        return Err(ManifestError::validation(format!(
+                            "source '{}' surface '{}' imports duplicate operation id '{}'",
+                            self.manifest.common.name, self.surface.id, operation.id
+                        )));
+                    }
+                    operations.push(operation);
                 }
-                operations.push(operation);
             }
         }
         Ok(SemanticIr {
@@ -119,6 +121,54 @@ impl<'a> OpenApiImporter<'a> {
                 Some(operation_id.to_string()),
             ));
             None
+        }
+    }
+
+    pub(super) fn effective_schema(
+        &self,
+        schema: &Value,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<Value> {
+        let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
+        let Some(all_of) = resolved.get("allOf").and_then(Value::as_array) else {
+            return Some(resolved);
+        };
+
+        let mut merged = Map::new();
+        for (key, value) in resolved.as_object()? {
+            if key != "allOf" {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+        for item in all_of {
+            let item = self.effective_schema(item, operation_id, diagnostics)?;
+            merge_schema_object(&mut merged, &item);
+        }
+        Some(Value::Object(merged))
+    }
+}
+
+fn merge_schema_object(target: &mut Map<String, Value>, item: &Value) {
+    let Some(item) = item.as_object() else {
+        return;
+    };
+    for (key, value) in item {
+        if key == "properties" {
+            let target_properties = target
+                .entry(key.clone())
+                .or_insert_with(|| Value::Object(Map::new()));
+            if let (Some(target_map), Some(value_map)) =
+                (target_properties.as_object_mut(), value.as_object())
+            {
+                for (property_name, property_schema) in value_map {
+                    target_map
+                        .entry(property_name.clone())
+                        .or_insert_with(|| property_schema.clone());
+                }
+            }
+        } else {
+            target.entry(key.clone()).or_insert_with(|| value.clone());
         }
     }
 }

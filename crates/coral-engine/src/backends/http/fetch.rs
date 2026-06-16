@@ -168,7 +168,7 @@ pub(super) async fn fetch_rows(
                 url: &url,
                 query_pairs: &query_pairs,
                 body: body.as_ref(),
-                response_format: target.response().format,
+                response: target.response(),
                 source_schema: &client.source_schema,
                 rate_limit: &client.rate_limit,
                 body_capture: client.body_capture,

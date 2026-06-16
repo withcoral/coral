@@ -21,6 +21,7 @@ impl OpenApiImporter<'_> {
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<String> {
         let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
+        let effective = self.effective_schema(schema, operation_id, diagnostics)?;
         let type_id = schema.get("$ref").and_then(Value::as_str).map_or_else(
             || normalize_identifier(suggested_id, "type"),
             type_id_from_ref,
@@ -30,11 +31,13 @@ impl OpenApiImporter<'_> {
         }
         let description = resolved
             .get("description")
+            .or_else(|| effective.get("description"))
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
         let nullable = resolved
             .get("nullable")
+            .or_else(|| effective.get("nullable"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
         self.types.insert(
@@ -46,50 +49,20 @@ impl OpenApiImporter<'_> {
                 description: description.clone(),
             },
         );
-        let shape = if let Some(all_of) = resolved.get("allOf").and_then(Value::as_array) {
-            let mut merged = Map::new();
-            for item in all_of {
-                let item = self.resolve_ref(item, operation_id, diagnostics)?;
-                if let Some(properties) = item.get("properties").and_then(Value::as_object) {
-                    for (name, property) in properties {
-                        if let Some(existing) = merged.get(name)
-                            && existing != property
-                        {
-                            diagnostics.push(Diagnostic::warning(
-                                "OPENAPI_ALLOF_CONFLICT",
-                                format!("allOf property '{name}' conflicts in operation '{operation_id}'"),
-                                self.surface.id.clone(),
-                                Some(operation_id.to_string()),
-                            ));
-                            return None;
-                        }
-                        merged.insert(name.clone(), property.clone());
-                    }
-                }
-            }
-            IrTypeShape::Object {
-                fields: self.import_object_fields(
-                    &merged,
-                    &BTreeSet::new(),
-                    &type_id,
-                    operation_id,
-                    diagnostics,
-                ),
-            }
-        } else if let Some(values) = resolved.get("enum").and_then(Value::as_array) {
+        let shape = if let Some(values) = effective.get("enum").and_then(Value::as_array) {
             IrTypeShape::Enum {
                 values: values.iter().map(enum_value).collect(),
             }
         } else {
-            match resolved
+            match effective
                 .get("type")
                 .and_then(Value::as_str)
                 .unwrap_or("object")
             {
                 "object" => {
-                    if let Some(properties) = resolved.get("properties").and_then(Value::as_object)
+                    if let Some(properties) = effective.get("properties").and_then(Value::as_object)
                     {
-                        let required = required_fields(&resolved);
+                        let required = required_fields(&effective);
                         IrTypeShape::Object {
                             fields: self.import_object_fields(
                                 properties,
@@ -99,7 +72,7 @@ impl OpenApiImporter<'_> {
                                 diagnostics,
                             ),
                         }
-                    } else if let Some(additional) = resolved.get("additionalProperties") {
+                    } else if let Some(additional) = effective.get("additionalProperties") {
                         if additional.as_bool() == Some(false) {
                             IrTypeShape::Object { fields: Vec::new() }
                         } else {
@@ -118,7 +91,7 @@ impl OpenApiImporter<'_> {
                     }
                 }
                 "array" => {
-                    let item = resolved.get("items").unwrap_or(&Value::Null);
+                    let item = effective.get("items").unwrap_or(&Value::Null);
                     let item_type_ref = self
                         .import_schema(item, &format!("{type_id}_item"), operation_id, diagnostics)
                         .unwrap_or_else(|| "json".to_string());
@@ -126,7 +99,7 @@ impl OpenApiImporter<'_> {
                 }
                 "string" => {
                     let scalar =
-                        if resolved.get("format").and_then(Value::as_str) == Some("date-time") {
+                        if effective.get("format").and_then(Value::as_str) == Some("date-time") {
                             IrScalarType::Timestamp
                         } else {
                             IrScalarType::String

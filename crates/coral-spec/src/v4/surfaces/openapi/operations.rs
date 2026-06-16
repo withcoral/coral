@@ -19,7 +19,7 @@ impl OpenApiImporter<'_> {
         path_item: &Map<String, Value>,
         method_name: &str,
         operation: &Value,
-    ) -> Result<IrOperation> {
+    ) -> Result<Vec<IrOperation>> {
         let op_obj = operation.as_object().ok_or_else(|| {
             ManifestError::validation(format!(
                 "OpenAPI operation {method_name} {path} must be a mapping"
@@ -36,10 +36,10 @@ impl OpenApiImporter<'_> {
         let mut diagnostics = Vec::new();
         let parameters = self.import_parameters(path_item, op_obj, &operation_id, &mut diagnostics);
         let request_body = self.import_request_body(op_obj, &operation_id, &mut diagnostics);
-        let (output, response, entity) =
-            self.import_response(path, op_obj, &operation_id, &mut diagnostics);
+        let response_variants =
+            self.import_response_variants(path, op_obj, &operation_id, &mut diagnostics);
         let pagination = detect_pagination(&parameters);
-        let rest_parameters = parameters
+        let rest_parameters: Vec<RestParameterBinding> = parameters
             .iter()
             .map(|input| RestParameterBinding {
                 input_name: input.name.clone(),
@@ -49,37 +49,55 @@ impl OpenApiImporter<'_> {
                 data_type: input.data_type,
             })
             .collect();
-        Ok(IrOperation {
-            id: operation_id.clone(),
-            method_name: op_obj
-                .get("operationId")
-                .and_then(Value::as_str)
-                .unwrap_or(method_name)
-                .to_string(),
-            description: op_obj
-                .get("description")
-                .or_else(|| op_obj.get("summary"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            deprecated: op_obj
-                .get("deprecated")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            read_only: method == HttpMethod::Get,
-            inputs: parameters,
-            output,
-            entity,
-            execution: IrExecutionAttachment::Rest(RestExecutionAttachment {
-                method,
-                path_template: path.to_string(),
-                parameters: rest_parameters,
-                request_body,
-                response,
-                pagination,
-            }),
-            diagnostics,
-        })
+        let method_name_value = op_obj
+            .get("operationId")
+            .and_then(Value::as_str)
+            .unwrap_or(method_name)
+            .to_string();
+        let description = op_obj
+            .get("description")
+            .or_else(|| op_obj.get("summary"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let deprecated = op_obj
+            .get("deprecated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let multiple_variants = response_variants.len() > 1;
+        Ok(response_variants
+            .into_iter()
+            .map(|variant| {
+                let id = if multiple_variants {
+                    format!(
+                        "{}_{}",
+                        operation_id,
+                        normalize_identifier(&variant.name_suffix, "response")
+                    )
+                } else {
+                    operation_id.clone()
+                };
+                IrOperation {
+                    id,
+                    method_name: method_name_value.clone(),
+                    description: description.clone(),
+                    deprecated,
+                    read_only: method == HttpMethod::Get,
+                    inputs: parameters.clone(),
+                    output: variant.output,
+                    entity: variant.entity,
+                    execution: IrExecutionAttachment::Rest(RestExecutionAttachment {
+                        method,
+                        path_template: path.to_string(),
+                        parameters: rest_parameters.clone(),
+                        request_body: request_body.clone(),
+                        response: variant.response,
+                        pagination: pagination.clone(),
+                    }),
+                    diagnostics: diagnostics.clone(),
+                }
+            })
+            .collect())
     }
 
     fn import_parameters(
