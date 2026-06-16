@@ -535,7 +535,7 @@ fn format_memory_limit(limit: MemorySize) -> String {
         ("Mi", 1024_usize.pow(2)),
         ("Ki", 1024),
     ] {
-        if bytes % multiplier == 0 {
+        if bytes.is_multiple_of(multiplier) {
             return format!("{}{} ({} bytes)", bytes / multiplier, suffix, bytes);
         }
     }
