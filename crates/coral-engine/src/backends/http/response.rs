@@ -4,7 +4,8 @@ use serde_json::Value;
 
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::trace::HttpBodyCapture;
-use coral_spec::ResponseBodyFormat;
+use crate::backends::http::xml::decode_xml_response;
+use coral_spec::{ResponseBodyFormat, ResponseSpec};
 
 pub(super) struct ResponseDecodeContext<'a> {
     pub(super) source_schema: &'a str,
@@ -16,9 +17,13 @@ pub(super) struct ResponseDecodeContext<'a> {
     pub(super) request_id: u64,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "HTTP body decoding keeps format branches together so error context stays identical."
+)]
 pub(super) async fn decode_response_body(
     response: reqwest::Response,
-    format: ResponseBodyFormat,
+    response_spec: &ResponseSpec,
     context: ResponseDecodeContext<'_>,
 ) -> Result<Value, ProviderQueryError> {
     let ResponseDecodeContext {
@@ -30,7 +35,7 @@ pub(super) async fn decode_response_body(
         response_span,
         request_id,
     } = context;
-    match format {
+    match response_spec.format {
         ResponseBodyFormat::Json => {
             let bytes = response.bytes().await.map_err(|error| {
                 // A read failure mid-body is transient, so it is eligible for retry.
@@ -93,6 +98,42 @@ pub(super) async fn decode_response_body(
                 rows.push(row);
             }
             Ok(Value::Array(rows))
+        }
+        ResponseBodyFormat::Xml => {
+            let bytes = response.bytes().await.map_err(|error| {
+                // A read failure mid-body is transient, so it is eligible for retry.
+                decode_error(
+                    source_schema,
+                    table_name,
+                    method_label,
+                    logged_url,
+                    format!("source API response decoding failed: {error}"),
+                    true,
+                )
+            })?;
+            response_span.record("http.response.body.size", bytes.len());
+            let trace_body = String::from_utf8_lossy(&bytes);
+            body_capture.record_response(response_span, request_id, trace_body.as_ref());
+            let Some(xml_spec) = response_spec.xml.as_ref() else {
+                return Err(decode_error(
+                    source_schema,
+                    table_name,
+                    method_label,
+                    logged_url,
+                    "source API response decoding failed: XML response format is missing xml normalization plan".to_string(),
+                    false,
+                ));
+            };
+            decode_xml_response(&bytes, xml_spec).map_err(|error| {
+                decode_error(
+                    source_schema,
+                    table_name,
+                    method_label,
+                    logged_url,
+                    error,
+                    false,
+                )
+            })
         }
     }
 }

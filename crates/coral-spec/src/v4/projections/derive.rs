@@ -6,7 +6,7 @@ use crate::v4::ir::{
     IrScalarType, IrTypeShape, OutputCardinality, SemanticIr,
 };
 use crate::v4::manifest::V4SourceManifest;
-use crate::v4::naming::{normalize_identifier, stable_suffix};
+use crate::v4::naming::{normalize_identifier, normalize_schema_identifier, stable_suffix};
 use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
 use crate::{ManifestDataType, Result, SearchLimitsSpec, SourceTableFunctionKind};
 
@@ -106,7 +106,7 @@ fn generate_projection(
                 ));
             }
             ProjectionInput {
-                name: normalize_identifier(&input.name, "input"),
+                name: normalize_schema_identifier(&input.name, "input"),
                 sql_exposure: exposure,
                 source_location: input.location,
                 wire_name: input.name.clone(),
@@ -194,7 +194,7 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
     let mut columns = Vec::new();
     let mut names = HashSet::new();
     for field in fields {
-        let mut name = normalize_identifier(&field.name, "column");
+        let mut name = normalize_schema_identifier(&field.name, "column");
         if !names.insert(name.clone()) {
             let suffix = stable_suffix(&field.name);
             name = format!("{name}__{suffix}");

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::parse_source_manifest_yaml;
+use crate::{ResponseBodyFormat, XmlValueSpec, parse_source_manifest_yaml};
 
 #[test]
 fn extracts_openapi_document_metadata() {
@@ -170,6 +170,238 @@ components:
     let projection = catalog.projections.first().expect("projection");
     assert_eq!(projection.name, "repositories");
     assert!(matches!(projection.kind, ProjectionKind::Table));
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "This fixture intentionally carries the full XML envelope and multiple response collections."
+)]
+fn importer_selects_xml_response_and_builds_schema_normalization_plan() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: cloudwatch
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://monitoring.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /:
+    get:
+      operationId: DescribeAlarms
+      parameters:
+        - {name: Action, in: query, required: true, schema: {type: string}}
+        - {name: Version, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            text/xml:
+              schema: {$ref: '#/components/schemas/DescribeAlarmsResponse'}
+components:
+  schemas:
+    DescribeAlarmsResponse:
+      type: object
+      xml: {name: DescribeAlarmsResponse}
+      properties:
+        DescribeAlarmsResult:
+          $ref: '#/components/schemas/DescribeAlarmsResult'
+        ResponseMetadata:
+          type: object
+          properties:
+            RequestId: {type: string}
+    DescribeAlarmsResult:
+      type: object
+      properties:
+        CompositeAlarms:
+          allOf:
+            - {$ref: '#/components/schemas/CompositeAlarms'}
+            - {description: The returned composite alarms.}
+        MetricAlarms:
+          allOf:
+            - {$ref: '#/components/schemas/MetricAlarms'}
+            - {description: The returned metric alarms.}
+        NextToken: {type: string}
+    CompositeAlarms:
+      type: array
+      items: {$ref: '#/components/schemas/CompositeAlarm'}
+    CompositeAlarm:
+      type: object
+      properties:
+        AlarmName: {type: string}
+        AlarmRule: {type: string}
+    MetricAlarms:
+      type: array
+      items: {$ref: '#/components/schemas/MetricAlarm'}
+    MetricAlarm:
+      type: object
+      properties:
+        AlarmName: {type: string}
+        ActionsEnabled: {type: boolean}
+"
+        .as_bytes(),
+    )
+    .expect("import XML response");
+    assert_eq!(ir.operations.len(), 2);
+    let operation = ir
+        .operations
+        .iter()
+        .find(|operation| {
+            operation.output.row_path
+                == vec![
+                    "DescribeAlarmsResponse".to_string(),
+                    "DescribeAlarmsResult".to_string(),
+                    "MetricAlarms".to_string(),
+                ]
+        })
+        .expect("metric alarm operation");
+    assert!(
+        ir.operations.iter().any(|operation| {
+            operation.output.row_path
+                == vec![
+                    "DescribeAlarmsResponse".to_string(),
+                    "DescribeAlarmsResult".to_string(),
+                    "CompositeAlarms".to_string(),
+                ]
+        }),
+        "composite alarms should get a separate operation"
+    );
+    assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
+    assert_eq!(
+        operation.output.row_path,
+        vec![
+            "DescribeAlarmsResponse".to_string(),
+            "DescribeAlarmsResult".to_string(),
+            "MetricAlarms".to_string()
+        ]
+    );
+    let IrExecutionAttachment::Rest(rest) = &operation.execution;
+    assert_eq!(rest.response.media_type, "text/xml");
+    assert_eq!(rest.response.response.format, ResponseBodyFormat::Xml);
+    let xml = rest.response.response.xml.as_ref().expect("xml plan");
+    assert_eq!(xml.root_name.as_deref(), Some("DescribeAlarmsResponse"));
+    let XmlValueSpec::Object(root) = &xml.root else {
+        panic!("root should be an object plan");
+    };
+    let result = root
+        .fields
+        .iter()
+        .find(|field| field.name == "DescribeAlarmsResult")
+        .expect("result field");
+    let XmlValueSpec::Object(result) = &result.value else {
+        panic!("result should be an object plan");
+    };
+    let alarms = result
+        .fields
+        .iter()
+        .find(|field| field.name == "MetricAlarms")
+        .expect("metric alarms field");
+    let XmlValueSpec::List(alarms) = &alarms.value else {
+        panic!("metric alarms should be a list plan");
+    };
+    assert_eq!(alarms.item_xml_name.as_deref(), Some("member"));
+
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let projection_names = catalog
+        .projections
+        .iter()
+        .map(|projection| projection.name.as_str())
+        .collect::<Vec<_>>();
+    let projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.name == "metric_alarms")
+        .unwrap_or_else(|| panic!("metric alarm projection in {projection_names:?}"));
+    assert!(
+        catalog
+            .projections
+            .iter()
+            .any(|projection| projection.name == "composite_alarms"),
+        "composite alarms should get a projection"
+    );
+    assert_eq!(projection.name, "metric_alarms");
+    let columns = projection
+        .columns
+        .iter()
+        .map(|column| (column.name.as_str(), column.data_type))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        columns,
+        vec![
+            ("alarm_name", crate::ManifestDataType::Utf8),
+            ("actions_enabled", crate::ManifestDataType::Boolean)
+        ]
+    );
+}
+
+#[test]
+fn importer_preserves_xml_name_local_part_and_attribute_fields() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: feed
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://feed.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /entry:
+    get:
+      operationId: getEntry
+      responses:
+        '200':
+          content:
+            application/xml:
+              schema:
+                type: object
+                xml: {name: atom:entry}
+                properties:
+                  id:
+                    type: integer
+                    xml: {attribute: true}
+                  title:
+                    type: string
+components: {schemas: {}}
+"
+        .as_bytes(),
+    )
+    .expect("import XML response");
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.row_path, vec!["entry".to_string()]);
+    let IrExecutionAttachment::Rest(rest) = &operation.execution;
+    let xml = rest.response.response.xml.as_ref().expect("xml plan");
+    assert_eq!(xml.root_name.as_deref(), Some("entry"));
+    let XmlValueSpec::Object(root) = &xml.root else {
+        panic!("root should be an object plan");
+    };
+    let id = root
+        .fields
+        .iter()
+        .find(|field| field.name == "id")
+        .expect("id field");
+    assert!(id.attribute);
 }
 
 #[test]

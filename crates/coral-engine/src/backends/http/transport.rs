@@ -28,7 +28,7 @@ use crate::backends::http::trace::{
 };
 use crate::backends::shared::template::{RenderContext, resolve_value_source, value_to_string};
 use coral_spec::backends::http::RateLimitSpec;
-use coral_spec::{AuthSpec, HeaderSpec, HttpMethod, ResponseBodyFormat};
+use coral_spec::{AuthSpec, HeaderSpec, HttpMethod, ResponseSpec};
 
 static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -44,7 +44,7 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) url: &'a str,
     pub(super) query_pairs: &'a [(String, String)],
     pub(super) body: Option<&'a RequestBody>,
-    pub(super) response_format: ResponseBodyFormat,
+    pub(super) response: &'a ResponseSpec,
     pub(super) source_schema: &'a str,
     pub(super) rate_limit: &'a RateLimitSpec,
     pub(super) body_capture: HttpBodyCapture,
@@ -79,7 +79,7 @@ pub(super) async fn execute_request(
         url,
         query_pairs,
         body,
-        response_format,
+        response: response_spec,
         source_schema,
         rate_limit,
         body_capture,
@@ -319,7 +319,7 @@ pub(super) async fn execute_request(
 
             match decode_response_body(
                 response,
-                response_format,
+                response_spec,
                 ResponseDecodeContext {
                     source_schema,
                     table_name,
@@ -459,7 +459,7 @@ mod tests {
     use crate::backends::http::trace::HttpBodyCapture;
     use crate::backends::shared::template::RenderContext;
     use coral_spec::backends::http::RateLimitSpec;
-    use coral_spec::{AuthSpec, HttpMethod, ResponseBodyFormat};
+    use coral_spec::{AuthSpec, HttpMethod, ResponseSpec};
 
     async fn spawn_hanging_http_server() -> (String, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -506,7 +506,7 @@ mod tests {
                 url: &url,
                 query_pairs: &query_pairs,
                 body: None,
-                response_format: ResponseBodyFormat::default(),
+                response: &ResponseSpec::default(),
                 source_schema: "demo",
                 rate_limit: &RateLimitSpec::default(),
                 body_capture: HttpBodyCapture::default(),
