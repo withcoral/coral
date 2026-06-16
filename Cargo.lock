@@ -6695,6 +6695,7 @@ name = "xtask"
 version = "0.4.2"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "coral-spec",
  "insta",
@@ -6702,6 +6703,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "uuid",
  "walkdir",
 ]
 
