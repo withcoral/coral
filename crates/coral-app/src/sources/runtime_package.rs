@@ -279,6 +279,7 @@ fn mcp_table_spec(
         filter_bindings: mcp_filter_bindings(projection),
         limit_binding: None,
         pagination: mcp.pagination.clone(),
+        offset_pagination: mcp.offset_pagination.clone(),
         response: mcp_response_for_operation(operation),
     }
 }
@@ -292,6 +293,7 @@ fn mcp_table_function_spec(
     McpTableFunctionSpec {
         tool: mcp.tool_name.clone(),
         pagination: mcp.pagination.clone(),
+        offset_pagination: mcp.offset_pagination.clone(),
         common: SourceTableFunctionSpec {
             name: projection.name.clone(),
             kind: function_kind,
@@ -395,7 +397,7 @@ mod tests {
     use std::path::PathBuf;
 
     use coral_spec::backends::http::{AuthSpec, RateLimitSpec};
-    use coral_spec::backends::mcp::{McpPaginationSpec, McpServerSpec};
+    use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpServerSpec};
     use coral_spec::v4::{
         Fingerprint, IrExecutionAttachment, IrOperation, IrOperationOutput, MCP_IMPORTER_VERSION,
         MaterializedSurface, McpExecutionAttachment, McpRuntimeConfig, OPENAPI_IMPORTER_VERSION,
@@ -485,6 +487,20 @@ mod tests {
         operation_id: &str,
         pagination: Option<McpPaginationSpec>,
     ) -> MaterializedSurface {
+        mcp_materialized_surface_with_pagination_and_offset(
+            surface_id,
+            operation_id,
+            pagination,
+            None,
+        )
+    }
+
+    fn mcp_materialized_surface_with_pagination_and_offset(
+        surface_id: &str,
+        operation_id: &str,
+        pagination: Option<McpPaginationSpec>,
+        offset_pagination: Option<McpOffsetPaginationSpec>,
+    ) -> MaterializedSurface {
         MaterializedSurface {
             surface_id: surface_id.to_string(),
             semantic_ir: SemanticIr {
@@ -509,6 +525,7 @@ mod tests {
                     execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
                         tool_name: operation_id.to_string(),
                         pagination,
+                        offset_pagination,
                     }),
                     diagnostics: Vec::new(),
                 }],
@@ -648,6 +665,74 @@ mod tests {
         assert_eq!(
             mcp.tables.first().expect("mcp table").pagination.as_ref(),
             Some(&pagination)
+        );
+    }
+
+    #[test]
+    fn mcp_runtime_component_keeps_operation_offset_pagination() {
+        let surface = mcp_surface("mcp", "github_v4_mcp");
+        let manifest = V4SourceManifest {
+            common: V4SourceCommon {
+                dsl_version: 4,
+                name: "github_v4".to_string(),
+                description: String::new(),
+                test_queries: Vec::new(),
+            },
+            declared_inputs: Vec::new(),
+            surfaces: vec![surface],
+        };
+        let offset_pagination = McpOffsetPaginationSpec {
+            limit_arg: "limit".to_string(),
+            default_limit: 50,
+            max_limit: 200,
+            offset_arg: "offset".to_string(),
+            offset_start: 0,
+            max_pages: None,
+        };
+        let materialized = V4MaterializedSource {
+            fingerprint: Fingerprint {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "github_v4".to_string(),
+                manifest_sha256: String::new(),
+                surfaces: Vec::new(),
+                importer_version: SURFACE_IMPORTER_VERSION.to_string(),
+                projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+            },
+            surfaces: vec![mcp_materialized_surface_with_pagination_and_offset(
+                "mcp",
+                "mcp_list_issues",
+                None,
+                Some(offset_pagination.clone()),
+            )],
+            projections: ProjectionCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "github_v4".to_string(),
+                generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+                projections: vec![published_projection(
+                    "mcp",
+                    "github_v4_mcp",
+                    "mcp_list_issues",
+                )],
+                diagnostics: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+        };
+
+        let components =
+            runtime_components_for_v4_source(&manifest, &materialized).expect("runtime components");
+        let coral_engine::RuntimeSourceComponent::Mcp(mcp) =
+            components.first().expect("mcp component")
+        else {
+            panic!("expected MCP component");
+        };
+
+        assert_eq!(
+            mcp.tables
+                .first()
+                .expect("mcp table")
+                .offset_pagination
+                .as_ref(),
+            Some(&offset_pagination)
         );
     }
 

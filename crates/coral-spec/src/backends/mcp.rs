@@ -137,6 +137,7 @@ pub struct McpTableFunctionSpec {
     pub common: SourceTableFunctionSpec,
     pub tool: String,
     pub pagination: Option<McpPaginationSpec>,
+    pub offset_pagination: Option<McpOffsetPaginationSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -173,6 +174,7 @@ pub struct McpTableSpec {
     pub filter_bindings: Vec<McpTableFilterBinding>,
     pub limit_binding: Option<McpLimitBinding>,
     pub pagination: Option<McpPaginationSpec>,
+    pub offset_pagination: Option<McpOffsetPaginationSpec>,
     pub response: ResponseSpec,
 }
 
@@ -191,6 +193,20 @@ pub struct McpLimitBinding {
 pub struct McpPaginationSpec {
     pub cursor_arg: String,
     pub response_cursor_path: Vec<String>,
+    #[serde(default)]
+    pub max_pages: Option<usize>,
+}
+
+/// Offset pagination for generated MCP tool-backed relations.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct McpOffsetPaginationSpec {
+    pub limit_arg: String,
+    pub default_limit: usize,
+    pub max_limit: usize,
+    pub offset_arg: String,
+    #[serde(default)]
+    pub offset_start: usize,
     #[serde(default)]
     pub max_pages: Option<usize>,
 }
@@ -308,6 +324,7 @@ impl RawMcpTableFunctionSpec {
         Ok(McpTableFunctionSpec {
             tool: self.tool,
             pagination: self.pagination,
+            offset_pagination: None,
             common: SourceTableFunctionSpec {
                 name: self.name,
                 kind: SourceTableFunctionKind::default(),
@@ -354,6 +371,7 @@ impl RawMcpTableSpec {
             filter_bindings,
             limit_binding: self.limit_binding,
             pagination: self.pagination,
+            offset_pagination: None,
             response: self.response,
         })
     }

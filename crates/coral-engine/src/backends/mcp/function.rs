@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_spec::ResponseSpec;
-use coral_spec::backends::mcp::{McpPaginationSpec, McpTableFunctionSpec};
+use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpTableFunctionSpec};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
@@ -35,6 +35,7 @@ struct McpFunctionState {
     schema: SchemaRef,
     response: ResponseSpec,
     pagination: Option<McpPaginationSpec>,
+    offset_pagination: Option<McpOffsetPaginationSpec>,
     columns: Arc<[coral_spec::ColumnSpec]>,
     fetch_limit_default: Option<usize>,
 }
@@ -72,6 +73,7 @@ impl McpSourceTableFunction {
         let columns = function.common.columns.clone();
         let fetch_limit_default = function.fetch_limit_default();
         let pagination = function.pagination.clone();
+        let offset_pagination = function.offset_pagination.clone();
         Ok(Self {
             spec: Arc::new(function),
             state: Arc::new(McpFunctionState {
@@ -82,6 +84,7 @@ impl McpSourceTableFunction {
                 schema,
                 response,
                 pagination,
+                offset_pagination,
                 columns: Arc::from(columns),
                 fetch_limit_default,
             }),
@@ -164,6 +167,7 @@ impl TableProvider for McpFunctionCallTableProvider {
             source_tool_args: Arc::new(BTreeMap::default()),
             response: self.state.response.clone(),
             pagination: self.state.pagination.clone(),
+            offset_pagination: self.state.offset_pagination.clone(),
             limit: limit.or(self.state.fetch_limit_default),
         });
         let arg_strings: Arc<HashMap<String, String>> =

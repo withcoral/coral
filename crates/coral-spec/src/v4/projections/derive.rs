@@ -245,11 +245,15 @@ fn mcp_pagination_owns_input(
     mcp: &crate::v4::McpExecutionAttachment,
     input: &IrOperationInput,
 ) -> bool {
-    input.location == IrInputLocation::ToolArg
-        && mcp
-            .pagination
-            .as_ref()
-            .is_some_and(|pagination| input.name == pagination.cursor_arg)
+    if input.location != IrInputLocation::ToolArg {
+        return false;
+    }
+    mcp.pagination
+        .as_ref()
+        .is_some_and(|pagination| input.name == pagination.cursor_arg)
+        || mcp.offset_pagination.as_ref().is_some_and(|pagination| {
+            input.name == pagination.limit_arg || input.name == pagination.offset_arg
+        })
 }
 
 fn projection_input_name(

@@ -1,21 +1,13 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use serde_json::Value;
-
-use crate::backends::mcp::McpPaginationSpec;
 use crate::v4::diagnostics::Diagnostic;
-use crate::v4::ir::{
-    IrEntityCandidate, IrExecutionAttachment, IrField, IrInputLocation, IrOperation,
-    IrOperationInput, IrOperationOutput, IrScalarType, IrType, IrTypeShape, McpExecutionAttachment,
-    OutputCardinality, SemanticIr,
-};
+use crate::v4::ir::{IrScalarType, IrType, IrTypeShape, SemanticIr};
 use crate::v4::manifest::{SurfaceType, V4SourceManifest, V4Surface};
 use crate::v4::naming::normalize_identifier;
-use crate::v4::surfaces::json_schema::{json_schema_scalar_type, json_schema_type_contains};
 use crate::v4::{MCP_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
 use crate::{ManifestError, Result};
 
-use super::model::{McpToolCatalog, McpToolDescriptor};
+use super::model::McpToolCatalog;
 
 pub fn normalize_mcp_tool_catalog(catalog: &McpToolCatalog) -> Result<Vec<u8>> {
     let mut normalized = catalog.clone();
@@ -42,11 +34,11 @@ pub fn import_mcp_surface(
     importer.import(catalog)
 }
 
-struct McpImporter<'a> {
-    manifest: &'a V4SourceManifest,
-    surface: &'a V4Surface,
-    types: BTreeMap<String, IrType>,
-    diagnostics: Vec<Diagnostic>,
+pub(super) struct McpImporter<'a> {
+    pub(super) manifest: &'a V4SourceManifest,
+    pub(super) surface: &'a V4Surface,
+    pub(super) types: BTreeMap<String, IrType>,
+    pub(super) diagnostics: Vec<Diagnostic>,
 }
 
 impl<'a> McpImporter<'a> {
@@ -93,210 +85,7 @@ impl<'a> McpImporter<'a> {
         })
     }
 
-    fn import_tool(&mut self, tool: &McpToolDescriptor, operation_id: &str) -> Option<IrOperation> {
-        let mut diagnostics = Vec::new();
-        let imported_inputs = self.import_inputs(tool, operation_id, &mut diagnostics);
-        let input_schema_complete = imported_inputs.schema_complete;
-        if !input_schema_complete {
-            self.diagnostics.extend(diagnostics);
-            return None;
-        }
-
-        let inputs = imported_inputs.inputs;
-        let output = self.import_output(operation_id, tool.output_schema.as_ref());
-        let pagination = infer_mcp_pagination(&inputs, &output, tool.output_schema.as_ref());
-        Some(IrOperation {
-            id: operation_id.to_string(),
-            method_name: "tools/call".to_string(),
-            description: tool
-                .description
-                .clone()
-                .or_else(|| tool.title.clone())
-                .unwrap_or_default(),
-            deprecated: false,
-            read_only: tool.read_only_hint.unwrap_or(false),
-            inputs,
-            output,
-            entity: Some(IrEntityCandidate {
-                name: operation_id.to_string(),
-                type_ref: format!("{operation_id}_row"),
-                identity_fields: Vec::new(),
-            }),
-            execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
-                tool_name: tool.name.clone(),
-                pagination,
-            }),
-            diagnostics,
-        })
-    }
-
-    fn import_inputs(
-        &mut self,
-        tool: &McpToolDescriptor,
-        operation_id: &str,
-        diagnostics: &mut Vec<Diagnostic>,
-    ) -> ImportedInputs {
-        let mut resolving_refs = BTreeSet::new();
-        let mut schema_complete = true;
-        let Some(shape) = input_object_shape(
-            &tool.input_schema,
-            &tool.input_schema,
-            &self.surface.id,
-            operation_id,
-            &mut resolving_refs,
-            diagnostics,
-            &mut schema_complete,
-        ) else {
-            return ImportedInputs {
-                inputs: Vec::new(),
-                schema_complete: false,
-            };
-        };
-        let inputs = shape
-            .properties
-            .iter()
-            .map(|(name, property)| {
-                let data_type = json_schema_scalar_type(property).unwrap_or(IrScalarType::Json);
-                self.ensure_type_for_scalar(data_type);
-                IrOperationInput {
-                    name: name.clone(),
-                    location: IrInputLocation::ToolArg,
-                    required: shape.required.contains(name.as_str()),
-                    data_type,
-                    default_value: property_default(property),
-                    description: schema_description(property),
-                }
-            })
-            .collect();
-        ImportedInputs {
-            inputs,
-            schema_complete,
-        }
-    }
-
-    fn import_output(
-        &mut self,
-        operation_id: &str,
-        output_schema: Option<&Value>,
-    ) -> IrOperationOutput {
-        let row_type_id = format!("{operation_id}_row");
-        let Some(schema) = output_schema else {
-            self.insert_generic_row_type(&row_type_id);
-            return IrOperationOutput {
-                cardinality: OutputCardinality::Singleton,
-                type_ref: row_type_id,
-                row_path: Vec::new(),
-            };
-        };
-        if json_schema_type_contains(schema, "array") {
-            let item_schema = schema.get("items");
-            self.insert_row_type_from_schema(&row_type_id, item_schema);
-            return IrOperationOutput {
-                cardinality: OutputCardinality::List,
-                type_ref: row_type_id,
-                row_path: Vec::new(),
-            };
-        }
-        if let Some((array_property, item_schema)) = wrapped_list_property(schema) {
-            self.insert_row_type_from_schema(&row_type_id, item_schema);
-            return IrOperationOutput {
-                cardinality: OutputCardinality::WrappedList,
-                type_ref: row_type_id,
-                row_path: vec![array_property.to_string()],
-            };
-        }
-        self.insert_row_type_from_schema(&row_type_id, Some(schema));
-        IrOperationOutput {
-            cardinality: OutputCardinality::Singleton,
-            type_ref: row_type_id,
-            row_path: Vec::new(),
-        }
-    }
-
-    fn insert_generic_row_type(&mut self, type_id: &str) {
-        let json_type = self.ensure_type_for_scalar(IrScalarType::Json);
-        self.types.insert(
-            type_id.to_string(),
-            IrType {
-                id: type_id.to_string(),
-                shape: IrTypeShape::Object {
-                    fields: vec![
-                        IrField {
-                            name: "result".to_string(),
-                            type_ref: json_type.clone(),
-                            required: false,
-                            nullable: true,
-                            description: String::new(),
-                        },
-                        IrField {
-                            name: "raw".to_string(),
-                            type_ref: json_type,
-                            required: false,
-                            nullable: true,
-                            description: "Raw MCP tool payload.".to_string(),
-                        },
-                    ],
-                },
-                nullable: false,
-                description: String::new(),
-            },
-        );
-    }
-
-    fn insert_row_type_from_schema(&mut self, type_id: &str, schema: Option<&Value>) {
-        let Some(schema) = schema else {
-            self.insert_generic_row_type(type_id);
-            return;
-        };
-        let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
-            self.insert_generic_row_type(type_id);
-            return;
-        };
-        let required = schema
-            .get("required")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        let mut fields = properties
-            .iter()
-            .map(|(name, property)| {
-                let data_type = json_schema_scalar_type(property).unwrap_or(IrScalarType::Json);
-                IrField {
-                    name: name.clone(),
-                    type_ref: self.ensure_type_for_scalar(data_type),
-                    required: required.contains(name.as_str()),
-                    nullable: !required.contains(name.as_str()),
-                    description: schema_description(property),
-                }
-            })
-            .collect::<Vec<_>>();
-        if !fields.iter().any(|field| field.name == "raw") {
-            let json_type = self.ensure_type_for_scalar(IrScalarType::Json);
-            fields.push(IrField {
-                name: "raw".to_string(),
-                type_ref: json_type,
-                required: false,
-                nullable: true,
-                description: "Raw MCP tool payload.".to_string(),
-            });
-        }
-        self.types.insert(
-            type_id.to_string(),
-            IrType {
-                id: type_id.to_string(),
-                shape: IrTypeShape::Object { fields },
-                nullable: false,
-                description: schema_description(schema),
-            },
-        );
-    }
-
-    fn ensure_type_for_scalar(&mut self, scalar: IrScalarType) -> String {
+    pub(super) fn ensure_type_for_scalar(&mut self, scalar: IrScalarType) -> String {
         let base = match scalar {
             IrScalarType::String => "string",
             IrScalarType::Integer => "integer",
@@ -317,357 +106,16 @@ impl<'a> McpImporter<'a> {
     }
 }
 
-#[derive(Default)]
-struct InputObjectShape {
-    properties: BTreeMap<String, Value>,
-    required: BTreeSet<String>,
-}
-
-struct ImportedInputs {
-    inputs: Vec<IrOperationInput>,
-    schema_complete: bool,
-}
-
-fn input_object_shape(
-    root: &Value,
-    schema: &Value,
-    surface_id: &str,
-    operation_id: &str,
-    resolving_refs: &mut BTreeSet<String>,
-    diagnostics: &mut Vec<Diagnostic>,
-    schema_complete: &mut bool,
-) -> Option<InputObjectShape> {
-    let schema = resolve_input_schema_ref(
-        root,
-        schema,
-        surface_id,
-        operation_id,
-        resolving_refs,
-        diagnostics,
-        schema_complete,
-    )?;
-
-    if schema.get("anyOf").is_some() || schema.get("oneOf").is_some() {
-        *schema_complete = false;
-        diagnostics.push(Diagnostic::warning(
-            "MCP_INPUT_SCHEMA_COMPOSITION_UNSUPPORTED",
-            "MCP input schema uses anyOf/oneOf, which cannot be safely imported as SQL inputs",
-            surface_id.to_string(),
-            Some(operation_id.to_string()),
-        ));
-        return None;
-    }
-
-    let mut shape = direct_input_object_shape(schema);
-    if let Some(all_of) = schema.get("allOf").and_then(Value::as_array) {
-        for item in all_of {
-            let item_shape = input_object_shape(
-                root,
-                item,
-                surface_id,
-                operation_id,
-                resolving_refs,
-                diagnostics,
-                schema_complete,
-            )?;
-            if !merge_input_object_shape(
-                &mut shape,
-                item_shape,
-                surface_id,
-                operation_id,
-                diagnostics,
-                schema_complete,
-            ) {
-                return None;
-            }
-        }
-    }
-    Some(shape)
-}
-
-fn resolve_input_schema_ref<'a>(
-    root: &'a Value,
-    schema: &'a Value,
-    surface_id: &str,
-    operation_id: &str,
-    resolving_refs: &mut BTreeSet<String>,
-    diagnostics: &mut Vec<Diagnostic>,
-    schema_complete: &mut bool,
-) -> Option<&'a Value> {
-    let Some(reference) = schema.get("$ref").and_then(Value::as_str) else {
-        return Some(schema);
-    };
-    if !reference.starts_with("#/") {
-        *schema_complete = false;
-        diagnostics.push(Diagnostic::warning(
-            "MCP_INPUT_SCHEMA_REF_UNSUPPORTED",
-            format!("MCP input schema external reference '{reference}' is unsupported"),
-            surface_id.to_string(),
-            Some(operation_id.to_string()),
-        ));
-        return None;
-    }
-    if !resolving_refs.insert(reference.to_string()) {
-        *schema_complete = false;
-        diagnostics.push(Diagnostic::warning(
-            "MCP_INPUT_SCHEMA_REF_UNSUPPORTED",
-            format!("MCP input schema reference cycle includes '{reference}'"),
-            surface_id.to_string(),
-            Some(operation_id.to_string()),
-        ));
-        return None;
-    }
-    let pointer = reference.strip_prefix('#').unwrap_or(reference);
-    let resolved = root.pointer(pointer);
-    resolving_refs.remove(reference);
-    if let Some(resolved) = resolved {
-        Some(resolved)
-    } else {
-        *schema_complete = false;
-        diagnostics.push(Diagnostic::warning(
-            "MCP_INPUT_SCHEMA_REF_NOT_FOUND",
-            format!("MCP input schema reference '{reference}' was not found"),
-            surface_id.to_string(),
-            Some(operation_id.to_string()),
-        ));
-        None
-    }
-}
-
-fn direct_input_object_shape(schema: &Value) -> InputObjectShape {
-    let Some(schema) = schema.as_object() else {
-        return InputObjectShape::default();
-    };
-    let required = schema
-        .get("required")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect::<BTreeSet<_>>()
-        })
-        .unwrap_or_default();
-    let properties = schema
-        .get("properties")
-        .and_then(Value::as_object)
-        .map(|properties| {
-            properties
-                .iter()
-                .map(|(name, property)| (name.clone(), property.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
-    InputObjectShape {
-        properties,
-        required,
-    }
-}
-
-fn merge_input_object_shape(
-    target: &mut InputObjectShape,
-    source: InputObjectShape,
-    surface_id: &str,
-    operation_id: &str,
-    diagnostics: &mut Vec<Diagnostic>,
-    schema_complete: &mut bool,
-) -> bool {
-    for (name, property) in source.properties {
-        if let Some(existing) = target.properties.get_mut(&name) {
-            if input_property_schemas_conflict(existing, &property) {
-                *schema_complete = false;
-                diagnostics.push(Diagnostic::warning(
-                    "MCP_INPUT_SCHEMA_CONFLICT",
-                    format!("MCP input schema defines conflicting property '{name}'"),
-                    surface_id.to_string(),
-                    Some(operation_id.to_string()),
-                ));
-                return false;
-            }
-            merge_input_property_metadata(existing, &property);
-        } else {
-            target.properties.insert(name, property);
-        }
-    }
-    target.required.extend(source.required);
-    true
-}
-
-fn input_property_schemas_conflict(existing: &Value, candidate: &Value) -> bool {
-    schema_without_annotation_metadata(existing) != schema_without_annotation_metadata(candidate)
-}
-
-fn schema_without_annotation_metadata(schema: &Value) -> Value {
-    schema_without_annotation_metadata_at_key(None, schema)
-}
-
-fn schema_without_annotation_metadata_at_key(key: Option<&str>, schema: &Value) -> Value {
-    const ANNOTATION_KEYS: &[&str] = &["$comment", "description", "examples", "title"];
-    match schema {
-        Value::Object(object) => {
-            let is_schema_name_map = matches!(
-                key,
-                Some("$defs" | "definitions" | "patternProperties" | "properties")
-            );
-            Value::Object(
-                object
-                    .iter()
-                    .filter(|(key, _value)| {
-                        is_schema_name_map || !ANNOTATION_KEYS.contains(&key.as_str())
-                    })
-                    .map(|(key, value)| {
-                        (
-                            key.clone(),
-                            schema_without_annotation_metadata_at_key(Some(key), value),
-                        )
-                    })
-                    .collect(),
-            )
-        }
-        Value::Array(values) => {
-            let mut values = values
-                .iter()
-                .map(|value| schema_without_annotation_metadata_at_key(None, value))
-                .collect::<Vec<_>>();
-            if key == Some("type") {
-                values.sort_by_key(Value::to_string);
-            }
-            Value::Array(values)
-        }
-        other => other.clone(),
-    }
-}
-
-fn merge_input_property_metadata(existing: &mut Value, candidate: &Value) {
-    const ANNOTATION_KEYS: &[&str] = &["$comment", "description", "examples", "title"];
-    let (Some(existing), Some(candidate)) = (existing.as_object_mut(), candidate.as_object())
-    else {
-        return;
-    };
-    for key in ANNOTATION_KEYS {
-        if !existing.contains_key(*key)
-            && let Some(value) = candidate.get(*key)
-        {
-            existing.insert((*key).to_string(), value.clone());
-        }
-    }
-}
-
-fn schema_description(schema: &Value) -> String {
-    schema
-        .get("description")
-        .and_then(Value::as_str)
-        .or_else(|| schema.get("title").and_then(Value::as_str))
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn property_default(schema: &Value) -> Option<String> {
-    schema.get("default").map(|value| match value {
-        Value::String(text) => text.clone(),
-        other => other.to_string(),
-    })
-}
-
-fn wrapped_list_property(schema: &Value) -> Option<(&str, Option<&Value>)> {
-    if !json_schema_type_contains(schema, "object") {
-        return None;
-    }
-    let properties = schema.get("properties").and_then(Value::as_object)?;
-    let mut arrays = properties
-        .iter()
-        .filter(|(_name, property)| json_schema_type_contains(property, "array"));
-    let (name, property) = arrays.next()?;
-    if arrays.next().is_some() {
-        return None;
-    }
-    if properties.len() != 1 && find_response_cursor_path(schema).is_none() {
-        return None;
-    }
-    Some((name.as_str(), property.get("items")))
-}
-
-fn infer_mcp_pagination(
-    inputs: &[IrOperationInput],
-    output: &IrOperationOutput,
-    output_schema: Option<&Value>,
-) -> Option<McpPaginationSpec> {
-    if !matches!(
-        output.cardinality,
-        OutputCardinality::List | OutputCardinality::WrappedList
-    ) {
-        return None;
-    }
-    let cursor_arg = cursor_input_name(inputs)?;
-    let response_cursor_path = find_response_cursor_path(output_schema?)?;
-    Some(McpPaginationSpec {
-        cursor_arg: cursor_arg.to_string(),
-        response_cursor_path,
-        max_pages: None,
-    })
-}
-
-fn cursor_input_name(inputs: &[IrOperationInput]) -> Option<&str> {
-    const CURSOR_INPUTS: &[&str] = &[
-        "cursor",
-        "after",
-        "page_token",
-        "pagetoken",
-        "next_cursor",
-        "nextcursor",
-        "next_token",
-        "nexttoken",
-    ];
-    inputs
-        .iter()
-        .filter(|input| !input.required)
-        .find(|input| {
-            let normalized = cursor_token(&input.name);
-            CURSOR_INPUTS.contains(&normalized.as_str())
-        })
-        .map(|input| input.name.as_str())
-}
-
-fn find_response_cursor_path(schema: &Value) -> Option<Vec<String>> {
-    let properties = schema.get("properties").and_then(Value::as_object)?;
-    for (name, property) in properties {
-        if is_response_cursor_property(name, property) {
-            return Some(vec![name.clone()]);
-        }
-    }
-    for (name, property) in properties {
-        if !json_schema_type_contains(property, "object") {
-            continue;
-        }
-        if let Some(mut path) = find_response_cursor_path(property) {
-            path.insert(0, name.clone());
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn is_response_cursor_property(name: &str, schema: &Value) -> bool {
-    const RESPONSE_CURSORS: &[&str] = &["nextcursor", "nextpagetoken", "nexttoken", "endcursor"];
-    RESPONSE_CURSORS.contains(&cursor_token(name).as_str())
-        && (json_schema_type_contains(schema, "string") || schema.get("type").is_none())
-}
-
-fn cursor_token(value: &str) -> String {
-    value
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
 
+    use super::super::model::McpToolDescriptor;
     use super::*;
-    use crate::v4::{ProjectionVisibility, generate_projection_catalog};
+    use crate::v4::ir::{
+        IrExecutionAttachment, IrField, IrOperation, IrScalarType, IrTypeShape, OutputCardinality,
+    };
+    use crate::v4::{ProjectionVisibility, SqlInputExposure, generate_projection_catalog};
     use crate::{ValidatedSourceManifest, parse_source_manifest_yaml};
 
     fn manifest() -> ValidatedSourceManifest {
@@ -728,6 +176,40 @@ surfaces:
             .iter()
             .find(|operation| operation.id == id)
             .expect("operation")
+    }
+
+    fn assert_no_offset_pagination_for_input_schema(input_schema: Value) {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "list-catalog",
+                input_schema,
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"}
+                                }
+                            }
+                        },
+                        "limit": {"type": "integer"},
+                        "offset": {"type": "integer"},
+                        "has_more": {"type": "boolean"}
+                    }
+                })),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "list_catalog");
+        let IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
+            panic!("expected MCP execution");
+        };
+        assert!(mcp.offset_pagination.is_none());
     }
 
     fn row_fields<'a>(ir: &'a SemanticIr, type_id: &str) -> &'a [IrField] {
@@ -1196,6 +678,138 @@ surfaces:
         assert_eq!(pagination.cursor_arg, "cursor");
         assert_eq!(pagination.response_cursor_path, ["meta", "nextCursor"]);
         assert_eq!(pagination.max_pages, None);
+    }
+
+    #[test]
+    fn infers_offset_pagination_for_mcp_discovery_contract() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "list-catalog",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 200,
+                            "default": 50
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 4_294_967_295_u64,
+                            "default": 0
+                        }
+                    }
+                }),
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"}
+                                }
+                            }
+                        },
+                        "total": {"type": "integer"},
+                        "limit": {"type": "integer"},
+                        "offset": {"type": "integer"},
+                        "has_more": {"type": "boolean"}
+                    }
+                })),
+                Some(true),
+            )],
+        };
+
+        let manifest = manifest();
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("surface");
+        let ir = import_mcp_surface(v4, surface, &catalog).expect("import");
+        let operation = operation(&ir, "list_catalog");
+        let IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
+            panic!("expected MCP execution");
+        };
+        assert!(mcp.pagination.is_none());
+        let pagination = mcp.offset_pagination.as_ref().expect("offset pagination");
+        assert_eq!(pagination.limit_arg, "limit");
+        assert_eq!(pagination.default_limit, 50);
+        assert_eq!(pagination.max_limit, 200);
+        assert_eq!(pagination.offset_arg, "offset");
+        assert_eq!(pagination.offset_start, 0);
+
+        let projections =
+            generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("projection catalog");
+        let projection = projections
+            .projections
+            .iter()
+            .find(|projection| projection.operation_id == "list_catalog")
+            .expect("projection");
+        assert!(matches!(projection.kind, crate::v4::ProjectionKind::Table));
+        for input in &projection.inputs {
+            assert_eq!(input.sql_exposure, SqlInputExposure::Internal);
+        }
+    }
+
+    #[test]
+    fn offset_pagination_requires_positive_limit_default() {
+        assert_no_offset_pagination_for_input_schema(json!({
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200,
+                    "default": 0
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0
+                }
+            }
+        }));
+    }
+
+    #[test]
+    fn offset_pagination_requires_bounded_limit_maximum() {
+        assert_no_offset_pagination_for_input_schema(json!({
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 50
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0
+                }
+            }
+        }));
+    }
+
+    #[test]
+    fn offset_pagination_requires_offset_zero_to_be_allowed() {
+        assert_no_offset_pagination_for_input_schema(json!({
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200,
+                    "default": 50
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 0
+                }
+            }
+        }));
     }
 
     #[test]
