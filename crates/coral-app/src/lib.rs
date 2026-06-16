@@ -40,6 +40,7 @@ mod credentials;
 pub mod features;
 mod feedback;
 mod identity;
+mod provenance;
 mod query;
 mod sources;
 mod state;

@@ -45,6 +45,7 @@ use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
+use crate::provenance::ProvenanceRecorder;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
@@ -275,6 +276,7 @@ impl ServerBuilder {
         let query_runtime_context = env
             .query_runtime_context()
             .with_body_capture_max_bytes(body_capture_max_bytes);
+        let provenance = ProvenanceRecorder::new(layout.provenance_events_file());
 
         let query_manager = QueryManager::new(
             config_store,
@@ -282,6 +284,7 @@ impl ServerBuilder {
             query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
+            provenance,
         );
         let trace_service = if telemetry_config.trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
@@ -638,6 +641,7 @@ mod tests {
     };
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::feedback::manager::FeedbackManager;
+    use crate::provenance::ProvenanceRecorder;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore};
@@ -712,8 +716,9 @@ enabled = false
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
+            ProvenanceRecorder::new(layout.provenance_events_file()),
         );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
@@ -1093,8 +1098,9 @@ tables:
                 home_dir: Some(fake_home.clone()),
                 ..QueryRuntimeContext::default()
             },
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
+            ProvenanceRecorder::new(layout.provenance_events_file()),
         );
         let running = start_server(
             source_manager,
@@ -1192,8 +1198,9 @@ tables:
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
+            ProvenanceRecorder::new(layout.provenance_events_file()),
         );
         let running = start_server(
             source_manager,
@@ -1291,8 +1298,9 @@ tables:
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
+            ProvenanceRecorder::new(layout.provenance_events_file()),
         );
         let running = start_server(
             source_manager,

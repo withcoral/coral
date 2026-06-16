@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use arrow::datatypes::Schema;
+use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::datasource::TableProvider;
@@ -23,10 +24,29 @@ pub struct EngineExtensions {
     pub source_decorators: Vec<Box<dyn SourceDecorator>>,
     /// Post-query observers invoked after successful SQL result collection.
     pub query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
+    /// App-provided static tables to register into this query runtime.
+    pub runtime_tables: Vec<RuntimeTable>,
     /// Request-time custom authenticators keyed by `auth.authenticator`.
     pub request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     /// Request-time resolver for app-managed source inputs.
     pub source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+}
+
+/// One app-provided table registered into a single query runtime.
+#[derive(Debug, Clone)]
+pub struct RuntimeTable {
+    /// Visible SQL schema name.
+    pub schema_name: String,
+    /// Visible SQL table name.
+    pub table_name: String,
+    /// Catalog description for `coral.tables`.
+    pub description: String,
+    /// Query guidance for `coral.tables`.
+    pub guide: String,
+    /// Arrow schema exposed by the table.
+    pub schema: SchemaRef,
+    /// Materialized batches for this runtime snapshot.
+    pub batches: Vec<RecordBatch>,
 }
 
 /// Neutral policy decision for one source registration failure.

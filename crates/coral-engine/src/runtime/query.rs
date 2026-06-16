@@ -1,8 +1,10 @@
 //! Concrete `DataFusion` runtime assembly for the data plane.
 
+use std::collections::{HashMap, hash_map::Entry};
 use std::sync::Arc;
 
 use datafusion::dataframe::DataFrame;
+use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::displayable;
@@ -11,6 +13,7 @@ use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
 use tracing::{Instrument as _, info_span};
 
 use crate::backends::compile_query_source;
+use crate::backends::{RegisteredSource, RegisteredTable, registered_columns_from_schema};
 use crate::runtime::catalog;
 use crate::runtime::error::{
     datafusion_to_core, datafusion_to_core_with_sql_and_table_functions,
@@ -21,10 +24,12 @@ use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
+use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
     CatalogInfo, CoreError, DescribeTableInfo, QueryExecution, QueryPlan, QueryResultObserver,
-    QueryResultObserverError, QueryRuntimeConfig, QuerySource, TableFunctionInfo, TableInfo,
+    QueryResultObserverError, QueryRuntimeConfig, QuerySource, RuntimeTable, TableFunctionInfo,
+    TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -112,13 +117,14 @@ async fn build_runtime_inner(
         extensions.source_decorators.as_mut_slice(),
     )
     .await?;
-    catalog::register(&ctx, &registration.active_sources)
-        .map_err(|err| datafusion_to_core(&err, &[]))?;
-    let tables = catalog::collect_tables(&registration.active_sources);
-    let table_functions = catalog::collect_table_functions(&registration.active_sources);
+    let runtime_sources = register_runtime_tables(&ctx, extensions.runtime_tables)?;
+    let mut active_sources = registration.active_sources;
+    active_sources.extend(runtime_sources);
+    catalog::register(&ctx, &active_sources).map_err(|err| datafusion_to_core(&err, &[]))?;
+    let tables = catalog::collect_tables(&active_sources);
+    let table_functions = catalog::collect_table_functions(&active_sources);
     let source_functions = SourceFunctionRegistry::new(
-        registration
-            .active_sources
+        active_sources
             .iter()
             .flat_map(|source| source.table_functions.iter()),
     );
@@ -141,6 +147,98 @@ async fn build_runtime_inner(
         failures: registration.failures,
         query_result_observers: extensions.query_result_observers,
     })
+}
+
+fn register_runtime_tables(
+    ctx: &SessionContext,
+    tables: Vec<RuntimeTable>,
+) -> Result<Vec<RegisteredSource>, CoreError> {
+    let catalog = ctx
+        .catalog("datafusion")
+        .ok_or_else(|| CoreError::InvalidInput("catalog 'datafusion' not found".to_string()))?;
+    let mut schemas: HashMap<String, RuntimeSchemaTables> = HashMap::new();
+    for table in tables {
+        if table.schema_name == "coral" || table.schema_name == "coral_admin" {
+            return Err(CoreError::InvalidInput(format!(
+                "runtime table schema '{}' is reserved",
+                table.schema_name
+            )));
+        }
+        let schema = table.schema.clone();
+        let batches = if table.batches.is_empty() {
+            vec![vec![]]
+        } else {
+            vec![table.batches.clone()]
+        };
+        let provider = Arc::new(
+            MemTable::try_new(schema.clone(), batches)
+                .map_err(|error| datafusion_to_core(&error, &[]))?,
+        ) as Arc<dyn TableProvider>;
+        let table_name = table.table_name;
+        let registered = RegisteredTable {
+            table_name: table_name.clone(),
+            description: table.description,
+            guide: table.guide,
+            columns: registered_columns_from_schema(&schema, &[]),
+            filters: Vec::new(),
+            required_filters: Vec::new(),
+            search_limits_json: None,
+        };
+        match schemas.entry(table.schema_name) {
+            Entry::Occupied(mut entry) => {
+                entry.get_mut().insert(&table_name, provider, registered)?;
+            }
+            Entry::Vacant(entry) => {
+                let mut schema_tables = RuntimeSchemaTables::default();
+                schema_tables.insert(&table_name, provider, registered)?;
+                entry.insert(schema_tables);
+            }
+        }
+    }
+
+    let mut registered_sources = Vec::new();
+    for (schema_name, schema_tables) in schemas {
+        catalog
+            .register_schema(
+                &schema_name,
+                Arc::new(StaticSchemaProvider::new(schema_tables.providers)),
+            )
+            .map_err(|error| datafusion_to_core(&error, &[]))?;
+        registered_sources.push(RegisteredSource {
+            schema_name,
+            tables: schema_tables.metadata,
+            table_functions: Vec::new(),
+            inputs: Vec::new(),
+        });
+    }
+    Ok(registered_sources)
+}
+
+#[derive(Default)]
+struct RuntimeSchemaTables {
+    providers: HashMap<String, Arc<dyn TableProvider>>,
+    metadata: Vec<RegisteredTable>,
+}
+
+impl RuntimeSchemaTables {
+    fn insert(
+        &mut self,
+        table_name: &str,
+        provider: Arc<dyn TableProvider>,
+        registered: RegisteredTable,
+    ) -> Result<(), CoreError> {
+        if self
+            .providers
+            .insert(table_name.to_string(), provider)
+            .is_some()
+        {
+            return Err(CoreError::InvalidInput(format!(
+                "duplicate runtime table '{table_name}'"
+            )));
+        }
+        self.metadata.push(registered);
+        Ok(())
+    }
 }
 
 impl QueryRuntimeAdapter {

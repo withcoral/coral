@@ -66,6 +66,13 @@ impl AppStateLayout {
         self.config_dir.join("telemetry").join("traces")
     }
 
+    pub(crate) fn provenance_events_file(&self) -> PathBuf {
+        self.config_dir
+            .join("telemetry")
+            .join("provenance")
+            .join("events.jsonl")
+    }
+
     pub(crate) fn workspaces_root(&self) -> PathBuf {
         self.config_dir.join("workspaces")
     }

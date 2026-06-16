@@ -5,6 +5,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
+use arrow::json::ArrayWriter;
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
@@ -12,11 +13,13 @@ use coral_engine::{
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::{KeyValue, trace::Status as OtelStatus};
+use serde_json::{Value, json};
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
+use crate::provenance::{self, CallTiming, ProvenanceCall, ProvenanceRecorder};
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
@@ -48,6 +51,7 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    provenance: ProvenanceRecorder,
 }
 
 impl QueryManager {
@@ -57,6 +61,7 @@ impl QueryManager {
         runtime_context: QueryRuntimeContext,
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        provenance: ProvenanceRecorder,
     ) -> Self {
         Self {
             config_store,
@@ -64,7 +69,12 @@ impl QueryManager {
             runtime_context,
             layout,
             engine_extensions_providers,
+            provenance,
         }
+    }
+
+    pub(crate) fn provenance_recorder(&self) -> ProvenanceRecorder {
+        self.provenance.clone()
     }
 
     pub(crate) async fn list_tables(
@@ -76,7 +86,11 @@ impl QueryManager {
         let sources = self
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(workspace_name, &sources);
+        let runtime = self.runtime_config(
+            workspace_name,
+            &sources,
+            schema_filter == Some(provenance::SCHEMA_NAME),
+        );
         CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
             .await
             .map_err(QueryManagerError::Core)
@@ -90,7 +104,11 @@ impl QueryManager {
         let sources = self
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(workspace_name, &sources);
+        let runtime = self.runtime_config(
+            workspace_name,
+            &sources,
+            schema_filter == Some(provenance::SCHEMA_NAME),
+        );
         CoralQuery::list_catalog(&sources, runtime, schema_filter)
             .await
             .map_err(QueryManagerError::Core)
@@ -105,7 +123,11 @@ impl QueryManager {
         let sources = self
             .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(workspace_name, &sources);
+        let runtime = self.runtime_config(
+            workspace_name,
+            &sources,
+            schema_name == provenance::SCHEMA_NAME,
+        );
         CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
             .await
             .map_err(QueryManagerError::Core)
@@ -116,7 +138,8 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         sql: &str,
     ) -> Result<QueryExecution, QueryManagerError> {
-        run_query_operation(
+        let timing = CallTiming::start_now();
+        let result = run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
             sql,
@@ -124,14 +147,16 @@ impl QueryManager {
                 let sources = self
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self.runtime_config(workspace_name, &sources);
+                let runtime = self.runtime_config(workspace_name, &sources, true);
                 CoralQuery::execute_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
             },
             |execution| Some(u64::try_from(execution.row_count()).unwrap_or(u64::MAX)),
         )
-        .await
+        .await;
+        self.record_sql_provenance(workspace_name, sql, &result, timing);
+        result
     }
 
     pub(crate) async fn explain_sql(
@@ -139,7 +164,8 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         sql: &str,
     ) -> Result<QueryPlan, QueryManagerError> {
-        run_query_operation(
+        let timing = CallTiming::start_now();
+        let result = run_query_operation(
             QueryOperation::ExplainSql,
             workspace_name,
             sql,
@@ -147,14 +173,16 @@ impl QueryManager {
                 let sources = self
                     .load_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self.runtime_config(workspace_name, &sources);
+                let runtime = self.runtime_config(workspace_name, &sources, true);
                 CoralQuery::explain_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
             },
             |_| None,
         )
-        .await
+        .await;
+        self.record_explain_provenance(workspace_name, sql, &result, timing);
+        result
     }
 
     pub(crate) async fn validate_source(
@@ -169,7 +197,8 @@ impl QueryManager {
         let (query_source, version) = self
             .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(workspace_name, std::slice::from_ref(&query_source));
+        let runtime =
+            self.runtime_config(workspace_name, std::slice::from_ref(&query_source), false);
         let report =
             CoralQuery::validate_source(&query_source, runtime, query_source.test_queries())
                 .await
@@ -298,9 +327,15 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
+        include_provenance: bool,
     ) -> QueryRuntimeConfig {
         let mut extensions =
             engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources);
+        if include_provenance {
+            extensions
+                .runtime_tables
+                .extend(self.provenance.runtime_tables());
+        }
         let provider_input_resolver = extensions.source_input_resolver.take();
         extensions.source_input_resolver = Some(Arc::new(CredentialRefreshingInputResolver::new(
             workspace_name.clone(),
@@ -309,6 +344,107 @@ impl QueryManager {
             provider_input_resolver,
         )));
         QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
+    }
+
+    fn record_sql_provenance(
+        &self,
+        workspace_name: &WorkspaceName,
+        sql: &str,
+        result: &Result<QueryExecution, QueryManagerError>,
+        timing: CallTiming,
+    ) {
+        let mut output_occurrences = Vec::new();
+        let output_summary_json = match result {
+            Ok(execution) => {
+                if !reads_provenance_sql(sql) {
+                    output_occurrences = query_output_occurrences(execution);
+                }
+                json!({ "row_count": execution.row_count() })
+            }
+            Err(error) => json!({ "error": query_error_message(error) }),
+        };
+        self.provenance.record_call(
+            &tracing::Span::current(),
+            ProvenanceCall {
+                workspace: workspace_name.as_str().to_string(),
+                operation: "query.execute_sql".to_string(),
+                input_json: json!({ "sql": sql }),
+                output_summary_json,
+                status: status_string(result),
+                row_count: result
+                    .as_ref()
+                    .ok()
+                    .map(|execution| i64::try_from(execution.row_count()).unwrap_or(i64::MAX)),
+                input_occurrences: provenance::sql_input_occurrences(sql),
+                output_occurrences,
+                timing,
+            },
+        );
+    }
+
+    fn record_explain_provenance(
+        &self,
+        workspace_name: &WorkspaceName,
+        sql: &str,
+        result: &Result<QueryPlan, QueryManagerError>,
+        timing: CallTiming,
+    ) {
+        self.provenance.record_call(
+            &tracing::Span::current(),
+            ProvenanceCall {
+                workspace: workspace_name.as_str().to_string(),
+                operation: "query.explain_sql".to_string(),
+                input_json: json!({ "sql": sql }),
+                output_summary_json: match result {
+                    Ok(_) => json!({ "plan": "available" }),
+                    Err(error) => json!({ "error": query_error_message(error) }),
+                },
+                status: status_string(result),
+                row_count: None,
+                input_occurrences: provenance::sql_input_occurrences(sql),
+                output_occurrences: Vec::new(),
+                timing,
+            },
+        );
+    }
+}
+
+const MAX_QUERY_OUTPUT_OCCURRENCES: usize = 512;
+
+fn query_output_occurrences(execution: &QueryExecution) -> Vec<provenance::OccurrenceDraft> {
+    let Ok(rows) = execution_rows_json(execution) else {
+        return Vec::new();
+    };
+    let mut occurrences = provenance::json_output_occurrences(&rows);
+    occurrences.truncate(MAX_QUERY_OUTPUT_OCCURRENCES);
+    occurrences
+}
+
+fn execution_rows_json(execution: &QueryExecution) -> Result<Value, serde_json::Error> {
+    let mut bytes = Vec::new();
+    {
+        let mut writer = ArrayWriter::new(&mut bytes);
+        for batch in execution.batches() {
+            if writer.write(batch).is_err() {
+                return Ok(Value::Array(Vec::new()));
+            }
+        }
+        if writer.finish().is_err() {
+            return Ok(Value::Array(Vec::new()));
+        }
+    }
+    serde_json::from_slice(&bytes)
+}
+
+fn reads_provenance_sql(sql: &str) -> bool {
+    sql.to_ascii_lowercase().contains(provenance::SCHEMA_NAME)
+}
+
+fn status_string<T>(result: &Result<T, QueryManagerError>) -> String {
+    if result.is_ok() {
+        "ok".to_string()
+    } else {
+        "error".to_string()
     }
 }
 
@@ -517,8 +653,9 @@ mod tests {
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             runtime_context,
-            layout,
+            layout.clone(),
             providers,
+            ProvenanceRecorder::new(layout.provenance_events_file()),
         );
         QueryManagerFixture {
             _temp: temp,
@@ -538,6 +675,48 @@ mod tests {
         serde_json::from_slice(&bytes).expect("json rows should decode")
     }
 
+    #[tokio::test]
+    async fn execute_sql_exposes_episode_provenance_bindings() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let workspace = WorkspaceName::default();
+        let url = "https://github.com/withcoral/coral/pull/1197";
+
+        fixture
+            .manager
+            .execute_sql(&workspace, &format!("SELECT '{url}' AS html_url"))
+            .await
+            .expect("producer query should execute");
+        fixture
+            .manager
+            .execute_sql(&workspace, &format!("SELECT '{url}' AS attachment_url"))
+            .await
+            .expect("consumer query should execute");
+
+        let bindings = fixture
+            .manager
+            .execute_sql(
+                &workspace,
+                "SELECT entity_key, evidence_kind FROM coral_provenance.bindings",
+            )
+            .await
+            .expect("provenance bindings should query");
+        let rows = execution_to_rows(&bindings);
+
+        assert_eq!(rows.len(), 1);
+        let row = rows.first().expect("one binding row");
+        assert_eq!(
+            row.get("evidence_kind").expect("evidence kind"),
+            "nearest_earlier_output_value"
+        );
+        assert!(
+            row.get("entity_key")
+                .expect("entity key")
+                .as_str()
+                .expect("entity key")
+                .starts_with("url:")
+        );
+    }
+
     #[test]
     fn runtime_config_preserves_app_owned_body_capture_max_bytes() {
         let fixture = query_manager_with(
@@ -547,7 +726,7 @@ mod tests {
 
         let runtime = fixture
             .manager
-            .runtime_config(&WorkspaceName::default(), &[]);
+            .runtime_config(&WorkspaceName::default(), &[], false);
 
         let config = runtime
             .context
@@ -809,8 +988,9 @@ surfaces:
             config_store,
             CredentialManager::new(credential_store),
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             Vec::new(),
+            ProvenanceRecorder::new(layout.provenance_events_file()),
         );
 
         let error = manager
@@ -937,9 +1117,10 @@ tables:
         )
         .expect("parse source manifest");
         let source = QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new());
-        let runtime = fixture
-            .manager
-            .runtime_config(&workspace_name, std::slice::from_ref(&source));
+        let runtime =
+            fixture
+                .manager
+                .runtime_config(&workspace_name, std::slice::from_ref(&source), false);
         let input_resolver = runtime
             .extensions
             .source_input_resolver

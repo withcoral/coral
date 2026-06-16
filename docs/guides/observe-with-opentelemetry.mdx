@@ -45,6 +45,23 @@ record_http_bodies = true
 
 The same flag enables HTTP body previews under the `coral.http.body` target and MCP tool-call argument and result previews under the `coral.mcp.body` target. Recorded body previews are capped by `http_body_max_bytes` bytes per body (`65536` by default). Body previews can contain sensitive data; keep them disabled unless the local debugging value is worth that exposure. Body preview spans are never exported to OTLP, even if a broad `[otel].trace_filter` would otherwise match `coral.http.body` or `coral.mcp.body`.
 
+## Episode provenance
+
+Coral also keeps local episode provenance for SQL and catalog calls. These receipts are stored under the local config directory and exposed to SQL as `coral_provenance.episodes`, `coral_provenance.calls`, `coral_provenance.occurrences`, and `coral_provenance.bindings`.
+
+`episodes` are keyed by the active trace id, so calls made under the same propagated W3C trace context are grouped together. `occurrences` records where catalog entities and scalar values appeared in call inputs or outputs. Scalar values use stable hashes as entity keys, with short previews for inspection. `bindings` links a later input occurrence to the nearest earlier output occurrence in the same episode with the same entity key.
+
+For example:
+
+```sql
+SELECT b.episode_id, b.source_call_id, b.target_call_id, b.entity_key
+FROM coral_provenance.bindings AS b
+ORDER BY b.observed_at_unix_nanos DESC
+LIMIT 20;
+```
+
+The provenance schema is queryable from SQL but is not included in normal unfiltered catalog listings, so source discovery counts stay focused on user data sources. To inspect the schema itself, list catalog items with `schema = "coral_provenance"`.
+
 ## Configuration reference
 
 External OpenTelemetry export settings live under `[otel]` in `config.toml`. Coral-owned trace history settings live under `[trace_history]`. There are no environment variable overrides except for [`CORAL_TRACE_PARENT`](#distributed-tracing).

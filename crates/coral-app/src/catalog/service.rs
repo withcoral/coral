@@ -2,11 +2,12 @@
 
 use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
 use coral_api::v1::{
-    CatalogCounts as ProtoCatalogCounts, CatalogItemKind as ProtoCatalogItemKind,
-    DescribeTableRequest, DescribeTableResponse, ListCatalogRequest, ListCatalogResponse,
-    ListColumnsRequest, ListColumnsResponse, PaginationRequest, SearchCatalogRequest,
-    SearchCatalogResponse,
+    CatalogCounts as ProtoCatalogCounts, CatalogItem as ProtoCatalogItem,
+    CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
+    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
+    PaginationRequest, SearchCatalogRequest, SearchCatalogResponse, catalog_item,
 };
+use serde_json::json;
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
@@ -14,6 +15,7 @@ use crate::catalog::discovery::{
     CatalogDiscovery, CatalogItemKind, CatalogTableRef, ListColumnsQuery, Pagination,
     column_pagination, search_pagination,
 };
+use crate::provenance::{self, CallTiming, OccurrenceDraft, ProvenanceCall, ProvenanceRecorder};
 use crate::query::manager::QueryManager;
 use crate::transport::{
     catalog_item_to_proto, catalog_search_result_to_proto, column_search_result_to_proto,
@@ -24,11 +26,13 @@ use crate::transport::{
 #[derive(Clone)]
 pub(crate) struct CatalogService {
     catalog: CatalogDiscovery,
+    provenance: ProvenanceRecorder,
 }
 
 impl CatalogService {
     pub(crate) fn new(query_manager: QueryManager) -> Self {
         Self {
+            provenance: query_manager.provenance_recorder(),
             catalog: CatalogDiscovery::new(query_manager),
         }
     }
@@ -40,13 +44,31 @@ impl CatalogServiceApi for CatalogService {
         &self,
         request: Request<ListCatalogRequest>,
     ) -> Result<Response<ListCatalogResponse>, Status> {
+        let timing = CallTiming::start_now();
         let span = grpc_span(&request);
+        let record_span = span.clone();
         let catalog = self.catalog.clone();
+        let provenance = self.provenance.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
+            let workspace_for_record = request
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.name.clone())
+                .unwrap_or_default();
+            let schema_name_input = request.schema_name.clone();
+            let input_json = json!({
+                "workspace": workspace_for_record.clone(),
+                "schema_name": schema_name_input.clone(),
+                "kind": request.kind,
+                "pagination": request.pagination.as_ref().map(|pagination| json!({
+                    "limit": pagination.limit,
+                    "offset": pagination.offset,
+                })),
+            });
             let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let schema_name = optional_trimmed(&request.schema_name);
+            let schema_name = optional_trimmed(&schema_name_input);
             let kind = catalog_item_kind_from_proto(request.kind)?;
             let catalog_page = catalog
                 .list_catalog(&workspace_name, schema_name, kind, pagination)
@@ -60,7 +82,7 @@ impl CatalogServiceApi for CatalogService {
                 page.has_more,
                 page.next_offset,
             );
-            Ok(Response::new(ListCatalogResponse {
+            let response = ListCatalogResponse {
                 items: page
                     .items
                     .into_iter()
@@ -71,7 +93,26 @@ impl CatalogServiceApi for CatalogService {
                     table_count: catalog_page.counts.table_count,
                     table_function_count: catalog_page.counts.table_function_count,
                 }),
-            }))
+            };
+            provenance.record_call(
+                &record_span,
+                ProvenanceCall {
+                    workspace: workspace_for_record,
+                    operation: "catalog.list_catalog".to_string(),
+                    input_json: input_json.clone(),
+                    output_summary_json: json!({
+                        "item_count": response.items.len(),
+                        "table_count": response.counts.as_ref().map(|counts| counts.table_count),
+                        "table_function_count": response.counts.as_ref().map(|counts| counts.table_function_count),
+                    }),
+                    status: "ok".to_string(),
+                    row_count: Some(i64::try_from(response.items.len()).unwrap_or(i64::MAX)),
+                    input_occurrences: provenance::json_input_occurrences(&input_json),
+                    output_occurrences: list_catalog_occurrences(&response),
+                    timing,
+                },
+            );
+            Ok(Response::new(response))
         })
         .await
     }
@@ -80,12 +121,33 @@ impl CatalogServiceApi for CatalogService {
         &self,
         request: Request<SearchCatalogRequest>,
     ) -> Result<Response<SearchCatalogResponse>, Status> {
+        let timing = CallTiming::start_now();
         let span = grpc_span(&request);
+        let record_span = span.clone();
         let catalog = self.catalog.clone();
+        let provenance = self.provenance.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
+            let workspace_for_record = request
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.name.clone())
+                .unwrap_or_default();
+            let pattern = request.pattern.clone();
+            let schema_name_input = request.schema_name.clone();
+            let input_json = json!({
+                "workspace": workspace_for_record.clone(),
+                "pattern": pattern.clone(),
+                "ignore_case": request.ignore_case,
+                "schema_name": schema_name_input.clone(),
+                "kind": request.kind,
+                "pagination": request.pagination.as_ref().map(|pagination| json!({
+                    "limit": pagination.limit,
+                    "offset": pagination.offset,
+                })),
+            });
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let schema_name = optional_trimmed(&request.schema_name);
+            let schema_name = optional_trimmed(&schema_name_input);
             let kind = catalog_item_kind_from_proto(request.kind)?;
             let pagination = search_pagination(request.pagination.map(pagination_from_proto))
                 .map_err(app_status)?;
@@ -107,14 +169,29 @@ impl CatalogServiceApi for CatalogService {
                 page.has_more,
                 page.next_offset,
             );
-            Ok(Response::new(SearchCatalogResponse {
+            let response = SearchCatalogResponse {
                 items: page
                     .items
                     .into_iter()
                     .map(|result| catalog_search_result_to_proto(&workspace_name, result))
                     .collect(),
                 pagination: Some(pagination),
-            }))
+            };
+            provenance.record_call(
+                &record_span,
+                ProvenanceCall {
+                    workspace: workspace_for_record,
+                    operation: "catalog.search_catalog".to_string(),
+                    input_json: input_json.clone(),
+                    output_summary_json: json!({ "item_count": response.items.len() }),
+                    status: "ok".to_string(),
+                    row_count: Some(i64::try_from(response.items.len()).unwrap_or(i64::MAX)),
+                    input_occurrences: provenance::json_input_occurrences(&input_json),
+                    output_occurrences: search_catalog_occurrences(&response),
+                    timing,
+                },
+            );
+            Ok(Response::new(response))
         })
         .await
     }
@@ -123,13 +200,28 @@ impl CatalogServiceApi for CatalogService {
         &self,
         request: Request<DescribeTableRequest>,
     ) -> Result<Response<DescribeTableResponse>, Status> {
+        let timing = CallTiming::start_now();
         let span = grpc_span(&request);
+        let record_span = span.clone();
         let catalog = self.catalog.clone();
+        let provenance = self.provenance.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
+            let workspace_for_record = request
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.name.clone())
+                .unwrap_or_default();
+            let schema_name_input = request.schema_name.clone();
+            let table_name_input = request.table_name.clone();
+            let input_json = json!({
+                "workspace": workspace_for_record.clone(),
+                "schema_name": schema_name_input.clone(),
+                "table_name": table_name_input.clone(),
+            });
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
-            let table_name = required_trimmed(&request.table_name, "table_name")?;
+            let schema_name = required_trimmed(&schema_name_input, "schema_name")?;
+            let table_name = required_trimmed(&table_name_input, "table_name")?;
             let result = catalog
                 .describe_table(
                     &workspace_name,
@@ -137,10 +229,30 @@ impl CatalogServiceApi for CatalogService {
                 )
                 .await
                 .map_err(query_status)?;
-            Ok(Response::new(describe_table_response_to_proto(
-                &workspace_name,
-                result,
-            )))
+            let response = describe_table_response_to_proto(&workspace_name, result);
+            let mut input_occurrences = provenance::json_input_occurrences(&input_json);
+            input_occurrences.push(OccurrenceDraft::input_entity(
+                "input.table",
+                format!("table:{schema_name}.{table_name}"),
+            ));
+            provenance.record_call(
+                &record_span,
+                ProvenanceCall {
+                    workspace: workspace_for_record,
+                    operation: "catalog.describe_table".to_string(),
+                    input_json: input_json.clone(),
+                    output_summary_json: json!({
+                        "found": response.table.is_some(),
+                        "suggestion_count": response.suggestions.len(),
+                    }),
+                    status: "ok".to_string(),
+                    row_count: response.table.as_ref().map(|_| 1_i64),
+                    input_occurrences,
+                    output_occurrences: describe_table_occurrences(&response),
+                    timing,
+                },
+            );
+            Ok(Response::new(response))
         })
         .await
     }
@@ -149,13 +261,36 @@ impl CatalogServiceApi for CatalogService {
         &self,
         request: Request<ListColumnsRequest>,
     ) -> Result<Response<ListColumnsResponse>, Status> {
+        let timing = CallTiming::start_now();
         let span = grpc_span(&request);
+        let record_span = span.clone();
         let catalog = self.catalog.clone();
+        let provenance = self.provenance.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
+            let workspace_for_record = request
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.name.clone())
+                .unwrap_or_default();
+            let schema_name_input = request.schema_name.clone();
+            let table_name_input = request.table_name.clone();
+            let pattern = request.pattern.clone();
+            let input_json = json!({
+                "workspace": workspace_for_record.clone(),
+                "schema_name": schema_name_input.clone(),
+                "table_name": table_name_input.clone(),
+                "pattern": pattern.clone(),
+                "ignore_case": request.ignore_case,
+                "required_only": request.required_only,
+                "pagination": request.pagination.as_ref().map(|pagination| json!({
+                    "limit": pagination.limit,
+                    "offset": pagination.offset,
+                })),
+            });
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
-            let table_name = required_trimmed(&request.table_name, "table_name")?;
+            let schema_name = required_trimmed(&schema_name_input, "schema_name")?;
+            let table_name = required_trimmed(&table_name_input, "table_name")?;
             let pagination = column_pagination(request.pagination.map(pagination_from_proto))
                 .map_err(app_status)?;
             let page = catalog
@@ -181,16 +316,132 @@ impl CatalogServiceApi for CatalogService {
                 page.has_more,
                 page.next_offset,
             );
-            Ok(Response::new(ListColumnsResponse {
+            let response = ListColumnsResponse {
                 columns: page
                     .items
                     .into_iter()
                     .map(column_search_result_to_proto)
                     .collect(),
                 pagination: Some(pagination),
-            }))
+            };
+            let mut input_occurrences = provenance::json_input_occurrences(&input_json);
+            input_occurrences.push(OccurrenceDraft::input_entity(
+                "input.table",
+                format!("table:{schema_name}.{table_name}"),
+            ));
+            provenance.record_call(
+                &record_span,
+                ProvenanceCall {
+                    workspace: workspace_for_record,
+                    operation: "catalog.list_columns".to_string(),
+                    input_json: input_json.clone(),
+                    output_summary_json: json!({ "column_count": response.columns.len() }),
+                    status: "ok".to_string(),
+                    row_count: Some(i64::try_from(response.columns.len()).unwrap_or(i64::MAX)),
+                    input_occurrences,
+                    output_occurrences: list_columns_occurrences(
+                        &schema_name,
+                        &table_name,
+                        &response,
+                    ),
+                    timing,
+                },
+            );
+            Ok(Response::new(response))
         })
         .await
+    }
+}
+
+fn list_catalog_occurrences(response: &ListCatalogResponse) -> Vec<OccurrenceDraft> {
+    response
+        .items
+        .iter()
+        .enumerate()
+        .flat_map(|(index, item)| catalog_item_occurrences(item, &format!("output.items[{index}]")))
+        .collect()
+}
+
+fn search_catalog_occurrences(response: &SearchCatalogResponse) -> Vec<OccurrenceDraft> {
+    response
+        .items
+        .iter()
+        .enumerate()
+        .flat_map(|(index, result)| {
+            result.item.as_ref().into_iter().flat_map(move |item| {
+                catalog_item_occurrences(item, &format!("output.items[{index}].item"))
+            })
+        })
+        .collect()
+}
+
+fn describe_table_occurrences(response: &DescribeTableResponse) -> Vec<OccurrenceDraft> {
+    let mut occurrences = Vec::new();
+    if let Some(table) = response.table.as_ref() {
+        occurrences.push(OccurrenceDraft::output_entity(
+            "output.table",
+            format!("table:{}.{}", table.schema_name, table.name),
+        ));
+        occurrences.extend(table.columns.iter().enumerate().map(|(index, column)| {
+            OccurrenceDraft::output_entity(
+                format!("output.table.columns[{index}]"),
+                format!(
+                    "column:{}.{}.{}",
+                    table.schema_name, table.name, column.name
+                ),
+            )
+        }));
+    }
+    occurrences.extend(
+        response
+            .suggestions
+            .iter()
+            .enumerate()
+            .map(|(index, table)| {
+                OccurrenceDraft::output_entity(
+                    format!("output.suggestions[{index}]"),
+                    format!("table:{}.{}", table.schema_name, table.name),
+                )
+            }),
+    );
+    occurrences
+}
+
+fn list_columns_occurrences(
+    schema_name: &str,
+    table_name: &str,
+    response: &ListColumnsResponse,
+) -> Vec<OccurrenceDraft> {
+    response
+        .columns
+        .iter()
+        .enumerate()
+        .filter_map(|(index, result)| {
+            result.column.as_ref().map(|column| {
+                OccurrenceDraft::output_entity(
+                    format!("output.columns[{index}]"),
+                    format!("column:{schema_name}.{table_name}.{}", column.name),
+                )
+            })
+        })
+        .collect()
+}
+
+fn catalog_item_occurrences(item: &ProtoCatalogItem, path: &str) -> Vec<OccurrenceDraft> {
+    match item.item.as_ref() {
+        Some(catalog_item::Item::Table(table)) => {
+            vec![OccurrenceDraft::output_entity(
+                format!("{path}.table"),
+                format!("table:{}.{}", table.schema_name, table.name),
+            )]
+        }
+        Some(catalog_item::Item::TableFunction(function)) => {
+            vec![OccurrenceDraft::output_entity(
+                format!("{path}.table_function"),
+                format!("function:{}.{}", function.schema_name, function.name),
+            )]
+        }
+        None => Vec::new(),
     }
 }
 
