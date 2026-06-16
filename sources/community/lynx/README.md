@@ -7,8 +7,10 @@ and **join the results with live data** from other Coral sources — without a
 byte leaving your machine.
 
 - `lynx.sources` — the sources you've indexed (codebases / docs sites / PDFs).
-- `lynx.search(q => '...')` — ranked hybrid (dense + BM25) search. Each row
-  carries `file`, `file_path`, `symbol`, `kind`, `language`,
+- `lynx.search(q => '...', source => '...', top_k => N)` — ranked hybrid
+  (dense + BM25) search. `q` is required; `source` and `top_k` are optional
+  (omit `source` to search every indexed source at once). Each row carries
+  `source`, `file`, `file_path`, `symbol`, `kind`, `language`,
   `start_line`/`end_line`, `score`, and the code `content` itself.
 
 ## Setup
