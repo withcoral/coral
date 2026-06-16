@@ -19,6 +19,7 @@ mod source_ops;
 
 use std::borrow::Cow;
 use std::future::Future;
+use std::io::IsTerminal as _;
 use std::path::PathBuf;
 #[cfg(feature = "embedded-ui")]
 use std::sync::Arc;
@@ -67,6 +68,10 @@ enum Command {
     Sql(SqlArgs),
     /// Manage data sources
     Source(SourceArgs),
+    /// Manage stored user-owned identities
+    Identity(IdentityArgs),
+    /// Manage global identity specs used by source identity requirements
+    IdentitySpec(IdentitySpecArgs),
     /// Interactive wizard to set up Coral and explore use cases
     Onboard,
     /// Start the MCP server over stdio
@@ -313,6 +318,72 @@ enum SourceCommand {
     },
 }
 
+#[derive(Debug, Args)]
+/// Manage stored user-owned identities
+struct IdentityArgs {
+    #[command(subcommand)]
+    command: IdentityCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum IdentityCommand {
+    /// List stored user-owned identities
+    List,
+    /// Show a stored user-owned identity
+    Info {
+        /// Identity name
+        name: String,
+    },
+    /// Create or replace a user-owned identity from an identity spec
+    Add {
+        /// Identity name used by source identity bindings
+        name: String,
+        /// Installed identity spec name
+        #[arg(long = "identity-spec")]
+        identity_spec: String,
+        /// Read the fixed-token credential from stdin instead of prompting
+        #[arg(long = "token-stdin")]
+        token_stdin: bool,
+    },
+    /// Remove a stored user-owned identity
+    Remove {
+        /// Identity name
+        name: String,
+    },
+}
+
+#[derive(Debug, Args)]
+/// Manage global identity specs used by source identity requirements
+struct IdentitySpecArgs {
+    #[command(subcommand)]
+    command: IdentitySpecCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum IdentitySpecCommand {
+    /// List installed identity specs
+    List,
+    /// Show an installed identity spec
+    Info {
+        /// Identity spec name
+        name: String,
+    },
+    /// Install an identity spec or replace an unused existing spec from a manifest file
+    Add {
+        /// Path to an identity spec YAML file
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Remove an installed identity spec
+    Remove {
+        /// Identity spec name
+        name: String,
+        /// Confirm removal when stored identity instances would become orphaned
+        #[arg(long)]
+        force: bool,
+    },
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 /// Output format for rendered SQL query results.
 pub enum OutputFormat {
@@ -383,9 +454,12 @@ impl CliError {
 impl Command {
     fn required_runtime(&self) -> RequiredRuntime {
         match self {
-            Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
-                RequiredRuntime::AppClient
-            }
+            Command::Sql(_)
+            | Command::Source(_)
+            | Command::Identity(_)
+            | Command::IdentitySpec(_)
+            | Command::Onboard
+            | Command::McpStdio(_) => RequiredRuntime::AppClient,
             Command::Features(_) | Command::Completion(_) => RequiredRuntime::None,
             #[cfg(feature = "embedded-ui")]
             Command::Ui(_) => RequiredRuntime::None,
@@ -655,7 +729,12 @@ async fn run_no_runtime_command(
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
         Command::Ui(args) => run_ui(args, feature_overrides).await.map_err(Into::into),
-        Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
+        Command::Sql(_)
+        | Command::Source(_)
+        | Command::Identity(_)
+        | Command::IdentitySpec(_)
+        | Command::Onboard
+        | Command::McpStdio(_) => {
             unreachable!("app client commands are routed through app runtime startup")
         }
     }
@@ -672,6 +751,8 @@ async fn run_app_command(
             run_sql(&app, default_workspace(), args.sql, args.format).await?;
         }
         Command::Source(args) => run_source(&app, args, feature_overrides).await?,
+        Command::Identity(args) => run_identity(&app, args).await?,
+        Command::IdentitySpec(args) => run_identity_spec(&app, args).await?,
         Command::Onboard => {
             onboard::run(&app).await?;
         }
@@ -798,6 +879,171 @@ async fn run_source(
         }
         SourceCommand::Remove { name } => {
             source_ops::remove_and_print(app, &name).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn run_identity(app: &AppClient, args: IdentityArgs) -> Result<(), CliError> {
+    match args.command {
+        IdentityCommand::List => {
+            let identities = source_ops::list_user_owned_identities(app).await?;
+            if identities.is_empty() {
+                println!("No identities configured.");
+            } else {
+                let rows = identities.into_iter().map(|identity| {
+                    [
+                        identity.name,
+                        identity.identity_spec,
+                        identity.issuer,
+                        identity.identity_type,
+                        source_ops::identity_owner_label(identity.owner).to_string(),
+                    ]
+                });
+                print_text_table(
+                    ["Identity", "Identity Spec", "Issuer", "Type", "Owner"],
+                    rows,
+                );
+            }
+        }
+        IdentityCommand::Info { name } => {
+            let identity = source_ops::get_user_owned_identity(app, &name).await?;
+            print_identity_info(&identity);
+        }
+        IdentityCommand::Add {
+            name,
+            identity_spec,
+            token_stdin,
+        } => {
+            let identity_spec_record = source_ops::get_identity_spec(app, &identity_spec).await?;
+            let manifest =
+                coral_spec::parse_identity_manifest_yaml(&identity_spec_record.manifest_yaml)
+                    .map_err(anyhow::Error::from)?;
+            let identity = match manifest.identity_type {
+                coral_spec::IdentitySpecType::OAuth => {
+                    if token_stdin {
+                        return Err(anyhow::anyhow!(
+                            "--token-stdin is only supported for fixed-token identity specs"
+                        )
+                        .into());
+                    }
+                    source_ops::require_interactive_for("identity OAuth setup")?;
+                    let selected = source_ops::identity_oauth_method(&manifest)?;
+                    source_ops::print_oauth_hint(selected.hint);
+                    let credential_inputs =
+                        source_ops::prompt_identity_oauth_inputs(&manifest, selected.oauth)?;
+                    source_ops::create_user_owned_identity_with_oauth(
+                        app,
+                        &name,
+                        &identity_spec,
+                        credential_inputs,
+                        &selected.label,
+                        "coral identity add",
+                    )
+                    .await?
+                }
+                coral_spec::IdentitySpecType::FixedToken => {
+                    let token = if token_stdin {
+                        source_ops::read_fixed_token_identity_token_from_stdin()?
+                    } else {
+                        source_ops::require_interactive_for("fixed-token identity setup")?;
+                        source_ops::prompt_fixed_token_identity_token(&identity_spec)?
+                    };
+                    source_ops::create_user_owned_identity_with_fixed_token(
+                        app,
+                        &name,
+                        &identity_spec,
+                        token,
+                    )
+                    .await?
+                }
+            };
+            println!(
+                "Created identity {} ({})",
+                identity.name, identity.identity_spec
+            );
+        }
+        IdentityCommand::Remove { name } => {
+            source_ops::get_user_owned_identity(app, &name).await?;
+            source_ops::delete_user_owned_identity(app, &name).await?;
+            println!("Removed identity {name}");
+        }
+    }
+    Ok(())
+}
+
+fn print_identity_info(identity: &coral_api::v1::Identity) {
+    println!("{}", identity.name);
+    println!("  Identity spec: {}", identity.identity_spec);
+    println!("  Issuer:        {}", identity.issuer);
+    println!("  Type:          {}", identity.identity_type);
+    println!(
+        "  Owner:         {}",
+        source_ops::identity_owner_label(identity.owner)
+    );
+    if !identity.metadata.is_empty() {
+        println!("  Metadata:");
+        for item in &identity.metadata {
+            println!("    {}: {}", item.key, item.value);
+        }
+    }
+}
+
+async fn run_identity_spec(app: &AppClient, args: IdentitySpecArgs) -> Result<(), CliError> {
+    match args.command {
+        IdentitySpecCommand::List => {
+            let identity_specs = source_ops::list_identity_specs(app).await?;
+            if identity_specs.is_empty() {
+                println!("No identity specs installed.");
+            } else {
+                let rows = identity_specs.into_iter().map(|identity_spec| {
+                    [
+                        identity_spec.name,
+                        source_ops::display_version(&identity_spec.version),
+                        identity_spec.issuer,
+                        identity_spec.identity_type,
+                    ]
+                });
+                print_text_table(["Identity Spec", "Version", "Issuer", "Type"], rows);
+            }
+        }
+        IdentitySpecCommand::Info { name } => {
+            let identity_spec = source_ops::get_identity_spec(app, &name).await?;
+            print!("{}", identity_spec.manifest_yaml);
+        }
+        IdentitySpecCommand::Add { file } => {
+            let (manifest_yaml, manifest) = source_ops::load_validated_identity_spec_file(&file)?;
+            let interactive = std::io::stdin().is_terminal();
+            let installed_manifest =
+                source_ops::parseable_installed_identity_spec_manifest(app, &manifest.name).await?;
+            let inputs = if installed_manifest.as_ref() == Some(&manifest) {
+                Vec::new()
+            } else {
+                source_ops::identity_spec_inputs_for_add(
+                    &manifest,
+                    interactive,
+                    format!(
+                        "coral identity-spec add --file {}",
+                        source_ops::shell_quote_arg(&file.display().to_string())
+                    ),
+                )?
+            };
+            let (identity_spec, replaced) =
+                source_ops::add_identity_spec(app, manifest_yaml, inputs).await?;
+            let action = if replaced { "Replaced" } else { "Added" };
+            println!(
+                "{action} identity spec {} ({})",
+                identity_spec.name,
+                source_ops::display_version(&identity_spec.version)
+            );
+        }
+        IdentitySpecCommand::Remove { name, force } => {
+            let orphaned = source_ops::remove_identity_spec(app, &name, force).await?;
+            if orphaned == 0 {
+                println!("Removed identity spec {name}");
+            } else {
+                println!("Removed identity spec {name} (orphaned identities: {orphaned})");
+            }
         }
     }
     Ok(())

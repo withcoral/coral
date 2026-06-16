@@ -7,8 +7,9 @@ use coral_api::v1::identity_service_server::IdentityService as IdentityServiceAp
 use coral_api::v1::{
     CreateUserOwnedIdentityWithFixedTokenRequest, CreateUserOwnedIdentityWithFixedTokenResponse,
     CreateUserOwnedIdentityWithOAuthRequest, CreateUserOwnedIdentityWithOAuthResponse,
-    CredentialMetadata, DeleteUserOwnedIdentityRequest, DeleteUserOwnedIdentityResponse, Identity,
-    IdentityOwner, ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse,
+    CredentialMetadata, DeleteUserOwnedIdentityRequest, DeleteUserOwnedIdentityResponse,
+    GetUserOwnedIdentityRequest, GetUserOwnedIdentityResponse, Identity, IdentityOwner,
+    ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse,
     create_user_owned_identity_with_o_auth_response,
 };
 use tokio_stream::Stream;
@@ -129,6 +130,27 @@ impl IdentityServiceApi for IdentityService {
                     .map_err(app_status)?;
                 Ok(Response::new(ListUserOwnedIdentitiesResponse {
                     identities: records.into_iter().map(identity_record_to_proto).collect(),
+                }))
+            },
+        )
+        .await
+    }
+
+    async fn get_user_owned_identity(
+        &self,
+        request: Request<GetUserOwnedIdentityRequest>,
+    ) -> Result<Response<GetUserOwnedIdentityResponse>, Status> {
+        let identities = self.identities.clone();
+        instrument_authenticated_grpc(
+            &self.user_principal_provider,
+            request,
+            |principal, request| async move {
+                let record = identities
+                    .get_user_owned_identity(&principal, &request.name)
+                    .await
+                    .map_err(app_status)?;
+                Ok(Response::new(GetUserOwnedIdentityResponse {
+                    identity: Some(identity_record_to_proto(record)),
                 }))
             },
         )

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ use coral_spec::{
     IdentityManifest, IdentitySpecConfig, IdentitySpecType, ManifestOAuthCredentialSpec,
 };
 use serde::{Deserialize, Serialize};
-use tracing::info_span;
+use tracing::{info_span, warn};
 
 use crate::bootstrap::AppError;
 use crate::credentials::oauth::{
@@ -38,7 +38,7 @@ use crate::identity_specs::{
     IdentitySpecManager, IdentitySpecRecord, identity_spec_fingerprint, validate_identity_spec_name,
 };
 use crate::sources::SourceName;
-use crate::state::AppStateLayout;
+use crate::state::{AppStateLayout, INSTALLED_SOURCE_IDENTITY_BINDING_FILE_NAME};
 use crate::storage::fs::{self as storage_fs, FileLock};
 use crate::workspaces::WorkspaceName;
 
@@ -641,6 +641,22 @@ impl UserOwnedIdentityManager {
         self.list_identities(&owner).await
     }
 
+    pub(crate) async fn get_user_owned_identity(
+        &self,
+        principal: &UserPrincipal,
+        identity_name: &str,
+    ) -> Result<UserOwnedIdentityRecord, AppError> {
+        let span = info_span!("coral.app.identities.get_user_owned");
+        let _guard = span.enter();
+        self.identity_specs.ensure_dsl_v4_enabled()?;
+        let owner = IdentityOwnerKey::for_user_principal(principal)?;
+        let identity_name = validate_identity_name(identity_name)?;
+        self.store
+            .load_identity(&owner, &identity_name)
+            .await?
+            .ok_or_else(|| AppError::IdentityNotFound(identity_name))
+    }
+
     pub(crate) async fn delete_user_owned_identity(
         &self,
         principal: &UserPrincipal,
@@ -898,6 +914,49 @@ impl FileUserOwnedIdentityStore {
             .map_err(Into::into)
     }
 
+    fn cleanup_user_source_identity_bindings_for_deleted_identity_unlocked(
+        &self,
+        user_id: &str,
+        identity_name: &str,
+    ) {
+        let bindings_root = self.layout.source_identity_bindings_root();
+        let user_root = bindings_root.join("users").join(user_id);
+        if !user_root.exists() {
+            return;
+        }
+
+        let mut binding_files = Vec::new();
+        if let Err(error) = collect_binding_files_unlocked(&user_root, &mut binding_files) {
+            warn!(
+                user_id,
+                identity_name,
+                error = %error,
+                "failed to collect source identity bindings while cleaning up a deleted user identity"
+            );
+            return;
+        }
+        for binding_file in binding_files {
+            let result = (|| -> Result<(), AppError> {
+                let raw = fs::read_to_string(&binding_file)?;
+                let document: UserSourceIdentityBindingDocument = serde_yaml::from_str(&raw)?;
+                if document.identity == identity_name {
+                    remove_file_if_exists_unlocked(&binding_file)?;
+                    cleanup_empty_parent(&bindings_root, binding_file.parent());
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                warn!(
+                    user_id,
+                    identity_name,
+                    binding_path = %binding_file.display(),
+                    error = %error,
+                    "failed to clean up source identity binding for a deleted user identity"
+                );
+            }
+        }
+    }
+
     fn validate_identity_spec_write_precondition_unlocked(
         layout: &AppStateLayout,
         record: &UserOwnedIdentityRecord,
@@ -1099,6 +1158,10 @@ impl UserOwnedIdentityStore for FileUserOwnedIdentityStore {
                     Err(error) => return Err(error.into()),
                 }
             }
+            store.cleanup_user_source_identity_bindings_for_deleted_identity_unlocked(
+                &owner_key,
+                &identity_name,
+            );
             Ok(true)
         })
         .await?
@@ -1724,6 +1787,26 @@ fn restore_file_unlocked(
         Some(bytes) => write_file_unlocked(path, &bytes).map_err(Into::into),
         None => remove_file_if_exists_unlocked(path).map_err(Into::into),
     }
+}
+
+fn collect_binding_files_unlocked(
+    dir: &Path,
+    binding_files: &mut Vec<PathBuf>,
+) -> Result<(), AppError> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            collect_binding_files_unlocked(&path, binding_files)?;
+            continue;
+        }
+        if path.file_name().and_then(|name| name.to_str())
+            == Some(INSTALLED_SOURCE_IDENTITY_BINDING_FILE_NAME)
+        {
+            binding_files.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn cleanup_empty_parent(root: &Path, path: Option<&Path>) {
@@ -2493,6 +2576,134 @@ oauth:
                 .await
                 .expect_err("all source bindings should be removed");
         }
+    }
+
+    #[tokio::test]
+    async fn deleting_user_owned_identity_removes_source_bindings_that_reference_it() {
+        let (_temp, manager, _identity_specs) = manager_with_github_pat_spec();
+        let principal = UserPrincipal::local();
+        create_github_local(&manager, "pat-token").await;
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github_v4").expect("source");
+        let deleted_selection =
+            SourceIdentitySelection::new("github_local", Some("github-rest-read".to_string()))
+                .expect("deleted identity selection");
+        let retained_selection =
+            SourceIdentitySelection::new("github_other", Some("github-rest-read".to_string()))
+                .expect("retained identity selection");
+
+        manager
+            .replace_user_owned_source_identity_binding(
+                &principal,
+                &workspace_name,
+                &source_name,
+                "rest",
+                &deleted_selection,
+            )
+            .await
+            .expect("write deleted identity binding");
+        manager
+            .replace_user_owned_source_identity_binding(
+                &principal,
+                &workspace_name,
+                &source_name,
+                "issues",
+                &retained_selection,
+            )
+            .await
+            .expect("write retained identity binding");
+
+        assert!(
+            manager
+                .delete_user_owned_identity(&principal, "github_local")
+                .await
+                .expect("delete identity")
+        );
+
+        let deleted = manager
+            .snapshot_user_owned_source_identity_binding(
+                &principal,
+                &workspace_name,
+                &source_name,
+                "rest",
+            )
+            .await
+            .expect("snapshot deleted binding");
+        assert_eq!(deleted, None);
+
+        let retained = manager
+            .snapshot_user_owned_source_identity_binding(
+                &principal,
+                &workspace_name,
+                &source_name,
+                "issues",
+            )
+            .await
+            .expect("snapshot retained binding");
+        assert_eq!(retained, Some(retained_selection));
+    }
+
+    #[tokio::test]
+    async fn deleting_user_owned_identity_treats_source_binding_cleanup_as_best_effort() {
+        let (temp, manager, _identity_specs) = manager_with_github_pat_spec();
+        let layout = test_layout(&temp);
+        let principal = UserPrincipal::local();
+        create_github_local(&manager, "pat-token").await;
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github_v4").expect("source");
+        let deleted_selection =
+            SourceIdentitySelection::new("github_local", Some("github-rest-read".to_string()))
+                .expect("deleted identity selection");
+
+        manager
+            .replace_user_owned_source_identity_binding(
+                &principal,
+                &workspace_name,
+                &source_name,
+                "rest",
+                &deleted_selection,
+            )
+            .await
+            .expect("write deleted identity binding");
+
+        let malformed_source = SourceName::parse("malformed_v4").expect("malformed source");
+        let malformed_path = layout.user_owned_source_identity_binding_file(
+            principal.user_id(),
+            &workspace_name,
+            &malformed_source,
+            "rest",
+        );
+        fs::create_dir_all(malformed_path.parent().expect("binding parent"))
+            .expect("create malformed binding parent");
+        fs::write(&malformed_path, "identity: [unterminated").expect("write malformed binding");
+
+        assert!(
+            manager
+                .delete_user_owned_identity(&principal, "github_local")
+                .await
+                .expect("delete identity")
+        );
+
+        let error = manager
+            .get_user_owned_identity(&principal, "github_local")
+            .await
+            .expect_err("identity delete should commit despite binding cleanup failures");
+        assert!(matches!(error, AppError::IdentityNotFound(name) if name == "github_local"));
+
+        let deleted = manager
+            .snapshot_user_owned_source_identity_binding(
+                &principal,
+                &workspace_name,
+                &source_name,
+                "rest",
+            )
+            .await
+            .expect("snapshot deleted binding");
+        assert_eq!(deleted, None);
+        assert!(
+            malformed_path.exists(),
+            "malformed unrelated binding should be left for later repair"
+        );
     }
 
     #[tokio::test]

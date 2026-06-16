@@ -11,10 +11,12 @@ use std::time::Duration;
 use anyhow::{Context as _, bail};
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
-    CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest, CreateIdentitySpecRequest,
-    CreateUserOwnedIdentityWithFixedTokenRequest, CreateUserOwnedIdentityWithOAuthRequest,
-    DeleteSourceRequest, DiscoverSourcesRequest, GetIdentitySpecRequest, GetSourceInfoRequest,
-    Identity, IdentitySpec, IdentitySpecImportInputs, IdentitySpecInput, ImportSourceRequest,
+    AddIdentitySpecRequest, CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
+    CreateIdentitySpecRequest, CreateUserOwnedIdentityWithFixedTokenRequest,
+    CreateUserOwnedIdentityWithOAuthRequest, DeleteIdentitySpecRequest, DeleteSourceRequest,
+    DeleteUserOwnedIdentityRequest, DiscoverSourcesRequest, GetIdentitySpecRequest,
+    GetSourceInfoRequest, GetUserOwnedIdentityRequest, Identity, IdentityOwner, IdentitySpec,
+    IdentitySpecImportInputs, IdentitySpecInput, ImportSourceRequest, ListIdentitySpecsRequest,
     ListSourcesRequest, ListUserOwnedIdentitiesRequest, OAuthCredentialInput,
     OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source, SourceCredentialStorage,
     SourceIdentityBinding, SourceIdentityOwner, SourceInfo, SourceOrigin, SourceSecret,
@@ -118,6 +120,12 @@ macro_rules! rpc_fn {
 }
 
 rpc_fn! {
+    fn list_identity_specs() -> Vec<IdentitySpec>;
+    identity_spec_client.list_identity_specs(ListIdentitySpecsRequest {});
+    |response| response.identity_specs
+}
+
+rpc_fn! {
     fn get_identity_spec(name: &str) -> IdentitySpec;
     identity_spec_client.get_identity_spec(GetIdentitySpecRequest {
         name: name.to_string(),
@@ -125,6 +133,23 @@ rpc_fn! {
     |response| response
         .identity_spec
         .ok_or_else(|| anyhow::anyhow!("get identity spec response missing identity_spec"))?
+}
+
+rpc_fn! {
+    fn add_identity_spec(
+        manifest_yaml: String,
+        inputs: Vec<IdentitySpecInput>
+    ) -> (IdentitySpec, bool);
+    identity_spec_client.add_identity_spec(AddIdentitySpecRequest {
+        manifest_yaml,
+        inputs,
+    });
+    |response| (
+        response
+            .identity_spec
+            .ok_or_else(|| anyhow::anyhow!("add identity spec response missing identity_spec"))?,
+        response.replaced,
+    )
 }
 
 rpc_fn! {
@@ -142,9 +167,38 @@ rpc_fn! {
 }
 
 rpc_fn! {
+    fn remove_identity_spec(name: &str, force: bool) -> u32;
+    identity_spec_client.delete_identity_spec(DeleteIdentitySpecRequest {
+        name: name.to_string(),
+        force,
+    });
+    |response| response.orphaned_identities
+}
+
+rpc_fn! {
     fn list_user_owned_identities() -> Vec<Identity>;
     identity_client.list_user_owned_identities(ListUserOwnedIdentitiesRequest {});
     |response| response.identities
+}
+
+rpc_fn! {
+    fn get_user_owned_identity(name: &str) -> Identity;
+    identity_client.get_user_owned_identity(GetUserOwnedIdentityRequest {
+        name: name.to_string(),
+    });
+    |response| response
+        .identity
+        .ok_or_else(|| anyhow::anyhow!("get user-owned identity response missing identity"))?
+}
+
+rpc_fn! {
+    fn delete_user_owned_identity(name: &str) -> ();
+    identity_client.delete_user_owned_identity(DeleteUserOwnedIdentityRequest {
+        name: name.to_string(),
+    });
+    |response| {
+        let _ = response;
+    }
 }
 
 pub(crate) async fn create_user_owned_identity_with_oauth(
@@ -153,6 +207,7 @@ pub(crate) async fn create_user_owned_identity_with_oauth(
     identity_spec: &str,
     credential_inputs: Vec<OAuthCredentialInput>,
     label: &str,
+    retry_command: &'static str,
 ) -> Result<Identity, anyhow::Error> {
     let response = app
         .identity_client()
@@ -174,7 +229,7 @@ pub(crate) async fn create_user_owned_identity_with_oauth(
         OAuthStreamContext {
             ended_message: "identity OAuth stream ended before identity creation completed",
             error_action: "identity creation",
-            retry_command: "coral source add --interactive --file <manifest.yaml>",
+            retry_command,
         },
         |response| response.event.map(CredentialStreamEvent::from),
     )
@@ -484,6 +539,17 @@ pub(crate) async fn install_identity_specs_for_source_add(
     Ok(newly_installed_names)
 }
 
+pub(crate) async fn parseable_installed_identity_spec_manifest(
+    app: &AppClient,
+    name: &str,
+) -> Result<Option<IdentityManifest>, anyhow::Error> {
+    match get_identity_spec(app, name).await {
+        Ok(existing) => Ok(parse_identity_manifest_yaml(&existing.manifest_yaml).ok()),
+        Err(error) if tonic_status_code(&error) == Some(tonic::Code::NotFound) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 async fn matching_identity_spec_exists(
     app: &AppClient,
     document: &IdentityManifestDocument,
@@ -787,6 +853,7 @@ async fn create_identity_for_surface(
                 &selected.identity_spec.name,
                 credential_inputs,
                 &label,
+                "coral source add --interactive --file <manifest.yaml>",
             )
             .await?
         }
@@ -883,6 +950,18 @@ pub(crate) fn prompt_fixed_token_identity_token(
         .with_prompt(format!("Token for {identity_spec_name}"))
         .allow_empty_password(false)
         .interact()?;
+    Ok(token)
+}
+
+pub(crate) fn read_fixed_token_identity_token_from_stdin() -> Result<String, anyhow::Error> {
+    let mut token = String::new();
+    stdin().read_to_string(&mut token)?;
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        return Err(anyhow::anyhow!(
+            "fixed token identity token must not be empty"
+        ));
+    }
     Ok(token)
 }
 
@@ -1130,6 +1209,14 @@ pub(crate) fn load_validated_manifest_file(
 ) -> Result<(String, ValidatedSourceManifest), anyhow::Error> {
     let bundle = load_validated_manifest_bundle_file(file)?;
     Ok((bundle.source_manifest_yaml, bundle.source_manifest))
+}
+
+pub(crate) fn load_validated_identity_spec_file(
+    file: &Path,
+) -> Result<(String, IdentityManifest), anyhow::Error> {
+    let raw = std::fs::read_to_string(file)?;
+    let manifest = parse_identity_manifest_yaml(&raw)?;
+    Ok((raw, manifest))
 }
 
 pub(crate) struct ValidatedManifestBundleFile {
@@ -1646,6 +1733,13 @@ pub(crate) fn source_credential_storage_label(storage: i32) -> &'static str {
         Ok(SourceCredentialStorage::File) => "file (plaintext)",
         Ok(SourceCredentialStorage::Keychain) => "keychain",
         Err(_) => "unknown",
+    }
+}
+
+pub(crate) fn identity_owner_label(owner: i32) -> &'static str {
+    match IdentityOwner::try_from(owner) {
+        Ok(IdentityOwner::User) => "user",
+        Ok(IdentityOwner::Unspecified) | Err(_) => "unknown",
     }
 }
 

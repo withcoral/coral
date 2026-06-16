@@ -1,4 +1,6 @@
-use coral_api::v1::ListUserOwnedIdentitiesRequest;
+use coral_api::v1::{
+    DeleteUserOwnedIdentityRequest, GetUserOwnedIdentityRequest, ListUserOwnedIdentitiesRequest,
+};
 use tonic::Request;
 
 use crate::harness::{GrpcHarness, OAuthFixture, create_github_oauth_identity};
@@ -75,4 +77,64 @@ type: fixed_token
 
     let material = identity_material(&harness, "github_pat_local");
     assert!(material.contains("TOKEN=pat-token"));
+}
+
+#[tokio::test]
+async fn identity_service_gets_and_deletes_user_identity() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .add_identity_spec(
+            r"
+kind: identity
+spec_version: 1
+name: github_pat
+version: 0.1.0
+issuer: github
+type: fixed_token
+"
+            .to_string(),
+        )
+        .await;
+
+    harness
+        .create_fixed_token_identity("github_pat_local", "github_pat", "pat-token")
+        .await;
+
+    let fetched = harness
+        .identity_client()
+        .get_user_owned_identity(Request::new(GetUserOwnedIdentityRequest {
+            name: "github_pat_local".to_string(),
+        }))
+        .await
+        .expect("get identity")
+        .into_inner()
+        .identity
+        .expect("identity");
+    assert_eq!(fetched.name, "github_pat_local");
+    assert_eq!(fetched.identity_spec, "github_pat");
+
+    harness
+        .identity_client()
+        .delete_user_owned_identity(Request::new(DeleteUserOwnedIdentityRequest {
+            name: "github_pat_local".to_string(),
+        }))
+        .await
+        .expect("delete identity");
+
+    let status = harness
+        .identity_client()
+        .get_user_owned_identity(Request::new(GetUserOwnedIdentityRequest {
+            name: "github_pat_local".to_string(),
+        }))
+        .await
+        .expect_err("deleted identity should not be found");
+    assert_eq!(status.code(), tonic::Code::NotFound);
+
+    harness
+        .identity_client()
+        .delete_user_owned_identity(Request::new(DeleteUserOwnedIdentityRequest {
+            name: "github_pat_local".to_string(),
+        }))
+        .await
+        .expect("second delete should remain idempotent");
 }
