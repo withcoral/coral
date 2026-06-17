@@ -64,6 +64,7 @@ use crate::identity_specs::{
 use crate::query::manager::{QueryManager, QueryManagerOptions};
 use crate::query::service::QueryService;
 use crate::source_artifacts::{LocalSourceArtifactStore, SourceArtifactStore};
+use crate::source_management::SourceManagementHandle;
 use crate::source_registry::SourceRegistry;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
@@ -99,12 +100,17 @@ type SourceIdentityProviderFactory =
 #[derive(Clone)]
 pub struct ServerExtensionContext {
     identity_management: IdentityManagementHandle,
+    source_management: SourceManagementHandle,
 }
 
 impl ServerExtensionContext {
-    fn new(identity_management: IdentityManagementHandle) -> Self {
+    fn new(
+        identity_management: IdentityManagementHandle,
+        source_management: SourceManagementHandle,
+    ) -> Self {
         Self {
             identity_management,
+            source_management,
         }
     }
 
@@ -112,6 +118,12 @@ impl ServerExtensionContext {
     #[must_use]
     pub fn identity_management(&self) -> &IdentityManagementHandle {
         &self.identity_management
+    }
+
+    /// Returns the shared source management handle for this server.
+    #[must_use]
+    pub fn source_management(&self) -> &SourceManagementHandle {
+        &self.source_management
     }
 }
 
@@ -615,12 +627,6 @@ impl ServerBuilder {
             identity_spec_manager.clone(),
             identity_store,
         );
-        let extension_context = ServerExtensionContext::new(identity_manager.handle());
-        let source_identity_providers = source_identity_providers_for_server(
-            self.config.source_identity_provider_factories,
-            &extension_context,
-            &identity_manager,
-        );
         let source_stores = source_stores_for_server(
             layout.clone(),
             config_store.clone(),
@@ -632,6 +638,15 @@ impl ServerBuilder {
             credential_manager.clone(),
             layout.clone(),
             features.clone(),
+        );
+        let extension_context = ServerExtensionContext::new(
+            identity_manager.handle(),
+            SourceManagementHandle::new(source_manager.clone()),
+        );
+        let source_identity_providers = source_identity_providers_for_server(
+            self.config.source_identity_provider_factories,
+            &extension_context,
+            &identity_manager,
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
@@ -1230,6 +1245,7 @@ mod tests {
     };
     use crate::identity_specs::IdentitySpecManager;
     use crate::query::manager::QueryManager;
+    use crate::source_management::SourceManagementHandle;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::service::TraceService;
@@ -1443,9 +1459,16 @@ enabled = false
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let source_manager = SourceManager::new(config_store, credential_manager, layout.clone());
         let identity_spec_manager = test_identity_spec_manager(&layout);
         let identity_manager = test_identity_manager(&layout, &identity_spec_manager);
-        let extension_context = ServerExtensionContext::new(identity_manager.handle());
+        let extension_context = ServerExtensionContext::new(
+            identity_manager.handle(),
+            SourceManagementHandle::new(source_manager),
+        );
         let static_provider: Arc<dyn SourceIdentityProvider> = Arc::new(NoopSourceIdentityProvider);
         let factory_provider: Arc<dyn SourceIdentityProvider> =
             Arc::new(NoopSourceIdentityProvider);
@@ -1791,6 +1814,7 @@ type: fixed_token
                 let source_factory_called = Arc::clone(&source_factory_called);
                 move |context| {
                     let _identity_management = context.identity_management().clone();
+                    let _source_management = context.source_management().clone();
                     source_factory_called.store(true, Ordering::SeqCst);
                     Arc::new(NoopSourceIdentityProvider)
                 }
@@ -1799,6 +1823,7 @@ type: fixed_token
                 let grpc_factory_called = Arc::clone(&grpc_factory_called);
                 move |context| {
                     let _identity_management = context.identity_management().clone();
+                    let _source_management = context.source_management().clone();
                     grpc_factory_called.store(true, Ordering::SeqCst);
                     TraceServiceServer::new(TraceService::new(
                         trace_store.clone(),
@@ -2041,6 +2066,7 @@ type: fixed_token
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let identity_spec_manager = test_identity_spec_manager(&layout);
         let identity_manager = test_identity_manager(&layout, &identity_spec_manager);
+        let source_management = SourceManagementHandle::new(source_manager.clone());
         start_server(
             ServerServices {
                 source_manager,
@@ -2053,7 +2079,10 @@ type: fixed_token
                 identity_spec_manager,
                 identity_manager: identity_manager.clone(),
                 grpc_route_extenders: Vec::new(),
-                extension_context: ServerExtensionContext::new(identity_manager.handle()),
+                extension_context: ServerExtensionContext::new(
+                    identity_manager.handle(),
+                    source_management,
+                ),
             },
             ServerMode::NativeGrpc,
         )
@@ -2482,6 +2511,7 @@ tables:
         );
         let identity_spec_manager = test_identity_spec_manager(&layout);
         let identity_manager = test_identity_manager(&layout, &identity_spec_manager);
+        let source_management = SourceManagementHandle::new(source_manager.clone());
         let running = start_server(
             ServerServices {
                 source_manager,
@@ -2494,7 +2524,10 @@ tables:
                 identity_spec_manager,
                 identity_manager: identity_manager.clone(),
                 grpc_route_extenders: Vec::new(),
-                extension_context: ServerExtensionContext::new(identity_manager.handle()),
+                extension_context: ServerExtensionContext::new(
+                    identity_manager.handle(),
+                    source_management,
+                ),
             },
             ServerMode::NativeGrpc,
         )
@@ -2597,6 +2630,7 @@ tables:
         );
         let identity_spec_manager = test_identity_spec_manager(&layout);
         let identity_manager = test_identity_manager(&layout, &identity_spec_manager);
+        let source_management = SourceManagementHandle::new(source_manager.clone());
         let running = start_server(
             ServerServices {
                 source_manager,
@@ -2609,7 +2643,10 @@ tables:
                 identity_spec_manager,
                 identity_manager: identity_manager.clone(),
                 grpc_route_extenders: Vec::new(),
-                extension_context: ServerExtensionContext::new(identity_manager.handle()),
+                extension_context: ServerExtensionContext::new(
+                    identity_manager.handle(),
+                    source_management,
+                ),
             },
             ServerMode::NativeGrpc,
         )
@@ -2708,6 +2745,7 @@ tables:
         );
         let identity_spec_manager = test_identity_spec_manager(&layout);
         let identity_manager = test_identity_manager(&layout, &identity_spec_manager);
+        let source_management = SourceManagementHandle::new(source_manager.clone());
         let running = start_server(
             ServerServices {
                 source_manager,
@@ -2720,7 +2758,10 @@ tables:
                 identity_spec_manager,
                 identity_manager: identity_manager.clone(),
                 grpc_route_extenders: Vec::new(),
-                extension_context: ServerExtensionContext::new(identity_manager.handle()),
+                extension_context: ServerExtensionContext::new(
+                    identity_manager.handle(),
+                    source_management,
+                ),
             },
             ServerMode::NativeGrpc,
         )

@@ -55,6 +55,7 @@ mod identity_specs;
 mod query;
 mod request_context;
 mod source_artifacts;
+mod source_management;
 mod source_registry;
 mod sources;
 mod state;
@@ -98,6 +99,7 @@ pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
 pub use source_artifacts::{SourceArtifactBackup, SourceArtifactStore};
+pub use source_management::{ImportManagedSourceCommand, ManagedSource, SourceManagementHandle};
 pub use source_registry::{
     BundleIdentityInputDiscoveryError, BundleIdentityInputSpec, ManifestInputKind,
     ManifestInputSpec, SourceRegistry, SourceRegistryCredentialStorage, SourceRegistryOrigin,
