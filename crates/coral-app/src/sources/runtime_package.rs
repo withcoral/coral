@@ -31,6 +31,12 @@ pub(crate) fn runtime_components_for_v4_source(
         }
         match surface.surface_type {
             SurfaceType::OpenApi => {
+                if surface.identity_requirements.is_some() {
+                    return Err(AppError::FailedPrecondition(format!(
+                        "DSL v4 surface '{}' declares identity_requirements, but this runtime cannot resolve source identities",
+                        surface.id
+                    )));
+                }
                 components.push(RuntimeSourceComponent::Http(http_manifest_for_surface(
                     manifest,
                     materialized,
@@ -394,17 +400,19 @@ fn validate_surface_base_url_template(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     use coral_spec::backends::http::{AuthSpec, RateLimitSpec};
     use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpServerSpec};
     use coral_spec::v4::{
-        Fingerprint, IrExecutionAttachment, IrOperation, IrOperationOutput, MCP_IMPORTER_VERSION,
-        MaterializedSurface, McpExecutionAttachment, McpRuntimeConfig, OPENAPI_IMPORTER_VERSION,
-        OpenApiRuntimeConfig, PROJECTION_GENERATOR_VERSION, Projection, ProjectionCatalog,
-        ProjectionKind, ProjectionVisibility, SURFACE_IMPORTER_VERSION, SemanticIr,
-        SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
-        V4MaterializedSource, V4SourceCommon, V4SourceManifest, V4Surface,
+        AcceptedIdentityRequirement, Fingerprint, IdentityRequirements, IrExecutionAttachment,
+        IrOperation, IrOperationOutput, MCP_IMPORTER_VERSION, MaterializedSurface,
+        McpExecutionAttachment, McpRuntimeConfig, OPENAPI_IMPORTER_VERSION, OpenApiRuntimeConfig,
+        PROJECTION_GENERATOR_VERSION, Projection, ProjectionCatalog, ProjectionKind,
+        ProjectionVisibility, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceDescriptor,
+        SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource,
+        V4SourceCommon, V4SourceManifest, V4Surface,
     };
 
     use super::{runtime_components_for_v4_source, surface_base_url};
@@ -416,8 +424,10 @@ mod tests {
             surface_type: SurfaceType::OpenApi,
             descriptor: SurfaceDescriptor::File {
                 file: PathBuf::from("/tmp/openapi.yaml"),
+                sha256: None,
             },
             inputs: Vec::new(),
+            identity_requirements: None,
             runtime: SurfaceRuntimeConfig::OpenApi(OpenApiRuntimeConfig {
                 base_url: coral_spec::ParsedTemplate::parse("").expect("empty template"),
                 auth: AuthSpec::default(),
@@ -432,6 +442,7 @@ mod tests {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "demo".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },
@@ -459,6 +470,30 @@ mod tests {
         }
     }
 
+    fn materialized_source_with_rest_projection(
+        raw_source_document_path: PathBuf,
+    ) -> V4MaterializedSource {
+        V4MaterializedSource {
+            fingerprint: Fingerprint {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "demo".to_string(),
+                manifest_sha256: String::new(),
+                surfaces: Vec::new(),
+                importer_version: SURFACE_IMPORTER_VERSION.to_string(),
+                projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+            },
+            surfaces: vec![materialized_surface(raw_source_document_path)],
+            projections: ProjectionCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "demo".to_string(),
+                generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+                projections: vec![published_projection("rest", "demo", "list_issues")],
+                diagnostics: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+        }
+    }
+
     fn mcp_surface(id: &str, relation_namespace: &str) -> V4Surface {
         V4Surface {
             id: id.to_string(),
@@ -468,6 +503,7 @@ mod tests {
                 location: "demo-mcp-server".to_string(),
             },
             inputs: Vec::new(),
+            identity_requirements: None,
             runtime: SurfaceRuntimeConfig::Mcp(McpRuntimeConfig {
                 server: McpServerSpec::Stdio {
                     command: "demo-mcp-server".to_string(),
@@ -558,11 +594,37 @@ mod tests {
     }
 
     #[test]
+    fn runtime_components_fail_closed_for_identity_gated_openapi_surfaces() {
+        let mut surface = surface_without_authored_base_url();
+        surface.identity_requirements = Some(IdentityRequirements {
+            accepts: vec![AcceptedIdentityRequirement {
+                id: "github".to_string(),
+                identity_specs: vec!["github_oauth".to_string()],
+                audience: BTreeMap::new(),
+            }],
+        });
+        let manifest = manifest_with_surface(surface);
+        let materialized =
+            materialized_source_with_rest_projection(PathBuf::from("/tmp/source-document.yaml"));
+
+        let error = runtime_components_for_v4_source(&manifest, &materialized)
+            .expect_err("identity-gated runtime should fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("cannot resolve source identities"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn multi_surface_runtime_components_use_surface_relation_namespaces() {
         let manifest = V4SourceManifest {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "github_v4".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },
@@ -615,6 +677,7 @@ mod tests {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "github_v4".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },

@@ -72,6 +72,16 @@
   `<name>_v4`. Do not bundle `sources/core-v4` into the binary; install preview
   v4 sources with `coral source add --file`. Do not replace or migrate an
   existing v3 source merely because a preview v4 spec exists.
+- Keep maintained identity specs under `identities/core/**`. Identity specs
+  describe how app-owned identities are instantiated and how their credential
+  material is injected into HTTP requests; they do not install sources or store
+  identity material by themselves.
+- OAuth identity specs may declare setup `inputs`. Client IDs should use
+  variable inputs or spec-authored defaults, client secrets must use secret
+  inputs, and OAuth endpoint templates may reference only variable inputs.
+  Secret identity inputs are owned by the installed identity spec, not by
+  identities instantiated from it; they are stored as identity-spec input
+  material so identity materialization and token refresh can retrieve them.
 - Changes to `scripts/install.sh` must keep the `Validate` workflow's
   install-script matrix in sync with every OS/architecture target that the
   installer supports.

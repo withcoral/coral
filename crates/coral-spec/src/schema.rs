@@ -1,4 +1,4 @@
-//! JSON Schema validation for source manifests.
+//! JSON Schema validation for Coral manifests.
 
 use std::sync::OnceLock;
 
@@ -9,9 +9,10 @@ use crate::{ManifestError, Result};
 
 static SOURCE_SCHEMA: OnceLock<JSONSchema> = OnceLock::new();
 static SOURCE_V4_SCHEMA: OnceLock<JSONSchema> = OnceLock::new();
+static IDENTITY_SCHEMA: OnceLock<JSONSchema> = OnceLock::new();
 
 pub(crate) fn validate_manifest_schema(manifest_json: &JsonValue) -> Result<()> {
-    validate_with_schema(manifest_json, source_schema())
+    validate_source_manifest_with_schema(manifest_json, source_schema())
 }
 
 pub(crate) fn validate_manifest_schema_for_dsl_version(
@@ -19,9 +20,13 @@ pub(crate) fn validate_manifest_schema_for_dsl_version(
     dsl_version: u32,
 ) -> Result<()> {
     if dsl_version == 4 {
-        return validate_with_schema(manifest_json, source_v4_schema());
+        return validate_source_manifest_with_schema(manifest_json, source_v4_schema());
     }
     validate_manifest_schema(manifest_json)
+}
+
+pub(crate) fn validate_identity_manifest_schema(manifest_json: &JsonValue) -> Result<()> {
+    validate_with_schema(manifest_json, identity_schema(), "identity manifest")
 }
 
 fn source_schema() -> &'static JSONSchema {
@@ -42,7 +47,27 @@ fn source_v4_schema() -> &'static JSONSchema {
     })
 }
 
-fn validate_with_schema(manifest_json: &JsonValue, validator: &JSONSchema) -> Result<()> {
+fn identity_schema() -> &'static JSONSchema {
+    // Compiled from the same generated schema `xtask generate-schemas` would
+    // render, so there is no checked-in copy to drift.
+    IDENTITY_SCHEMA.get_or_init(|| {
+        JSONSchema::compile(&crate::generated_identity_manifest_schema())
+            .expect("generated identity schema must compile")
+    })
+}
+
+fn validate_source_manifest_with_schema(
+    manifest_json: &JsonValue,
+    validator: &JSONSchema,
+) -> Result<()> {
+    validate_with_schema(manifest_json, validator, "source manifest")
+}
+
+fn validate_with_schema(
+    manifest_json: &JsonValue,
+    validator: &JSONSchema,
+    manifest_kind: &str,
+) -> Result<()> {
     if let Err(errors) = validator.validate(manifest_json) {
         let problems: Vec<String> = errors
             .take(8)
@@ -53,7 +78,7 @@ fn validate_with_schema(manifest_json: &JsonValue, validator: &JSONSchema) -> Re
             })
             .collect();
         return Err(ManifestError::validation(format!(
-            "source manifest failed schema validation:\n{}",
+            "{manifest_kind} failed schema validation:\n{}",
             problems.join("\n")
         )));
     }

@@ -16,6 +16,8 @@ struct V4SourceManifestSchema {
     dsl_version: u32,
     name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     test_queries: Vec<String>,
@@ -25,7 +27,7 @@ struct V4SourceManifestSchema {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum V4SurfaceSchema {
-    Openapi(V4OpenApiSurfaceSchema),
+    Openapi(Box<V4OpenApiSurfaceSchema>),
     Mcp(V4McpSurfaceSchema),
 }
 
@@ -40,9 +42,13 @@ struct V4OpenApiSurfaceSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identity_requirements: Option<IdentityRequirementsSchema>,
     #[serde(default)]
     auth: AuthSpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -60,6 +66,21 @@ struct V4McpSurfaceSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     server: McpServerSpec,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct IdentityRequirementsSchema {
+    accepts: Vec<AcceptedIdentityRequirementSchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AcceptedIdentityRequirementSchema {
+    id: String,
+    identity_specs: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    audience: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -148,6 +169,7 @@ fn post_process_schema(schema: &mut Value) {
             file.insert("type".to_string(), json!("string"));
             file.insert("minLength".to_string(), json!(1));
         }
+        post_process_surface_sha256(properties);
         post_process_surface_inputs(properties);
         if let Some(base_url) = properties
             .get_mut("base_url")
@@ -189,6 +211,10 @@ fn post_process_root_properties(properties: &mut serde_json::Map<String, Value>)
         .and_then(Value::as_object_mut)
     {
         description.insert("type".to_string(), json!("string"));
+    }
+    if let Some(version) = properties.get_mut("version").and_then(Value::as_object_mut) {
+        version.insert("type".to_string(), json!("string"));
+        version.insert("minLength".to_string(), json!(1));
     }
     if let Some(test_queries) = properties
         .get_mut("test_queries")
@@ -243,6 +269,7 @@ fn post_process_surface_variants(surface_schema: &mut Value) {
                 file.insert("type".to_string(), json!("string"));
                 file.insert("minLength".to_string(), json!(1));
             }
+            post_process_surface_sha256(properties);
             if let Some(base_url) = properties
                 .get_mut("base_url")
                 .and_then(Value::as_object_mut)
@@ -332,6 +359,13 @@ fn post_process_surface_inputs(properties: &mut serde_json::Map<String, Value>) 
     if let Some(inputs) = properties.get_mut("inputs").and_then(Value::as_object_mut) {
         inputs.insert("type".to_string(), json!("object"));
         inputs.insert("propertyNames".to_string(), json!({ "minLength": 1 }));
+    }
+}
+
+fn post_process_surface_sha256(properties: &mut serde_json::Map<String, Value>) {
+    if let Some(sha256) = properties.get_mut("sha256").and_then(Value::as_object_mut) {
+        sha256.insert("type".to_string(), json!("string"));
+        sha256.insert("pattern".to_string(), json!("^[0-9a-f]{64}$"));
     }
 }
 
@@ -437,7 +471,6 @@ surfaces:
     #[test]
     fn generated_schema_rejects_v3_only_fields_and_removed_snapshot_fields() {
         let invalid = [
-            "version: 1.0.0\n",
             "backend: http\n",
             "tables: []\n",
             "auth: {type: HeaderAuth}\n",
@@ -452,11 +485,20 @@ surfaces:
                 "field should be rejected: {field}"
             );
         }
+    }
 
+    #[test]
+    fn generated_schema_validates_surface_sha256() {
         let raw = "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n";
         assert!(
+            validator().validate(&manifest_json(raw)).is_ok(),
+            "valid surface sha256 should be accepted"
+        );
+
+        let raw = "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n    sha256: nope\n";
+        assert!(
             validator().validate(&manifest_json(raw)).is_err(),
-            "surface sha256 should be rejected"
+            "invalid surface sha256 should be rejected"
         );
     }
 
