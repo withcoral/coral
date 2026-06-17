@@ -107,14 +107,6 @@ pub(crate) fn replace_v4_materialization(
     Ok(had_existing.then_some(backup))
 }
 
-pub(crate) fn cleanup_materialization_backup(backup: Option<PathBuf>) {
-    if let Some(backup) = backup
-        && backup.exists()
-    {
-        drop(std::fs::remove_dir_all(backup));
-    }
-}
-
 pub(crate) fn cleanup_materialization_tmp(temp_dir: Option<&Path>) {
     if let Some(temp_dir) = temp_dir
         && temp_dir.exists()
@@ -131,12 +123,16 @@ pub(crate) fn restore_materialization_backup(
 ) -> Result<(), AppError> {
     let target = layout.v4_materialized_dir(workspace_name, source_name);
     if let Some(backup) = backup {
+        if !backup.exists() {
+            return Err(AppError::FailedPrecondition(format!(
+                "DSL v4 materialization backup '{}' does not exist",
+                backup.display()
+            )));
+        }
         if target.exists() {
             std::fs::remove_dir_all(&target)?;
         }
-        if backup.exists() {
-            std::fs::rename(backup, target)?;
-        }
+        std::fs::rename(backup, target)?;
     } else if target.exists() {
         std::fs::remove_dir_all(target)?;
     }

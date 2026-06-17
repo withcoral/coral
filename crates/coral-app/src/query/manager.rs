@@ -32,11 +32,12 @@ use crate::query::QueryContext;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
+#[cfg(test)]
+use crate::source_artifacts::LocalSourceArtifactStore;
+use crate::source_artifacts::SourceArtifactStore;
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
-use crate::sources::materialization::{
-    incompatible_materialization_error, load_v4_materialization,
-};
+use crate::sources::materialization::incompatible_materialization_error;
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_components_for_v4_source;
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
@@ -73,7 +74,9 @@ pub(crate) struct QueryManager {
     config_store: ConfigStore,
     credential_manager: CredentialManager,
     runtime_context: QueryRuntimeContext,
+    #[cfg(test)]
     layout: AppStateLayout,
+    artifact_store: Arc<dyn SourceArtifactStore>,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     features: Features,
     identity_manager: IdentityManager,
@@ -98,6 +101,7 @@ impl QueryManager {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_options(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
@@ -106,11 +110,35 @@ impl QueryManager {
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
         options: QueryManagerOptions,
     ) -> Self {
-        Self {
+        let artifact_store = Arc::new(LocalSourceArtifactStore::new(layout.clone()));
+        Self::new_with_source_identity_providers_and_artifact_store(
             config_store,
             credential_manager,
             runtime_context,
             layout,
+            artifact_store,
+            engine_extensions_providers,
+            options,
+        )
+    }
+
+    pub(crate) fn new_with_source_identity_providers_and_artifact_store(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        #[cfg(test)] layout: AppStateLayout,
+        #[cfg(not(test))] _layout: AppStateLayout,
+        artifact_store: Arc<dyn SourceArtifactStore>,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        options: QueryManagerOptions,
+    ) -> Self {
+        Self {
+            config_store,
+            credential_manager,
+            runtime_context,
+            #[cfg(test)]
+            layout,
+            artifact_store,
             engine_extensions_providers,
             features: options.features,
             identity_manager: IdentityManager::new(options.source_identity_providers),
@@ -352,14 +380,14 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
     ) -> Result<LoadedQuerySource, AppError> {
-        let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
+        let installed =
+            resolve_installed_manifest(workspace_name, source, self.artifact_store.as_ref())?;
         let source_spec = installed.source_spec;
         let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
             self.features.ensure_dsl_v4_enabled()?;
-            let materialized = load_v4_materialization(
-                &self.layout,
-                workspace_name,
-                &source.name,
+            let materialized = self.artifact_store.load_v4_materialization(
+                workspace_name.as_str(),
+                source.name.as_str(),
                 &installed.manifest_yaml,
                 v4,
             )?;

@@ -18,6 +18,9 @@ use crate::credentials::{
 };
 use crate::features::Features;
 use crate::identity::SourceIdentityBinding;
+#[cfg(test)]
+use crate::source_artifacts::LocalSourceArtifactStore;
+use crate::source_artifacts::SourceArtifactStore;
 use crate::source_registry::{
     SourceRegistry, installed_source_from_record, record_from_installed_source,
 };
@@ -27,24 +30,22 @@ use crate::sources::catalog::{
 };
 use crate::sources::materialization::{
     MaterializationBuild, MaterializationInputs, build_v4_materialization_tmp,
-    canonicalize_file_descriptor, cleanup_materialization_backup, cleanup_materialization_tmp,
-    new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
+    canonicalize_file_descriptor, cleanup_materialization_tmp, new_materialization_suffix,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
 #[cfg(test)]
 use crate::state::ConfigStore;
-use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
 use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec};
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
-use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) struct SourceManager {
     source_registry: Arc<dyn SourceRegistry>,
+    artifact_store: Arc<dyn SourceArtifactStore>,
     credential_manager: CredentialManager,
     oauth_credential_service: OAuthCredentialService,
     layout: AppStateLayout,
@@ -231,14 +232,32 @@ impl SourceManager {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_source_registry_and_features(
         source_registry: Arc<dyn SourceRegistry>,
         credential_manager: CredentialManager,
         layout: AppStateLayout,
         features: Features,
     ) -> Self {
+        Self::new_with_source_registry_and_artifact_store(
+            source_registry,
+            Arc::new(LocalSourceArtifactStore::new(layout.clone())),
+            credential_manager,
+            layout,
+            features,
+        )
+    }
+
+    pub(crate) fn new_with_source_registry_and_artifact_store(
+        source_registry: Arc<dyn SourceRegistry>,
+        artifact_store: Arc<dyn SourceArtifactStore>,
+        credential_manager: CredentialManager,
+        layout: AppStateLayout,
+        features: Features,
+    ) -> Self {
         Self {
             source_registry,
+            artifact_store,
             credential_manager,
             oauth_credential_service: OAuthCredentialService::new(),
             layout,
@@ -316,9 +335,12 @@ impl SourceManager {
         source_name: &SourceName,
     ) -> Result<CandidateSource, AppError> {
         if let Some(source) = self.get_registry_source(workspace_name, source_name)? {
-            return Ok(
-                resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate,
-            );
+            return Ok(resolve_installed_manifest(
+                workspace_name,
+                &source,
+                self.artifact_store.as_ref(),
+            )?
+            .candidate);
         }
 
         match load_bundled_source(source_name) {
@@ -606,7 +628,6 @@ impl SourceManager {
     ) -> Result<InstalledSource, AppError> {
         let stored = self.require_registry_source(workspace_name, source_name)?;
         let removed = self.populate_source_version_or_keep(workspace_name, stored.clone());
-        let source_dir = self.layout.source_dir(workspace_name, source_name);
         let credential_set_id = CredentialSetId::for_source(source_name);
         let credential_guard = self
             .credential_manager
@@ -619,9 +640,9 @@ impl SourceManager {
             source: stored,
             manifest_yaml: match removed.origin {
                 SourceOrigin::Bundled => None,
-                SourceOrigin::Imported => Some(std::fs::read_to_string(
-                    self.layout.manifest_file(workspace_name, source_name),
-                )?),
+                SourceOrigin::Imported => self
+                    .artifact_store
+                    .read_manifest_artifact(workspace_name.as_str(), source_name.as_str())?,
             },
             credential_material,
         };
@@ -637,14 +658,12 @@ impl SourceManager {
             );
             return Err(error);
         }
-        let source_dir_backup =
-            source_dir.with_file_name(format!("{source_name}.delete.rollback.{}", Uuid::new_v4()));
-        let had_source_dir = source_dir.exists();
-        if had_source_dir {
-            if source_dir_backup.exists() {
-                std::fs::remove_dir_all(&source_dir_backup)?;
-            }
-            if let Err(error) = std::fs::rename(&source_dir, &source_dir_backup) {
+        let artifact_backup = match self
+            .artifact_store
+            .remove_source_artifacts(workspace_name.as_str(), source_name.as_str())
+        {
+            Ok(backup) => backup,
+            Err(error) => {
                 self.restore_source_rollback_state(
                     workspace_name,
                     source_name,
@@ -652,20 +671,20 @@ impl SourceManager {
                     None,
                     &credential_guard,
                 );
-                return Err(error.into());
+                return Err(error);
             }
-        }
+        };
         if let Err(error) = self
             .source_registry
             .remove_source(workspace_name.as_str(), source_name.as_str())
         {
-            if had_source_dir
-                && source_dir_backup.exists()
-                && let Err(restore_error) = std::fs::rename(&source_dir_backup, &source_dir)
-            {
+            if let Err(restore_error) = self.artifact_store.restore_source_artifacts_backup(
+                workspace_name.as_str(),
+                source_name.as_str(),
+                artifact_backup,
+            ) {
                 return Err(AppError::FailedPrecondition(format!(
-                    "failed to remove source '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
-                    source_dir_backup.display()
+                    "failed to remove source '{source_name}': {error}; failed to restore source artifacts: {restore_error}"
                 )));
             }
             self.restore_source_rollback_state(
@@ -677,14 +696,8 @@ impl SourceManager {
             );
             return Err(error);
         }
-        if source_dir_backup.exists() {
-            std::fs::remove_dir_all(&source_dir_backup)?;
-        }
-        cleanup_empty_parent(&self.layout.workspaces_root(), source_dir.parent());
-        cleanup_empty_parent(
-            &self.layout.workspaces_root(),
-            self.layout.workspace_dir(workspace_name).parent(),
-        );
+        self.artifact_store
+            .cleanup_source_artifacts_backup(artifact_backup);
         Ok(removed)
     }
 
@@ -769,9 +782,11 @@ impl SourceManager {
             .material_guard(workspace_name, &credential_set_id)?;
         let previous =
             self.load_source_rollback_state(workspace_name, &source_name, &credential_guard)?;
-        if let Err(error) =
-            self.persist_manifest_artifact(workspace_name, &source_name, request.manifest_yaml)
-        {
+        if let Err(error) = self.artifact_store.persist_manifest_artifact(
+            workspace_name.as_str(),
+            source_name.as_str(),
+            request.manifest_yaml,
+        ) {
             cleanup_materialization_tmp(request.materialization_tmp.as_deref());
             self.restore_source_rollback_state(
                 workspace_name,
@@ -836,10 +851,9 @@ impl SourceManager {
 
         let materialization_backup =
             if let Some(materialization_tmp) = request.materialization_tmp.as_ref() {
-                match replace_v4_materialization(
-                    &self.layout,
-                    workspace_name,
-                    &source_name,
+                match self.artifact_store.replace_v4_materialization(
+                    workspace_name.as_str(),
+                    source_name.as_str(),
                     materialization_tmp,
                 ) {
                     Ok(backup) => backup,
@@ -875,10 +889,9 @@ impl SourceManager {
         if let Err(error) =
             self.upsert_registry_source(workspace_name, stored.clone(), request.manifest_yaml)
         {
-            let restore_result = restore_materialization_backup(
-                &self.layout,
-                workspace_name,
-                &source_name,
+            let restore_result = self.artifact_store.restore_v4_materialization_backup(
+                workspace_name.as_str(),
+                source_name.as_str(),
                 materialization_backup,
             );
             self.restore_source_rollback_state(
@@ -895,7 +908,8 @@ impl SourceManager {
             }
             return Err(error);
         }
-        cleanup_materialization_backup(materialization_backup);
+        self.artifact_store
+            .cleanup_v4_materialization_backup(materialization_backup);
         let mut resolved = stored;
         resolved.version.clone_from(&request.candidate.version);
         Ok(resolved)
@@ -970,8 +984,11 @@ impl SourceManager {
             if installed.name == *candidate_name {
                 continue;
             }
-            let installed_manifest =
-                resolve_installed_manifest(workspace_name, &installed, &self.layout)?;
+            let installed_manifest = resolve_installed_manifest(
+                workspace_name,
+                &installed,
+                self.artifact_store.as_ref(),
+            )?;
             let installed_schema_names = runtime_schema_names(&installed_manifest.source_spec);
             if let Some(schema_name) = candidate_schema_names
                 .intersection(&installed_schema_names)
@@ -1263,9 +1280,9 @@ impl SourceManager {
         Ok(Some(SourceRollbackState {
             manifest_yaml: match source.origin {
                 SourceOrigin::Bundled => None,
-                SourceOrigin::Imported => Some(std::fs::read_to_string(
-                    self.layout.manifest_file(workspace_name, source_name),
-                )?),
+                SourceOrigin::Imported => self
+                    .artifact_store
+                    .read_manifest_artifact(workspace_name.as_str(), source_name.as_str())?,
             },
             source,
             credential_material,
@@ -1282,24 +1299,12 @@ impl SourceManager {
     ) {
         if let Some(previous) = previous {
             let previous_manifest_yaml = previous.manifest_yaml.clone();
-            let manifest_path = self.layout.manifest_file(workspace_name, source_name);
-            match previous.manifest_yaml {
-                Some(manifest_yaml) => {
-                    if let Some(parent) = manifest_path.parent()
-                        && let Err(e) = fs::ensure_dir(parent)
-                    {
-                        warn!("rollback: failed to create manifest parent dir: {e}");
-                    }
-                    if let Err(e) = fs::write_atomic(&manifest_path, manifest_yaml.as_bytes()) {
-                        warn!("rollback: failed to restore manifest file: {e}");
-                    }
-                }
-                None if manifest_path.exists() => {
-                    if let Err(e) = std::fs::remove_file(&manifest_path) {
-                        warn!("rollback: failed to remove manifest file: {e}");
-                    }
-                }
-                None => {}
+            if let Err(e) = self.artifact_store.persist_manifest_artifact(
+                workspace_name.as_str(),
+                source_name.as_str(),
+                previous.manifest_yaml.as_deref(),
+            ) {
+                warn!("rollback: failed to restore source manifest artifact: {e}");
             }
             match previous.credential_material {
                 Some(snapshot) => {
@@ -1323,11 +1328,12 @@ impl SourceManager {
                 warn!("rollback: failed to restore source config: {e}");
             }
         } else {
-            let source_dir = self.layout.source_dir(workspace_name, source_name);
-            if source_dir.exists()
-                && let Err(e) = std::fs::remove_dir_all(&source_dir)
-            {
-                warn!("rollback: failed to remove source directory: {e}");
+            if let Err(e) = self.artifact_store.restore_source_artifacts_backup(
+                workspace_name.as_str(),
+                source_name.as_str(),
+                None,
+            ) {
+                warn!("rollback: failed to remove source artifacts: {e}");
             }
             if let Some(storage) = new_material_storage
                 && let Err(e) = credential_material.remove_material(storage)
@@ -1337,37 +1343,15 @@ impl SourceManager {
         }
     }
 
-    fn persist_manifest_artifact(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-        manifest_yaml: Option<&str>,
-    ) -> Result<(), AppError> {
-        let manifest_path = self.layout.manifest_file(workspace_name, source_name);
-        match manifest_yaml {
-            Some(manifest_yaml) => {
-                if let Some(parent) = manifest_path.parent() {
-                    fs::ensure_dir(parent)?;
-                }
-                fs::write_atomic(&manifest_path, manifest_yaml.as_bytes())?;
-            }
-            None if manifest_path.exists() => {
-                std::fs::remove_file(&manifest_path)?;
-            }
-            None => {}
-        }
-        cleanup_empty_parent(&self.layout.workspaces_root(), manifest_path.parent());
-        Ok(())
-    }
-
     fn populate_source_version(
         &self,
         workspace_name: &WorkspaceName,
         mut source: InstalledSource,
     ) -> Result<InstalledSource, AppError> {
-        source.version = resolve_installed_manifest(workspace_name, &source, &self.layout)?
-            .candidate
-            .version;
+        source.version =
+            resolve_installed_manifest(workspace_name, &source, self.artifact_store.as_ref())?
+                .candidate
+                .version;
         Ok(source)
     }
 
@@ -1719,25 +1703,6 @@ fn durable_import_manifest_yaml(
         );
     }
     serde_yaml::to_string(&value).map_err(AppError::from)
-}
-
-fn cleanup_empty_parent(root: &std::path::Path, path: Option<&std::path::Path>) {
-    let Some(mut current) = path.map(std::path::Path::to_path_buf) else {
-        return;
-    };
-    while current.starts_with(root) && current != root {
-        let Ok(mut entries) = std::fs::read_dir(&current) else {
-            break;
-        };
-        if entries.next().is_some() {
-            break;
-        }
-        let next = current.parent().unwrap_or(root).to_path_buf();
-        if std::fs::remove_dir(&current).is_err() {
-            break;
-        }
-        current = next;
-    }
 }
 
 #[cfg(test)]

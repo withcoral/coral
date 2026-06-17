@@ -63,12 +63,13 @@ use crate::identity_specs::{
 };
 use crate::query::manager::{QueryManager, QueryManagerOptions};
 use crate::query::service::QueryService;
+use crate::source_artifacts::{LocalSourceArtifactStore, SourceArtifactStore};
 use crate::source_registry::SourceRegistry;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore};
-use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
+use crate::telemetry::{InstalledLocalTraceStore, TelemetryConfig};
 use crate::transport::GrpcRequestContextLayer;
 
 /// A static asset (e.g., a built SPA file) served on the same port as
@@ -121,6 +122,7 @@ pub(crate) struct ServerConfig {
     mode: ServerMode,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     source_registry: Option<Arc<dyn SourceRegistry>>,
+    source_artifact_store: Option<Arc<dyn SourceArtifactStore>>,
     identity_spec_registry: Option<Arc<dyn IdentitySpecRegistry>>,
     identity_spec_usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
     feature_overrides: FeatureOverrides,
@@ -146,6 +148,7 @@ impl ServerConfig {
             mode: ServerMode::NativeGrpc,
             engine_extensions_providers: Vec::new(),
             source_registry: None,
+            source_artifact_store: None,
             identity_spec_registry: None,
             identity_spec_usage_providers: Vec::new(),
             feature_overrides: FeatureOverrides::default(),
@@ -204,6 +207,14 @@ impl ServerConfig {
 
     pub(crate) fn with_source_registry(mut self, source_registry: Arc<dyn SourceRegistry>) -> Self {
         self.source_registry = Some(source_registry);
+        self
+    }
+
+    pub(crate) fn with_source_artifact_store(
+        mut self,
+        source_artifact_store: Arc<dyn SourceArtifactStore>,
+    ) -> Self {
+        self.source_artifact_store = Some(source_artifact_store);
         self
     }
 
@@ -404,6 +415,23 @@ impl ServerBuilder {
     }
 
     #[must_use]
+    /// Sets the durable artifact store used for installed source manifests and
+    /// DSL v4 materialized artifacts.
+    ///
+    /// The default store persists artifacts in the local config directory.
+    /// Product-specific siblings can install a store backed by their own
+    /// durable artifact storage.
+    pub fn with_source_artifact_store(
+        mut self,
+        source_artifact_store: Arc<dyn SourceArtifactStore>,
+    ) -> Self {
+        self.config = self
+            .config
+            .with_source_artifact_store(source_artifact_store);
+        self
+    }
+
+    #[must_use]
     /// Adds a provider that reports stored identity usage for identity specs.
     ///
     /// Providers are consulted before deleting an identity spec so deletion can
@@ -593,37 +621,38 @@ impl ServerBuilder {
             &extension_context,
             &identity_manager,
         );
-        let source_manager = source_manager_for_server(
-            self.config.source_registry,
-            &config_store,
-            credential_manager.clone(),
+        let (source_manager, source_artifact_store) = source_manager_for_server(
             layout.clone(),
+            config_store.clone(),
+            self.config.source_registry,
+            self.config.source_artifact_store,
+            credential_manager.clone(),
             features.clone(),
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let episode_store = EpisodeStore::new(layout.clone());
-        let body_capture_max_bytes = telemetry_config
-            .trace_history
-            .http_body_recording_max_bytes();
-        let query_runtime_context = env
-            .query_runtime_context()
-            .with_body_capture_max_bytes(body_capture_max_bytes);
+        let query_runtime_context = env.query_runtime_context().with_body_capture_max_bytes(
+            telemetry_config
+                .trace_history
+                .http_body_recording_max_bytes(),
+        );
 
+        let query_manager_options = QueryManagerOptions {
+            features,
+            source_identity_providers,
+        };
         let query_manager = query_manager_for_server(
             config_store,
             credential_manager,
             query_runtime_context,
             layout,
+            source_artifact_store,
             self.config.engine_extensions_providers,
-            features,
-            source_identity_providers,
+            query_manager_options,
         );
-        let trace_service = if telemetry_config.trace_history.enabled {
-            installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
-        } else {
-            None
-        };
+        let user_principal_provider = self.config.user_principal_provider;
+        let trace_service = trace_service_for_server(&telemetry_config, installed_trace_store);
         start_server(
             ServerServices {
                 source_manager,
@@ -631,7 +660,7 @@ impl ServerBuilder {
                 feedback_manager,
                 episode_store,
                 trace_service,
-                user_principal_provider: self.config.user_principal_provider,
+                user_principal_provider,
                 management_authorizer: self.config.management_authorizer,
                 identity_spec_manager,
                 identity_manager,
@@ -699,26 +728,25 @@ fn source_identity_providers_for_server(
     providers
 }
 
-fn source_registry_for_server(
-    registry: Option<Arc<dyn SourceRegistry>>,
-    config_store: &ConfigStore,
-) -> Arc<dyn SourceRegistry> {
-    registry.unwrap_or_else(|| Arc::new(config_store.clone()))
-}
-
 fn source_manager_for_server(
-    registry: Option<Arc<dyn SourceRegistry>>,
-    config_store: &ConfigStore,
-    credential_manager: CredentialManager,
     layout: AppStateLayout,
+    config_store: ConfigStore,
+    source_registry: Option<Arc<dyn SourceRegistry>>,
+    source_artifact_store: Option<Arc<dyn SourceArtifactStore>>,
+    credential_manager: CredentialManager,
     features: Features,
-) -> SourceManager {
-    SourceManager::new_with_source_registry_and_features(
-        source_registry_for_server(registry, config_store),
+) -> (SourceManager, Arc<dyn SourceArtifactStore>) {
+    let source_registry = source_registry.unwrap_or_else(|| Arc::new(config_store));
+    let source_artifact_store = source_artifact_store
+        .unwrap_or_else(|| Arc::new(LocalSourceArtifactStore::new(layout.clone())));
+    let source_manager = SourceManager::new_with_source_registry_and_artifact_store(
+        source_registry,
+        Arc::clone(&source_artifact_store),
         credential_manager,
         layout,
         features,
-    )
+    );
+    (source_manager, source_artifact_store)
 }
 
 fn query_manager_for_server(
@@ -726,21 +754,30 @@ fn query_manager_for_server(
     credential_manager: CredentialManager,
     query_runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
+    source_artifact_store: Arc<dyn SourceArtifactStore>,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    features: Features,
-    source_identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
+    options: QueryManagerOptions,
 ) -> QueryManager {
-    QueryManager::new_with_options(
+    QueryManager::new_with_source_identity_providers_and_artifact_store(
         config_store,
         credential_manager,
         query_runtime_context,
         layout,
+        source_artifact_store,
         engine_extensions_providers,
-        QueryManagerOptions {
-            features,
-            source_identity_providers,
-        },
+        options,
     )
+}
+
+fn trace_service_for_server(
+    telemetry_config: &TelemetryConfig,
+    installed_trace_store: Option<InstalledLocalTraceStore>,
+) -> Option<TraceService> {
+    if telemetry_config.trace_history.enabled {
+        installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
+    } else {
+        None
+    }
 }
 
 struct ServerServices {
