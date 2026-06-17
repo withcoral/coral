@@ -1988,50 +1988,19 @@ surfaces:
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "This integration-style unit test sets up persisted credentials and resolver composition."
-    )]
-    #[tokio::test]
-    async fn runtime_config_composes_provider_input_resolver_with_refreshed_inputs() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let observed_token = Arc::new(Mutex::new(None));
-        let fixture = query_manager_with(
-            QueryRuntimeContext::default(),
-            vec![Arc::new(DelegatingInputResolverProvider {
-                calls: Arc::clone(&calls),
-                observed_token: Arc::clone(&observed_token),
-            })],
-        );
-        let source_name = SourceName::parse("secured_messages").expect("source name");
-        let workspace_name = WorkspaceName::default();
-        let credential_set_id = CredentialSetId::for_source(&source_name);
-        fixture
-            .manager
-            .config_store
-            .upsert_source(
-                &workspace_name,
-                InstalledSource {
-                    name: source_name.clone(),
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: vec!["API_TOKEN".to_string()],
-                    credential_storage: Some(CredentialStorageKind::File),
-                    identity_bindings: BTreeMap::new(),
-                    origin: SourceOrigin::Bundled,
-                },
-            )
-            .expect("persist source");
-        fixture
-            .manager
-            .credential_manager
-            .replace_material(
-                &workspace_name,
-                &credential_set_id,
-                CredentialStorageKind::File,
-                &BTreeMap::from([("API_TOKEN".to_string(), "stored-token".to_string())]),
-            )
-            .expect("write credential material");
+    fn installed_api_token_source(source_name: SourceName) -> InstalledSource {
+        InstalledSource {
+            name: source_name,
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: vec!["API_TOKEN".to_string()],
+            credential_storage: Some(CredentialStorageKind::File),
+            identity_bindings: BTreeMap::new(),
+            origin: SourceOrigin::Bundled,
+        }
+    }
+
+    fn secured_messages_query_source() -> QuerySource {
         let source_spec = parse_source_manifest_yaml(
             r#"
 name: secured_messages
@@ -2058,13 +2027,36 @@ tables:
 "#,
         )
         .expect("parse source manifest");
-        let source = QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new());
-        let runtime = fixture
-            .manager
+        QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new())
+    }
+
+    fn query_manager_with_explicit_source_registry(
+        config_store: ConfigStore,
+        source_registry: Arc<dyn SourceRegistry>,
+        layout: AppStateLayout,
+    ) -> QueryManager {
+        QueryManager::new(
+            config_store,
+            source_registry,
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            QueryRuntimeContext::default(),
+            layout.clone(),
+            Arc::new(LocalSourceArtifactStore::new(layout)),
+            Vec::new(),
+            QueryManagerOptions::default(),
+        )
+    }
+
+    async fn resolve_runtime_inputs(
+        manager: &QueryManager,
+        workspace_name: &WorkspaceName,
+        source: &QuerySource,
+    ) -> Result<BTreeMap<String, String>, SourceInputResolverError> {
+        let runtime = manager
             .runtime_config(
-                &workspace_name,
+                workspace_name,
                 &UserPrincipal::local(),
-                std::slice::from_ref(&source),
+                std::slice::from_ref(source),
                 BTreeMap::new(),
                 &AppConfig::default(),
             )
@@ -2073,9 +2065,46 @@ tables:
             .extensions
             .source_input_resolver
             .expect("runtime installs input resolver");
+        input_resolver
+            .resolve_inputs(&SourceInputResolutionContext::from_query_source(source))
+            .await
+    }
 
-        let resolved_inputs = input_resolver
-            .resolve_inputs(&SourceInputResolutionContext::from_query_source(&source))
+    #[tokio::test]
+    async fn runtime_config_composes_provider_input_resolver_with_refreshed_inputs() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_token = Arc::new(Mutex::new(None));
+        let fixture = query_manager_with(
+            QueryRuntimeContext::default(),
+            vec![Arc::new(DelegatingInputResolverProvider {
+                calls: Arc::clone(&calls),
+                observed_token: Arc::clone(&observed_token),
+            })],
+        );
+        let source_name = SourceName::parse("secured_messages").expect("source name");
+        let workspace_name = WorkspaceName::default();
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        fixture
+            .manager
+            .config_store
+            .upsert_source(
+                &workspace_name,
+                installed_api_token_source(source_name.clone()),
+            )
+            .expect("persist source");
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "stored-token".to_string())]),
+            )
+            .expect("write credential material");
+        let source = secured_messages_query_source();
+
+        let resolved_inputs = resolve_runtime_inputs(&fixture.manager, &workspace_name, &source)
             .await
             .expect("resolve source inputs");
 
@@ -2196,6 +2225,109 @@ tables:
         assert_eq!(
             resolved_inputs.get("API_TOKEN").map(String::as_str),
             Some("registry-token")
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_config_refreshes_inputs_from_injected_source_registry() {
+        let temp = TempDir::new().expect("temp dir");
+        let local_layout =
+            AppStateLayout::discover(Some(temp.path().join("local-config"))).expect("layout");
+        let registry_layout =
+            AppStateLayout::discover(Some(temp.path().join("registry-config"))).expect("layout");
+        let local_config_store = ConfigStore::new(local_layout.clone());
+        let registry_store = ConfigStore::new(registry_layout);
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("secured_messages").expect("source name");
+        registry_store
+            .upsert_source(
+                &workspace_name,
+                installed_api_token_source(source_name.clone()),
+            )
+            .expect("persist registry source");
+        let source_registry: Arc<dyn SourceRegistry> = Arc::new(registry_store);
+        let manager = query_manager_with_explicit_source_registry(
+            local_config_store.clone(),
+            source_registry,
+            local_layout,
+        );
+        manager
+            .credential_manager
+            .replace_material(
+                &workspace_name,
+                &CredentialSetId::for_source(&source_name),
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "stored-token".to_string())]),
+            )
+            .expect("write credential material");
+        let source = secured_messages_query_source();
+
+        let resolved_inputs = resolve_runtime_inputs(&manager, &workspace_name, &source)
+            .await
+            .expect("resolve source inputs");
+
+        assert_eq!(
+            resolved_inputs.get("API_TOKEN").map(String::as_str),
+            Some("stored-token")
+        );
+        assert_eq!(
+            resolved_inputs.get("API_BASE").map(String::as_str),
+            Some("https://example.com")
+        );
+        assert!(
+            matches!(
+                local_config_store.get_source(&workspace_name, &source_name),
+                Err(AppError::SourceNotFound(_))
+            ),
+            "source should not need to exist in the local config store"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_config_refresh_does_not_fallback_to_local_config_store() {
+        let temp = TempDir::new().expect("temp dir");
+        let local_layout =
+            AppStateLayout::discover(Some(temp.path().join("local-config"))).expect("layout");
+        let registry_layout =
+            AppStateLayout::discover(Some(temp.path().join("registry-config"))).expect("layout");
+        let local_config_store = ConfigStore::new(local_layout.clone());
+        let registry_store = ConfigStore::new(registry_layout);
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("secured_messages").expect("source name");
+        local_config_store
+            .upsert_source(
+                &workspace_name,
+                installed_api_token_source(source_name.clone()),
+            )
+            .expect("persist local source");
+        let source_registry: Arc<dyn SourceRegistry> = Arc::new(registry_store);
+        let manager = query_manager_with_explicit_source_registry(
+            local_config_store,
+            source_registry,
+            local_layout,
+        );
+        manager
+            .credential_manager
+            .replace_material(
+                &workspace_name,
+                &CredentialSetId::for_source(&source_name),
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "stored-token".to_string())]),
+            )
+            .expect("write credential material");
+        let source = secured_messages_query_source();
+
+        let error = resolve_runtime_inputs(&manager, &workspace_name, &source)
+            .await
+            .expect_err("missing registry source should fail");
+
+        assert!(
+            matches!(
+                error,
+                SourceInputResolverError::FailedPrecondition(ref detail)
+                    if detail.contains("source 'default:secured_messages' not found")
+            ),
+            "unexpected resolver error: {error}"
         );
     }
 }
