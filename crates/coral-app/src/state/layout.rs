@@ -14,6 +14,7 @@ use crate::workspaces::WorkspaceName;
 pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
 pub(crate) const INSTALLED_SECRETS_FILE_NAME: &str = "secrets.env";
 pub(crate) const INSTALLED_IDENTITY_FILE_NAME: &str = "identity.yaml";
+pub(crate) const INSTALLED_SOURCE_IDENTITY_BINDING_FILE_NAME: &str = "binding.yaml";
 
 #[derive(Debug, Clone)]
 pub(crate) struct AppStateLayout {
@@ -130,6 +131,26 @@ impl AppStateLayout {
         self.identities_root()
             .join(owner.storage_segment())
             .join(owner.key())
+    }
+
+    pub(crate) fn source_identity_bindings_root(&self) -> PathBuf {
+        self.identities_root().join("source-bindings")
+    }
+
+    pub(crate) fn user_owned_source_identity_binding_file(
+        &self,
+        user_id: &str,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        surface_id: &str,
+    ) -> PathBuf {
+        self.source_identity_bindings_root()
+            .join("users")
+            .join(user_id)
+            .join(workspace_name.as_str())
+            .join(source_name.as_str())
+            .join(surface_id)
+            .join(INSTALLED_SOURCE_IDENTITY_BINDING_FILE_NAME)
     }
 
     pub(crate) fn identity_dir(

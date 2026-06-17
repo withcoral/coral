@@ -23,16 +23,21 @@ use crate::identities::runtime::{
     StoredIdentityRuntimeData,
 };
 use crate::identity::{
-    IdentityOwnerKind, RuntimeSourceIdentity, UserPrincipal, parse_path_segment, unique_input_map,
+    IdentityOwnerKind, RuntimeSourceIdentity, SourceIdentityProvider,
+    SourceIdentityResolutionRequest, SourceIdentitySelection, SourceIdentitySelectionRequest,
+    UserPrincipal, parse_path_segment, unique_input_map,
 };
 use crate::identity_specs::{
     IdentitySpecManager, IdentitySpecRecord, identity_spec_fingerprint, validate_identity_spec_name,
 };
+use crate::sources::SourceName;
 use crate::state::AppStateLayout;
 use crate::storage::env_file::{parse_env_file, render_env_file};
 use crate::storage::fs::{self as storage_fs, FileLock};
+use crate::workspaces::WorkspaceName;
 
 const IDENTITY_DOCUMENT_VERSION: u32 = 1;
+const USER_SOURCE_IDENTITY_BINDING_DOCUMENT_VERSION: u32 = 1;
 
 /// One stored provider identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,6 +270,37 @@ pub trait IdentityStore: Send + Sync + std::fmt::Debug + 'static {
         owner: &IdentityOwner,
         identity_name: &IdentityName,
     ) -> Result<Box<dyn IdentityMaterialGuard>, AppError>;
+
+    /// Replaces one per-user source identity selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the store cannot be written.
+    async fn replace_source_identity_binding(
+        &self,
+        _user_id: &str,
+        _workspace_name: &str,
+        _source_name: &str,
+        _surface_id: &str,
+        _selection: &SourceIdentitySelection,
+    ) -> Result<(), AppError> {
+        Err(source_identity_binding_store_unsupported())
+    }
+
+    /// Loads one per-user source identity selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the store cannot be read.
+    async fn load_source_identity_binding(
+        &self,
+        _user_id: &str,
+        _workspace_name: &str,
+        _source_name: &str,
+        _surface_id: &str,
+    ) -> Result<SourceIdentitySelection, AppError> {
+        Err(source_identity_binding_store_unsupported())
+    }
 
     /// Counts identities that reference `identity_spec_name`.
     ///
@@ -829,6 +865,82 @@ impl IdentityStore for FileIdentityStore {
         .await?
     }
 
+    async fn replace_source_identity_binding(
+        &self,
+        user_id: &str,
+        workspace_name: &str,
+        source_name: &str,
+        surface_id: &str,
+        selection: &SourceIdentitySelection,
+    ) -> Result<(), AppError> {
+        let store = self.clone();
+        let user_id = user_id.to_string();
+        let workspace_name = workspace_name.to_string();
+        let source_name = source_name.to_string();
+        let surface_id = surface_id.to_string();
+        let selection = selection.clone();
+        tokio::task::spawn_blocking(move || {
+            let user_id = validate_user_id(&user_id)?;
+            let workspace_name = WorkspaceName::parse(&workspace_name)?;
+            let source_name = SourceName::parse(&source_name)?;
+            let surface_id = validate_source_surface_id(&surface_id)?;
+            selection.validate()?;
+            let _lock = FileLock::exclusive(store.layout.state_lock())?;
+            let path = store.layout.user_owned_source_identity_binding_file(
+                &user_id,
+                &workspace_name,
+                &source_name,
+                &surface_id,
+            );
+            if let Some(parent) = path.parent() {
+                storage_fs::ensure_private_dir(parent)?;
+            }
+            write_files_transactionally(&[&path], || {
+                let document = UserSourceIdentityBindingDocument::from_selection(&selection);
+                write_file_unlocked(&path, serde_yaml::to_string(&document)?.as_bytes())?;
+                Ok(())
+            })
+        })
+        .await?
+    }
+
+    async fn load_source_identity_binding(
+        &self,
+        user_id: &str,
+        workspace_name: &str,
+        source_name: &str,
+        surface_id: &str,
+    ) -> Result<SourceIdentitySelection, AppError> {
+        let store = self.clone();
+        let user_id = user_id.to_string();
+        let workspace_name = workspace_name.to_string();
+        let source_name = source_name.to_string();
+        let surface_id = surface_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let user_id = validate_user_id(&user_id)?;
+            let workspace_name = WorkspaceName::parse(&workspace_name)?;
+            let source_name = SourceName::parse(&source_name)?;
+            let surface_id = validate_source_surface_id(&surface_id)?;
+            let _lock = FileLock::shared(store.layout.state_lock())?;
+            let path = store.layout.user_owned_source_identity_binding_file(
+                &user_id,
+                &workspace_name,
+                &source_name,
+                &surface_id,
+            );
+            if !path.exists() {
+                return Err(AppError::FailedPrecondition(format!(
+                    "user '{user_id}' has no selected identity for source '{}' surface '{surface_id}'",
+                    source_name.as_str()
+                )));
+            }
+            let raw = fs::read_to_string(&path)?;
+            let document: UserSourceIdentityBindingDocument = serde_yaml::from_str(&raw)?;
+            document.into_selection()
+        })
+        .await?
+    }
+
     fn count_identities_for_spec(&self, identity_spec_name: &str) -> Result<u32, AppError> {
         let identity_spec_name = validate_identity_spec_name(identity_spec_name)?;
         Self::count_identity_spec_references_unlocked(&self.layout, identity_spec_name.as_str())
@@ -881,6 +993,54 @@ impl IdentityMaterialGuard for FileIdentityMaterialGuard {
     }
 }
 
+#[tonic::async_trait]
+impl SourceIdentityProvider for IdentityManager {
+    async fn resolve_source_identity_selection(
+        &self,
+        request: &SourceIdentitySelectionRequest,
+    ) -> Result<Option<SourceIdentitySelection>, AppError> {
+        if request.binding.owner != IdentityOwnerKind::User {
+            return Ok(None);
+        }
+        request.binding.validate()?;
+        let user_id = validate_user_id(&request.user_id)?;
+        let workspace_name = WorkspaceName::parse(&request.workspace_name)?;
+        let source_name = SourceName::parse(&request.source_name)?;
+        let selection = self
+            .store
+            .load_source_identity_binding(
+                &user_id,
+                workspace_name.as_str(),
+                source_name.as_str(),
+                &request.surface_id,
+            )
+            .await?;
+        Ok(Some(selection))
+    }
+
+    async fn resolve_source_identity(
+        &self,
+        request: &SourceIdentityResolutionRequest,
+    ) -> Result<Option<Arc<dyn RuntimeSourceIdentity>>, AppError> {
+        request.binding.validate()?;
+        request.selection.validate()?;
+        let owner = match request.binding.owner {
+            IdentityOwnerKind::User => {
+                let Some(user_id) = request.user_id.as_deref() else {
+                    return Ok(None);
+                };
+                IdentityOwner::user(user_id)?
+            }
+            IdentityOwnerKind::Workspace => {
+                let workspace_name = WorkspaceName::parse(&request.workspace_name)?;
+                IdentityOwner::workspace(workspace_name.as_str())?
+            }
+        };
+        self.resolve_identity(&owner, &request.selection.identity)
+            .await
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IdentityDocument {
@@ -895,6 +1055,32 @@ struct IdentityDocument {
     identity_type: String,
     #[serde(default)]
     metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UserSourceIdentityBindingDocument {
+    version: u32,
+    identity: String,
+}
+
+impl UserSourceIdentityBindingDocument {
+    fn from_selection(selection: &SourceIdentitySelection) -> Self {
+        Self {
+            version: USER_SOURCE_IDENTITY_BINDING_DOCUMENT_VERSION,
+            identity: selection.identity.clone(),
+        }
+    }
+
+    fn into_selection(self) -> Result<SourceIdentitySelection, AppError> {
+        if self.version != USER_SOURCE_IDENTITY_BINDING_DOCUMENT_VERSION {
+            return Err(AppError::FailedPrecondition(format!(
+                "source identity binding for identity '{}' has unsupported document version {}; expected {}",
+                self.identity, self.version, USER_SOURCE_IDENTITY_BINDING_DOCUMENT_VERSION
+            )));
+        }
+        SourceIdentitySelection::new(self.identity)
+    }
 }
 
 impl IdentityDocument {
@@ -1102,6 +1288,16 @@ fn validate_identity_name(name: &str) -> Result<IdentityName, AppError> {
     IdentityName::new(name)
 }
 
+fn validate_user_id(user_id: &str) -> Result<String, AppError> {
+    parse_path_segment("user", user_id)
+}
+
+fn source_identity_binding_store_unsupported() -> AppError {
+    AppError::FailedPrecondition(
+        "identity store does not support source identity bindings".to_string(),
+    )
+}
+
 fn validate_identity_spec_reference_unlocked(
     identity_specs: &IdentitySpecManager,
     record: &IdentityRecord,
@@ -1131,6 +1327,10 @@ fn checked_add_identity_count(
             "too many stored identities reference identity spec '{identity_spec_name}'"
         ))
     })
+}
+
+fn validate_source_surface_id(surface_id: &str) -> Result<String, AppError> {
+    parse_path_segment("source surface", surface_id)
 }
 
 /// Snapshots `paths`, runs `write`, and restores every file to its prior
@@ -1189,6 +1389,9 @@ fn remove_file_if_exists_unlocked(path: &Path) -> Result<(), std::io::Error> {
 mod tests {
     use super::*;
     use crate::features::{Features, dsl_v4_features};
+    use crate::identity::{
+        SourceIdentityBinding, SourceIdentitySelection, SourceIdentitySelectionRequest,
+    };
     use tempfile::TempDir;
 
     #[test]
@@ -1304,6 +1507,69 @@ audience:
         BTreeMap::from([(key.to_string(), value.to_string())])
     }
 
+    #[derive(Debug)]
+    struct MinimalIdentityStore;
+
+    #[tonic::async_trait]
+    impl IdentityStore for MinimalIdentityStore {
+        async fn list_identities(
+            &self,
+            _owner: &IdentityOwner,
+        ) -> Result<Vec<IdentityRecord>, AppError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_identity(
+            &self,
+            _owner: &IdentityOwner,
+            _identity_name: &IdentityName,
+        ) -> Result<Option<IdentityRecord>, AppError> {
+            Ok(None)
+        }
+
+        async fn replace_identity(
+            &self,
+            _record: &IdentityRecord,
+            _material: &BTreeMap<String, String>,
+        ) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        async fn delete_identity(
+            &self,
+            _owner: &IdentityOwner,
+            _identity_name: &IdentityName,
+        ) -> Result<bool, AppError> {
+            Ok(false)
+        }
+
+        async fn material_guard(
+            &self,
+            _owner: &IdentityOwner,
+            _identity_name: &IdentityName,
+        ) -> Result<Box<dyn IdentityMaterialGuard>, AppError> {
+            Err(AppError::IdentityNotFound("missing".to_string()))
+        }
+
+        fn count_identities_for_spec(&self, _identity_spec_name: &str) -> Result<u32, AppError> {
+            Ok(0)
+        }
+    }
+
+    fn resolution_request(identity_name: &str) -> SourceIdentityResolutionRequest {
+        SourceIdentityResolutionRequest {
+            workspace_name: "default".to_string(),
+            user_id: Some("local".to_string()),
+            source_name: "github".to_string(),
+            surface_id: "rest".to_string(),
+            binding: SourceIdentityBinding::user_owned(),
+            selection: SourceIdentitySelection::new(identity_name).expect("selection"),
+            identity_requirements: coral_spec::v4::IdentityRequirements {
+                accepts: Vec::new(),
+            },
+        }
+    }
+
     #[tokio::test]
     async fn create_user_owned_identity_requires_dsl_v4_feature() {
         let (_temp, manager, _identity_specs) = manager_with_features(Features::default());
@@ -1405,6 +1671,30 @@ audience:
         assert!(
             matches!(error, AppError::InvalidInput(ref message) if message.contains("must not be empty")),
             "unexpected error: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_identity_store_source_binding_defaults_fail_closed() {
+        let store = MinimalIdentityStore;
+        let selection = SourceIdentitySelection::new("github_local").expect("selection");
+
+        let replace_error = store
+            .replace_source_identity_binding("local", "default", "github_v4", "rest", &selection)
+            .await
+            .expect_err("default source binding writes should fail closed");
+        assert!(
+            matches!(replace_error, AppError::FailedPrecondition(ref message) if message.contains("does not support source identity bindings")),
+            "unexpected error: {replace_error:?}"
+        );
+
+        let load_error = store
+            .load_source_identity_binding("local", "default", "github_v4", "rest")
+            .await
+            .expect_err("default source binding reads should fail closed");
+        assert!(
+            matches!(load_error, AppError::FailedPrecondition(ref message) if message.contains("does not support source identity bindings")),
+            "unexpected error: {load_error:?}"
         );
     }
 
@@ -1525,6 +1815,102 @@ audience:
                 reqwest::header::AUTHORIZATION,
                 reqwest::header::HeaderValue::from_static("Bearer ghp_token")
             )]
+        );
+    }
+
+    #[tokio::test]
+    async fn built_in_provider_resolves_workspace_owned_bindings() {
+        let (_temp, manager, _identity_specs) = manager_with_github_pat_spec();
+        manager
+            .create_fixed_token_identity(
+                &default_workspace_owner(),
+                github_local_command("ghp_token"),
+            )
+            .await
+            .expect("create workspace identity");
+        let request = SourceIdentityResolutionRequest {
+            user_id: None,
+            binding: SourceIdentityBinding::workspace_owned("github_local").expect("binding"),
+            ..resolution_request("github_local")
+        };
+
+        let identity = manager
+            .resolve_source_identity(&request)
+            .await
+            .expect("resolve workspace binding")
+            .expect("workspace identity");
+        let request = reqwest::Request::new(
+            reqwest::Method::GET,
+            "https://api.github.com/user".parse().expect("request url"),
+        );
+        let headers = identity
+            .resolve_headers(
+                &coral_engine::SelectedRequestIdentity::new(
+                    "github_local".to_string(),
+                    identity.identity_spec_id().to_string(),
+                    identity.audience().clone(),
+                ),
+                &request,
+                &BTreeMap::new(),
+            )
+            .await
+            .expect("identity headers");
+
+        assert_eq!(
+            headers,
+            vec![(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_static("Bearer ghp_token")
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn resolves_user_owned_source_identity_selection_per_user() {
+        let (_temp, manager, _identity_specs) = manager();
+        let principal = UserPrincipal::for_user("saul").expect("principal");
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github_v4").expect("source");
+        let selection = SourceIdentitySelection::new("github_saul").expect("selection");
+        manager
+            .store
+            .replace_source_identity_binding(
+                principal.user_id(),
+                workspace_name.as_str(),
+                source_name.as_str(),
+                "rest",
+                &selection,
+            )
+            .await
+            .expect("write source identity binding");
+
+        let request = SourceIdentitySelectionRequest {
+            workspace_name: "default".to_string(),
+            user_id: "saul".to_string(),
+            source_name: "github_v4".to_string(),
+            surface_id: "rest".to_string(),
+            binding: SourceIdentityBinding::user_owned(),
+        };
+
+        let resolved = manager
+            .resolve_source_identity_selection(&request)
+            .await
+            .expect("resolve source identity binding")
+            .expect("selection");
+        assert_eq!(resolved, selection);
+
+        let missing_user = SourceIdentitySelectionRequest {
+            user_id: "tina".to_string(),
+            ..request
+        };
+        let error = manager
+            .resolve_source_identity_selection(&missing_user)
+            .await
+            .expect_err("selection should be per user");
+        assert!(
+            error
+                .to_string()
+                .contains("user 'tina' has no selected identity")
         );
     }
 
