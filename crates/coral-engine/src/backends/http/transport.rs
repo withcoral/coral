@@ -39,6 +39,7 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) auth: &'a AuthSpec,
     pub(super) request_headers: &'a [HeaderSpec],
     pub(super) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
+    pub(super) require_credential_safe_auth_transport: bool,
     pub(super) request_identity_http_authenticator:
         Option<&'a BoundRequestIdentityHttpAuthenticator>,
     pub(super) trace_context: Option<&'a OtelContext>,
@@ -76,6 +77,7 @@ pub(super) async fn execute_request(
         auth,
         request_headers,
         request_authenticators,
+        require_credential_safe_auth_transport,
         request_identity_http_authenticator,
         trace_context,
         table_headers,
@@ -200,6 +202,7 @@ pub(super) async fn execute_request(
             request,
             request_authenticators,
             render_context.resolved_inputs,
+            require_credential_safe_auth_transport,
         ) {
             Ok(request) => request,
             Err(error) => {
@@ -558,6 +561,7 @@ mod tests {
                 auth: &AuthSpec::default(),
                 request_headers: &[],
                 request_authenticators: &HashMap::new(),
+                require_credential_safe_auth_transport: false,
                 request_identity_http_authenticator: None,
                 trace_context: None,
                 table_headers: &[],

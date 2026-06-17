@@ -1845,6 +1845,58 @@ surfaces:
     }
 
     #[test]
+    fn load_query_sources_fails_closed_for_v4_when_feature_is_disabled() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("github_v4_disabled").expect("source name");
+        let manifest_path = fixture
+            .manager
+            .layout
+            .manifest_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(
+            &manifest_path,
+            r"
+name: github_v4_disabled
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+",
+        )
+        .expect("write manifest");
+        fixture
+            .manager
+            .config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name,
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: Vec::new(),
+                    credential_storage: None,
+                    identity_bindings: BTreeMap::new(),
+                    origin: SourceOrigin::Imported,
+                },
+            )
+            .expect("persist source");
+
+        let error = fixture
+            .manager
+            .load_query_sources(&workspace_name)
+            .expect_err("disabled v4 feature should fail closed");
+
+        assert!(
+            matches!(error, AppError::SourceUnservable(ref message) if message.contains("dsl_v4")),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
     fn load_query_sources_fails_closed_for_unavailable_keychain_source() {
         let temp = TempDir::new().expect("temp dir");
         let layout =

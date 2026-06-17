@@ -1,6 +1,7 @@
 //! Authentication header resolution for HTTP source manifests.
 
 use std::collections::{BTreeMap, HashMap};
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use base64::Engine as _;
@@ -110,6 +111,7 @@ pub(crate) fn resolve_auth_headers(
     request: reqwest::RequestBuilder,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     resolved_inputs: &BTreeMap<String, String>,
+    require_credential_safe_transport: bool,
 ) -> Result<reqwest::Request> {
     let mut built = request.build().map_err(|error| {
         DataFusionError::Execution(format!("failed to build HTTP request: {error}"))
@@ -124,10 +126,34 @@ pub(crate) fn resolve_auth_headers(
                 .map_err(|error| authenticator_error(&spec.authenticator, &error))
         }
     }?;
+    if require_credential_safe_transport && !headers.is_empty() {
+        ensure_auth_uses_credential_safe_transport(built.url())?;
+    }
     for (name, value) in headers {
         built.headers_mut().insert(name, value);
     }
     Ok(built)
+}
+
+fn ensure_auth_uses_credential_safe_transport(url: &reqwest::Url) -> Result<()> {
+    if url.scheme() == "https" || is_loopback_http_url(url) {
+        return Ok(());
+    }
+    let host = url.host_str().unwrap_or("<missing>");
+    Err(DataFusionError::Execution(format!(
+        "HTTP source auth headers require https or loopback http, got {}://{host}",
+        url.scheme()
+    )))
+}
+
+fn is_loopback_http_url(url: &reqwest::Url) -> bool {
+    url.scheme() == "http"
+        && url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
 }
 
 fn get_custom_authenticator<'a>(
@@ -146,4 +172,85 @@ fn get_custom_authenticator<'a>(
 
 fn authenticator_error(name: &str, error: &crate::RequestAuthenticatorError) -> DataFusionError {
     DataFusionError::Execution(format!("custom authenticator '{name}' failed: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use coral_spec::{HeaderSpec, ParsedTemplate, ValueSourceSpec};
+
+    fn bearer_auth() -> AuthSpec {
+        AuthSpec::HeaderAuth(HeaderAuthSpec {
+            headers: vec![HeaderSpec {
+                name: "Authorization".to_string(),
+                value: ValueSourceSpec::Template {
+                    template: ParsedTemplate::parse("Bearer {{input.API_TOKEN}}")
+                        .expect("auth template"),
+                },
+            }],
+        })
+    }
+
+    #[test]
+    fn source_auth_rejects_non_https_non_loopback_provider_url() {
+        let http = reqwest::Client::new();
+        let request = http.get("http://api.example.test/items");
+        let resolved_inputs = BTreeMap::from([("API_TOKEN".to_string(), "secret".to_string())]);
+
+        let error = resolve_auth_headers(
+            &bearer_auth(),
+            request,
+            &HashMap::new(),
+            &resolved_inputs,
+            true,
+        )
+        .expect_err("non-https non-loopback auth request should fail");
+
+        assert!(
+            error.to_string().contains("require https"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn source_auth_allows_loopback_http_provider_url() {
+        let http = reqwest::Client::new();
+        let request = http.get("http://127.0.0.1:8080/items");
+        let resolved_inputs = BTreeMap::from([("API_TOKEN".to_string(), "secret".to_string())]);
+
+        let built = resolve_auth_headers(
+            &bearer_auth(),
+            request,
+            &HashMap::new(),
+            &resolved_inputs,
+            true,
+        )
+        .expect("loopback http auth should be allowed");
+
+        assert_eq!(
+            built.headers().get(reqwest::header::AUTHORIZATION),
+            Some(&HeaderValue::from_static("Bearer secret"))
+        );
+    }
+
+    #[test]
+    fn source_auth_can_skip_transport_guard_for_legacy_sources() {
+        let http = reqwest::Client::new();
+        let request = http.get("http://api.example.test/items");
+        let resolved_inputs = BTreeMap::from([("API_TOKEN".to_string(), "secret".to_string())]);
+
+        let built = resolve_auth_headers(
+            &bearer_auth(),
+            request,
+            &HashMap::new(),
+            &resolved_inputs,
+            false,
+        )
+        .expect("legacy source auth policy should allow existing http behavior");
+
+        assert_eq!(
+            built.headers().get(reqwest::header::AUTHORIZATION),
+            Some(&HeaderValue::from_static("Bearer secret"))
+        );
+    }
 }

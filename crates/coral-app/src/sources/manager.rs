@@ -2273,7 +2273,7 @@ tables:
     }
 
     #[test]
-    fn import_v4_source_requires_dsl_v4_feature() {
+    fn import_v4_source_disabled_feature_does_not_materialize_artifacts() {
         let temp = TempDir::new().expect("temp dir");
         let descriptor_temp = TempDir::new().expect("descriptor temp dir");
         let layout =
@@ -2431,6 +2431,46 @@ tables:
             .get_source_info(&default_workspace(), &source_name)
             .expect("installed v4 source should be usable");
         assert_eq!(info.name.as_str(), "github_v4_test");
+    }
+
+    #[test]
+    fn import_v4_source_requires_dsl_v4_feature() {
+        let temp = TempDir::new().expect("temp dir");
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
+        let manager = SourceManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout.clone(),
+        );
+
+        let error = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_v4_with_file_descriptor(&openapi_file),
+                    bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
+                },
+            )
+            .expect_err("disabled v4 feature should reject import");
+
+        assert!(
+            error.to_string().contains("dsl_v4"),
+            "unexpected error: {error}"
+        );
+        let source_name = SourceName::parse("github_v4_test").expect("source");
+        assert!(
+            !layout
+                .v4_materialized_dir(&default_workspace(), &source_name)
+                .exists(),
+            "disabled v4 import should not materialize artifacts"
+        );
     }
 
     #[test]
