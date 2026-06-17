@@ -23,6 +23,8 @@ use crate::bootstrap::AppError;
 pub(crate) fn runtime_components_for_v4_source(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
+    source_spec_id: &str,
+    runtime_source_name: &str,
 ) -> Result<Vec<RuntimeSourceComponent>, AppError> {
     let mut components = Vec::new();
     for surface in &manifest.surfaces {
@@ -31,7 +33,13 @@ pub(crate) fn runtime_components_for_v4_source(
         }
         match surface.surface_type {
             SurfaceType::OpenApi => {
-                let http_manifest = http_manifest_for_surface(manifest, materialized, &surface.id)?;
+                let http_manifest = http_manifest_for_surface(
+                    manifest,
+                    materialized,
+                    &surface.id,
+                    source_spec_id,
+                    runtime_source_name,
+                )?;
                 let http_component =
                     if let Some(identity_requirements) = surface.identity_requirements.clone() {
                         RuntimeHttpSourceComponent::with_identity_requirements(
@@ -49,6 +57,8 @@ pub(crate) fn runtime_components_for_v4_source(
                     manifest,
                     materialized,
                     &surface.id,
+                    source_spec_id,
+                    runtime_source_name,
                 )?));
             }
         }
@@ -71,6 +81,8 @@ fn http_manifest_for_surface(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
     surface_id: &str,
+    source_spec_id: &str,
+    runtime_source_name: &str,
 ) -> Result<HttpSourceManifest, AppError> {
     let surface = manifest.surface(surface_id).ok_or_else(|| {
         AppError::FailedPrecondition(format!("DSL v4 manifest is missing surface '{surface_id}'"))
@@ -154,13 +166,12 @@ fn http_manifest_for_surface(
         }
     }
     Ok(HttpSourceManifest {
-        common: SourceManifestCommon {
-            dsl_version: manifest.common.dsl_version,
-            name: surface.relation_namespace.clone(),
-            version: String::new(),
-            description: manifest.common.description.clone(),
-            test_queries: Vec::new(),
-        },
+        common: runtime_source_common(
+            manifest,
+            &surface.relation_namespace,
+            source_spec_id,
+            runtime_source_name,
+        ),
         base_url: surface_base_url(manifest, surface, materialized_surface)?,
         auth: openapi_runtime.auth.clone(),
         request_headers: openapi_runtime.request_headers.clone(),
@@ -187,6 +198,8 @@ fn mcp_manifest_for_surface(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
     surface_id: &str,
+    source_spec_id: &str,
+    runtime_source_name: &str,
 ) -> Result<McpSourceManifest, AppError> {
     let surface = manifest.surface(surface_id).ok_or_else(|| {
         AppError::FailedPrecondition(format!("DSL v4 manifest is missing surface '{surface_id}'"))
@@ -251,18 +264,52 @@ fn mcp_manifest_for_surface(
         }
     }
     Ok(McpSourceManifest {
-        common: SourceManifestCommon {
-            dsl_version: manifest.common.dsl_version,
-            name: surface.relation_namespace.clone(),
-            version: String::new(),
-            description: manifest.common.description.clone(),
-            test_queries: Vec::new(),
-        },
+        common: runtime_source_common(
+            manifest,
+            &surface.relation_namespace,
+            source_spec_id,
+            runtime_source_name,
+        ),
         server: mcp_runtime.server.clone(),
         functions,
         tables,
         declared_inputs: manifest.declared_inputs.clone(),
     })
+}
+
+fn runtime_source_common(
+    manifest: &V4SourceManifest,
+    authored_namespace: &str,
+    source_spec_id: &str,
+    runtime_source_name: &str,
+) -> SourceManifestCommon {
+    SourceManifestCommon {
+        dsl_version: manifest.common.dsl_version,
+        name: runtime_relation_namespace(authored_namespace, source_spec_id, runtime_source_name),
+        version: String::new(),
+        description: manifest.common.description.clone(),
+        test_queries: Vec::new(),
+    }
+}
+
+pub(crate) fn runtime_relation_namespace(
+    authored_namespace: &str,
+    source_spec_id: &str,
+    runtime_source_name: &str,
+) -> String {
+    if source_spec_id == runtime_source_name {
+        return authored_namespace.to_string();
+    }
+    if authored_namespace == source_spec_id {
+        return runtime_source_name.to_string();
+    }
+    let source_spec_prefix = format!("{source_spec_id}_");
+    authored_namespace
+        .strip_prefix(&source_spec_prefix)
+        .map_or_else(
+            || authored_namespace.to_string(),
+            |suffix| format!("{runtime_source_name}_{suffix}"),
+        )
 }
 
 fn mcp_table_spec(
@@ -611,7 +658,8 @@ mod tests {
         };
 
         let components =
-            runtime_components_for_v4_source(&manifest, &materialized).expect("runtime components");
+            runtime_components_for_v4_source(&manifest, &materialized, "github_v4", "github_v4")
+                .expect("runtime components");
         let schema_names = components
             .iter()
             .map(coral_engine::RuntimeSourceComponent::source_name)
@@ -668,7 +716,8 @@ mod tests {
         };
 
         let components =
-            runtime_components_for_v4_source(&manifest, &materialized).expect("runtime components");
+            runtime_components_for_v4_source(&manifest, &materialized, "github_v4", "github_v4")
+                .expect("runtime components");
         let coral_engine::RuntimeSourceComponent::Mcp(mcp) =
             components.first().expect("mcp component")
         else {
@@ -733,7 +782,8 @@ mod tests {
         };
 
         let components =
-            runtime_components_for_v4_source(&manifest, &materialized).expect("runtime components");
+            runtime_components_for_v4_source(&manifest, &materialized, "github_v4", "github_v4")
+                .expect("runtime components");
         let coral_engine::RuntimeSourceComponent::Mcp(mcp) =
             components.first().expect("mcp component")
         else {

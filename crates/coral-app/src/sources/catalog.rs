@@ -66,7 +66,10 @@ pub(crate) fn resolve_installed_manifest(
     artifacts: &dyn SourceArtifactStore,
 ) -> Result<InstalledSourceManifest, AppError> {
     let manifest_yaml = match source.origin {
-        SourceOrigin::Bundled => load_bundled_source(&source.name)?.manifest_yaml,
+        SourceOrigin::Bundled => {
+            let source_spec_id = SourceName::parse(source.source_spec_id())?;
+            load_bundled_source(&source_spec_id)?.manifest_yaml
+        }
         SourceOrigin::Imported => artifacts
             .read_manifest_artifact(workspace_name.as_str(), source.name.as_str())?
             .ok_or_else(|| {
@@ -82,12 +85,15 @@ pub(crate) fn resolve_installed_manifest(
     let source_spec = parse_source_manifest_yaml(&manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
     let mut candidate = candidate_from_manifest(&source_spec, source.origin, false)?;
-    if candidate.name != source.name {
+    if candidate.name.as_str() != source.source_spec_id() {
         return Err(AppError::FailedPrecondition(format!(
-            "installed source '{}' does not match manifest name '{}'",
-            source.name, candidate.name
+            "installed source '{}' references source spec '{}' but manifest declares '{}'",
+            source.name,
+            source.source_spec_id(),
+            candidate.name
         )));
     }
+    candidate.name = source.name.clone();
     candidate.installed = true;
     candidate.credential_storage = Some(source.effective_credential_storage());
     Ok(InstalledSourceManifest {

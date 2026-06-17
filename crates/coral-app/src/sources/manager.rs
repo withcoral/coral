@@ -33,6 +33,7 @@ use crate::sources::materialization::{
     canonicalize_file_descriptor, cleanup_materialization_tmp, new_materialization_suffix,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+use crate::sources::runtime_package::runtime_relation_namespace;
 use crate::state::AppStateLayout;
 #[cfg(test)]
 use crate::state::ConfigStore;
@@ -160,6 +161,7 @@ struct PersistSourceRequest<'a> {
     manifest_yaml: Option<&'a str>,
     bindings: ValidatedBindings,
     identity_bindings: BTreeMap<String, SourceIdentityBinding>,
+    source_spec_id: &'a SourceName,
     origin: SourceOrigin,
     credential_storage: Option<CredentialStorageKind>,
     materialization_tmp: Option<PathBuf>,
@@ -391,6 +393,7 @@ impl SourceManager {
             &candidate,
             &command.bindings,
             BTreeMap::new(),
+            &candidate.name,
             None,
             &bundled.manifest_yaml,
             SourceOrigin::Bundled,
@@ -412,6 +415,7 @@ impl SourceManager {
             command.oauth_credential_retrievals,
             events,
             BTreeMap::new(),
+            &candidate.name,
             None,
             &bundled.manifest_yaml,
             SourceOrigin::Bundled,
@@ -424,11 +428,44 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         command: &ImportSourceCommand,
     ) -> Result<InstalledSource, AppError> {
+        self.import_source_with_names(workspace_name, command, None, None)
+    }
+
+    pub(crate) fn import_source_as(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        source_spec_id: &SourceName,
+        command: &ImportSourceCommand,
+    ) -> Result<InstalledSource, AppError> {
+        self.import_source_with_names(
+            workspace_name,
+            command,
+            Some(source_name),
+            Some(source_spec_id),
+        )
+    }
+
+    fn import_source_with_names(
+        &self,
+        workspace_name: &WorkspaceName,
+        command: &ImportSourceCommand,
+        installed_source_name: Option<&SourceName>,
+        expected_source_spec_id: Option<&SourceName>,
+    ) -> Result<InstalledSource, AppError> {
         let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         self.ensure_dsl_v4_enabled_for_manifest(&manifest)?;
         let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
+        let source_spec_id = expected_source_spec_id
+            .cloned()
+            .unwrap_or_else(|| candidate.name.clone());
+        ensure_manifest_source_spec_matches(&manifest, &source_spec_id)?;
+        if let Some(source_name) = installed_source_name {
+            ensure_source_alias_supported(&manifest, source_name, &source_spec_id)?;
+            candidate.name = source_name.clone();
+        }
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         let identity_bindings = self.effective_source_identity_bindings(
             workspace_name,
@@ -442,6 +479,7 @@ impl SourceManager {
             &candidate,
             &command.bindings,
             identity_bindings,
+            &source_spec_id,
             Some(&manifest_yaml),
             &manifest_yaml,
             SourceOrigin::Imported,
@@ -459,6 +497,7 @@ impl SourceManager {
         self.ensure_dsl_v4_enabled_for_manifest(&manifest)?;
         let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
+        let source_spec_id = candidate.name.clone();
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         let identity_bindings = self.effective_source_identity_bindings(
             workspace_name,
@@ -474,6 +513,7 @@ impl SourceManager {
             command.oauth_credential_retrievals,
             events,
             identity_bindings,
+            &source_spec_id,
             Some(&manifest_yaml),
             &manifest_yaml,
             SourceOrigin::Imported,
@@ -495,6 +535,7 @@ impl SourceManager {
         candidate: &CandidateSource,
         bindings: &SourceBindings,
         identity_bindings: BTreeMap<String, SourceIdentityBinding>,
+        source_spec_id: &SourceName,
         manifest_yaml: Option<&str>,
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
@@ -503,6 +544,7 @@ impl SourceManager {
         self.validate_runtime_schema_names_available(
             workspace_name,
             &candidate.name,
+            source_spec_id,
             materialization_manifest_yaml,
         )?;
         let stored_material = self.source_stored_material_for_validation(
@@ -527,6 +569,7 @@ impl SourceManager {
                 manifest_yaml,
                 bindings,
                 identity_bindings,
+                source_spec_id,
                 origin,
                 credential_storage,
                 materialization_tmp: self
@@ -559,6 +602,7 @@ impl SourceManager {
         oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
         events: ImportSourceEventSender,
         identity_bindings: BTreeMap<String, SourceIdentityBinding>,
+        source_spec_id: &SourceName,
         manifest_yaml: Option<&str>,
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
@@ -567,6 +611,7 @@ impl SourceManager {
         self.validate_runtime_schema_names_available(
             workspace_name,
             &candidate.name,
+            source_spec_id,
             materialization_manifest_yaml,
         )?;
         let oauth_input_keys = oauth_credential_retrievals
@@ -605,6 +650,7 @@ impl SourceManager {
                 manifest_yaml,
                 bindings,
                 identity_bindings,
+                source_spec_id,
                 origin,
                 credential_storage,
                 materialization_tmp: self
@@ -879,6 +925,8 @@ impl SourceManager {
         };
         let stored = InstalledSource {
             name: source_name.clone(),
+            source_spec_id: (request.source_spec_id.as_str() != source_name.as_str())
+                .then(|| request.source_spec_id.as_str().to_string()),
             version: persisted_version,
             variables,
             secrets: visible_secret_keys,
@@ -975,11 +1023,13 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
         candidate_name: &SourceName,
+        source_spec_id: &SourceName,
         manifest_yaml: &str,
     ) -> Result<(), AppError> {
         let candidate_manifest = parse_source_manifest_yaml(manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        let candidate_schema_names = runtime_schema_names(&candidate_manifest);
+        let candidate_schema_names =
+            runtime_schema_names(&candidate_manifest, source_spec_id, candidate_name);
         for installed in self.list_registry_sources(workspace_name)? {
             if installed.name == *candidate_name {
                 continue;
@@ -989,7 +1039,18 @@ impl SourceManager {
                 &installed,
                 self.artifact_store.as_ref(),
             )?;
-            let installed_schema_names = runtime_schema_names(&installed_manifest.source_spec);
+            let installed_source_spec_id =
+                SourceName::parse(installed.source_spec_id()).map_err(|error| {
+                    AppError::InvalidInput(format!(
+                        "source '{}' has invalid source spec id: {error}",
+                        installed.name
+                    ))
+                })?;
+            let installed_schema_names = runtime_schema_names(
+                &installed_manifest.source_spec,
+                &installed_source_spec_id,
+                &installed.name,
+            );
             if let Some(schema_name) = candidate_schema_names
                 .intersection(&installed_schema_names)
                 .next()
@@ -1485,6 +1546,35 @@ fn validate_import_identity_bindings(
     Ok(())
 }
 
+fn ensure_manifest_source_spec_matches(
+    manifest: &ValidatedSourceManifest,
+    source_spec_id: &SourceName,
+) -> Result<(), AppError> {
+    if manifest.schema_name() == source_spec_id.as_str() {
+        return Ok(());
+    }
+    Err(AppError::InvalidInput(format!(
+        "source spec id '{source_spec_id}' does not match manifest name '{}'",
+        manifest.schema_name()
+    )))
+}
+
+fn ensure_source_alias_supported(
+    manifest: &ValidatedSourceManifest,
+    source_name: &SourceName,
+    source_spec_id: &SourceName,
+) -> Result<(), AppError> {
+    if source_name == source_spec_id {
+        return Ok(());
+    }
+    if manifest.as_v4().is_some() {
+        return Ok(());
+    }
+    Err(AppError::InvalidInput(format!(
+        "source alias '{source_name}' for source spec '{source_spec_id}' requires DSL v4"
+    )))
+}
+
 fn source_needs_stored_material_for_validation(
     candidate: &CandidateSource,
     bindings: &SourceBindings,
@@ -1646,12 +1736,22 @@ fn normalize_binding_key(label: &str, value: &str) -> Result<String, AppError> {
     Ok(trimmed.to_string())
 }
 
-fn runtime_schema_names(manifest: &ValidatedSourceManifest) -> BTreeSet<String> {
+fn runtime_schema_names(
+    manifest: &ValidatedSourceManifest,
+    source_spec_id: &SourceName,
+    runtime_source_name: &SourceName,
+) -> BTreeSet<String> {
     if let Some(v4) = manifest.as_v4() {
         return v4
             .surfaces
             .iter()
-            .map(|surface| surface.relation_namespace.clone())
+            .map(|surface| {
+                runtime_relation_namespace(
+                    &surface.relation_namespace,
+                    source_spec_id.as_str(),
+                    runtime_source_name.as_str(),
+                )
+            })
             .collect();
     }
     BTreeSet::from([manifest.schema_name().to_string()])
@@ -2214,6 +2314,7 @@ tables:
                 &default_workspace(),
                 InstalledSource {
                     name: candidate.name.clone(),
+                    source_spec_id: None,
                     version: None,
                     variables: BTreeMap::new(),
                     secrets: vec!["OTHER_TOKEN".to_string()],
@@ -2431,6 +2532,92 @@ tables:
             .get_source_info(&default_workspace(), &source_name)
             .expect("installed v4 source should be usable");
         assert_eq!(info.name.as_str(), "github_v4_test");
+    }
+
+    #[test]
+    fn import_v4_source_can_install_under_alias() {
+        let temp = TempDir::new().expect("temp dir");
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager = SourceManager::new_with_features(
+            config_store,
+            credential_manager,
+            layout.clone(),
+            dsl_v4_features(),
+        );
+        let source_name = SourceName::parse("github_alias").expect("source alias");
+        let source_spec_id = SourceName::parse("github_v4_test").expect("source spec");
+
+        let installed = manager
+            .import_source_as(
+                &default_workspace(),
+                &source_name,
+                &source_spec_id,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_v4_with_file_descriptor(&openapi_file),
+                    bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
+                },
+            )
+            .expect("import v4 source under alias");
+
+        assert_eq!(installed.name.as_str(), "github_alias");
+        assert_eq!(installed.source_spec_id.as_deref(), Some("github_v4_test"));
+        assert!(
+            layout
+                .v4_materialized_dir(&default_workspace(), &source_name)
+                .join("fingerprint.yaml")
+                .exists()
+        );
+        let stored = manager
+            .get_source(&default_workspace(), &source_name)
+            .expect("stored source");
+        assert_eq!(stored.source_spec_id.as_deref(), Some("github_v4_test"));
+        let stored_manifest =
+            std::fs::read_to_string(layout.manifest_file(&default_workspace(), &source_name))
+                .expect("stored manifest");
+        assert!(
+            stored_manifest.contains("name: github_v4_test"),
+            "stored manifest should preserve authored source-spec id: {stored_manifest}"
+        );
+    }
+
+    #[test]
+    fn import_source_rejects_alias_for_non_v4_manifest() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager =
+            SourceManager::new(ConfigStore::new(layout.clone()), credential_manager, layout);
+        let source_name = SourceName::parse("public_alias").expect("source alias");
+        let source_spec_id = SourceName::parse("public_messages").expect("source spec");
+
+        let error = manager
+            .import_source_as(
+                &default_workspace(),
+                &source_name,
+                &source_spec_id,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_without_secrets(),
+                    bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
+                },
+            )
+            .expect_err("non-v4 alias should be rejected");
+
+        assert!(
+            error.to_string().contains("requires DSL v4"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

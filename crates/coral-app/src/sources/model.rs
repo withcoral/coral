@@ -26,6 +26,12 @@ pub(crate) struct CandidateSource {
 pub(crate) struct InstalledSource {
     /// Bare installed source name.
     pub(crate) name: SourceName,
+    /// Authored source-spec id declared by the manifest.
+    ///
+    /// When absent, the installed source name is also the source-spec id. This
+    /// preserves older local config records and bundled sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source_spec_id: Option<String>,
     /// Persisted manifest version when it should live in app state.
     ///
     /// Bundled sources resolve their manifest directly from the compiled-in
@@ -52,6 +58,12 @@ pub(crate) struct InstalledSource {
 }
 
 impl InstalledSource {
+    pub(crate) fn source_spec_id(&self) -> &str {
+        self.source_spec_id
+            .as_deref()
+            .unwrap_or_else(|| self.name.as_str())
+    }
+
     pub(crate) fn effective_credential_storage(&self) -> CredentialStorageKind {
         self.credential_storage
             .unwrap_or(CredentialStorageKind::File)

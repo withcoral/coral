@@ -173,6 +173,8 @@ struct PersistedWorkspaceConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedInstalledSource {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_spec_id: Option<String>,
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
@@ -189,8 +191,13 @@ struct PersistedInstalledSource {
 impl PersistedInstalledSource {
     fn into_installed_source(self, source_name: SourceName) -> Result<InstalledSource, AppError> {
         validate_identity_bindings(source_name.as_str(), &self.identity_bindings)?;
+        let source_spec_id = self
+            .source_spec_id
+            .map(|id| SourceName::parse(&id).map(|parsed| parsed.as_str().to_string()))
+            .transpose()?;
         Ok(InstalledSource {
             name: source_name,
+            source_spec_id,
             version: self.version,
             variables: self.variables,
             secrets: self.secrets,
@@ -204,6 +211,7 @@ impl PersistedInstalledSource {
 impl From<&InstalledSource> for PersistedInstalledSource {
     fn from(value: &InstalledSource) -> Self {
         Self {
+            source_spec_id: value.source_spec_id.clone(),
             version: value.version.clone(),
             variables: value.variables.clone(),
             secrets: value.secrets.clone(),
@@ -546,6 +554,14 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
                     .as_table_mut()
                     .expect("source config entry should be a table after initialization");
                 source_table.remove("version");
+            }
+            if let Some(source_spec_id) = &source.source_spec_id {
+                source_item["source_spec_id"] = value(source_spec_id.clone());
+            } else {
+                let source_table = source_item
+                    .as_table_mut()
+                    .expect("source config entry should be a table after initialization");
+                source_table.remove("source_spec_id");
             }
             source_item["variables"] = Item::Value(render_inline_table(&source.variables));
             source_item["secrets"] = Item::Value(render_string_array(&source.secrets));
@@ -893,6 +909,7 @@ mod tests {
     fn installed_source(name: &str) -> InstalledSource {
         InstalledSource {
             name: SourceName::parse(name).expect("source"),
+            source_spec_id: None,
             version: Some("1.1.4".to_string()),
             variables: BTreeMap::from([(
                 "GITHUB_API_BASE".to_string(),
@@ -981,6 +998,30 @@ mod tests {
         let raw = render_config(&PersistedAppConfig::from(&config), None);
         assert!(!raw.contains("version = \"\""));
         assert!(!raw.contains("version = \""));
+    }
+
+    #[test]
+    fn renders_and_loads_source_spec_id_for_aliased_sources() {
+        let workspace_name = default_workspace();
+        let mut source = installed_source("github");
+        source.source_spec_id = Some("github_v4".to_string());
+        let mut catalog = SourceCatalog::default();
+        catalog.upsert_source(&workspace_name, source);
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            catalog,
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+        assert!(raw.contains("source_spec_id = \"github_v4\""));
+
+        let loaded = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(&raw).expect("rendered config should parse"),
+        )
+        .expect("config");
+        let sources = loaded.catalog.workspace_sources(&workspace_name);
+        assert_eq!(sources[0].source_spec_id.as_deref(), Some("github_v4"));
     }
 
     #[test]

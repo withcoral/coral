@@ -8,6 +8,7 @@ use crate::sources::SourceName;
 use crate::sources::manager::{
     ImportSourceCommand as ManagerImportSourceCommand, SourceBinding, SourceBindings, SourceManager,
 };
+use crate::sources::model::InstalledSource;
 use crate::workspaces::WorkspaceName;
 
 /// Source import command accepted by [`SourceManagementHandle`].
@@ -53,26 +54,37 @@ impl SourceManagementHandle {
         command: ImportManagedSourceCommand,
     ) -> Result<ManagedSource, AppError> {
         let workspace_name = WorkspaceName::parse(workspace_id)?;
-        let installed = self.sources.import_source(
+        let installed = self
+            .sources
+            .import_source(&workspace_name, &manager_import_command(command))?;
+        Ok(managed_source_from_installed(installed))
+    }
+
+    /// Imports a source under a workspace-local name while preserving the
+    /// authored source-spec id declared by the manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the workspace/source input is invalid, when
+    /// the manifest name does not match `source_spec_id`, or when source
+    /// installation fails.
+    pub fn import_source_as(
+        &self,
+        workspace_id: &str,
+        source_name: &str,
+        source_spec_id: &str,
+        command: ImportManagedSourceCommand,
+    ) -> Result<ManagedSource, AppError> {
+        let workspace_name = WorkspaceName::parse(workspace_id)?;
+        let source_name = SourceName::parse(source_name)?;
+        let source_spec_id = SourceName::parse(source_spec_id)?;
+        let installed = self.sources.import_source_as(
             &workspace_name,
-            &ManagerImportSourceCommand {
-                manifest_yaml: command.manifest_yaml,
-                bindings: SourceBindings {
-                    variables: command
-                        .variables
-                        .into_iter()
-                        .map(|(key, value)| SourceBinding { key, value })
-                        .collect(),
-                    secrets: Vec::new(),
-                },
-                identity_bindings: command.identity_bindings,
-                replace_identity_bindings: command.replace_identity_bindings,
-            },
+            &source_name,
+            &source_spec_id,
+            &manager_import_command(command),
         )?;
-        Ok(ManagedSource {
-            name: installed.name.as_str().to_string(),
-            version: installed.version,
-        })
+        Ok(managed_source_from_installed(installed))
     }
 
     /// Deletes a source from a workspace using the shared source lifecycle.
@@ -93,6 +105,29 @@ impl SourceManagementHandle {
             name: removed.name.as_str().to_string(),
             version: removed.version,
         })
+    }
+}
+
+fn manager_import_command(command: ImportManagedSourceCommand) -> ManagerImportSourceCommand {
+    ManagerImportSourceCommand {
+        manifest_yaml: command.manifest_yaml,
+        bindings: SourceBindings {
+            variables: command
+                .variables
+                .into_iter()
+                .map(|(key, value)| SourceBinding { key, value })
+                .collect(),
+            secrets: Vec::new(),
+        },
+        identity_bindings: command.identity_bindings,
+        replace_identity_bindings: command.replace_identity_bindings,
+    }
+}
+
+fn managed_source_from_installed(installed: InstalledSource) -> ManagedSource {
+    ManagedSource {
+        name: installed.name.as_str().to_string(),
+        version: installed.version,
     }
 }
 

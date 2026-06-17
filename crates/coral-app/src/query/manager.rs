@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -14,8 +15,13 @@ use coral_engine::{
     RuntimeIdentityRequirements, RuntimeSourceComponent, RuntimeSourcePackage,
     SelectedRequestIdentity, SourceValidationReport, StatusCode, TableInfo,
 };
-use coral_spec::{ManifestInputKind, ManifestInputSpec};
+use coral_spec::{ManifestInputKind, ManifestInputSpec, ValidatedSourceManifest};
 use opentelemetry::trace::Status as OtelStatus;
+use sqlparser::ast::{
+    ObjectName as SqlObjectName, ObjectNamePart as SqlObjectNamePart, visit_relations_mut,
+};
+use sqlparser::dialect::GenericDialect;
+use sqlparser::parser::Parser;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
@@ -40,7 +46,9 @@ use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::incompatible_materialization_error;
 use crate::sources::model::InstalledSource;
-use crate::sources::runtime_package::runtime_components_for_v4_source;
+use crate::sources::runtime_package::{
+    runtime_components_for_v4_source, runtime_relation_namespace,
+};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
@@ -345,6 +353,9 @@ impl QueryManager {
         let loaded_source = self
             .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
+        let validation_test_queries = self
+            .source_validation_test_queries(workspace_name, &source)
+            .map_err(QueryManagerError::App)?;
         self.validate_source_identity_bindings(workspace_name, context.principal(), &loaded_source)
             .await
             .map_err(QueryManagerError::App)?;
@@ -362,7 +373,7 @@ impl QueryManager {
         let report = CoralQuery::validate_source(
             &loaded_source.query_source,
             runtime,
-            loaded_source.query_source.test_queries(),
+            &validation_test_queries,
         )
         .await
         .map_err(QueryManagerError::Core)?;
@@ -423,7 +434,13 @@ impl QueryManager {
                 v4,
             )?;
             Some(
-                runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
+                runtime_components_for_v4_source(
+                    v4,
+                    &materialized,
+                    source.source_spec_id(),
+                    source.name.as_str(),
+                )
+                .map_err(|error| {
                     incompatible_materialization_error(
                         &source.name,
                         format!("failed to assemble runtime package: {error}"),
@@ -431,6 +448,13 @@ impl QueryManager {
                 })?,
             )
         } else {
+            if source.name.as_str() != source_spec.schema_name() {
+                return Err(AppError::FailedPrecondition(format!(
+                    "installed source alias '{}' for source spec '{}' requires DSL v4",
+                    source.name,
+                    source_spec.schema_name()
+                )));
+            }
             None
         };
         validate_required_variables(source, source_spec.declared_inputs())?;
@@ -470,7 +494,7 @@ impl QueryManager {
         let query_source = if let Some(components) = v4_runtime_components {
             QuerySource::from_runtime_components(
                 RuntimeSourcePackage {
-                    source_name: source_spec.schema_name().to_string(),
+                    source_name: source.name.as_str().to_string(),
                     authored_version: source_spec.source_version().map(ToString::to_string),
                     description: source_spec.description().to_string(),
                     declared_inputs: source_spec.declared_inputs().to_vec(),
@@ -489,6 +513,16 @@ impl QueryManager {
             version: installed.candidate.version,
             identity_bindings: source.identity_bindings.clone(),
         })
+    }
+
+    fn source_validation_test_queries(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) -> Result<Vec<String>, AppError> {
+        let installed =
+            resolve_installed_manifest(workspace_name, source, self.artifact_store.as_ref())?;
+        validation_test_queries(&installed.source_spec, source)
     }
 
     fn request_identity_selector_and_factory(
@@ -612,6 +646,80 @@ fn identity_binding_snapshot_for_sources(
             )
         })
         .collect()
+}
+
+fn validation_test_queries(
+    source_spec: &ValidatedSourceManifest,
+    source: &InstalledSource,
+) -> Result<Vec<String>, AppError> {
+    let Some(v4) = source_spec.as_v4() else {
+        return Ok(source_spec.test_queries().to_vec());
+    };
+    if source.source_spec_id() == source.name.as_str() {
+        return Ok(source_spec.test_queries().to_vec());
+    }
+    let namespace_map = v4
+        .surfaces
+        .iter()
+        .map(|surface| {
+            (
+                surface.relation_namespace.clone(),
+                runtime_relation_namespace(
+                    &surface.relation_namespace,
+                    source.source_spec_id(),
+                    source.name.as_str(),
+                ),
+            )
+        })
+        .filter(|(authored, runtime)| authored != runtime)
+        .collect::<BTreeMap<_, _>>();
+    source_spec
+        .test_queries()
+        .iter()
+        .map(|sql| rewrite_query_namespaces(sql, &namespace_map))
+        .collect()
+}
+
+fn rewrite_query_namespaces(
+    sql: &str,
+    namespace_map: &BTreeMap<String, String>,
+) -> Result<String, AppError> {
+    if namespace_map.is_empty() {
+        return Ok(sql.to_string());
+    }
+    let dialect = GenericDialect;
+    let mut statements = Parser::parse_sql(&dialect, sql).map_err(|error| {
+        AppError::InvalidInput(format!("source test query is invalid: {error}"))
+    })?;
+    match visit_relations_mut(&mut statements, |relation| {
+        rewrite_relation_namespace(relation, namespace_map);
+        ControlFlow::<()>::Continue(())
+    }) {
+        ControlFlow::Continue(()) => {}
+        ControlFlow::Break(()) => unreachable!("query namespace rewrite never breaks traversal"),
+    }
+    Ok(statements
+        .into_iter()
+        .map(|statement| statement.to_string())
+        .collect::<Vec<_>>()
+        .join("; "))
+}
+
+fn rewrite_relation_namespace(
+    relation: &mut SqlObjectName,
+    namespace_map: &BTreeMap<String, String>,
+) {
+    if relation.0.len() < 2 {
+        return;
+    }
+    let namespace_index = relation.0.len() - 2;
+    let Some(SqlObjectNamePart::Identifier(namespace)) = relation.0.get_mut(namespace_index) else {
+        return;
+    };
+    let Some(runtime_namespace) = namespace_map.get(&namespace.value) else {
+        return;
+    };
+    namespace.value.clone_from(runtime_namespace);
 }
 
 #[derive(Clone)]
@@ -1316,6 +1424,33 @@ mod tests {
         serde_json::from_slice(&bytes).expect("json rows should decode")
     }
 
+    fn issues_openapi_fixture(server_uri: impl std::fmt::Display) -> String {
+        format!(
+            r"
+openapi: 3.0.3
+info:
+  title: GitHub
+servers:
+  - url: {server_uri}
+paths:
+  /issues:
+    get:
+      operationId: issues/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {{type: integer}}
+                    title: {{type: string}}
+"
+        )
+    }
+
     #[test]
     fn runtime_config_preserves_app_owned_body_capture_max_bytes() {
         let fixture = query_manager_with(
@@ -1594,6 +1729,7 @@ tables:
         .expect("write manifest");
         let source = InstalledSource {
             name: source_name.clone(),
+            source_spec_id: None,
             version: Some("0.1.0".to_string()),
             variables: BTreeMap::new(),
             secrets: vec!["API_KEY".to_string(), "OAUTH_TOKEN".to_string()],
@@ -1725,6 +1861,213 @@ surfaces:
         );
     }
 
+    #[tokio::test]
+    async fn aliased_v4_source_queries_and_validates_through_installed_source_name() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/issues"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"id": 7, "title": "Aliased runtime package"}
+            ])))
+            .mount(&server)
+            .await;
+
+        let fixture = query_manager_with_features(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            dsl_v4_features(),
+        );
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let source_manager = SourceManager::new_with_features(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+            dsl_v4_features(),
+        );
+        let workspace_name = WorkspaceName::default();
+        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+        std::fs::write(
+            &openapi_file,
+            format!(
+                r"
+openapi: 3.0.3
+info:
+  title: GitHub
+servers:
+  - url: {}
+paths:
+  /issues:
+    get:
+      operationId: issues/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {{type: integer}}
+                    title: {{type: string}}
+",
+                server.uri()
+            ),
+        )
+        .expect("write OpenAPI fixture");
+        let source_name = SourceName::parse("github_alias").expect("source alias");
+        let source_spec_id = SourceName::parse("github_v4_query").expect("source spec");
+        source_manager
+            .import_source_as(
+                &workspace_name,
+                &source_name,
+                &source_spec_id,
+                &ImportSourceCommand {
+                    manifest_yaml: format!(
+                        r"
+name: github_v4_query
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+test_queries:
+  - SELECT id, title FROM github_v4_query.issues
+",
+                        openapi_file.display()
+                    ),
+                    bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
+                },
+            )
+            .expect("import v4 source alias");
+
+        fixture
+            .manager
+            .validate_source(&workspace_name, &UserPrincipal::local(), &source_name)
+            .await
+            .expect("authored validation query is rewritten to installed alias");
+        let execution = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                "SELECT id, title FROM github_alias.issues",
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("query executes through installed alias");
+
+        assert_eq!(
+            execution_to_rows(&execution),
+            vec![json!({"id": 7, "title": "Aliased runtime package"})]
+        );
+    }
+
+    #[tokio::test]
+    async fn aliased_v4_source_runtime_load_keeps_authored_test_queries_unparsed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/issues"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"id": 9, "title": "Runtime ignores invalid validation SQL"}
+            ])))
+            .mount(&server)
+            .await;
+
+        let fixture = query_manager_with_features(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            dsl_v4_features(),
+        );
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let source_manager = SourceManager::new_with_features(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+            dsl_v4_features(),
+        );
+        let workspace_name = WorkspaceName::default();
+        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+        std::fs::write(&openapi_file, issues_openapi_fixture(server.uri()))
+            .expect("write OpenAPI fixture");
+        let source_name = SourceName::parse("github_alias").expect("source alias");
+        let source_spec_id = SourceName::parse("github_v4_query").expect("source spec");
+        source_manager
+            .import_source_as(
+                &workspace_name,
+                &source_name,
+                &source_spec_id,
+                &ImportSourceCommand {
+                    manifest_yaml: format!(
+                        r"
+name: github_v4_query
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+test_queries:
+  - SELECT * FROM github_v4_query.issues WHERE
+",
+                        openapi_file.display()
+                    ),
+                    bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
+                },
+            )
+            .expect("import v4 source alias");
+
+        let execution = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                "SELECT id, title FROM github_alias.issues",
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("query executes without parsing validation SQL during runtime load");
+        assert_eq!(
+            execution_to_rows(&execution),
+            vec![json!({"id": 9, "title": "Runtime ignores invalid validation SQL"})]
+        );
+
+        let validation_result = fixture
+            .manager
+            .validate_source(&workspace_name, &UserPrincipal::local(), &source_name)
+            .await;
+        assert!(
+            validation_result.is_err(),
+            "validation should parse and reject invalid validation SQL"
+        );
+    }
+
+    #[test]
+    fn rewrite_query_namespaces_updates_relations_without_touching_literals() {
+        let namespace_map = BTreeMap::from([
+            ("github_v4".to_string(), "github".to_string()),
+            ("github_v4_mcp".to_string(), "github_mcp".to_string()),
+        ]);
+
+        let rewritten_table = rewrite_query_namespaces(
+            "SELECT id FROM github_v4.issues WHERE note = 'github_v4.issues'",
+            &namespace_map,
+        )
+        .expect("rewrite table query");
+        assert!(rewritten_table.contains("FROM github.issues"));
+        assert!(rewritten_table.contains("'github_v4.issues'"));
+
+        let rewritten_function = rewrite_query_namespaces(
+            "SELECT result FROM github_v4_mcp.list_pull_requests('withcoral')",
+            &namespace_map,
+        )
+        .expect("rewrite table function query");
+        assert!(rewritten_function.contains("github_mcp.list_pull_requests"));
+    }
+
     #[test]
     fn load_query_source_rejects_v4_when_dsl_v4_feature_is_disabled() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
@@ -1751,6 +2094,7 @@ surfaces:
         .expect("write manifest");
         let source = InstalledSource {
             name: source_name,
+            source_spec_id: None,
             version: None,
             variables: BTreeMap::new(),
             secrets: Vec::new(),
@@ -1820,6 +2164,7 @@ surfaces:
                 &workspace_name,
                 InstalledSource {
                     name: source_name.clone(),
+                    source_spec_id: None,
                     version: None,
                     variables: BTreeMap::new(),
                     secrets: Vec::new(),
@@ -1875,6 +2220,7 @@ surfaces:
                 &workspace_name,
                 InstalledSource {
                     name: source_name,
+                    source_spec_id: None,
                     version: None,
                     variables: BTreeMap::new(),
                     secrets: Vec::new(),
@@ -1910,6 +2256,7 @@ surfaces:
                 &workspace_name,
                 InstalledSource {
                     name: source_name,
+                    source_spec_id: None,
                     version: None,
                     variables: BTreeMap::new(),
                     secrets: vec!["GITHUB_TOKEN".to_string()],
@@ -1991,6 +2338,7 @@ surfaces:
     fn installed_api_token_source(source_name: SourceName) -> InstalledSource {
         InstalledSource {
             name: source_name,
+            source_spec_id: None,
             version: None,
             variables: BTreeMap::new(),
             secrets: vec!["API_TOKEN".to_string()],
@@ -2043,7 +2391,10 @@ tables:
             layout.clone(),
             Arc::new(LocalSourceArtifactStore::new(layout)),
             Vec::new(),
-            QueryManagerOptions::default(),
+            QueryManagerOptions {
+                features: Features::default(),
+                source_identity_providers: Vec::new(),
+            },
         )
     }
 
