@@ -74,9 +74,11 @@ pub use coral_engine::{
     RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
     SelectedRequestIdentity,
 };
+pub use credentials::oauth::{OAuthProgressEvent, OAuthProgressEventSender};
 pub use identities::{
-    CreateFixedTokenIdentityCommand, IdentityManagementHandle, IdentityMaterialGuard, IdentityName,
-    IdentityOwner, IdentityRecord, IdentityStore,
+    CreateFixedTokenIdentityCommand, CreateOAuthIdentityCommand, IdentityCredentialInput,
+    IdentityManagementHandle, IdentityMaterialGuard, IdentityName, IdentityOwner, IdentityRecord,
+    IdentityStore,
 };
 pub use identity::{
     IdentityOwnerKind, RuntimeSourceIdentity, SingleUserPrincipalProvider, SourceIdentityBinding,
@@ -93,4 +95,5 @@ pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
 pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
+pub use transport::oauth_operation_response_stream;
 pub use workspaces::DEFAULT_WORKSPACE_ID;

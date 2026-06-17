@@ -1,18 +1,30 @@
 //! Storage seam types and traits for provider identities.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use coral_spec::IdentitySpecType;
+use coral_spec::{
+    IdentityManifest, IdentitySpecConfig, IdentitySpecType, ManifestOAuthCredentialSpec,
+};
 use serde::{Deserialize, Serialize};
 use tracing::info_span;
 
 use crate::bootstrap::AppError;
-use crate::identity::{IdentityOwnerKind, UserPrincipal, parse_path_segment};
+use crate::credentials::oauth::{
+    OAuthClientMaterialPersistence, OAuthCredentialMaterial, OAuthCredentialService,
+    OAuthProgressEventSender, StartOAuthCredentialRequest,
+};
+use crate::identities::runtime::{
+    FIXED_TOKEN_MATERIAL_KEY, IdentityRuntimeServices, OAUTH_ACCESS_TOKEN_MATERIAL_KEY,
+    StoredIdentityRuntimeData,
+};
+use crate::identity::{
+    IdentityOwnerKind, RuntimeSourceIdentity, UserPrincipal, parse_path_segment, unique_input_map,
+};
 use crate::identity_specs::{
     IdentitySpecManager, IdentitySpecRecord, identity_spec_fingerprint, validate_identity_spec_name,
 };
@@ -21,7 +33,6 @@ use crate::storage::env_file::{parse_env_file, render_env_file};
 use crate::storage::fs::{self as storage_fs, FileLock};
 
 const IDENTITY_DOCUMENT_VERSION: u32 = 1;
-const FIXED_TOKEN_MATERIAL_KEY: &str = "TOKEN";
 
 /// One stored provider identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,6 +161,17 @@ impl fmt::Display for IdentityOwner {
     }
 }
 
+/// Request to create or replace an OAuth identity.
+#[derive(Debug, Clone)]
+pub struct CreateOAuthIdentityCommand {
+    /// Stable identity name used by source identity bindings.
+    pub name: String,
+    /// Installed OAuth identity spec name.
+    pub identity_spec: String,
+    /// Method-specific OAuth credential inputs.
+    pub credential_inputs: Vec<IdentityCredentialInput>,
+}
+
 /// Request to create or replace a fixed-token identity.
 #[derive(Debug, Clone)]
 pub struct CreateFixedTokenIdentityCommand {
@@ -159,6 +181,16 @@ pub struct CreateFixedTokenIdentityCommand {
     pub identity_spec: String,
     /// Bearer token to store.
     pub token: String,
+}
+
+/// Locked access to credential material for one provider identity.
+/// OAuth method input supplied while creating an identity.
+#[derive(Debug, Clone)]
+pub struct IdentityCredentialInput {
+    /// Input key.
+    pub key: String,
+    /// Input value.
+    pub value: String,
 }
 
 /// Locked access to credential material for one provider identity.
@@ -246,6 +278,7 @@ pub trait IdentityStore: Send + Sync + std::fmt::Debug + 'static {
 #[derive(Debug, Clone)]
 pub(crate) struct IdentityManager {
     identity_specs: IdentitySpecManager,
+    oauth_credential_service: OAuthCredentialService,
     store: Arc<dyn IdentityStore>,
 }
 
@@ -259,6 +292,23 @@ pub struct IdentityManagementHandle {
 }
 
 impl IdentityManagementHandle {
+    /// Creates or replaces an OAuth identity under `owner`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the identity spec is invalid, OAuth
+    /// authorization fails, or credential material cannot be stored.
+    pub async fn create_oauth_identity(
+        &self,
+        owner: &IdentityOwner,
+        command: CreateOAuthIdentityCommand,
+        events: OAuthProgressEventSender,
+    ) -> Result<IdentityRecord, AppError> {
+        self.manager
+            .create_oauth_identity(owner, command, events)
+            .await
+    }
+
     /// Creates or replaces a fixed-token identity under `owner`.
     ///
     /// # Errors
@@ -298,6 +348,21 @@ impl IdentityManagementHandle {
     ) -> Result<bool, AppError> {
         self.manager.delete_identity(owner, identity_name).await
     }
+
+    /// Resolves an identity under `owner` into runtime credential material,
+    /// refreshing OAuth material if necessary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the stored identity is invalid or refresh
+    /// fails.
+    pub async fn resolve_identity(
+        &self,
+        owner: &IdentityOwner,
+        identity_name: &str,
+    ) -> Result<Option<Arc<dyn RuntimeSourceIdentity>>, AppError> {
+        self.manager.resolve_identity(owner, identity_name).await
+    }
 }
 
 impl IdentityManager {
@@ -314,6 +379,7 @@ impl IdentityManager {
     ) -> Self {
         Self {
             identity_specs,
+            oauth_credential_service: OAuthCredentialService::new(),
             store,
         }
     }
@@ -345,6 +411,78 @@ impl IdentityManager {
             )));
         }
         Ok((owner.clone(), name, spec))
+    }
+
+    async fn create_oauth_identity(
+        &self,
+        owner: &IdentityOwner,
+        command: CreateOAuthIdentityCommand,
+        events: OAuthProgressEventSender,
+    ) -> Result<IdentityRecord, AppError> {
+        let span = info_span!("coral.app.identities.create_oauth");
+        let _guard = span.enter();
+        let (owner, name, spec) = self.prepare_identity_creation(
+            owner,
+            &command.name,
+            &command.identity_spec,
+            IdentitySpecType::OAuth,
+        )?;
+        let identity_spec_name = spec.manifest.name.clone();
+        let oauth = oauth_method(&identity_spec_name, &spec.manifest.config)?;
+        let provided_inputs = unique_input_map(
+            command
+                .credential_inputs
+                .into_iter()
+                .map(|input| (input.key, input.value)),
+            "credential input",
+        )?;
+        reject_identity_owned_inputs(
+            name.as_str(),
+            &identity_spec_name,
+            &spec.manifest,
+            oauth,
+            &provided_inputs,
+        )?;
+        let identity_inputs = self
+            .identity_specs
+            .resolve_identity_spec_inputs(&spec.manifest)?;
+        let credential_inputs =
+            oauth_credential_inputs_from_identity_inputs(oauth, &identity_inputs, &provided_inputs);
+        OAuthCredentialService::validate_credential_inputs(
+            oauth,
+            &identity_inputs,
+            credential_inputs.clone(),
+        )?;
+
+        let client_material_persistence =
+            oauth_client_material_persistence_for_identity(oauth, &provided_inputs);
+        let material = self
+            .oauth_credential_service
+            .authorize_with_progress(
+                StartOAuthCredentialRequest {
+                    input_key: OAUTH_ACCESS_TOKEN_MATERIAL_KEY,
+                    oauth,
+                    source_inputs: &identity_inputs,
+                    credential_inputs,
+                    client_material_persistence,
+                },
+                name.to_string(),
+                &events,
+            )
+            .await?;
+
+        let record = IdentityRecord {
+            owner,
+            name,
+            identity_spec: identity_spec_name,
+            identity_spec_fingerprint: Some(identity_spec_fingerprint(&spec.manifest)?),
+            issuer: spec.manifest.issuer,
+            identity_type: spec.manifest.identity_type.label().to_string(),
+            metadata: material.safe_metadata.clone(),
+        };
+        let material = material_values(material);
+        self.store.replace_identity(&record, &material).await?;
+        Ok(record)
     }
 
     async fn create_fixed_token_identity(
@@ -380,6 +518,16 @@ impl IdentityManager {
         Ok(record)
     }
 
+    pub(crate) async fn create_user_owned_oauth_identity(
+        &self,
+        principal: &UserPrincipal,
+        command: CreateOAuthIdentityCommand,
+        events: OAuthProgressEventSender,
+    ) -> Result<IdentityRecord, AppError> {
+        let owner = IdentityOwner::for_user_principal(principal)?;
+        self.create_oauth_identity(&owner, command, events).await
+    }
+
     pub(crate) async fn create_user_owned_fixed_token_identity(
         &self,
         principal: &UserPrincipal,
@@ -413,6 +561,59 @@ impl IdentityManager {
     ) -> Result<bool, AppError> {
         let identity_name = validate_identity_name(identity_name)?;
         self.store.delete_identity(owner, &identity_name).await
+    }
+
+    /// Loads the installed identity spec backing `record`, reporting orphaned
+    /// identities and rejecting records that no longer match the spec.
+    fn load_spec_for_record(
+        &self,
+        record: &IdentityRecord,
+    ) -> Result<IdentitySpecRecord, AppError> {
+        let spec = match self.identity_specs.get_identity_spec(&record.identity_spec) {
+            Ok(spec) => spec,
+            Err(AppError::IdentitySpecNotFound(_)) => {
+                return Err(AppError::FailedPrecondition(format!(
+                    "identity '{}' is orphaned because identity spec '{}' is not installed",
+                    record.name, record.identity_spec
+                )));
+            }
+            Err(error) => return Err(error),
+        };
+        validate_record_identity_type(record, spec.manifest.identity_type)?;
+        validate_record_identity_spec_fingerprint(record, &spec.manifest)?;
+        Ok(spec)
+    }
+
+    async fn resolve_identity(
+        &self,
+        owner: &IdentityOwner,
+        identity_name: &str,
+    ) -> Result<Option<Arc<dyn RuntimeSourceIdentity>>, AppError> {
+        let identity_name = validate_identity_name(identity_name)?;
+        let material_guard = self.store.material_guard(owner, &identity_name).await?;
+        let record = self.store.load_identity(owner, &identity_name).await?;
+        let Some(record) = record else {
+            return Ok(None);
+        };
+        let spec = self.load_spec_for_record(&record)?;
+        let identity_inputs = self
+            .identity_specs
+            .resolve_identity_spec_inputs(&spec.manifest)?;
+        let material = material_guard.read_material().await?;
+        let prepared = StoredIdentityRuntimeData::new(
+            record.name.to_string(),
+            spec.manifest,
+            identity_inputs,
+            material,
+        )
+        .prepare(IdentityRuntimeServices {
+            oauth_credential_service: &self.oauth_credential_service,
+        })
+        .await?;
+        if let Some(updated_material) = prepared.updated_material {
+            material_guard.write_material(&updated_material).await?;
+        }
+        Ok(Some(prepared.identity))
     }
 }
 
@@ -753,6 +954,148 @@ const fn default_identity_owner_kind() -> IdentityOwnerKind {
 #[derive(Debug, Deserialize)]
 struct IdentitySpecReference {
     identity_spec: String,
+}
+
+fn oauth_method<'a>(
+    identity_spec_name: &str,
+    config: &'a IdentitySpecConfig,
+) -> Result<&'a ManifestOAuthCredentialSpec, AppError> {
+    let IdentitySpecConfig::OAuth(oauth) = config else {
+        return Err(AppError::InvalidInput(format!(
+            "identity spec '{identity_spec_name}' is not oauth"
+        )));
+    };
+    Ok(&oauth.method.oauth)
+}
+
+fn material_values(material: OAuthCredentialMaterial) -> BTreeMap<String, String> {
+    let mut values = material.internal_metadata;
+    values.insert(
+        OAUTH_ACCESS_TOKEN_MATERIAL_KEY.to_string(),
+        material.access_token,
+    );
+    values
+}
+
+fn validate_record_identity_type(
+    record: &IdentityRecord,
+    identity_spec_type: IdentitySpecType,
+) -> Result<(), AppError> {
+    let expected = identity_spec_type.label();
+    if record.identity_type == expected {
+        return Ok(());
+    }
+    Err(AppError::FailedPrecondition(format!(
+        "identity '{}' is orphaned because identity spec '{}' has type '{}', but the stored identity has type '{}'",
+        record.name, record.identity_spec, expected, record.identity_type
+    )))
+}
+
+fn validate_record_identity_spec_fingerprint(
+    record: &IdentityRecord,
+    identity_spec: &IdentityManifest,
+) -> Result<(), AppError> {
+    let Some(stored_fingerprint) = record.identity_spec_fingerprint.as_deref() else {
+        return Err(AppError::FailedPrecondition(format!(
+            "identity '{}' is orphaned because it was created before identity spec fingerprinting; recreate it from identity spec '{}'",
+            record.name, record.identity_spec
+        )));
+    };
+    let current_fingerprint = identity_spec_fingerprint(identity_spec)?;
+    if stored_fingerprint == current_fingerprint {
+        return Ok(());
+    }
+    Err(AppError::FailedPrecondition(format!(
+        "identity '{}' is orphaned because identity spec '{}' has changed since the identity was created; recreate the identity from the current spec",
+        record.name, record.identity_spec
+    )))
+}
+
+fn reject_identity_owned_inputs(
+    identity_name: &str,
+    identity_spec_name: &str,
+    manifest: &IdentityManifest,
+    oauth: &ManifestOAuthCredentialSpec,
+    provided: &BTreeMap<String, String>,
+) -> Result<(), AppError> {
+    let declared = manifest
+        .inputs
+        .iter()
+        .map(|input| input.key.as_str())
+        .collect::<BTreeSet<_>>();
+    for key in provided.keys() {
+        if declared.contains(key.as_str()) {
+            return Err(AppError::InvalidInput(format!(
+                "identity input '{key}' belongs to identity spec '{identity_spec_name}', not identity '{identity_name}'; provide it when installing the identity spec"
+            )));
+        }
+        if legacy_oauth_client_input(oauth, key) {
+            continue;
+        }
+        return Err(AppError::InvalidInput(format!(
+            "unknown OAuth credential input '{key}' for identity '{identity_name}'"
+        )));
+    }
+    Ok(())
+}
+
+fn legacy_oauth_client_input(oauth: &ManifestOAuthCredentialSpec, key: &str) -> bool {
+    oauth.client.id.input.as_deref() == Some(key)
+        || oauth
+            .client
+            .secret
+            .as_ref()
+            .is_some_and(|secret| secret.input == key)
+}
+
+fn oauth_credential_inputs_from_identity_inputs(
+    oauth: &ManifestOAuthCredentialSpec,
+    identity_inputs: &BTreeMap<String, String>,
+    provided: &BTreeMap<String, String>,
+) -> Vec<(String, String)> {
+    let mut values = Vec::new();
+    if let Some(input_key) = oauth.client.id.input.as_deref()
+        && let Some(value) = identity_inputs
+            .get(input_key)
+            .or_else(|| provided.get(input_key))
+            .filter(|value| !value.is_empty())
+    {
+        values.push((input_key.to_string(), value.clone()));
+    }
+    if let Some(secret) = oauth.client.secret.as_ref()
+        && let Some(value) = identity_inputs
+            .get(&secret.input)
+            .or_else(|| provided.get(&secret.input))
+            .filter(|value| !value.is_empty())
+    {
+        values.push((secret.input.clone(), value.clone()));
+    }
+    values
+}
+
+fn oauth_client_material_persistence_for_identity(
+    oauth: &ManifestOAuthCredentialSpec,
+    provided: &BTreeMap<String, String>,
+) -> OAuthClientMaterialPersistence {
+    let client_id = oauth
+        .client
+        .id
+        .input
+        .as_deref()
+        .is_some_and(|input| provided.contains_key(input));
+    let client_secret = oauth
+        .client
+        .secret
+        .as_ref()
+        .is_some_and(|secret| provided.contains_key(&secret.input));
+    if client_id || client_secret {
+        OAuthClientMaterialPersistence::ClientCredentials {
+            client_id,
+            client_secret,
+        }
+    } else {
+        OAuthClientMaterialPersistence::None
+    }
 }
 
 fn validate_identity_name(name: &str) -> Result<IdentityName, AppError> {
@@ -1141,6 +1484,47 @@ audience:
                 .identity_material_file(&local_owner(), &github_local_name())
                 .exists(),
             "rejected stale identity should not create material"
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_management_handle_resolves_fixed_token_identity() {
+        let (_temp, manager, _identity_specs) = manager_with_github_pat_spec();
+        let principal = UserPrincipal::local();
+        manager
+            .create_user_owned_fixed_token_identity(&principal, github_local_command("ghp_token"))
+            .await
+            .expect("create identity");
+
+        let identity = manager
+            .handle()
+            .resolve_identity(&local_owner(), "github_local")
+            .await
+            .expect("resolve identity")
+            .expect("identity exists");
+        let request = reqwest::Request::new(
+            reqwest::Method::GET,
+            "https://api.github.com/user".parse().expect("request url"),
+        );
+        let headers = identity
+            .resolve_headers(
+                &coral_engine::SelectedRequestIdentity::new(
+                    "github_local".to_string(),
+                    identity.identity_spec_id().to_string(),
+                    identity.audience().clone(),
+                ),
+                &request,
+                &BTreeMap::new(),
+            )
+            .await
+            .expect("identity headers");
+
+        assert_eq!(
+            headers,
+            vec![(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_static("Bearer ghp_token")
+            )]
         );
     }
 

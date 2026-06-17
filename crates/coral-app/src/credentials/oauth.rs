@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -20,7 +20,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use url::{Url, form_urlencoded};
 use uuid::Uuid;
 
@@ -35,7 +35,7 @@ const MAX_CALLBACK_BYTES: usize = 8 * 1024;
 const REFRESH_EXPIRY_SKEW_SECONDS: i64 = 60;
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct OAuthCredentialService {
     http: reqwest::Client,
 }
@@ -45,23 +45,155 @@ pub(crate) struct StartOAuthCredentialRequest<'a> {
     pub(crate) oauth: &'a ManifestOAuthCredentialSpec,
     pub(crate) source_inputs: &'a BTreeMap<String, String>,
     pub(crate) credential_inputs: Vec<(String, String)>,
+    pub(crate) client_material_persistence: OAuthClientMaterialPersistence,
 }
 
-pub(super) struct RefreshOAuthCredentialRequest<'a> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OAuthClientMaterialPersistence {
+    None,
+    ClientCredentials {
+        client_id: bool,
+        client_secret: bool,
+    },
+    All,
+}
+
+/// Progress event emitted while an OAuth credential authorization runs.
+#[derive(Debug, Clone)]
+pub enum OAuthProgressEvent {
+    /// An OAuth flow is waiting for the user to authorize the credential.
+    OAuthAuthorization {
+        /// Source or identity input key whose credential is being authorized.
+        input_key: String,
+        /// Authorization URL the user should open.
+        authorization_url: String,
+        /// Number of seconds before the authorization request expires.
+        expires_in_seconds: u64,
+        /// Optional device-code user code, when the provider returns one.
+        user_code: Option<String>,
+        /// Optional device-code verification URL.
+        verification_uri: Option<String>,
+        /// Optional complete device-code verification URL.
+        verification_uri_complete: Option<String>,
+    },
+    /// The OAuth flow completed and produced safe credential metadata.
+    OAuthCompleted {
+        /// Source or identity input key whose credential was authorized.
+        input_key: String,
+        /// Safe metadata about the credential, never token material.
+        metadata: BTreeMap<String, String>,
+    },
+}
+
+/// Acknowledged progress-event sink bridging an OAuth-driven manager operation
+/// to its gRPC response stream.
+#[derive(Clone)]
+pub struct OAuthProgressEventSender {
+    tx: mpsc::Sender<PendingOAuthProgressEvent>,
+    closed_message: &'static str,
+}
+
+pub(crate) struct PendingOAuthProgressEvent {
+    event: OAuthProgressEvent,
+    delivered: oneshot::Sender<()>,
+}
+
+impl OAuthProgressEventSender {
+    pub(crate) fn new(
+        tx: mpsc::Sender<PendingOAuthProgressEvent>,
+        closed_message: &'static str,
+    ) -> Self {
+        Self { tx, closed_message }
+    }
+
+    /// Sends one progress event and waits until the response stream dequeues it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the response stream has closed.
+    pub async fn send(&self, event: OAuthProgressEvent) -> Result<(), AppError> {
+        let (delivered, delivered_rx) = oneshot::channel();
+        self.tx
+            .send(PendingOAuthProgressEvent { event, delivered })
+            .await
+            .map_err(|_closed| AppError::FailedPrecondition(self.closed_message.to_string()))?;
+        delivered_rx
+            .await
+            .map_err(|_closed| AppError::FailedPrecondition(self.closed_message.to_string()))
+    }
+}
+
+impl PendingOAuthProgressEvent {
+    pub(crate) fn into_event(self) -> OAuthProgressEvent {
+        if self.delivered.send(()).is_err() {
+            // The sender side is best-effort; the operation will observe stream
+            // closure through the next progress send.
+        }
+        self.event
+    }
+}
+
+impl OAuthClientMaterialPersistence {
+    fn stores_client_id(self) -> bool {
+        matches!(
+            self,
+            Self::All
+                | Self::ClientCredentials {
+                    client_id: true,
+                    ..
+                }
+        )
+    }
+
+    fn stores_client_secret(self) -> bool {
+        matches!(
+            self,
+            Self::All
+                | Self::ClientCredentials {
+                    client_secret: true,
+                    ..
+                }
+        )
+    }
+}
+
+pub(crate) struct RefreshOAuthCredentialRequest<'a> {
     access_token_material_key: &'a str,
+    material_label: String,
+    reconnect_label: &'static str,
     metadata_prefix: String,
     oauth: &'a ManifestOAuthCredentialSpec,
+    resolved_inputs: Option<&'a BTreeMap<String, String>>,
 }
 
 impl<'a> RefreshOAuthCredentialRequest<'a> {
-    pub(super) fn for_source_input(
+    pub(crate) fn for_source_input(
         input_key: &'a str,
         oauth: &'a ManifestOAuthCredentialSpec,
     ) -> Self {
         Self {
             access_token_material_key: input_key,
+            material_label: format!("source secret '{input_key}'"),
+            reconnect_label: "reconnect the source",
             metadata_prefix: oauth_metadata_prefix(input_key),
             oauth,
+            resolved_inputs: None,
+        }
+    }
+
+    pub(crate) fn for_identity(
+        identity_name: &str,
+        access_token_material_key: &'a str,
+        oauth: &'a ManifestOAuthCredentialSpec,
+        resolved_inputs: &'a BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            access_token_material_key,
+            material_label: format!("identity '{identity_name}'"),
+            reconnect_label: "reconnect the identity",
+            metadata_prefix: oauth_metadata_prefix(access_token_material_key),
+            oauth,
+            resolved_inputs: Some(resolved_inputs),
         }
     }
 }
@@ -88,6 +220,7 @@ struct OAuthSessionCommon {
     endpoints: ManifestOAuthEndpointUrls,
     client_id: String,
     client_secret: Option<String>,
+    client_material_persistence: OAuthClientMaterialPersistence,
 }
 
 struct AuthorizationCodeSessionConfig {
@@ -165,6 +298,39 @@ impl OAuthCredentialService {
         }
     }
 
+    /// Runs [`Self::authorize`] while reporting progress on `events`, keying
+    /// emitted events by `event_key`.
+    pub(crate) async fn authorize_with_progress(
+        &self,
+        request: StartOAuthCredentialRequest<'_>,
+        event_key: String,
+        events: &OAuthProgressEventSender,
+    ) -> Result<OAuthCredentialMaterial, AppError> {
+        let authorization_events = events.clone();
+        let authorization_key = event_key.clone();
+        let material = self
+            .authorize(request, move |authorization| async move {
+                authorization_events
+                    .send(OAuthProgressEvent::OAuthAuthorization {
+                        input_key: authorization_key,
+                        authorization_url: authorization.authorization_url,
+                        expires_in_seconds: authorization.expires_in_seconds,
+                        user_code: authorization.user_code,
+                        verification_uri: authorization.verification_uri,
+                        verification_uri_complete: authorization.verification_uri_complete,
+                    })
+                    .await
+            })
+            .await?;
+        events
+            .send(OAuthProgressEvent::OAuthCompleted {
+                input_key: event_key,
+                metadata: material.safe_metadata.clone(),
+            })
+            .await?;
+        Ok(material)
+    }
+
     pub(crate) async fn authorize<F, Fut>(
         &self,
         request: StartOAuthCredentialRequest<'_>,
@@ -180,39 +346,29 @@ impl OAuthCredentialService {
         reject_unknown_credential_inputs(&oauth, &credential_inputs)?;
         let client_id = resolve_client_id(&oauth, &credential_inputs)?;
         let client_secret = resolve_client_secret(&oauth, &credential_inputs)?;
-        match oauth.flow.kind {
+        let flow_kind = oauth.flow.kind;
+        let common = OAuthSessionCommon {
+            input_key: request.input_key.to_string(),
+            oauth,
+            endpoints,
+            client_id,
+            client_secret,
+            client_material_persistence: request.client_material_persistence,
+        };
+        match flow_kind {
             ManifestOAuthFlowKind::AuthorizationCode => {
-                self.authorize_authorization_code(
-                    request.input_key.to_string(),
-                    oauth,
-                    endpoints,
-                    client_id,
-                    client_secret,
-                    on_authorization,
-                )
-                .await
+                self.authorize_authorization_code(common, on_authorization)
+                    .await
             }
             ManifestOAuthFlowKind::DeviceCode => {
-                self.authorize_device_code(
-                    request.input_key.to_string(),
-                    oauth,
-                    endpoints,
-                    client_id,
-                    client_secret,
-                    on_authorization,
-                )
-                .await
+                self.authorize_device_code(common, on_authorization).await
             }
         }
     }
 
     async fn authorize_authorization_code<F, Fut>(
         &self,
-        input_key: String,
-        oauth: ManifestOAuthCredentialSpec,
-        endpoints: ManifestOAuthEndpointUrls,
-        client_id: String,
-        client_secret: Option<String>,
+        common: OAuthSessionCommon,
         on_authorization: F,
     ) -> Result<OAuthCredentialMaterial, AppError>
     where
@@ -220,25 +376,18 @@ impl OAuthCredentialService {
         Fut: Future<Output = Result<(), AppError>>,
     {
         let (listener, callback_path, provider_redirect_uri) =
-            bind_redirect_listener(&oauth).await?;
+            bind_redirect_listener(&common.oauth).await?;
         let state = random_token();
-        let code_verifier = pkce_code_verifier(&oauth);
+        let code_verifier = pkce_code_verifier(&common.oauth);
         let authorization_url = build_authorization_url(
-            &oauth,
-            &endpoints,
+            &common.oauth,
+            &common.endpoints,
             &provider_redirect_uri,
-            &client_id,
+            &common.client_id,
             &state,
             code_verifier.as_deref(),
         )?;
         let expires_at = Instant::now() + SESSION_TTL;
-        let common = OAuthSessionCommon {
-            input_key,
-            oauth,
-            endpoints,
-            client_id,
-            client_secret,
-        };
         let session = AuthorizationCodeSessionConfig {
             common,
             state,
@@ -298,15 +447,17 @@ impl OAuthCredentialService {
 
     /// Uses persisted credential material as both the refresh input
     /// (expiry, refresh token, client metadata) and output (new token values).
-    pub(super) async fn refresh_if_needed(
+    pub(crate) async fn refresh_if_needed(
         &self,
         request: RefreshOAuthCredentialRequest<'_>,
         credential_material: &mut BTreeMap<String, String>,
     ) -> Result<bool, AppError> {
         let Some(refresh) = oauth_refresh_config(
-            request.access_token_material_key,
+            request.material_label.as_str(),
+            request.reconnect_label,
             request.metadata_prefix.as_str(),
             request.oauth,
+            request.resolved_inputs,
             credential_material,
         )?
         else {
@@ -324,27 +475,23 @@ impl OAuthCredentialService {
 
     async fn authorize_device_code<F, Fut>(
         &self,
-        input_key: String,
-        oauth: ManifestOAuthCredentialSpec,
-        endpoints: ManifestOAuthEndpointUrls,
-        client_id: String,
-        client_secret: Option<String>,
+        common: OAuthSessionCommon,
         on_authorization: F,
     ) -> Result<OAuthCredentialMaterial, AppError>
     where
         F: FnOnce(OAuthAuthorization) -> Fut,
         Fut: Future<Output = Result<(), AppError>>,
     {
-        if client_secret.is_some() {
+        if common.client_secret.is_some() {
             return Err(AppError::InvalidInput(
                 "device_code OAuth methods must not declare a client secret".to_string(),
             ));
         }
         let device = request_device_code(
             &self.http,
-            &oauth,
-            &endpoints,
-            &client_id,
+            &common.oauth,
+            &common.endpoints,
+            &common.client_id,
             DEVICE_CODE_REQUEST_TIMEOUT,
         )
         .await?;
@@ -356,13 +503,6 @@ impl OAuthCredentialService {
         let verification_uri = device.verification_uri.clone();
         let verification_uri_complete = device.verification_uri_complete.clone();
         let expires_in = device.expires_in;
-        let common = OAuthSessionCommon {
-            input_key,
-            oauth,
-            endpoints,
-            client_id,
-            client_secret: None,
-        };
         let session = DeviceCodeSessionConfig {
             common,
             device_code: device.device_code,
@@ -602,6 +742,7 @@ fn build_authorization_url(
     let mut url = Url::parse(authorization_url).map_err(|error| {
         AppError::InvalidInput(format!("invalid OAuth authorization URL: {error}"))
     })?;
+    ensure_oauth_url_uses_credential_safe_transport("OAuth authorization URL", &url)?;
     {
         let mut query = url.query_pairs_mut();
         query
@@ -622,6 +763,36 @@ fn build_authorization_url(
         }
     }
     Ok(url.to_string())
+}
+
+fn ensure_oauth_endpoint_uses_credential_safe_transport(
+    label: &str,
+    endpoint_url: &str,
+) -> Result<(), AppError> {
+    let url = Url::parse(endpoint_url)
+        .map_err(|error| AppError::InvalidInput(format!("{label} is invalid: {error}")))?;
+    ensure_oauth_url_uses_credential_safe_transport(label, &url)
+}
+
+fn ensure_oauth_url_uses_credential_safe_transport(label: &str, url: &Url) -> Result<(), AppError> {
+    if url.scheme() == "https" || is_loopback_http_url(url) {
+        return Ok(());
+    }
+    let host = url.host_str().unwrap_or("<missing>");
+    Err(AppError::InvalidInput(format!(
+        "{label} must use https or loopback http, got {}://{host}",
+        url.scheme()
+    )))
+}
+
+fn is_loopback_http_url(url: &Url) -> bool {
+    url.scheme() == "http"
+        && url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
 }
 
 fn join_scope_values(delimiter: ManifestOAuthScopeDelimiter, values: &[String]) -> String {
@@ -878,6 +1049,10 @@ async fn request_device_code(
                     "device_code OAuth method is missing device_authorization_url".to_string(),
                 )
             })?;
+    ensure_oauth_endpoint_uses_credential_safe_transport(
+        "OAuth device authorization URL",
+        device_authorization_url,
+    )?;
     let mut form = vec![("client_id", client_id.to_string())];
     if let Some(scopes) = oauth.scopes.as_ref() {
         form.push((
@@ -961,6 +1136,10 @@ async fn poll_device_token(
     http: &reqwest::Client,
     session: &DeviceCodeSessionConfig,
 ) -> Result<TokenResponse, AppError> {
+    ensure_oauth_endpoint_uses_credential_safe_transport(
+        "OAuth device token URL",
+        &session.common.endpoints.token_url,
+    )?;
     let deadline = Instant::now() + session.expires_in;
     let mut interval = session.interval;
     loop {
@@ -1038,6 +1217,10 @@ async fn exchange_authorization_code(
     session: &AuthorizationCodeSessionConfig,
     code: &str,
 ) -> Result<TokenResponse, AppError> {
+    ensure_oauth_endpoint_uses_credential_safe_transport(
+        "OAuth token exchange URL",
+        &session.common.endpoints.token_url,
+    )?;
     let mut form = vec![
         ("grant_type", "authorization_code".to_string()),
         ("code", code.to_string()),
@@ -1069,6 +1252,10 @@ async fn refresh_access_token(
     http: &reqwest::Client,
     refresh: &OAuthRefreshConfig,
 ) -> Result<TokenResponse, AppError> {
+    ensure_oauth_endpoint_uses_credential_safe_transport(
+        "OAuth token refresh URL",
+        &refresh.token_url,
+    )?;
     let mut form = vec![
         ("grant_type", "refresh_token".to_string()),
         ("refresh_token", refresh.refresh_token.clone()),
@@ -1248,19 +1435,25 @@ fn oauth_credential_material(
     if let Some(scope) = token.scope.as_deref() {
         internal_metadata.insert(format!("{prefix}scope"), scope.to_string());
     }
-    internal_metadata.insert(format!("{prefix}client_id"), session.client_id.clone());
-    internal_metadata.insert(
-        format!("{prefix}token_url"),
-        session.endpoints.token_url.clone(),
-    );
-    if let Some(secret) = session.oauth.client.secret.as_ref() {
+    if session.client_material_persistence.stores_client_id() {
+        internal_metadata.insert(format!("{prefix}client_id"), session.client_id.clone());
+    }
+    if session.client_material_persistence == OAuthClientMaterialPersistence::All {
         internal_metadata.insert(
-            format!("{prefix}client_secret_transport"),
-            secret.transport.label().to_string(),
+            format!("{prefix}token_url"),
+            session.endpoints.token_url.clone(),
         );
     }
-    if let Some(client_secret) = session.client_secret.as_deref() {
-        internal_metadata.insert(format!("{prefix}client_secret"), client_secret.to_string());
+    if session.client_material_persistence.stores_client_secret() {
+        if let Some(secret) = session.oauth.client.secret.as_ref() {
+            internal_metadata.insert(
+                format!("{prefix}client_secret_transport"),
+                secret.transport.label().to_string(),
+            );
+        }
+        if let Some(client_secret) = session.client_secret.as_deref() {
+            internal_metadata.insert(format!("{prefix}client_secret"), client_secret.to_string());
+        }
     }
     OAuthCredentialMaterial {
         input_key: session.input_key.clone(),
@@ -1282,11 +1475,15 @@ fn oauth_metadata_prefix(input_key: &str) -> String {
 }
 
 fn oauth_refresh_config(
-    access_token_material_key: &str,
+    material_label: &str,
+    reconnect_label: &str,
     metadata_prefix: &str,
     oauth: &ManifestOAuthCredentialSpec,
+    resolved_inputs: Option<&BTreeMap<String, String>>,
     material: &BTreeMap<String, String>,
 ) -> Result<Option<OAuthRefreshConfig>, AppError> {
+    let empty_resolved_inputs = BTreeMap::new();
+    let resolved_inputs = resolved_inputs.unwrap_or(&empty_resolved_inputs);
     if material
         .get(&format!("{metadata_prefix}method"))
         .map(String::as_str)
@@ -1301,7 +1498,7 @@ fn oauth_refresh_config(
     let expires_at = DateTime::parse_from_rfc3339(expires_at)
         .map_err(|error| {
             AppError::FailedPrecondition(format!(
-                "stored OAuth access token expiry for source secret '{access_token_material_key}' is invalid: {error}"
+                "stored OAuth access token expiry for {material_label} is invalid: {error}"
             ))
         })?
         .with_timezone(&Utc);
@@ -1318,43 +1515,33 @@ fn oauth_refresh_config(
             return Ok(None);
         }
         return Err(AppError::FailedPrecondition(format!(
-            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because no refresh token is stored; reconnect the source"
+            "OAuth access token for {material_label} expired and cannot be refreshed because no refresh token is stored; {reconnect_label}"
         )));
     };
-    let client_id = material
-        .get(&format!("{metadata_prefix}client_id"))
-        .filter(|value| !value.is_empty())
-        .cloned()
-        .or_else(|| oauth.client.id.default.clone())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            AppError::FailedPrecondition(format!(
-                "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because client ID metadata is missing"
-            ))
-        })?;
-    let token_url = material
-        .get(&format!("{metadata_prefix}token_url"))
-        .filter(|value| !value.is_empty())
-        .cloned()
-        .unwrap_or_else(|| oauth.token_url.clone());
+    let client_id = oauth_refresh_client_id(
+        material_label,
+        metadata_prefix,
+        oauth,
+        resolved_inputs,
+        material,
+    )?;
+    let token_url = oauth_refresh_token_url(metadata_prefix, oauth, resolved_inputs, material)?;
     let client_secret_transport = material
         .get(&format!("{metadata_prefix}client_secret_transport"))
         .map(|value| {
             ManifestOAuthClientSecretTransport::from_label(value).ok_or_else(|| {
                 AppError::FailedPrecondition(format!(
-                    "stored OAuth client secret transport for source secret '{access_token_material_key}' is invalid: {value}"
+                    "stored OAuth client secret transport for {material_label} is invalid: {value}"
                 ))
             })
         })
         .transpose()?
         .or_else(|| oauth.client.secret.as_ref().map(|secret| secret.transport));
-    let client_secret = material
-        .get(&format!("{metadata_prefix}client_secret"))
-        .filter(|value| !value.is_empty())
-        .cloned();
+    let client_secret =
+        oauth_refresh_client_secret(metadata_prefix, oauth, resolved_inputs, material);
     if client_secret_transport.is_some() && client_secret.is_none() {
         return Err(AppError::FailedPrecondition(format!(
-            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because client secret metadata is missing"
+            "OAuth access token for {material_label} expired and cannot be refreshed because client secret metadata is missing"
         )));
     }
     Ok(Some(OAuthRefreshConfig {
@@ -1364,6 +1551,77 @@ fn oauth_refresh_config(
         client_secret_transport,
         refresh_token,
     }))
+}
+
+fn oauth_refresh_client_id(
+    material_label: &str,
+    metadata_prefix: &str,
+    oauth: &ManifestOAuthCredentialSpec,
+    resolved_inputs: &BTreeMap<String, String>,
+    material: &BTreeMap<String, String>,
+) -> Result<String, AppError> {
+    material
+        .get(&format!("{metadata_prefix}client_id"))
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .or_else(|| {
+            oauth.client
+                .id
+                .input
+                .as_deref()
+                .and_then(|input| resolved_inputs.get(input))
+                .filter(|value| !value.is_empty())
+                .cloned()
+        })
+        .or_else(|| oauth.client.id.default.clone())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::FailedPrecondition(format!(
+                "OAuth access token for {material_label} expired and cannot be refreshed because client ID metadata is missing"
+            ))
+        })
+}
+
+fn oauth_refresh_token_url(
+    metadata_prefix: &str,
+    oauth: &ManifestOAuthCredentialSpec,
+    resolved_inputs: &BTreeMap<String, String>,
+    material: &BTreeMap<String, String>,
+) -> Result<String, AppError> {
+    material
+        .get(&format!("{metadata_prefix}token_url"))
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .map_or_else(
+            || {
+                oauth
+                    .endpoint_urls(resolved_inputs)
+                    .map(|endpoints| endpoints.token_url)
+                    .map_err(|error| AppError::FailedPrecondition(error.to_string()))
+            },
+            Ok,
+        )
+}
+
+fn oauth_refresh_client_secret(
+    metadata_prefix: &str,
+    oauth: &ManifestOAuthCredentialSpec,
+    resolved_inputs: &BTreeMap<String, String>,
+    material: &BTreeMap<String, String>,
+) -> Option<String> {
+    material
+        .get(&format!("{metadata_prefix}client_secret"))
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .or_else(|| {
+            oauth
+                .client
+                .secret
+                .as_ref()
+                .and_then(|secret| resolved_inputs.get(&secret.input))
+                .filter(|value| !value.is_empty())
+                .cloned()
+        })
 }
 
 fn apply_refreshed_token(
@@ -1449,10 +1707,11 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        AuthorizationCodeSessionConfig, OAuthCredentialService, OAuthSessionCommon,
-        RefreshOAuthCredentialRequest, StartOAuthCredentialRequest, basic_client_authorization,
-        join_scope_values, material_key_belongs_to_input, oauth_metadata_prefix,
-        parse_token_response, pkce_challenge, receive_callback, request_device_code,
+        AuthorizationCodeSessionConfig, OAuthClientMaterialPersistence, OAuthCredentialService,
+        OAuthSessionCommon, RefreshOAuthCredentialRequest, StartOAuthCredentialRequest,
+        basic_client_authorization, join_scope_values, material_key_belongs_to_input,
+        oauth_metadata_prefix, parse_token_response, pkce_challenge, receive_callback,
+        request_device_code,
     };
     use coral_spec::{
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
@@ -1583,6 +1842,56 @@ mod tests {
             Some("rotated-refresh-token")
         );
         assert!(captured.authorization.is_none());
+    }
+
+    #[tokio::test]
+    async fn expired_oauth_material_rejects_non_https_non_loopback_refresh_url() {
+        let token_url = "http://provider.example.test/access_token";
+        let oauth = oauth_spec(
+            token_url,
+            free_loopback_port(),
+            ManifestOAuthPkceMode::Disabled,
+            ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("default-client".to_string()),
+                    input: None,
+                },
+                secret: None,
+            },
+        );
+        let prefix = oauth_metadata_prefix("API_TOKEN");
+        let mut material = BTreeMap::from([
+            ("API_TOKEN".to_string(), "expired-token".to_string()),
+            (format!("{prefix}method"), "oauth".to_string()),
+            (
+                format!("{prefix}access_token_expires_at"),
+                (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+            ),
+            (
+                format!("{prefix}refresh_token"),
+                "stored-refresh-token".to_string(),
+            ),
+            (format!("{prefix}client_id"), "stored-client".to_string()),
+            (format!("{prefix}token_url"), token_url.to_string()),
+        ]);
+        let service = OAuthCredentialService::new();
+
+        let error = service
+            .refresh_if_needed(
+                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", &oauth),
+                &mut material,
+            )
+            .await
+            .expect_err("non-https non-loopback refresh URL should fail before request");
+
+        assert!(
+            error.to_string().contains("must use https"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            material.get("API_TOKEN").map(String::as_str),
+            Some("expired-token")
+        );
     }
 
     #[tokio::test]
@@ -1823,6 +2132,7 @@ mod tests {
                     "OAUTH_CLIENT_ID".to_string(),
                     "override-client".to_string(),
                 )],
+                client_material_persistence: OAuthClientMaterialPersistence::All,
             },
             move |authorization| async move {
                 authorization_tx
@@ -1865,6 +2175,7 @@ mod tests {
         let (completed, ()) = tokio::join!(authorize, callback);
         let completed = completed.expect("authorize oauth");
         let captured = fixture.token_server.await.expect("token server");
+        let metadata_prefix = oauth_metadata_prefix("API_TOKEN");
 
         assert_eq!(completed.input_key, "API_TOKEN");
         assert_eq!(completed.access_token, "access-token");
@@ -1882,17 +2193,14 @@ mod tests {
         assert_eq!(
             completed
                 .internal_metadata
-                .get(&format!(
-                    "{}refresh_token",
-                    oauth_metadata_prefix("API_TOKEN")
-                ))
+                .get(&format!("{metadata_prefix}refresh_token"))
                 .map(String::as_str),
             Some("refresh-token")
         );
         assert_eq!(
             completed
                 .internal_metadata
-                .get(&format!("{}client_id", oauth_metadata_prefix("API_TOKEN")))
+                .get(&format!("{metadata_prefix}client_id"))
                 .map(String::as_str),
             Some("override-client")
         );
@@ -1918,6 +2226,7 @@ mod tests {
                     "OAUTH_CLIENT_ID".to_string(),
                     "device-client".to_string(),
                 )],
+                client_material_persistence: OAuthClientMaterialPersistence::All,
             },
             move |authorization| async move {
                 authorization_tx.send(authorization).map_err(|_error| {
@@ -1998,6 +2307,7 @@ mod tests {
                     "OAUTH_CLIENT_ID".to_string(),
                     "device-client".to_string(),
                 )],
+                client_material_persistence: OAuthClientMaterialPersistence::All,
             },
             |_authorization| async { Ok(()) },
         );
@@ -2083,6 +2393,7 @@ mod tests {
                     ("OAUTH_CLIENT_ID".to_string(), "client".to_string()),
                     ("OAUTH_CLIENT_SECRET".to_string(), "secret".to_string()),
                 ],
+                client_material_persistence: OAuthClientMaterialPersistence::All,
             },
             move |authorization| async move {
                 authorization_tx
@@ -2150,6 +2461,7 @@ mod tests {
                 endpoints,
                 client_id: "client".to_string(),
                 client_secret: None,
+                client_material_persistence: OAuthClientMaterialPersistence::All,
             },
             state: "expected-state".to_string(),
             code_verifier: None,
@@ -2217,6 +2529,7 @@ mod tests {
                 endpoints,
                 client_id: "client".to_string(),
                 client_secret: None,
+                client_material_persistence: OAuthClientMaterialPersistence::All,
             },
             state: "expected-state".to_string(),
             code_verifier: None,
@@ -2278,6 +2591,7 @@ mod tests {
                     ("OAUTH_CLIENT_ID".to_string(), "client".to_string()),
                     ("OAUTH_CLIENT_SECRET".to_string(), "secret".to_string()),
                 ],
+                client_material_persistence: OAuthClientMaterialPersistence::All,
             },
             move |authorization| async move {
                 authorization_tx
@@ -2329,6 +2643,7 @@ mod tests {
                 oauth: &oauth,
                 source_inputs: &EMPTY_SOURCE_INPUTS,
                 credential_inputs: Vec::new(),
+                client_material_persistence: OAuthClientMaterialPersistence::All,
             },
             move |authorization| async move {
                 authorization_tx
@@ -2389,6 +2704,7 @@ mod tests {
                 oauth: &oauth,
                 source_inputs: &EMPTY_SOURCE_INPUTS,
                 credential_inputs: Vec::new(),
+                client_material_persistence: OAuthClientMaterialPersistence::All,
             },
             move |authorization| async move {
                 authorization_tx

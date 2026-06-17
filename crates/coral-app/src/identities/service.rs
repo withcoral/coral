@@ -13,10 +13,15 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
-use crate::identities::{CreateFixedTokenIdentityCommand, IdentityManager, IdentityRecord};
+use crate::credentials::oauth::OAuthProgressEvent;
+use crate::identities::{
+    CreateFixedTokenIdentityCommand, CreateOAuthIdentityCommand, IdentityManager, IdentityRecord,
+};
 use crate::identity::IdentityOwnerKind;
 use crate::request_context::RequestContext;
-use crate::transport::{grpc_span, instrument_grpc};
+use crate::transport::{
+    OAuthProgressProto, grpc_span, instrument_grpc, oauth_operation_response_stream,
+};
 
 #[derive(Clone)]
 pub(crate) struct IdentityService {
@@ -39,37 +44,54 @@ impl IdentityServiceApi for IdentityService {
     ) -> Result<Response<Self::CreateUserOwnedIdentityStream>, Status> {
         let span = grpc_span(&request);
         let identities = self.identities.clone();
-        instrument_grpc(span, async move {
+        instrument_grpc(span.clone(), async move {
             let principal = RequestContext::from_request(&request)?.principal().clone();
             let request = request.into_inner();
-            let Some(create_user_owned_identity_request::Setup::FixedToken(
+            if let Some(create_user_owned_identity_request::Setup::FixedToken(
                 FixedTokenUserOwnedIdentitySetup { token },
             )) = request.setup
-            else {
-                return Err(Status::unimplemented(
-                    "OAuth identity creation is not enabled by this server",
+            {
+                let record = identities
+                    .create_user_owned_fixed_token_identity(
+                        &principal,
+                        CreateFixedTokenIdentityCommand {
+                            name: request.name,
+                            identity_spec: request.identity_spec,
+                            token,
+                        },
+                    )
+                    .await
+                    .map_err(app_status)?;
+                let response = CreateUserOwnedIdentityResponse {
+                    event: Some(create_user_owned_identity_response::Event::Identity(
+                        identity_record_to_proto(record),
+                    )),
+                };
+                let stream = Box::pin(tokio_stream::iter([Ok(response)]));
+                return Ok(Response::new(
+                    stream as CreateUserOwnedIdentityResponseStreamBox,
                 ));
-            };
-            let record = identities
-                .create_user_owned_fixed_token_identity(
-                    &principal,
-                    CreateFixedTokenIdentityCommand {
-                        name: request.name,
-                        identity_spec: request.identity_spec,
-                        token,
-                    },
-                )
-                .await
-                .map_err(app_status)?;
-            let response = CreateUserOwnedIdentityResponse {
-                event: Some(create_user_owned_identity_response::Event::Identity(
-                    user_owned_identity_record_to_proto(record),
-                )),
-            };
-            let stream = Box::pin(tokio_stream::iter([Ok(response)]));
-            Ok(Response::new(
-                stream as CreateUserOwnedIdentityResponseStreamBox,
-            ))
+            }
+
+            let command = create_user_owned_oauth_command_from_proto(request);
+            let stream = oauth_operation_response_stream(
+                "identity OAuth stream closed before creation completed",
+                move |event_sender| {
+                    instrument_grpc(span, async move {
+                        identities
+                            .create_user_owned_oauth_identity(&principal, command, event_sender)
+                            .await
+                            .map_err(app_status)
+                    })
+                },
+                identity_event_to_proto,
+                |identity| CreateUserOwnedIdentityResponse {
+                    event: Some(create_user_owned_identity_response::Event::Identity(
+                        identity_record_to_proto(identity),
+                    )),
+                },
+            );
+            Ok(Response::new(stream))
         })
         .await
     }
@@ -88,10 +110,7 @@ impl IdentityServiceApi for IdentityService {
                 .await
                 .map_err(app_status)?;
             Ok(Response::new(ListUserOwnedIdentitiesResponse {
-                identities: records
-                    .into_iter()
-                    .map(user_owned_identity_record_to_proto)
-                    .collect(),
+                identities: records.into_iter().map(identity_record_to_proto).collect(),
             }))
         })
         .await
@@ -101,18 +120,45 @@ impl IdentityServiceApi for IdentityService {
 type CreateUserOwnedIdentityResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<CreateUserOwnedIdentityResponse, Status>> + Send>>;
 
-fn user_owned_identity_record_to_proto(record: IdentityRecord) -> Identity {
-    debug_assert_eq!(record.owner.kind(), IdentityOwnerKind::User);
+fn create_user_owned_oauth_command_from_proto(
+    request: CreateUserOwnedIdentityRequest,
+) -> CreateOAuthIdentityCommand {
+    CreateOAuthIdentityCommand {
+        name: request.name,
+        identity_spec: request.identity_spec,
+        credential_inputs: Vec::new(),
+    }
+}
+
+fn identity_event_to_proto(event: OAuthProgressEvent) -> CreateUserOwnedIdentityResponse {
+    use create_user_owned_identity_response::Event;
+    let event = match OAuthProgressProto::from(event) {
+        OAuthProgressProto::Authorization(authorization) => {
+            Event::OauthAuthorization(authorization)
+        }
+        OAuthProgressProto::Completed(completed) => Event::OauthCompleted(completed),
+    };
+    CreateUserOwnedIdentityResponse { event: Some(event) }
+}
+
+fn identity_record_to_proto(record: IdentityRecord) -> Identity {
     Identity {
         name: record.name.to_string(),
         identity_spec: record.identity_spec,
         issuer: record.issuer,
         identity_type: record.identity_type,
-        owner: ProtoIdentityOwner::User as i32,
+        owner: proto_identity_owner(record.owner.kind()) as i32,
         metadata: record
             .metadata
             .into_iter()
             .map(|(key, value)| CredentialMetadata { key, value })
             .collect(),
+    }
+}
+
+fn proto_identity_owner(owner: IdentityOwnerKind) -> ProtoIdentityOwner {
+    match owner {
+        IdentityOwnerKind::User => ProtoIdentityOwner::User,
+        IdentityOwnerKind::Workspace => ProtoIdentityOwner::Workspace,
     }
 }

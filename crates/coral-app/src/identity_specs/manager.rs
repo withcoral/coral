@@ -392,7 +392,6 @@ impl IdentitySpecManager {
         self.load_identity_spec_manifest_unlocked(&name)
     }
 
-    #[cfg(test)]
     pub(crate) fn resolve_identity_spec_inputs(
         &self,
         manifest: &IdentityManifest,

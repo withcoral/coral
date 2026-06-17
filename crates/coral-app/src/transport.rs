@@ -3,8 +3,11 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
+use tokio::sync::mpsc;
 use tokio::task;
+use tokio_stream::Stream;
 
 use coral_api::{
     CORAL_EPISODE_ID_METADATA_KEY, CORAL_ERROR_DOMAIN, grpc_response_status_code,
@@ -31,6 +34,9 @@ use crate::bootstrap::{AppError, app_status, core_status};
 use crate::catalog::discovery::{
     CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
     ColumnSearchResult, DescribeTableResult,
+};
+use crate::credentials::oauth::{
+    OAuthProgressEvent, OAuthProgressEventSender, PendingOAuthProgressEvent,
 };
 use crate::episode::EpisodeId;
 use crate::identity::UserPrincipalProvider;
@@ -346,6 +352,124 @@ fn decode_grpc_error(status: &Status) -> GrpcErrorTelemetry {
     GrpcErrorTelemetry {
         error_type: grpc_response_status_code(status.code()).to_string(),
         message: status.message().to_string(),
+    }
+}
+
+/// One OAuth progress event mapped onto the shared credential proto pair.
+pub(crate) enum OAuthProgressProto {
+    /// Authorization-in-progress response payload.
+    Authorization(coral_api::v1::OAuthCredentialAuthorization),
+    /// Authorization-completed response payload.
+    Completed(coral_api::v1::OAuthCredentialCompleted),
+}
+
+impl From<OAuthProgressEvent> for OAuthProgressProto {
+    fn from(event: OAuthProgressEvent) -> Self {
+        match event {
+            OAuthProgressEvent::OAuthAuthorization {
+                input_key,
+                authorization_url,
+                expires_in_seconds,
+                user_code,
+                verification_uri,
+                verification_uri_complete,
+            } => Self::Authorization(coral_api::v1::OAuthCredentialAuthorization {
+                input_key,
+                authorization_url,
+                expires_in_seconds,
+                user_code: user_code.unwrap_or_default(),
+                verification_uri: verification_uri.unwrap_or_default(),
+                verification_uri_complete: verification_uri_complete.unwrap_or_default(),
+            }),
+            OAuthProgressEvent::OAuthCompleted {
+                input_key,
+                metadata,
+            } => Self::Completed(coral_api::v1::OAuthCredentialCompleted {
+                input_key,
+                metadata: metadata
+                    .into_iter()
+                    .map(|(key, value)| coral_api::v1::CredentialMetadata { key, value })
+                    .collect(),
+            }),
+        }
+    }
+}
+
+/// Builds a gRPC response stream that forwards acknowledged OAuth progress
+/// events while `operation` runs, then yields the operation's mapped result.
+pub fn oauth_operation_response_stream<T, R, F, Fut>(
+    closed_message: &'static str,
+    operation: F,
+    event_to_response: fn(OAuthProgressEvent) -> R,
+    operation_to_response: impl FnOnce(T) -> R + Send + 'static,
+) -> Pin<Box<dyn Stream<Item = Result<R, Status>> + Send>>
+where
+    T: 'static,
+    R: Send + Unpin + 'static,
+    F: FnOnce(OAuthProgressEventSender) -> Fut,
+    Fut: Future<Output = Result<T, Status>> + Send + 'static,
+{
+    let (event_tx, event_rx) = mpsc::channel(8);
+    let sender = OAuthProgressEventSender::new(event_tx, closed_message);
+    Box::pin(OAuthOperationResponseStream {
+        events: event_rx,
+        operation: Some((
+            Box::pin(operation(sender)) as Pin<Box<dyn Future<Output = _> + Send>>,
+            Box::new(operation_to_response),
+        )),
+        completion: None,
+        event_to_response,
+    })
+}
+
+struct OAuthOperationResponseStream<T, R> {
+    events: mpsc::Receiver<PendingOAuthProgressEvent>,
+    #[expect(clippy::type_complexity, reason = "private one-shot operation slot")]
+    operation: Option<(
+        Pin<Box<dyn Future<Output = Result<T, Status>> + Send>>,
+        Box<dyn FnOnce(T) -> R + Send>,
+    )>,
+    completion: Option<Result<R, Status>>,
+    event_to_response: fn(OAuthProgressEvent) -> R,
+}
+
+impl<T, R> OAuthOperationResponseStream<T, R> {
+    fn poll_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<R>> {
+        Pin::new(&mut self.events)
+            .poll_recv(cx)
+            .map(|event| event.map(|event| (self.event_to_response)(event.into_event())))
+    }
+}
+
+impl<T, R: Unpin> Stream for OAuthOperationResponseStream<T, R> {
+    type Item = Result<R, Status>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            if let Poll::Ready(Some(event)) = this.poll_event(cx) {
+                return Poll::Ready(Some(Ok(event)));
+            }
+            if let Some(completion) = this.completion.take() {
+                return Poll::Ready(Some(completion));
+            }
+            let Some((operation, _)) = this.operation.as_mut() else {
+                return Poll::Ready(None);
+            };
+            match operation.as_mut().poll(cx) {
+                Poll::Ready(result) => {
+                    if let Some((_, operation_to_response)) = this.operation.take() {
+                        this.completion = Some(result.map(operation_to_response));
+                    }
+                }
+                Poll::Pending => {
+                    return match this.poll_event(cx) {
+                        Poll::Ready(Some(event)) => Poll::Ready(Some(Ok(event))),
+                        Poll::Ready(None) | Poll::Pending => Poll::Pending,
+                    };
+                }
+            }
+        }
     }
 }
 
