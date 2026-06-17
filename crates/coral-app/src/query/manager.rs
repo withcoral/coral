@@ -18,6 +18,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::episode::EpisodeId;
+use crate::features::Features;
 use crate::query::QueryContext;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
@@ -50,9 +51,11 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    features: Features,
 }
 
 impl QueryManager {
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
@@ -60,12 +63,31 @@ impl QueryManager {
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
+        Self::new_with_features(
+            config_store,
+            credential_manager,
+            runtime_context,
+            layout,
+            engine_extensions_providers,
+            Features::default(),
+        )
+    }
+
+    pub(crate) fn new_with_features(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        features: Features,
+    ) -> Self {
         Self {
             config_store,
             credential_manager,
             runtime_context,
             layout,
             engine_extensions_providers,
+            features,
         }
     }
 
@@ -285,7 +307,8 @@ impl QueryManager {
                 Ok((query_source, _version)) => query_sources.push(query_source),
                 Err(
                     error @ (AppError::Credentials(CredentialsError::Unavailable(_))
-                    | AppError::MissingOrIncompatibleV4Materialization { .. }),
+                    | AppError::MissingOrIncompatibleV4Materialization { .. }
+                    | AppError::SourceUnservable(_)),
                 ) => {
                     return Err(error);
                 }
@@ -310,6 +333,7 @@ impl QueryManager {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
         let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
+            self.features.ensure_dsl_v4_enabled()?;
             let materialized = load_v4_materialization(
                 &self.layout,
                 workspace_name,
@@ -550,11 +574,14 @@ fn app_error_type(error: &AppError) -> &'static str {
     match error {
         AppError::Unauthenticated(_) => "UNAUTHENTICATED",
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
+        AppError::IdentitySpecNotFound(_) => "IDENTITY_SPEC_NOT_FOUND",
+        AppError::IdentityNotFound(_) => "IDENTITY_NOT_FOUND",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
         AppError::MissingOrIncompatibleV4Materialization { .. } => {
             "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
         }
+        AppError::SourceUnservable(_) => "SOURCE_UNSERVABLE",
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Unavailable(_) => "UNAVAILABLE",
         AppError::Io(_) => "IO",
@@ -632,6 +659,7 @@ mod tests {
 
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
+    use crate::features::{Features, dsl_v4_features};
     use crate::identity::UserPrincipal;
     use crate::query::QueryAttribution;
     use crate::request_context::RequestContext;
@@ -647,15 +675,24 @@ mod tests {
         runtime_context: QueryRuntimeContext,
         providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> QueryManagerFixture {
+        query_manager_with_features(runtime_context, providers, Features::default())
+    }
+
+    fn query_manager_with_features(
+        runtime_context: QueryRuntimeContext,
+        providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        features: Features,
+    ) -> QueryManagerFixture {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        let manager = QueryManager::new(
+        let manager = QueryManager::new_with_features(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             runtime_context,
             layout,
             providers,
+            features,
         );
         QueryManagerFixture {
             _temp: temp,
@@ -985,12 +1022,17 @@ tables:
             .mount(&server)
             .await;
 
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let fixture = query_manager_with_features(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            dsl_v4_features(),
+        );
         fixture.manager.layout.ensure().expect("ensure layout");
-        let source_manager = SourceManager::new(
+        let source_manager = SourceManager::new_with_features(
             fixture.manager.config_store.clone(),
             fixture.manager.credential_manager.clone(),
             fixture.manager.layout.clone(),
+            dsl_v4_features(),
         );
         let workspace_name = WorkspaceName::default();
         let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
@@ -1065,8 +1107,76 @@ surfaces:
     }
 
     #[test]
-    fn load_query_sources_fails_closed_for_missing_v4_materialization() {
+    fn load_query_source_rejects_v4_when_dsl_v4_feature_is_disabled() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("github_v4_disabled").expect("source name");
+        let manifest_path = fixture
+            .manager
+            .layout
+            .manifest_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(
+            &manifest_path,
+            r"
+name: github_v4_disabled
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+",
+        )
+        .expect("write manifest");
+        let source = InstalledSource {
+            name: source_name,
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: Vec::new(),
+            credential_storage: None,
+            origin: SourceOrigin::Imported,
+        };
+
+        let error = fixture
+            .manager
+            .load_query_source(&workspace_name, &source)
+            .expect_err("v4 source should require feature opt-in");
+
+        assert!(
+            matches!(error, AppError::SourceUnservable(ref message) if message.contains("dsl_v4")),
+            "unexpected error: {error:#}"
+        );
+
+        fixture
+            .manager
+            .config_store
+            .upsert_source(&workspace_name, source)
+            .expect("persist v4 source");
+        let config = fixture
+            .manager
+            .config_store
+            .load_config()
+            .expect("load config");
+        let error = fixture
+            .manager
+            .load_query_sources(&workspace_name, &config)
+            .expect_err("normal query loading should fail on disabled v4 source");
+
+        assert!(
+            matches!(error, AppError::SourceUnservable(ref message) if message.contains("dsl_v4")),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn load_query_sources_fails_closed_for_missing_v4_materialization() {
+        let fixture = query_manager_with_features(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            dsl_v4_features(),
+        );
         fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = WorkspaceName::default();
         let source_name = SourceName::parse("github_v4_missing_artifacts").expect("source name");

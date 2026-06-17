@@ -16,6 +16,8 @@ use crate::workspaces::WorkspaceName;
 
 use self::oauth::{OAuthCredentialService, RefreshOAuthCredentialRequest};
 
+#[cfg(test)]
+pub(crate) use store::parse_env_file;
 pub(crate) use store::{CredentialStore, CredentialsError};
 
 /// Opaque credential material captured for best-effort rollback.
@@ -97,6 +99,12 @@ impl CredentialSetId {
         Self(format!("source.{}", source_name.as_str()))
     }
 
+    /// Build the identity-spec-backed credential-set id used for spec-owned
+    /// input material.
+    pub(crate) fn for_identity_spec(identity_spec_name: &str) -> Self {
+        Self(format!("identity-spec.{identity_spec_name}"))
+    }
+
     pub(crate) fn source_name(&self) -> Result<SourceName, AppError> {
         let Some(source_name) = self.0.strip_prefix("source.") else {
             return Err(AppError::FailedPrecondition(format!(
@@ -105,6 +113,19 @@ impl CredentialSetId {
             )));
         };
         SourceName::parse(source_name)
+    }
+
+    pub(crate) fn identity_spec_name(&self) -> Result<&str, AppError> {
+        self.0.strip_prefix("identity-spec.").ok_or_else(|| {
+            AppError::FailedPrecondition(format!(
+                "credential set '{}' is not identity-spec-backed",
+                self.0
+            ))
+        })
+    }
+
+    pub(crate) fn is_identity_spec_backed(&self) -> bool {
+        self.0.starts_with("identity-spec.")
     }
 }
 

@@ -437,6 +437,7 @@ pub async fn run_from_env() -> Result<(), CliError> {
             let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
             let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
                 enable_stderr_logs: command.enables_stderr_logs(),
+                feature_overrides: feature_overrides.clone(),
             })
             .await
             .map_err(anyhow::Error::from)?;
@@ -481,8 +482,11 @@ pub fn open_url(url: &str) -> Result<(), std::io::Error> {
 }
 
 #[cfg(feature = "embedded-ui")]
-async fn run_ui(args: UiArgs) -> Result<(), anyhow::Error> {
-    let server = bootstrap::start_ui_server(args.port).await?;
+async fn run_ui(
+    args: UiArgs,
+    feature_overrides: &coral_app::features::FeatureOverrides,
+) -> Result<(), anyhow::Error> {
+    let server = bootstrap::start_ui_server(args.port, feature_overrides.clone()).await?;
     let endpoint = server.endpoint_uri().to_string();
 
     println!("Coral UI listening on {endpoint}");
@@ -519,7 +523,7 @@ async fn run_no_runtime_command(
         }
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
-        Command::Ui(args) => run_ui(args).await.map_err(Into::into),
+        Command::Ui(args) => run_ui(args, feature_overrides).await.map_err(Into::into),
         Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
             unreachable!("app client commands are routed through app runtime startup")
         }

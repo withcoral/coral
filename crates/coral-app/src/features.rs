@@ -13,6 +13,8 @@ use crate::state::{
 /// Runtime feature keys recognized by Coral.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
+    /// Enables preview DSL v4 source manifests.
+    DslV4,
     /// Expose the optional MCP `feedback` tool.
     Feedback,
     /// Experimental trajectory-memory episodes (in progress): exposes the MCP
@@ -70,6 +72,14 @@ struct FeatureSpec {
 }
 
 const FEATURE_SPECS: &[FeatureSpec] = &[
+    FeatureSpec {
+        feature: Feature::DslV4,
+        key: "dsl_v4",
+        default_enabled: false,
+        description: "Enables preview DSL v4 source manifests.",
+        enable_flag: "enable-dsl-v4",
+        disable_flag: "disable-dsl-v4",
+    },
     FeatureSpec {
         feature: Feature::Feedback,
         key: "feedback",
@@ -157,6 +167,22 @@ impl Features {
         self.enabled.get(&feature).copied().unwrap_or(false)
     }
 
+    /// Errors unless the preview DSL v4 runtime feature is enabled.
+    ///
+    /// DSL v4 sources and their identity specs cannot be installed or served
+    /// while `dsl_v4` is off, so the source-install, identity-spec-install, and
+    /// query-load paths share this single gate and its canonical remediation
+    /// message.
+    pub(crate) fn ensure_dsl_v4_enabled(&self) -> Result<(), AppError> {
+        if self.enabled(Feature::DslV4) {
+            return Ok(());
+        }
+        Err(AppError::SourceUnservable(
+            "DSL v4 sources require the 'dsl_v4' runtime feature. Run `coral features enable dsl_v4` or pass `--enable-dsl-v4` and retry."
+                .to_string(),
+        ))
+    }
+
     fn from_raw_overrides(raw: &RawFeatureOverrides) -> Self {
         let mut features = Self::default();
         for (key, value) in raw.iter() {
@@ -180,7 +206,7 @@ impl Features {
         features
     }
 
-    fn apply_overrides(&mut self, overrides: &FeatureOverrides) {
+    pub(crate) fn apply_overrides(&mut self, overrides: &FeatureOverrides) {
         for (feature, enabled) in overrides.iter() {
             self.enabled.insert(feature, enabled);
         }
@@ -199,6 +225,21 @@ impl FeatureOverrides {
         self.enabled.insert(feature, enabled);
     }
 
+    /// Returns the process-local override for a known feature, when present.
+    #[must_use]
+    pub fn get(&self, feature: Feature) -> Option<bool> {
+        self.enabled.get(&feature).copied()
+    }
+
+    /// Adds every override from `defaults` that is not already explicitly set.
+    pub fn apply_defaults_from(&mut self, defaults: &Self) {
+        for (feature, enabled) in defaults.iter() {
+            if self.get(feature).is_none() {
+                self.set(feature, enabled);
+            }
+        }
+    }
+
     fn iter(&self) -> impl Iterator<Item = (Feature, bool)> + '_ {
         self.enabled
             .iter()
@@ -213,6 +254,12 @@ pub struct FeatureStore {
 }
 
 impl FeatureStore {
+    /// Builds a feature store for an already-discovered app state layout.
+    #[must_use]
+    pub(crate) fn new(layout: AppStateLayout) -> Self {
+        Self { layout }
+    }
+
     /// Discovers the Coral app state layout used for runtime feature config.
     ///
     /// # Errors
@@ -329,6 +376,17 @@ fn spec_for_key(key: &str) -> Option<&'static FeatureSpec> {
     FEATURE_SPECS.iter().find(|spec| spec.key == key)
 }
 
+/// Builds a [`Features`] with the preview DSL v4 feature enabled, shared by the
+/// crate's source-install and query tests that exercise v4 sources.
+#[cfg(test)]
+pub(crate) fn dsl_v4_features() -> Features {
+    let mut overrides = FeatureOverrides::default();
+    overrides.set(Feature::DslV4, true);
+    let mut features = Features::default();
+    features.apply_overrides(&overrides);
+    features
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,10 +398,12 @@ mod tests {
     }
 
     #[test]
-    fn defaults_disable_feedback() {
+    fn defaults_disable_features() {
         let features = Features::default();
 
-        assert!(!features.enabled(Feature::Feedback));
+        for (label, feature) in [("feedback", Feature::Feedback), ("dsl_v4", Feature::DslV4)] {
+            assert!(!features.enabled(feature), "{label} should default off");
+        }
     }
 
     #[test]
@@ -358,19 +418,44 @@ mod tests {
     }
 
     #[test]
-    fn known_boolean_override_enables_feedback() {
-        let raw = raw([("feedback", RawFeatureValue::Bool(true))]);
-        let features = Features::from_raw_overrides(&raw);
+    fn process_override_get_reports_only_explicit_overrides() {
+        let mut overrides = FeatureOverrides::default();
 
-        assert!(features.enabled(Feature::Feedback));
+        assert_eq!(overrides.get(Feature::DslV4), None);
+
+        overrides.set(Feature::DslV4, false);
+
+        assert_eq!(overrides.get(Feature::DslV4), Some(false));
     }
 
     #[test]
-    fn known_boolean_override_disables_feedback() {
-        let raw = raw([("feedback", RawFeatureValue::Bool(false))]);
-        let features = Features::from_raw_overrides(&raw);
+    fn process_override_defaults_fill_missing_features_only() {
+        let mut overrides = FeatureOverrides::default();
+        overrides.set(Feature::DslV4, false);
+        let mut defaults = FeatureOverrides::default();
+        defaults.set(Feature::DslV4, true);
+        defaults.set(Feature::Feedback, true);
 
-        assert!(!features.enabled(Feature::Feedback));
+        overrides.apply_defaults_from(&defaults);
+
+        assert_eq!(overrides.get(Feature::DslV4), Some(false));
+        assert_eq!(overrides.get(Feature::Feedback), Some(true));
+    }
+
+    #[test]
+    fn raw_overrides_toggle_only_known_boolean_entries() {
+        use RawFeatureValue::{Bool, UnsupportedType};
+
+        for (label, key, value, on) in [
+            ("enables feedback", "feedback", Bool(true), true),
+            ("disables feedback", "feedback", Bool(false), false),
+            ("unknown key ignored", "future_flag", Bool(true), false),
+            ("unsupported type", "feedback", UnsupportedType, false),
+        ] {
+            let features = Features::from_raw_overrides(&raw([(key, value)]));
+
+            assert_eq!(features.enabled(Feature::Feedback), on, "{label}");
+        }
     }
 
     #[test]
@@ -386,31 +471,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_override_is_ignored() {
-        let raw = raw([("future_flag", RawFeatureValue::Bool(true))]);
-        let features = Features::from_raw_overrides(&raw);
-
-        assert!(!features.enabled(Feature::Feedback));
-    }
-
-    #[test]
-    fn unsupported_known_override_is_ignored() {
-        let raw = raw([("feedback", RawFeatureValue::UnsupportedType)]);
-        let features = Features::from_raw_overrides(&raw);
-
-        assert!(!features.enabled(Feature::Feedback));
-    }
-
-    #[test]
     fn statuses_report_invalid_known_value_without_enabling_feature() {
         let raw = raw([("feedback", RawFeatureValue::UnsupportedType)]);
         let features = Features::from_raw_overrides(&raw);
 
-        let statuses = FEATURE_SPECS
+        let status = FEATURE_SPECS
             .iter()
             .map(|spec| status_from_raw(spec, &raw, &features))
-            .collect::<Vec<_>>();
-        let status = statuses.first().expect("feedback status");
+            .find(|status| status.key == "feedback")
+            .expect("feedback status");
 
         assert_eq!(status.key, "feedback");
         assert_eq!(status.configured, FeatureConfiguredState::InvalidValue);

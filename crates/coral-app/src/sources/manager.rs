@@ -15,6 +15,7 @@ use crate::credentials::{
     CORAL_INTERNAL_KEY_PREFIX, CredentialManager, CredentialMaterialGuard,
     CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind, CredentialsError,
 };
+use crate::features::Features;
 use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
@@ -40,6 +41,7 @@ pub(crate) struct SourceManager {
     credential_manager: CredentialManager,
     oauth_credential_service: OAuthCredentialService,
     layout: AppStateLayout,
+    features: Features,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -169,16 +171,32 @@ fn materialization_inputs_from_bindings(
 }
 
 impl SourceManager {
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
         layout: AppStateLayout,
+    ) -> Self {
+        Self::new_with_features(
+            config_store,
+            credential_manager,
+            layout,
+            Features::default(),
+        )
+    }
+
+    pub(crate) fn new_with_features(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        layout: AppStateLayout,
+        features: Features,
     ) -> Self {
         Self {
             config_store,
             credential_manager,
             oauth_credential_service: OAuthCredentialService::new(),
             layout,
+            features,
         }
     }
 
@@ -301,6 +319,7 @@ impl SourceManager {
     ) -> Result<InstalledSource, AppError> {
         let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        self.ensure_dsl_v4_enabled_for_manifest(&manifest)?;
         let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
@@ -322,6 +341,7 @@ impl SourceManager {
     ) -> Result<InstalledSource, AppError> {
         let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        self.ensure_dsl_v4_enabled_for_manifest(&manifest)?;
         let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
@@ -351,6 +371,7 @@ impl SourceManager {
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
+        self.ensure_dsl_v4_enabled_for_manifest_yaml(materialization_manifest_yaml)?;
         self.validate_runtime_schema_names_available(
             workspace_name,
             &candidate.name,
@@ -412,6 +433,7 @@ impl SourceManager {
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
+        self.ensure_dsl_v4_enabled_for_manifest_yaml(materialization_manifest_yaml)?;
         self.validate_runtime_schema_names_available(
             workspace_name,
             &candidate.name,
@@ -726,6 +748,7 @@ impl SourceManager {
         let Some(v4) = manifest.as_v4() else {
             return Ok(None);
         };
+        self.features.ensure_dsl_v4_enabled()?;
         if matches!(origin, SourceOrigin::Bundled)
             && v4.surfaces.iter().any(|surface| {
                 matches!(
@@ -749,6 +772,22 @@ impl SourceManager {
             &new_materialization_suffix(suffix_prefix),
         )
         .map(Some)
+    }
+
+    fn ensure_dsl_v4_enabled_for_manifest(
+        &self,
+        manifest: &ValidatedSourceManifest,
+    ) -> Result<(), AppError> {
+        if manifest.as_v4().is_some() {
+            self.features.ensure_dsl_v4_enabled()?;
+        }
+        Ok(())
+    }
+
+    fn ensure_dsl_v4_enabled_for_manifest_yaml(&self, manifest_yaml: &str) -> Result<(), AppError> {
+        let manifest = parse_source_manifest_yaml(manifest_yaml)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        self.ensure_dsl_v4_enabled_for_manifest(&manifest)
     }
 
     fn validate_runtime_schema_names_available(
@@ -1490,15 +1529,30 @@ mod tests {
         materialization_inputs_from_bindings, normalize_binding_key,
         source_needs_stored_material_for_validation,
     };
+    use crate::bootstrap::AppError;
     use crate::credentials::{
         CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
         CredentialStore,
     };
+    use crate::features::dsl_v4_features;
     use crate::sources::SourceName;
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
+
+    fn source_manager_with_dsl_v4(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        layout: AppStateLayout,
+    ) -> SourceManager {
+        SourceManager::new_with_features(
+            config_store,
+            credential_manager,
+            layout,
+            dsl_v4_features(),
+        )
+    }
 
     fn default_workspace() -> WorkspaceName {
         WorkspaceName::default()
@@ -1935,6 +1989,83 @@ tables:
     }
 
     #[test]
+    fn import_v4_source_requires_dsl_v4_feature() {
+        let temp = TempDir::new().expect("temp dir");
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+
+        let error = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_v4_with_file_descriptor(&openapi_file),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect_err("v4 source import should require feature opt-in");
+
+        assert!(
+            matches!(error, AppError::SourceUnservable(ref message) if message.contains("dsl_v4")),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            manager
+                .list_workspace_sources(&default_workspace())
+                .expect("list sources")
+                .is_empty(),
+            "rejected source should not be persisted"
+        );
+    }
+
+    #[tokio::test]
+    async fn import_v4_source_with_oauth_requires_dsl_v4_before_retrieval() {
+        let temp = TempDir::new().expect("temp dir");
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout);
+        let (event_tx, mut event_rx) = import_event_channel();
+
+        let error = manager
+            .import_source_with_credentials(
+                &default_workspace(),
+                ImportSourceWithCredentialsCommand {
+                    manifest_yaml: manifest_v4_with_file_descriptor(&openapi_file),
+                    bindings: SourceBindings::default(),
+                    oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
+                        input_key: "API_TOKEN".to_string(),
+                        method_index: 0,
+                        credential_inputs: Vec::new(),
+                    }],
+                },
+                event_tx,
+            )
+            .await
+            .expect_err("v4 OAuth import should require feature opt-in");
+
+        assert!(
+            matches!(error, AppError::SourceUnservable(ref message) if message.contains("dsl_v4")),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            event_rx.try_recv().is_err(),
+            "feature gate should fail before OAuth retrieval emits events"
+        );
+    }
+
+    #[test]
     fn import_v4_source_writes_materialized_artifacts() {
         let temp = TempDir::new().expect("temp dir");
         let descriptor_temp = TempDir::new().expect("descriptor temp dir");
@@ -1946,7 +2077,7 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+        let manager = source_manager_with_dsl_v4(config_store, credential_manager, layout.clone());
 
         let installed = manager
             .import_source(
@@ -1986,7 +2117,7 @@ tables:
         layout.ensure().expect("ensure layout");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
-        let manager = SourceManager::new(
+        let manager = source_manager_with_dsl_v4(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout.clone(),
@@ -2048,7 +2179,7 @@ tables:
             v4_openapi_fixture_with_defaulted_input_server_url(),
         )
         .expect("write fixture");
-        let manager = SourceManager::new(
+        let manager = source_manager_with_dsl_v4(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout.clone(),
@@ -2086,7 +2217,7 @@ tables:
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
-        let manager = SourceManager::new(
+        let manager = source_manager_with_dsl_v4(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout,
@@ -2119,7 +2250,7 @@ tables:
         layout.ensure().expect("ensure layout");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         std::fs::write(&openapi_file, v4_openapi_fixture_with_metadata()).expect("write fixture");
-        let manager = SourceManager::new(
+        let manager = source_manager_with_dsl_v4(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout.clone(),

@@ -4,6 +4,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use tokio::task;
+
 use coral_api::{
     CORAL_EPISODE_ID_METADATA_KEY, CORAL_ERROR_DOMAIN, grpc_response_status_code,
     v1::{
@@ -287,6 +289,20 @@ where
     })
 }
 
+/// Runs a blocking `operation` on the blocking thread pool while preserving the
+/// current tracing span, mapping a join failure or [`AppError`] to a [`Status`].
+/// `label` names the operation in the join-failure message.
+pub(crate) async fn run_blocking_operation<T, F>(label: &str, operation: F) -> Result<T, Status>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, AppError> + Send + 'static,
+{
+    let span = tracing::Span::current();
+    task::spawn_blocking(move || span.in_scope(operation))
+        .await
+        .map_err(|error| Status::internal(format!("{label} task failed: {error}")))?
+        .map_err(app_status)
+}
 fn record_grpc_status(span: &tracing::Span, code: Code, status: Option<&Status>) {
     let response_status_code = grpc_response_status_code(code);
     span.record("grpc.status_code", code as i64);

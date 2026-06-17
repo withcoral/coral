@@ -7,7 +7,7 @@ use coral_api::v1::{
     ValidateSourceResponse, catalog_item, import_source_response,
 };
 use coral_client::{
-    AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
+    AppClient, CatalogClient, IdentitySpecClient, QueryClient, SourceClient, batches_to_json_rows,
     decode_execute_sql_response, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
@@ -67,6 +67,10 @@ impl GrpcHarness {
 
     pub(crate) fn source_client(&self) -> SourceClient {
         self.app.source_client()
+    }
+
+    pub(crate) fn identity_spec_client(&self) -> IdentitySpecClient {
+        self.app.identity_spec_client()
     }
 
     pub(crate) fn catalog_client(&self) -> CatalogClient {

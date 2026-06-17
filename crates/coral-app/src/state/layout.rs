@@ -11,6 +11,7 @@ use crate::workspaces::WorkspaceName;
 
 pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
 pub(crate) const INSTALLED_SECRETS_FILE_NAME: &str = "secrets.env";
+pub(crate) const INSTALLED_IDENTITY_FILE_NAME: &str = "identity.yaml";
 
 #[derive(Debug, Clone)]
 pub(crate) struct AppStateLayout {
@@ -93,6 +94,41 @@ impl AppStateLayout {
         self.workspace_dir(workspace_name)
             .join("episodes")
             .join("episodes.jsonl")
+    }
+
+    pub(crate) fn identity_specs_root(&self) -> PathBuf {
+        self.config_dir.join("identity-specs")
+    }
+
+    pub(crate) fn identity_spec_dir(&self, identity_spec_name: &str) -> PathBuf {
+        self.identity_specs_root().join(identity_spec_name)
+    }
+
+    pub(crate) fn identity_spec_manifest_file(&self, identity_spec_name: &str) -> PathBuf {
+        self.identity_spec_dir(identity_spec_name)
+            .join(INSTALLED_MANIFEST_FILE_NAME)
+    }
+
+    pub(crate) fn identity_spec_material_file(&self, identity_spec_name: &str) -> PathBuf {
+        self.identity_spec_dir(identity_spec_name)
+            .join(INSTALLED_SECRETS_FILE_NAME)
+    }
+
+    pub(crate) fn identities_root(&self) -> PathBuf {
+        self.config_dir.join("identities")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn user_owned_identity_manifest_file(
+        &self,
+        user_id: &str,
+        identity_name: &str,
+    ) -> PathBuf {
+        self.identities_root()
+            .join("users")
+            .join(user_id)
+            .join(identity_name)
+            .join(INSTALLED_IDENTITY_FILE_NAME)
     }
 
     pub(crate) fn source_dir(

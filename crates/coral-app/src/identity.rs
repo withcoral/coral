@@ -12,6 +12,24 @@ use serde_json::Value;
 
 use crate::bootstrap::AppError;
 
+/// Collects `(key, value)` inputs into a map, validating each key as a path
+/// segment and rejecting duplicates. `label` names the input kind in errors.
+pub(crate) fn unique_input_map(
+    inputs: impl IntoIterator<Item = (String, String)>,
+    label: &str,
+) -> Result<BTreeMap<String, String>, AppError> {
+    let mut values = BTreeMap::new();
+    for (key, value) in inputs {
+        let key = parse_path_segment(label, &key)?;
+        if values.insert(key.clone(), value).is_some() {
+            return Err(AppError::InvalidInput(format!(
+                "{label} '{key}' is repeated"
+            )));
+        }
+    }
+    Ok(values)
+}
+
 pub(crate) fn parse_path_segment(kind: &str, value: &str) -> Result<String, AppError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {

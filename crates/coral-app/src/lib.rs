@@ -51,6 +51,7 @@ pub mod features;
 mod feedback;
 mod identities;
 mod identity;
+mod identity_specs;
 mod query;
 mod request_context;
 mod sources;
@@ -81,6 +82,12 @@ pub use identity::{
     RuntimeSourceIdentity, SingleUserPrincipalProvider, SourceIdentityBinding, SourceIdentityOwner,
     SourceIdentityProvider, SourceIdentityResolutionRequest, SourceIdentitySelection,
     SourceIdentitySelectionRequest, UserPrincipal, UserPrincipalProvider,
+};
+pub use identity_specs::IdentitySpecUsageProvider;
+pub use identity_specs::{
+    IdentitySpecManifestMetadata, IdentitySpecRegistry, IdentitySpecRegistryRecord,
+    identity_spec_input_material_from_manifest,
+    identity_spec_input_material_from_manifest_with_existing, identity_spec_manifest_metadata,
 };
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,

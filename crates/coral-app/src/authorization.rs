@@ -111,3 +111,10 @@ impl ManagementAuthorizer for AllowAllManagementAuthorizer {
         Ok(())
     }
 }
+
+pub(crate) fn authorization_status(error: AuthorizationError) -> tonic::Status {
+    match error {
+        AuthorizationError::Forbidden(message) => tonic::Status::permission_denied(message),
+        AuthorizationError::Internal(message) => tonic::Status::internal(message),
+    }
+}

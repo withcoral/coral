@@ -17,6 +17,7 @@ use axum::response::Response as AxumResponse;
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
 use coral_api::v1::episode_service_server::EpisodeServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
+use coral_api::v1::identity_spec_service_server::IdentitySpecServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
@@ -38,17 +39,22 @@ use tower::{Layer, Service};
 use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
+use crate::authorization::{AllowAllManagementAuthorizer, ManagementAuthorizer};
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::episode::service::EpisodeService;
 use crate::episode::store::EpisodeStore;
+use crate::features::FeatureOverrides;
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
 use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
+use crate::identity_specs::{
+    IdentitySpecManager, IdentitySpecRegistry, IdentitySpecService, IdentitySpecUsageProvider,
+};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
@@ -83,7 +89,11 @@ pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerMode,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    identity_spec_registry: Option<Arc<dyn IdentitySpecRegistry>>,
+    identity_spec_usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
+    feature_overrides: FeatureOverrides,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    management_authorizer: Arc<dyn ManagementAuthorizer>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     enable_stderr_logs: bool,
 }
@@ -100,7 +110,11 @@ impl ServerConfig {
             config_dir: None,
             mode: ServerMode::NativeGrpc,
             engine_extensions_providers: Vec::new(),
+            identity_spec_registry: None,
+            identity_spec_usage_providers: Vec::new(),
+            feature_overrides: FeatureOverrides::default(),
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
+            management_authorizer: Arc::new(AllowAllManagementAuthorizer),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             enable_stderr_logs: false,
         }
@@ -130,6 +144,35 @@ impl ServerConfig {
         user_principal_provider: Arc<dyn UserPrincipalProvider>,
     ) -> Self {
         self.user_principal_provider = user_principal_provider;
+        self
+    }
+
+    pub(crate) fn with_management_authorizer(
+        mut self,
+        management_authorizer: Arc<dyn ManagementAuthorizer>,
+    ) -> Self {
+        self.management_authorizer = management_authorizer;
+        self
+    }
+
+    pub(crate) fn with_identity_spec_registry(
+        mut self,
+        identity_spec_registry: Arc<dyn IdentitySpecRegistry>,
+    ) -> Self {
+        self.identity_spec_registry = Some(identity_spec_registry);
+        self
+    }
+
+    pub(crate) fn add_identity_spec_usage_provider(
+        mut self,
+        usage_provider: Arc<dyn IdentitySpecUsageProvider>,
+    ) -> Self {
+        self.identity_spec_usage_providers.push(usage_provider);
+        self
+    }
+
+    pub(crate) fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
+        self.feature_overrides = feature_overrides;
         self
     }
 
@@ -246,6 +289,59 @@ impl ServerBuilder {
     }
 
     #[must_use]
+    /// Sets the server-side management authorizer.
+    ///
+    /// The default authorizer allows every mutation, preserving local
+    /// single-user behavior.
+    pub fn with_management_authorizer(
+        mut self,
+        management_authorizer: Arc<dyn ManagementAuthorizer>,
+    ) -> Self {
+        self.config = self
+            .config
+            .with_management_authorizer(management_authorizer);
+        self
+    }
+
+    #[must_use]
+    /// Sets the durable global identity-spec registry.
+    ///
+    /// The default registry stores identity specs under the local Coral config
+    /// directory.
+    pub fn with_identity_spec_registry(
+        mut self,
+        identity_spec_registry: Arc<dyn IdentitySpecRegistry>,
+    ) -> Self {
+        self.config = self
+            .config
+            .with_identity_spec_registry(identity_spec_registry);
+        self
+    }
+
+    #[must_use]
+    /// Adds a provider that reports stored identity usage for identity specs.
+    ///
+    /// Providers are consulted before deleting an identity spec so deletion can
+    /// reject or report orphaned identities outside the default local store.
+    pub fn add_identity_spec_usage_provider(
+        mut self,
+        usage_provider: Arc<dyn IdentitySpecUsageProvider>,
+    ) -> Self {
+        self.config = self.config.add_identity_spec_usage_provider(usage_provider);
+        self
+    }
+
+    #[must_use]
+    /// Sets process-local runtime feature overrides.
+    ///
+    /// Overrides affect this server process only; they do not persist to
+    /// `config.toml`.
+    pub fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
+        self.config = self.config.with_feature_overrides(feature_overrides);
+        self
+    }
+
+    #[must_use]
     /// Enables or disables local stderr log rendering for this server.
     ///
     /// `MCP` stdio adapters can enable this for diagnostics while keeping
@@ -292,11 +388,29 @@ impl ServerBuilder {
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
-        let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
+        let credential_manager = CredentialManager::new(credential_store.clone());
+        let features = crate::features::FeatureStore::new(layout.clone())
+            .load_with_overrides(&self.config.feature_overrides)?;
+        let identity_spec_manager = if let Some(registry) = self.config.identity_spec_registry {
+            IdentitySpecManager::new_with_registry(
+                layout.clone(),
+                registry,
+                features.clone(),
+                self.config.identity_spec_usage_providers,
+            )
+        } else {
+            IdentitySpecManager::new_with_credential_store(
+                layout.clone(),
+                credential_store,
+                features.clone(),
+                self.config.identity_spec_usage_providers,
+            )
+        };
+        let source_manager = SourceManager::new_with_features(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            features.clone(),
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
@@ -308,12 +422,13 @@ impl ServerBuilder {
             .query_runtime_context()
             .with_body_capture_max_bytes(body_capture_max_bytes);
 
-        let query_manager = QueryManager::new(
+        let query_manager = QueryManager::new_with_features(
             config_store,
             credential_manager,
             query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
+            features,
         );
         let trace_service = if telemetry_config.trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
@@ -321,16 +436,31 @@ impl ServerBuilder {
             None
         };
         start_server(
-            source_manager,
-            query_manager,
-            feedback_manager,
-            episode_store,
-            trace_service,
-            self.config.user_principal_provider,
+            ServerServices {
+                source_manager,
+                query_manager,
+                feedback_manager,
+                episode_store,
+                trace_service,
+                user_principal_provider: self.config.user_principal_provider,
+                management_authorizer: self.config.management_authorizer,
+                identity_spec_manager,
+            },
             self.config.mode,
         )
         .await
     }
+}
+
+struct ServerServices {
+    source_manager: SourceManager,
+    query_manager: QueryManager,
+    feedback_manager: FeedbackManager,
+    episode_store: EpisodeStore,
+    trace_service: Option<TraceService>,
+    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    management_authorizer: Arc<dyn ManagementAuthorizer>,
+    identity_spec_manager: IdentitySpecManager,
 }
 
 /// Running Coral server.
@@ -404,21 +534,33 @@ impl Drop for RunningServer {
 }
 
 async fn start_server(
-    source_manager: SourceManager,
-    query_manager: QueryManager,
-    feedback_manager: FeedbackManager,
-    episode_store: EpisodeStore,
-    trace_service: Option<TraceService>,
-    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    services: ServerServices,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
-    let source_service = SourceService::new(source_manager, query_manager.clone());
+    let ServerServices {
+        source_manager,
+        query_manager,
+        feedback_manager,
+        episode_store,
+        trace_service,
+        user_principal_provider,
+        management_authorizer,
+        identity_spec_manager,
+    } = services;
+    let source_service = SourceService::new(
+        source_manager,
+        query_manager.clone(),
+        Arc::clone(&management_authorizer),
+    );
     let catalog_service = CatalogService::new(query_manager.clone());
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
+    let identity_spec_service =
+        IdentitySpecService::new(identity_spec_manager, management_authorizer);
     let episode_service = EpisodeService::new(episode_store);
     let mut routes = Routes::default()
         .add_service(SourceServiceServer::new(source_service))
+        .add_service(IdentitySpecServiceServer::new(identity_spec_service))
         .add_service(
             CatalogServiceServer::new(catalog_service)
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
@@ -674,12 +816,15 @@ mod tests {
     use std::time::Duration;
 
     use coral_api::v1::episode_service_client::EpisodeServiceClient;
+    use coral_api::v1::identity_spec_service_client::IdentitySpecServiceClient;
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
-        ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-        ListTracesRequest, OpenEpisodeRequest, Workspace, import_source_response,
+        AddIdentitySpecRequest, CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
+        DeleteSourceRequest, ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse,
+        ListSourcesRequest, ListTracesRequest, OpenEpisodeRequest, Workspace,
+        import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -688,12 +833,14 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
-        is_grpc_web_content_type, is_native_grpc_content_type, start_server,
+        RunningServer, ServerBuilder, ServerMode, ServerServices, StaticAsset,
+        StaticAssetsProvider, is_grpc_web_content_type, is_native_grpc_content_type, start_server,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::episode::store::EpisodeStore;
+    use crate::features::{Feature, FeatureOverrides};
     use crate::feedback::manager::FeedbackManager;
+    use crate::identity_specs::IdentitySpecManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore};
@@ -701,12 +848,17 @@ mod tests {
     use crate::transport::workspace_to_proto;
     use crate::workspaces::WorkspaceName;
     use crate::{
-        AppError, AwsEngineExtensionsProvider, NoopEngineExtensionsProvider,
-        SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider,
+        AllowAllManagementAuthorizer, AppError, AuthorizationError, AwsEngineExtensionsProvider,
+        ManagementAuthorizer, NoopEngineExtensionsProvider, SingleUserPrincipalProvider,
+        SourceMutationKind, UserPrincipal, UserPrincipalProvider,
     };
 
     fn default_workspace() -> Workspace {
         workspace_to_proto(&WorkspaceName::default())
+    }
+
+    fn test_identity_spec_manager(layout: &AppStateLayout) -> IdentitySpecManager {
+        IdentitySpecManager::new(layout.clone())
     }
 
     fn disable_internal_tracing(config_dir: &Path) {
@@ -735,6 +887,28 @@ enabled = false
             Err(AppError::Unauthenticated(
                 "rejected user principal".to_string(),
             ))
+        }
+    }
+
+    #[derive(Debug)]
+    struct DenyingSourceManagementAuthorizer;
+
+    #[tonic::async_trait]
+    impl ManagementAuthorizer for DenyingSourceManagementAuthorizer {
+        async fn authorize_identity_spec_mutation(
+            &self,
+            _principal: &UserPrincipal,
+        ) -> Result<(), AuthorizationError> {
+            Ok(())
+        }
+
+        async fn authorize_source_mutation(
+            &self,
+            _principal: &UserPrincipal,
+            _workspace_id: &str,
+            _kind: SourceMutationKind,
+        ) -> Result<(), AuthorizationError> {
+            Err(AuthorizationError::forbidden("source mutation denied"))
         }
     }
 
@@ -786,6 +960,106 @@ enabled = false
             .expect_err("query should require a request principal");
 
         assert_eq!(status.code(), Code::Unauthenticated);
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn source_mutations_require_management_authorization() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_management_authorizer(Arc::new(DenyingSourceManagementAuthorizer))
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut source_client = SourceServiceClient::new(channel);
+
+        let create_status = source_client
+            .create_bundled_source(Request::new(CreateBundledSourceRequest {
+                workspace: Some(default_workspace()),
+                name: "missing_bundle".to_string(),
+                variables: Vec::new(),
+                secrets: Vec::new(),
+            }))
+            .await
+            .expect_err("bundled source creation should be authorization-gated");
+        assert_eq!(create_status.code(), Code::PermissionDenied);
+
+        let create_oauth_status = source_client
+            .create_bundled_source_with_o_auth(Request::new(CreateBundledSourceWithOAuthRequest {
+                workspace: Some(default_workspace()),
+                name: "missing_bundle".to_string(),
+                variables: Vec::new(),
+                secrets: Vec::new(),
+                oauth_credential_retrievals: Vec::new(),
+            }))
+            .await
+            .expect_err("OAuth bundled source creation should be authorization-gated");
+        assert_eq!(create_oauth_status.code(), Code::PermissionDenied);
+
+        let import_status = source_client
+            .import_source(Request::new(ImportSourceRequest {
+                workspace: Some(default_workspace()),
+                manifest_yaml: "not a manifest".to_string(),
+                variables: Vec::new(),
+                secrets: Vec::new(),
+                oauth_credential_retrievals: Vec::new(),
+            }))
+            .await
+            .expect_err("source import should be authorization-gated");
+        assert_eq!(import_status.code(), Code::PermissionDenied);
+
+        let delete_status = source_client
+            .delete_source(Request::new(DeleteSourceRequest {
+                workspace: Some(default_workspace()),
+                name: "missing_source".to_string(),
+            }))
+            .await
+            .expect_err("source deletion should be authorization-gated");
+        assert_eq!(delete_status.code(), Code::PermissionDenied);
+
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn server_feature_overrides_enable_identity_spec_api() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut feature_overrides = FeatureOverrides::default();
+        feature_overrides.set(Feature::DslV4, true);
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_feature_overrides(feature_overrides)
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut identity_spec_client = IdentitySpecServiceClient::new(channel);
+
+        identity_spec_client
+            .add_identity_spec(Request::new(AddIdentitySpecRequest {
+                manifest_yaml: r"
+kind: identity
+spec_version: 1
+name: github_oauth
+version: 0.1.0
+issuer: github
+type: fixed_token
+"
+                .to_string(),
+                inputs: Vec::new(),
+            }))
+            .await
+            .expect("process-local dsl_v4 override should enable identity spec API");
+
         server.shutdown().await.expect("shutdown");
     }
 
@@ -933,18 +1207,23 @@ enabled = false
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
+        let identity_spec_manager = test_identity_spec_manager(&layout);
         start_server(
-            source_manager,
-            query_manager,
-            feedback_manager,
-            episode_store,
-            Some(trace_service),
-            user_principal_provider,
+            ServerServices {
+                source_manager,
+                query_manager,
+                feedback_manager,
+                episode_store,
+                trace_service: Some(trace_service),
+                user_principal_provider,
+                management_authorizer: Arc::new(AllowAllManagementAuthorizer),
+                identity_spec_manager,
+            },
             ServerMode::NativeGrpc,
         )
         .await
@@ -1353,16 +1632,21 @@ tables:
                 home_dir: Some(fake_home.clone()),
                 ..QueryRuntimeContext::default()
             },
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
+        let identity_spec_manager = test_identity_spec_manager(&layout);
         let running = start_server(
-            source_manager,
-            query_manager,
-            feedback_manager,
-            episode_store,
-            None,
-            Arc::new(SingleUserPrincipalProvider),
+            ServerServices {
+                source_manager,
+                query_manager,
+                feedback_manager,
+                episode_store,
+                trace_service: None,
+                user_principal_provider: Arc::new(SingleUserPrincipalProvider),
+                management_authorizer: Arc::new(AllowAllManagementAuthorizer),
+                identity_spec_manager,
+            },
             ServerMode::NativeGrpc,
         )
         .await
@@ -1455,16 +1739,21 @@ tables:
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
+        let identity_spec_manager = test_identity_spec_manager(&layout);
         let running = start_server(
-            source_manager,
-            query_manager,
-            feedback_manager,
-            episode_store,
-            None,
-            Arc::new(SingleUserPrincipalProvider),
+            ServerServices {
+                source_manager,
+                query_manager,
+                feedback_manager,
+                episode_store,
+                trace_service: None,
+                user_principal_provider: Arc::new(SingleUserPrincipalProvider),
+                management_authorizer: Arc::new(AllowAllManagementAuthorizer),
+                identity_spec_manager,
+            },
             ServerMode::NativeGrpc,
         )
         .await
@@ -1557,16 +1846,21 @@ tables:
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
+        let identity_spec_manager = test_identity_spec_manager(&layout);
         let running = start_server(
-            source_manager,
-            query_manager,
-            feedback_manager,
-            episode_store,
-            None,
-            Arc::new(SingleUserPrincipalProvider),
+            ServerServices {
+                source_manager,
+                query_manager,
+                feedback_manager,
+                episode_store,
+                trace_service: None,
+                user_principal_provider: Arc::new(SingleUserPrincipalProvider),
+                management_authorizer: Arc::new(AllowAllManagementAuthorizer),
+                identity_spec_manager,
+            },
             ServerMode::NativeGrpc,
         )
         .await
