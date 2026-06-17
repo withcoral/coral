@@ -41,6 +41,7 @@
     )
 )]
 
+mod authorization;
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
 mod catalog;
@@ -59,15 +60,25 @@ pub mod telemetry;
 mod transport;
 mod workspaces;
 
+pub use authorization::{
+    AllowAllManagementAuthorizer, AuthorizationError, ManagementAuthorizer, SourceMutationKind,
+};
 pub use bootstrap::{
     AppError, RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
 };
-pub use coral_engine::{EngineExtensions, QuerySource};
+pub use coral_engine::{
+    EngineExtensions, QuerySource, RequestIdentityResolutionContext, RequestIdentityResolver,
+    RequestIdentityResolverError,
+};
 pub use identities::{
     IdentityOwnerKey, UserOwnedIdentityMaterialGuard, UserOwnedIdentityName,
     UserOwnedIdentityRecord, UserOwnedIdentityStore,
 };
-pub use identity::{SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider};
+pub use identity::{
+    RuntimeSourceIdentity, SingleUserPrincipalProvider, SourceIdentityBinding, SourceIdentityOwner,
+    SourceIdentityProvider, SourceIdentityResolutionRequest, SourceIdentitySelection,
+    SourceIdentitySelectionRequest, SourceIdentitySubject, UserPrincipal, UserPrincipalProvider,
+};
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
