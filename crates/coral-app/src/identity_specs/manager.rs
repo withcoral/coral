@@ -113,16 +113,18 @@ pub trait IdentitySpecRegistry: Send + Sync + std::fmt::Debug + 'static {
     fn get_identity_spec(&self, name: &str)
     -> Result<Option<IdentitySpecRegistryRecord>, AppError>;
 
-    /// Fetches one identity spec manifest by name without hydrating stored
-    /// setup input material.
+    /// Fetches one identity spec manifest by name.
+    ///
+    /// Implementations that can load manifests independently should override
+    /// this to avoid hydrating stored setup input material. The default preserves
+    /// compatibility with registries that only implement full-record lookup.
     ///
     /// # Errors
     ///
     /// Returns [`AppError`] when the registry cannot be read.
     fn get_identity_spec_manifest_yaml(&self, name: &str) -> Result<Option<String>, AppError> {
-        Err(AppError::FailedPrecondition(format!(
-            "identity spec registry does not support manifest-only lookup for '{name}'"
-        )))
+        self.get_identity_spec(name)
+            .map(|record| record.map(|record| record.manifest_yaml))
     }
 
     /// Inserts or replaces one identity spec.
@@ -905,8 +907,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        IdentitySpecInputValue, IdentitySpecManager, IdentitySpecRecord, IdentitySpecUsageProvider,
-        identity_spec_fingerprint,
+        IdentitySpecInputValue, IdentitySpecManager, IdentitySpecRecord, IdentitySpecRegistry,
+        IdentitySpecRegistryRecord, IdentitySpecUsageProvider, identity_spec_fingerprint,
     };
     use crate::bootstrap::AppError;
     use crate::credentials::parse_env_file;
@@ -1139,6 +1141,73 @@ oauth:
                 .expect("list again")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn manifest_lookup_default_falls_back_to_full_registry_record() {
+        let temp = TempDir::new().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("layout directories");
+        let manager = IdentitySpecManager::new_with_registry(
+            layout,
+            Arc::new(GetOnlyIdentitySpecRegistry {
+                record: IdentitySpecRegistryRecord {
+                    manifest_yaml: identity_yaml("github_oauth", "0.1.0"),
+                    input_material: BTreeMap::from([(
+                        "DEMO_OAUTH_CLIENT_SECRET".to_string(),
+                        "client-secret".to_string(),
+                    )]),
+                },
+            }),
+            dsl_v4_features(),
+            Vec::new(),
+        );
+
+        let record = manager
+            .get_identity_spec_manifest("github_oauth")
+            .expect("fallback manifest lookup");
+
+        assert_eq!(record.manifest.name, "github_oauth");
+        assert_eq!(record.manifest.version, "0.1.0");
+    }
+
+    #[derive(Debug)]
+    struct GetOnlyIdentitySpecRegistry {
+        record: IdentitySpecRegistryRecord,
+    }
+
+    impl IdentitySpecRegistry for GetOnlyIdentitySpecRegistry {
+        fn list_identity_specs(&self) -> Result<Vec<IdentitySpecRegistryRecord>, AppError> {
+            Ok(vec![self.record.clone()])
+        }
+
+        fn get_identity_spec(
+            &self,
+            name: &str,
+        ) -> Result<Option<IdentitySpecRegistryRecord>, AppError> {
+            if name == "github_oauth" {
+                Ok(Some(self.record.clone()))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn upsert_identity_spec(
+            &self,
+            _name: &str,
+            _record: IdentitySpecRegistryRecord,
+        ) -> Result<(), AppError> {
+            Err(AppError::FailedPrecondition(
+                "read-only test registry".to_string(),
+            ))
+        }
+
+        fn remove_identity_spec(&self, _name: &str) -> Result<(), AppError> {
+            Err(AppError::FailedPrecondition(
+                "read-only test registry".to_string(),
+            ))
+        }
     }
 
     /// Merges the previous missing-input rejection, declared-input storage,
