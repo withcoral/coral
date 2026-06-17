@@ -11,21 +11,26 @@ use std::time::Duration;
 use anyhow::{Context as _, bail};
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
-    CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DiscoverSourcesRequest,
-    GetSourceInfoRequest, IdentityOwner, ImportSourceRequest, ImportSourceResponse,
-    ListSourcesRequest, OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure,
-    QueryTestSuccess, Source, SourceCredentialStorage, SourceIdentityBinding, SourceInfo,
-    SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
-    create_bundled_source_with_o_auth_response, import_source_response, query_test_result,
+    AddIdentitySpecRequest, CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
+    CreateBundledSourceWithOAuthResponse, CreateUserOwnedIdentityRequest,
+    CreateUserOwnedIdentityResponse, DeleteIdentitySpecRequest, DeleteSourceRequest,
+    DeleteUserOwnedIdentityRequest, DiscoverSourcesRequest, FixedTokenUserOwnedIdentitySetup,
+    GetIdentitySpecRequest, GetSourceInfoRequest, GetUserOwnedIdentityRequest, Identity,
+    IdentityOwner, IdentitySpec, IdentitySpecInputValue, ImportSourceRequest, ImportSourceResponse,
+    ListIdentitySpecsRequest, ListSourcesRequest, ListUserOwnedIdentitiesRequest,
+    OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
+    SourceCredentialStorage, SourceIdentityBinding, SourceInfo, SourceOrigin, SourceSecret,
+    SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
+    create_bundled_source_with_o_auth_response, create_user_owned_identity_request,
+    create_user_owned_identity_response, import_source_response, query_test_result,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::v4::SurfaceDescriptor;
 use coral_spec::{
-    ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
-    ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec, ValidatedSourceManifest,
-    parse_source_manifest_yaml,
+    IdentityManifest, IdentitySpecConfig, ManifestCredentialMethod, ManifestCredentialMethodKind,
+    ManifestCredentialSpec, ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec,
+    ValidatedSourceManifest, parse_identity_manifest_yaml, parse_source_manifest_yaml,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
@@ -91,6 +96,146 @@ pub(crate) async fn list_sources(app: &AppClient) -> Result<Vec<Source>, anyhow:
         .await?
         .into_inner()
         .sources)
+}
+
+pub(crate) async fn list_identity_specs(
+    app: &AppClient,
+) -> Result<Vec<IdentitySpec>, anyhow::Error> {
+    Ok(app
+        .identity_spec_client()
+        .list_identity_specs(Request::new(ListIdentitySpecsRequest {}))
+        .await?
+        .into_inner()
+        .identity_specs)
+}
+
+pub(crate) async fn get_identity_spec(
+    app: &AppClient,
+    name: &str,
+) -> Result<IdentitySpec, anyhow::Error> {
+    let response = app
+        .identity_spec_client()
+        .get_identity_spec(Request::new(GetIdentitySpecRequest {
+            name: name.to_string(),
+        }))
+        .await?
+        .into_inner();
+    response
+        .identity_spec
+        .ok_or_else(|| anyhow::anyhow!("get identity spec response missing identity_spec"))
+}
+
+pub(crate) async fn add_identity_spec(
+    app: &AppClient,
+    manifest_yaml: String,
+    inputs: Vec<IdentitySpecInputValue>,
+) -> Result<(IdentitySpec, bool), anyhow::Error> {
+    let response = app
+        .identity_spec_client()
+        .add_identity_spec(Request::new(AddIdentitySpecRequest {
+            manifest_yaml,
+            input_values: inputs,
+        }))
+        .await?
+        .into_inner();
+    Ok((
+        response
+            .identity_spec
+            .ok_or_else(|| anyhow::anyhow!("add identity spec response missing identity_spec"))?,
+        response.replaced,
+    ))
+}
+
+pub(crate) async fn remove_identity_spec(
+    app: &AppClient,
+    name: &str,
+    force: bool,
+) -> Result<u32, anyhow::Error> {
+    Ok(app
+        .identity_spec_client()
+        .delete_identity_spec(Request::new(DeleteIdentitySpecRequest {
+            name: name.to_string(),
+            force,
+        }))
+        .await?
+        .into_inner()
+        .orphaned_identities)
+}
+
+pub(crate) async fn list_user_owned_identities(
+    app: &AppClient,
+) -> Result<Vec<Identity>, anyhow::Error> {
+    Ok(app
+        .identity_client()
+        .list_user_owned_identities(Request::new(ListUserOwnedIdentitiesRequest {}))
+        .await?
+        .into_inner()
+        .identities)
+}
+
+pub(crate) async fn get_user_owned_identity(
+    app: &AppClient,
+    name: &str,
+) -> Result<Identity, anyhow::Error> {
+    let response = app
+        .identity_client()
+        .get_user_owned_identity(Request::new(GetUserOwnedIdentityRequest {
+            name: name.to_string(),
+        }))
+        .await?
+        .into_inner();
+    response
+        .identity
+        .ok_or_else(|| anyhow::anyhow!("get user-owned identity response missing identity"))
+}
+
+pub(crate) async fn delete_user_owned_identity(
+    app: &AppClient,
+    name: &str,
+) -> Result<(), anyhow::Error> {
+    app.identity_client()
+        .delete_user_owned_identity(Request::new(DeleteUserOwnedIdentityRequest {
+            name: name.to_string(),
+        }))
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn create_user_owned_identity_with_oauth(
+    app: &AppClient,
+    name: &str,
+    identity_spec: &str,
+    label: &str,
+) -> Result<Identity, anyhow::Error> {
+    let response = app
+        .identity_client()
+        .create_user_owned_identity(Request::new(CreateUserOwnedIdentityRequest {
+            name: name.to_string(),
+            identity_spec: identity_spec.to_string(),
+            setup: None,
+        }))
+        .await?;
+    let oauth_labels = BTreeMap::from([(name.to_string(), label.to_string())]);
+    identity_from_create_identity_stream(response.into_inner(), &oauth_labels).await
+}
+
+pub(crate) async fn create_user_owned_identity_with_fixed_token(
+    app: &AppClient,
+    name: &str,
+    identity_spec: &str,
+    token: String,
+) -> Result<Identity, anyhow::Error> {
+    let response = app
+        .identity_client()
+        .create_user_owned_identity(Request::new(CreateUserOwnedIdentityRequest {
+            name: name.to_string(),
+            identity_spec: identity_spec.to_string(),
+            setup: Some(create_user_owned_identity_request::Setup::FixedToken(
+                FixedTokenUserOwnedIdentitySetup { token },
+            )),
+        }))
+        .await?;
+    identity_from_create_identity_stream(response.into_inner(), &BTreeMap::new()).await
 }
 
 pub(crate) async fn add_bundled_source(
@@ -375,6 +520,50 @@ async fn source_from_import_credential_stream(
     }
 }
 
+async fn identity_from_create_identity_stream(
+    mut stream: tonic::Streaming<CreateUserOwnedIdentityResponse>,
+    oauth_labels: &BTreeMap<String, String>,
+) -> Result<Identity, anyhow::Error> {
+    let mut redirect_prompt = OAuthRedirectPastePrompt::default();
+    loop {
+        let response = match stream.message().await {
+            Ok(Some(response)) => response,
+            Ok(None) => {
+                redirect_prompt.cancel_and_join();
+                return Err(anyhow::anyhow!(
+                    "identity OAuth stream ended before identity creation completed"
+                ));
+            }
+            Err(error) => {
+                redirect_prompt.cancel_and_join();
+                return Err(oauth_error_with_retry(
+                    "identity creation",
+                    &error,
+                    "coral identity add",
+                ));
+            }
+        };
+        match response.event {
+            Some(create_user_owned_identity_response::Event::Identity(identity)) => {
+                redirect_prompt.cancel_and_join();
+                return Ok(identity);
+            }
+            Some(create_user_owned_identity_response::Event::OauthAuthorization(authorization)) => {
+                handle_oauth_authorization_event(
+                    &authorization.input_key,
+                    &authorization.authorization_url,
+                    &authorization.user_code,
+                    oauth_labels,
+                    &mut redirect_prompt,
+                );
+            }
+            Some(create_user_owned_identity_response::Event::OauthCompleted(_)) | None => {
+                redirect_prompt.cancel_and_join();
+            }
+        }
+    }
+}
+
 enum CredentialStreamEvent {
     Source(Source),
     OAuthAuthorization {
@@ -432,21 +621,13 @@ fn handle_credential_stream_event(
             authorization_url,
             user_code,
         }) => {
-            let label = oauth_labels
-                .get(&input_key)
-                .map_or(input_key.as_str(), String::as_str);
-            println!("Open this URL to connect {label}:");
-            println!("{authorization_url}");
-            redirect_prompt.cancel_and_join();
-            if user_code.is_empty() {
-                redirect_prompt
-                    .replace(spawn_oauth_redirect_paste_prompt(&authorization_url, label));
-            } else {
-                println!("Enter this code when prompted: {user_code}");
-            }
-            if let Err(err) = crate::browser::open_url(&authorization_url) {
-                println!("{}", style(format!("Could not open browser: {err}")).dim());
-            }
+            handle_oauth_authorization_event(
+                &input_key,
+                &authorization_url,
+                &user_code,
+                oauth_labels,
+                redirect_prompt,
+            );
             None
         }
         Some(CredentialStreamEvent::Source(source)) => {
@@ -458,6 +639,29 @@ fn handle_credential_stream_event(
             None
         }
         None => None,
+    }
+}
+
+fn handle_oauth_authorization_event(
+    input_key: &str,
+    authorization_url: &str,
+    user_code: &str,
+    oauth_labels: &BTreeMap<String, String>,
+    redirect_prompt: &mut OAuthRedirectPastePrompt,
+) {
+    let label = oauth_labels
+        .get(input_key)
+        .map_or(input_key, String::as_str);
+    println!("Open this URL to connect {label}:");
+    println!("{authorization_url}");
+    redirect_prompt.cancel_and_join();
+    if user_code.is_empty() {
+        redirect_prompt.replace(spawn_oauth_redirect_paste_prompt(authorization_url, label));
+    } else {
+        println!("Enter this code when prompted: {user_code}");
+    }
+    if let Err(err) = crate::browser::open_url(authorization_url) {
+        println!("{}", style(format!("Could not open browser: {err}")).dim());
     }
 }
 
@@ -492,6 +696,12 @@ pub(crate) fn load_validated_manifest_file(
         durable_manifest_file_yaml(&manifest_yaml, &manifest, manifest_dir.as_path())?;
     let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
     Ok((manifest_yaml, manifest))
+}
+
+pub(crate) fn load_validated_identity_spec_file(file: &Path) -> Result<String, anyhow::Error> {
+    let raw = std::fs::read_to_string(file)?;
+    parse_identity_manifest_yaml(&raw)?;
+    Ok(raw)
 }
 
 fn manifest_file_parent_dir(file: &Path) -> Result<PathBuf, anyhow::Error> {
@@ -698,8 +908,12 @@ pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), any
 }
 
 pub(crate) fn require_interactive() -> Result<(), anyhow::Error> {
+    require_interactive_for("interactive source install")
+}
+
+pub(crate) fn require_interactive_for(action: &str) -> Result<(), anyhow::Error> {
     if !stdin().is_terminal() || !stdout().is_terminal() {
-        return Err(anyhow::anyhow!("interactive source install requires a TTY"));
+        return Err(anyhow::anyhow!("{action} requires a TTY"));
     }
     Ok(())
 }
@@ -798,6 +1012,79 @@ pub(crate) fn collect_inputs_from_env(
     )
 }
 
+pub(crate) fn identity_spec_inputs_for_add(
+    manifest: &IdentityManifest,
+    interactive_command: String,
+) -> Result<Vec<IdentitySpecInputValue>, anyhow::Error> {
+    if manifest.inputs.is_empty() {
+        return Ok(Vec::new());
+    }
+    if stdin().is_terminal() && stdout().is_terminal() {
+        return prompt_identity_spec_inputs(manifest);
+    }
+    collect_identity_spec_inputs_from_env(manifest, interactive_command)
+}
+
+fn collect_identity_spec_inputs_from_env(
+    manifest: &IdentityManifest,
+    interactive_command: String,
+) -> Result<Vec<IdentitySpecInputValue>, anyhow::Error> {
+    let mut values = Vec::new();
+    let mut missing = Vec::new();
+
+    for input in &manifest.inputs {
+        let value = read_identity_spec_input_env(&input.key).filter(|value| !value.is_empty());
+        if let Some(value) = value {
+            values.push(IdentitySpecInputValue {
+                key: input.key.clone(),
+                value,
+            });
+            continue;
+        }
+        let default_resolves_in_manifest =
+            input.kind == ManifestInputKind::Variable && !input.default_value.is_empty();
+        if input.required && !default_resolves_in_manifest {
+            missing.push(input.key.clone());
+        }
+    }
+
+    if !missing.is_empty() {
+        return Err(missing_environment_variables_error(
+            &missing,
+            Some(interactive_command),
+        ));
+    }
+
+    Ok(values)
+}
+
+fn prompt_identity_spec_inputs(
+    manifest: &IdentityManifest,
+) -> Result<Vec<IdentitySpecInputValue>, anyhow::Error> {
+    let mut values = Vec::new();
+    for input in &manifest.inputs {
+        match input.kind {
+            ManifestInputKind::Variable => {
+                if let Some(variable) = prompt_variable(input)? {
+                    values.push(IdentitySpecInputValue {
+                        key: variable.key,
+                        value: variable.value,
+                    });
+                }
+            }
+            ManifestInputKind::Secret => {
+                if let Some(secret) = prompt_source_config_secret(input, None)? {
+                    values.push(IdentitySpecInputValue {
+                        key: secret.key,
+                        value: secret.value,
+                    });
+                }
+            }
+        }
+    }
+    Ok(values)
+}
+
 pub(crate) fn shell_quote_arg(value: &str) -> String {
     if value
         .chars()
@@ -813,6 +1100,14 @@ pub(crate) fn shell_quote_arg(value: &str) -> String {
     reason = "`coral source add` reads install-time source inputs from matching environment variables."
 )]
 fn read_source_input_env(key: &str) -> Option<String> {
+    std::env::var(key).ok()
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Identity spec setup reads install-time inputs from matching environment variables."
+)]
+fn read_identity_spec_input_env(key: &str) -> Option<String> {
     std::env::var(key).ok()
 }
 
@@ -851,19 +1146,29 @@ fn collect_inputs_with_hint(
     }
 
     if !missing.is_empty() {
-        let interactive_hint = interactive_command.map_or_else(
-            || "--interactive".to_string(),
-            |command| format!("`{command}`"),
-        );
-        return Err(anyhow::anyhow!(
-            "missing required environment variable{}: {}. Set the variable{} or run {interactive_hint}.",
-            if missing.len() == 1 { "" } else { "s" },
-            missing.join(", "),
-            if missing.len() == 1 { "" } else { "s" },
+        return Err(missing_environment_variables_error(
+            &missing,
+            interactive_command,
         ));
     }
 
     Ok((variables, secrets))
+}
+
+fn missing_environment_variables_error(
+    missing: &[String],
+    interactive_command: Option<String>,
+) -> anyhow::Error {
+    let interactive_hint = interactive_command.map_or_else(
+        || "--interactive".to_string(),
+        |command| format!("`{command}`"),
+    );
+    anyhow::anyhow!(
+        "missing required environment variable{}: {}. Set the variable{} or run {interactive_hint}.",
+        if missing.len() == 1 { "" } else { "s" },
+        missing.join(", "),
+        if missing.len() == 1 { "" } else { "s" },
+    )
 }
 
 pub(crate) fn source_origin_label(origin: i32) -> &'static str {
@@ -881,6 +1186,40 @@ pub(crate) fn source_credential_storage_label(storage: i32) -> &'static str {
         Ok(SourceCredentialStorage::Keychain) => "keychain",
         Err(_) => "unknown",
     }
+}
+
+pub(crate) fn identity_owner_label(owner: i32) -> &'static str {
+    match IdentityOwner::try_from(owner) {
+        Ok(IdentityOwner::User) => "user",
+        Ok(IdentityOwner::Workspace) => "workspace",
+        Ok(IdentityOwner::Unspecified) | Err(_) => "unknown",
+    }
+}
+
+pub(crate) struct SelectedIdentityOAuthMethod<'a> {
+    pub(crate) label: String,
+    pub(crate) hint: Option<&'a str>,
+}
+
+pub(crate) fn identity_oauth_method(
+    manifest: &IdentityManifest,
+) -> Result<SelectedIdentityOAuthMethod<'_>, anyhow::Error> {
+    let IdentitySpecConfig::OAuth(oauth) = &manifest.config else {
+        return Err(anyhow::anyhow!(
+            "identity spec '{}' has type '{}'; expected oauth",
+            manifest.name,
+            manifest.identity_type.label()
+        ));
+    };
+    let method = &oauth.method;
+    Ok(SelectedIdentityOAuthMethod {
+        label: identity_oauth_method_label(method),
+        hint: method.hint.as_deref(),
+    })
+}
+
+pub(crate) fn print_oauth_hint(hint: Option<&str>) {
+    print_prompt_hint(hint);
 }
 
 pub(crate) async fn validate_and_print(
@@ -1288,6 +1627,39 @@ fn credential_method_label(method: &ManifestCredentialMethod) -> String {
     })
 }
 
+fn identity_oauth_method_label(method: &coral_spec::IdentityOAuthMethodSpec) -> String {
+    method
+        .label
+        .clone()
+        .unwrap_or_else(|| "Connect with OAuth".to_string())
+}
+
+pub(crate) fn prompt_fixed_token_identity_token(
+    identity_spec_name: &str,
+) -> Result<String, anyhow::Error> {
+    let token = Password::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!("Token for {identity_spec_name}"))
+        .allow_empty_password(false)
+        .interact()?;
+    normalize_fixed_token_identity_token(&token)
+}
+
+pub(crate) fn read_fixed_token_identity_token_from_stdin() -> Result<String, anyhow::Error> {
+    let mut token = String::new();
+    stdin().read_to_string(&mut token)?;
+    normalize_fixed_token_identity_token(&token)
+}
+
+fn normalize_fixed_token_identity_token(token: &str) -> Result<String, anyhow::Error> {
+    let token = token.trim_end_matches(['\r', '\n']).to_string();
+    if token.is_empty() {
+        return Err(anyhow::anyhow!(
+            "fixed token identity token must not be empty"
+        ));
+    }
+    Ok(token)
+}
+
 fn collect_oauth_credential_method(
     input: &ManifestInputSpec,
     method_index: usize,
@@ -1305,8 +1677,16 @@ fn collect_oauth_credential_method(
 }
 
 fn oauth_error(action: &str, error: &tonic::Status) -> anyhow::Error {
+    oauth_error_with_retry(action, error, "coral source add")
+}
+
+fn oauth_error_with_retry(
+    action: &str,
+    error: &tonic::Status,
+    retry_command: &str,
+) -> anyhow::Error {
     anyhow::anyhow!(
-        "OAuth credential retrieval failed during {action}: {error}. Rerun `coral source add` to try again."
+        "OAuth credential retrieval failed during {action}: {error}. Rerun `{retry_command}` to try again."
     )
 }
 

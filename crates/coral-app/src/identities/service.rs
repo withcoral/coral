@@ -5,9 +5,11 @@ use std::pin::Pin;
 use coral_api::v1::identity_service_server::IdentityService as IdentityServiceApi;
 use coral_api::v1::{
     CreateUserOwnedIdentityRequest, CreateUserOwnedIdentityResponse, CredentialMetadata,
-    FixedTokenUserOwnedIdentitySetup, Identity, IdentityOwner as ProtoIdentityOwner,
-    ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse,
-    create_user_owned_identity_request, create_user_owned_identity_response,
+    DeleteUserOwnedIdentityRequest, DeleteUserOwnedIdentityResponse,
+    FixedTokenUserOwnedIdentitySetup, GetUserOwnedIdentityRequest, GetUserOwnedIdentityResponse,
+    Identity, IdentityOwner as ProtoIdentityOwner, ListUserOwnedIdentitiesRequest,
+    ListUserOwnedIdentitiesResponse, create_user_owned_identity_request,
+    create_user_owned_identity_response,
 };
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
@@ -112,6 +114,44 @@ impl IdentityServiceApi for IdentityService {
             Ok(Response::new(ListUserOwnedIdentitiesResponse {
                 identities: records.into_iter().map(identity_record_to_proto).collect(),
             }))
+        })
+        .await
+    }
+
+    async fn get_user_owned_identity(
+        &self,
+        request: Request<GetUserOwnedIdentityRequest>,
+    ) -> Result<Response<GetUserOwnedIdentityResponse>, Status> {
+        let span = grpc_span(&request);
+        let identities = self.identities.clone();
+        instrument_grpc(span, async move {
+            let principal = RequestContext::from_request(&request)?.principal().clone();
+            let request = request.into_inner();
+            let record = identities
+                .get_user_owned_identity(&principal, &request.name)
+                .await
+                .map_err(app_status)?;
+            Ok(Response::new(GetUserOwnedIdentityResponse {
+                identity: Some(identity_record_to_proto(record)),
+            }))
+        })
+        .await
+    }
+
+    async fn delete_user_owned_identity(
+        &self,
+        request: Request<DeleteUserOwnedIdentityRequest>,
+    ) -> Result<Response<DeleteUserOwnedIdentityResponse>, Status> {
+        let span = grpc_span(&request);
+        let identities = self.identities.clone();
+        instrument_grpc(span, async move {
+            let principal = RequestContext::from_request(&request)?.principal().clone();
+            let request = request.into_inner();
+            identities
+                .delete_user_owned_identity(&principal, &request.name)
+                .await
+                .map_err(app_status)?;
+            Ok(Response::new(DeleteUserOwnedIdentityResponse {}))
         })
         .await
     }

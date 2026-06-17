@@ -14,21 +14,31 @@ use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
 use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer};
+use coral_api::v1::identity_service_server::{IdentityService, IdentityServiceServer};
+use coral_api::v1::identity_spec_service_server::{IdentitySpecService, IdentitySpecServiceServer};
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
-    CatalogCounts, CatalogItem, CatalogSearchResult, Column, ColumnSearchResult,
-    CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DeleteSourceResponse,
-    DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
-    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
+    AddIdentitySpecRequest, AddIdentitySpecResponse, CatalogCounts, CatalogItem,
+    CatalogSearchResult, Column, ColumnSearchResult, CreateBundledSourceRequest,
+    CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
+    CreateBundledSourceWithOAuthResponse, CreateUserOwnedIdentityRequest,
+    CreateUserOwnedIdentityResponse, DeleteIdentitySpecRequest, DeleteIdentitySpecResponse,
+    DeleteSourceRequest, DeleteSourceResponse, DeleteUserOwnedIdentityRequest,
+    DeleteUserOwnedIdentityResponse, DescribeTableRequest, DescribeTableResponse,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
+    ExplainSqlRequest, ExplainSqlResponse, GetIdentitySpecRequest, GetIdentitySpecResponse,
     GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
-    ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
-    ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
-    PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
-    Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
-    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
-    create_bundled_source_with_o_auth_response, import_source_response,
+    GetUserOwnedIdentityRequest, GetUserOwnedIdentityResponse, Identity, IdentityOwner,
+    IdentitySpec, ImportSourceRequest, ImportSourceResponse, ListCatalogRequest,
+    ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, ListIdentitySpecsRequest,
+    ListIdentitySpecsResponse, ListSourcesRequest, ListSourcesResponse,
+    ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse, PaginationRequest,
+    PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse, Source,
+    SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table,
+    TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    create_bundled_source_with_o_auth_response, create_user_owned_identity_request,
+    create_user_owned_identity_response, import_source_response,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
@@ -58,6 +68,64 @@ fn mock_source() -> Source {
         origin: SourceOrigin::Bundled as i32,
         credential_storage: SourceCredentialStorage::File as i32,
         identity_bindings: Vec::new(),
+    }
+}
+
+fn mock_identity_spec() -> IdentitySpec {
+    IdentitySpec {
+        name: "github_oauth".to_string(),
+        version: "0.1.0".to_string(),
+        description: "GitHub OAuth identity.".to_string(),
+        issuer: "github".to_string(),
+        identity_type: "oauth".to_string(),
+        manifest_yaml: r"
+kind: identity
+spec_version: 1
+name: github_oauth
+version: 0.1.0
+issuer: github
+type: oauth
+oauth:
+  method:
+    flow:
+      type: device_code
+    endpoints:
+      device_authorization_url: https://github.com/login/device/code
+      token_url: https://github.com/login/oauth/access_token
+    client:
+      id:
+        input: GITHUB_OAUTH_CLIENT_ID
+"
+        .to_string(),
+    }
+}
+
+fn mock_identity() -> Identity {
+    mock_oauth_identity("github_local", "github_oauth")
+}
+
+fn mock_oauth_identity(name: impl Into<String>, identity_spec: impl Into<String>) -> Identity {
+    Identity {
+        name: name.into(),
+        identity_spec: identity_spec.into(),
+        issuer: "github".to_string(),
+        identity_type: "oauth".to_string(),
+        owner: IdentityOwner::User as i32,
+        metadata: Vec::new(),
+    }
+}
+
+fn mock_fixed_token_identity(
+    name: impl Into<String>,
+    identity_spec: impl Into<String>,
+) -> Identity {
+    Identity {
+        name: name.into(),
+        identity_spec: identity_spec.into(),
+        issuer: "github".to_string(),
+        identity_type: "fixed_token".to_string(),
+        owner: IdentityOwner::User as i32,
+        metadata: Vec::new(),
     }
 }
 
@@ -442,6 +510,14 @@ pub(crate) struct MockServerConfig {
     execute_sql_override: Option<MockResult<ExecuteSqlResponse>>,
     discover_sources: MockResult<DiscoverSourcesResponse>,
     list_sources: MockResult<ListSourcesResponse>,
+    list_user_owned_identities: MockResult<ListUserOwnedIdentitiesResponse>,
+    get_user_owned_identity: MockResult<GetUserOwnedIdentityResponse>,
+    delete_user_owned_identity: MockResult<()>,
+    create_user_owned_identity_with_oauth: Option<MockResult<Identity>>,
+    create_user_owned_identity_with_fixed_token: Option<MockResult<Identity>>,
+    list_identity_specs: MockResult<ListIdentitySpecsResponse>,
+    get_identity_spec: MockResult<GetIdentitySpecResponse>,
+    delete_identity_spec: MockResult<()>,
     validate_source: MockResult<ValidateSourceResponse>,
     delete_source: MockResult<()>,
 }
@@ -451,6 +527,22 @@ impl Default for MockServerConfig {
         Self {
             execute_sql_override: None,
             discover_sources: MockResult::ok(mock_discover_response()),
+            list_identity_specs: MockResult::ok(ListIdentitySpecsResponse {
+                identity_specs: vec![mock_identity_spec()],
+            }),
+            get_identity_spec: MockResult::ok(GetIdentitySpecResponse {
+                identity_spec: Some(mock_identity_spec()),
+            }),
+            list_user_owned_identities: MockResult::ok(ListUserOwnedIdentitiesResponse {
+                identities: vec![mock_identity()],
+            }),
+            get_user_owned_identity: MockResult::ok(GetUserOwnedIdentityResponse {
+                identity: Some(mock_identity()),
+            }),
+            delete_user_owned_identity: MockResult::ok(()),
+            create_user_owned_identity_with_oauth: None,
+            create_user_owned_identity_with_fixed_token: None,
+            delete_identity_spec: MockResult::ok(()),
             list_sources: MockResult::ok(ListSourcesResponse {
                 sources: vec![
                     Source {
@@ -489,6 +581,24 @@ impl MockServerConfig {
 
     pub(crate) fn with_list_sources(mut self, response: ListSourcesResponse) -> Self {
         self.list_sources = MockResult::ok(response);
+        self
+    }
+
+    pub(crate) fn with_get_identity_spec(mut self, response: GetIdentitySpecResponse) -> Self {
+        self.get_identity_spec = MockResult::ok(response);
+        self
+    }
+
+    pub(crate) fn with_create_user_owned_identity_with_oauth(mut self, identity: Identity) -> Self {
+        self.create_user_owned_identity_with_oauth = Some(MockResult::ok(identity));
+        self
+    }
+
+    pub(crate) fn with_create_user_owned_identity_with_fixed_token(
+        mut self,
+        identity: Identity,
+    ) -> Self {
+        self.create_user_owned_identity_with_fixed_token = Some(MockResult::ok(identity));
         self
     }
 
@@ -589,6 +699,14 @@ struct Captured {
     create_bundled_source: Mutex<Vec<CreateBundledSourceRequest>>,
     create_bundled_source_with_oauth: Mutex<Vec<CreateBundledSourceWithOAuthRequest>>,
     import_source: Mutex<Vec<ImportSourceRequest>>,
+    add_identity_spec: Mutex<Vec<AddIdentitySpecRequest>>,
+    list_identity_specs: Mutex<Vec<ListIdentitySpecsRequest>>,
+    get_identity_spec: Mutex<Vec<GetIdentitySpecRequest>>,
+    delete_identity_spec: Mutex<Vec<DeleteIdentitySpecRequest>>,
+    create_user_owned_identity: Mutex<Vec<CreateUserOwnedIdentityRequest>>,
+    list_user_owned_identities: Mutex<Vec<ListUserOwnedIdentitiesRequest>>,
+    get_user_owned_identity: Mutex<Vec<GetUserOwnedIdentityRequest>>,
+    delete_user_owned_identity: Mutex<Vec<DeleteUserOwnedIdentityRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
 }
@@ -814,6 +932,188 @@ impl CatalogService for MockCatalogService {
 }
 
 #[derive(Clone)]
+struct MockIdentitySpecService {
+    config: Arc<MockServerConfig>,
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl IdentitySpecService for MockIdentitySpecService {
+    async fn add_identity_spec(
+        &self,
+        request: Request<AddIdentitySpecRequest>,
+    ) -> Result<Response<AddIdentitySpecResponse>, Status> {
+        self.captured
+            .add_identity_spec
+            .lock()
+            .expect("add_identity_spec capture")
+            .push(request.into_inner());
+        Ok(Response::new(AddIdentitySpecResponse {
+            identity_spec: Some(mock_identity_spec()),
+            replaced: false,
+        }))
+    }
+
+    async fn list_identity_specs(
+        &self,
+        request: Request<ListIdentitySpecsRequest>,
+    ) -> Result<Response<ListIdentitySpecsResponse>, Status> {
+        self.captured
+            .list_identity_specs
+            .lock()
+            .expect("list_identity_specs capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config
+                .list_identity_specs
+                .clone()
+                .into_tonic_result()?,
+        ))
+    }
+
+    async fn get_identity_spec(
+        &self,
+        request: Request<GetIdentitySpecRequest>,
+    ) -> Result<Response<GetIdentitySpecResponse>, Status> {
+        self.captured
+            .get_identity_spec
+            .lock()
+            .expect("get_identity_spec capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config.get_identity_spec.clone().into_tonic_result()?,
+        ))
+    }
+
+    async fn delete_identity_spec(
+        &self,
+        request: Request<DeleteIdentitySpecRequest>,
+    ) -> Result<Response<DeleteIdentitySpecResponse>, Status> {
+        self.captured
+            .delete_identity_spec
+            .lock()
+            .expect("delete_identity_spec capture")
+            .push(request.into_inner());
+        self.config
+            .delete_identity_spec
+            .clone()
+            .into_tonic_result()?;
+        Ok(Response::new(DeleteIdentitySpecResponse {
+            orphaned_identities: 0,
+        }))
+    }
+}
+
+#[derive(Clone)]
+struct MockIdentityService {
+    config: Arc<MockServerConfig>,
+    captured: Arc<Captured>,
+}
+
+type MockCreateUserOwnedIdentityStream =
+    Pin<Box<dyn Stream<Item = Result<CreateUserOwnedIdentityResponse, Status>> + Send>>;
+
+fn mock_user_owned_identity_stream(identity: Identity) -> MockCreateUserOwnedIdentityStream {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<CreateUserOwnedIdentityResponse, Status>>(1);
+    tx.try_send(Ok(CreateUserOwnedIdentityResponse {
+        event: Some(create_user_owned_identity_response::Event::Identity(
+            identity,
+        )),
+    }))
+    .expect("send mock user-owned identity event");
+    Box::pin(ReceiverStream::new(rx))
+}
+
+#[tonic::async_trait]
+impl IdentityService for MockIdentityService {
+    type CreateUserOwnedIdentityStream = MockCreateUserOwnedIdentityStream;
+
+    async fn create_user_owned_identity(
+        &self,
+        request: Request<CreateUserOwnedIdentityRequest>,
+    ) -> Result<Response<Self::CreateUserOwnedIdentityStream>, Status> {
+        let request = request.into_inner();
+        let identity = match request.setup.as_ref() {
+            Some(create_user_owned_identity_request::Setup::FixedToken(_)) => self
+                .config
+                .create_user_owned_identity_with_fixed_token
+                .clone()
+                .unwrap_or_else(|| {
+                    MockResult::ok(mock_fixed_token_identity(
+                        &request.name,
+                        &request.identity_spec,
+                    ))
+                })
+                .into_tonic_result()?,
+            None => self
+                .config
+                .create_user_owned_identity_with_oauth
+                .clone()
+                .unwrap_or_else(|| {
+                    MockResult::ok(mock_oauth_identity(&request.name, &request.identity_spec))
+                })
+                .into_tonic_result()?,
+        };
+        self.captured
+            .create_user_owned_identity
+            .lock()
+            .expect("create_user_owned_identity capture")
+            .push(request);
+        Ok(Response::new(mock_user_owned_identity_stream(identity)))
+    }
+
+    async fn list_user_owned_identities(
+        &self,
+        request: Request<ListUserOwnedIdentitiesRequest>,
+    ) -> Result<Response<ListUserOwnedIdentitiesResponse>, Status> {
+        self.captured
+            .list_user_owned_identities
+            .lock()
+            .expect("list_user_owned_identities capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config
+                .list_user_owned_identities
+                .clone()
+                .into_tonic_result()?,
+        ))
+    }
+
+    async fn get_user_owned_identity(
+        &self,
+        request: Request<GetUserOwnedIdentityRequest>,
+    ) -> Result<Response<GetUserOwnedIdentityResponse>, Status> {
+        self.captured
+            .get_user_owned_identity
+            .lock()
+            .expect("get_user_owned_identity capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config
+                .get_user_owned_identity
+                .clone()
+                .into_tonic_result()?,
+        ))
+    }
+
+    async fn delete_user_owned_identity(
+        &self,
+        request: Request<DeleteUserOwnedIdentityRequest>,
+    ) -> Result<Response<DeleteUserOwnedIdentityResponse>, Status> {
+        self.captured
+            .delete_user_owned_identity
+            .lock()
+            .expect("delete_user_owned_identity capture")
+            .push(request.into_inner());
+        self.config
+            .delete_user_owned_identity
+            .clone()
+            .into_tonic_result()?;
+        Ok(Response::new(DeleteUserOwnedIdentityResponse {}))
+    }
+}
+
+#[derive(Clone)]
 struct MockSourceService {
     config: Arc<MockServerConfig>,
     captured: Arc<Captured>,
@@ -996,8 +1296,13 @@ impl MockServer {
         let captured = Arc::new(Captured::default());
         let query_captured = Arc::clone(&captured);
         let catalog_captured = Arc::clone(&captured);
+        let identity_spec_captured = Arc::clone(&captured);
+        let identity_captured = Arc::clone(&captured);
         let source_captured = Arc::clone(&captured);
         let query_config = Arc::clone(&config);
+        let identity_spec_config = Arc::clone(&config);
+        let identity_config = Arc::clone(&config);
+        let source_config = Arc::clone(&config);
         let task = tokio::spawn(async move {
             Server::builder()
                 .add_service(CatalogServiceServer::new(MockCatalogService {
@@ -1007,8 +1312,16 @@ impl MockServer {
                     config: query_config,
                     captured: query_captured,
                 }))
+                .add_service(IdentitySpecServiceServer::new(MockIdentitySpecService {
+                    config: identity_spec_config,
+                    captured: identity_spec_captured,
+                }))
+                .add_service(IdentityServiceServer::new(MockIdentityService {
+                    config: identity_config,
+                    captured: identity_captured,
+                }))
                 .add_service(SourceServiceServer::new(MockSourceService {
-                    config,
+                    config: source_config,
                     captured: source_captured,
                 }))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
@@ -1130,6 +1443,76 @@ impl MockServer {
             .import_source
             .lock()
             .expect("import_source capture")
+            .clone()
+    }
+
+    pub(crate) fn add_identity_spec_requests(&self) -> Vec<AddIdentitySpecRequest> {
+        self.captured
+            .add_identity_spec
+            .lock()
+            .expect("add_identity_spec capture")
+            .clone()
+    }
+
+    pub(crate) fn list_identity_specs_requests(&self) -> Vec<ListIdentitySpecsRequest> {
+        self.captured
+            .list_identity_specs
+            .lock()
+            .expect("list_identity_specs capture")
+            .clone()
+    }
+
+    pub(crate) fn get_identity_spec_requests(&self) -> Vec<GetIdentitySpecRequest> {
+        self.captured
+            .get_identity_spec
+            .lock()
+            .expect("get_identity_spec capture")
+            .clone()
+    }
+
+    pub(crate) fn delete_identity_spec_requests(&self) -> Vec<DeleteIdentitySpecRequest> {
+        self.captured
+            .delete_identity_spec
+            .lock()
+            .expect("delete_identity_spec capture")
+            .clone()
+    }
+
+    pub(crate) fn create_user_owned_identity_requests(
+        &self,
+    ) -> Vec<CreateUserOwnedIdentityRequest> {
+        self.captured
+            .create_user_owned_identity
+            .lock()
+            .expect("create_user_owned_identity capture")
+            .clone()
+    }
+
+    pub(crate) fn list_user_owned_identities_requests(
+        &self,
+    ) -> Vec<ListUserOwnedIdentitiesRequest> {
+        self.captured
+            .list_user_owned_identities
+            .lock()
+            .expect("list_user_owned_identities capture")
+            .clone()
+    }
+
+    pub(crate) fn get_user_owned_identity_requests(&self) -> Vec<GetUserOwnedIdentityRequest> {
+        self.captured
+            .get_user_owned_identity
+            .lock()
+            .expect("get_user_owned_identity capture")
+            .clone()
+    }
+
+    pub(crate) fn delete_user_owned_identity_requests(
+        &self,
+    ) -> Vec<DeleteUserOwnedIdentityRequest> {
+        self.captured
+            .delete_user_owned_identity
+            .lock()
+            .expect("delete_user_owned_identity capture")
             .clone()
     }
 

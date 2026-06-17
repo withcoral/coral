@@ -17,8 +17,9 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, IdentityOwner, ListSourcesResponse, Source,
-    SourceCredentialStorage, SourceInfo, SourceOrigin,
+    DiscoverSourcesResponse, ExecuteSqlResponse, GetIdentitySpecResponse, IdentityOwner,
+    IdentitySpec, ListSourcesResponse, Source, SourceCredentialStorage, SourceInfo, SourceOrigin,
+    create_user_owned_identity_request,
 };
 use tempfile::tempdir;
 use tonic::Code;
@@ -848,6 +849,198 @@ surfaces:
     assert_eq!(source_binding.owner, IdentityOwner::User as i32);
     assert_eq!(source_binding.identity, "local_github");
     assert!(requests[0].replace_identity_bindings);
+
+    server.shutdown().await;
+}
+
+fn fixed_token_spec_yaml(name: &str) -> String {
+    format!(
+        r"
+kind: identity
+spec_version: 1
+name: {name}
+version: 0.1.0
+issuer: github
+type: fixed_token
+"
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_spec_commands_use_identity_spec_service() {
+    let server = MockServer::start().await;
+    let source_dir = tempdir().expect("identity spec dir");
+    let identity_file = source_dir.path().join("github_oauth.yaml");
+    std::fs::write(&identity_file, fixed_token_spec_yaml("github_oauth"))
+        .expect("write identity spec fixture");
+
+    server
+        .cmd()
+        .args([
+            "identity-spec",
+            "add",
+            "--file",
+            identity_file.to_str().expect("identity file path utf8"),
+        ])
+        .assert()
+        .success();
+    server
+        .cmd()
+        .args(["identity-spec", "list"])
+        .assert()
+        .success();
+    server
+        .cmd()
+        .args(["identity-spec", "info", "github_oauth"])
+        .assert()
+        .success();
+    server
+        .cmd()
+        .args(["identity-spec", "remove", "github_oauth", "--force"])
+        .assert()
+        .success();
+
+    assert_eq!(server.add_identity_spec_requests().len(), 1);
+    assert_eq!(server.list_identity_specs_requests().len(), 1);
+    assert_eq!(server.get_identity_spec_requests()[0].name, "github_oauth");
+    let delete_requests = server.delete_identity_spec_requests();
+    assert_eq!(delete_requests[0].name, "github_oauth");
+    assert!(delete_requests[0].force);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_spec_add_noninteractive_does_not_send_manifest_defaults_as_inputs() {
+    let server = MockServer::start().await;
+    let source_dir = tempdir().expect("identity spec dir");
+    let identity_file = source_dir.path().join("demo_oauth.yaml");
+    std::fs::write(
+        &identity_file,
+        r"
+kind: identity
+spec_version: 1
+name: demo_oauth
+version: 0.1.0
+description: Demo OAuth identity.
+issuer: demo
+type: oauth
+audience:
+  host: example.test
+inputs:
+  DEMO_TENANT: {kind: variable, default: default-tenant}
+  DEMO_OAUTH_CLIENT_SECRET: {kind: secret}
+oauth:
+  method:
+    flow:
+      type: authorization_code
+      pkce: required
+    redirect_uri: http://127.0.0.1:53682/oauth/callback
+    endpoints:
+      authorization_url: https://example.test/authorize
+      token_url: https://example.test/token
+    client:
+      id:
+        default: demo-client
+      secret:
+        input: DEMO_OAUTH_CLIENT_SECRET
+        transport: request_body
+",
+    )
+    .expect("write identity spec fixture");
+
+    server
+        .cmd()
+        .args([
+            "identity-spec",
+            "add",
+            "--file",
+            identity_file.to_str().expect("identity file path utf8"),
+        ])
+        .env_remove("DEMO_TENANT")
+        .env("DEMO_OAUTH_CLIENT_SECRET", "client-secret")
+        .assert()
+        .success();
+
+    let requests = server.add_identity_spec_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].input_values.len(), 1);
+    assert_eq!(requests[0].input_values[0].key, "DEMO_OAUTH_CLIENT_SECRET");
+    assert_eq!(requests[0].input_values[0].value, "client-secret");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_commands_use_identity_service() {
+    let server = MockServer::start().await;
+
+    server.cmd().args(["identity", "list"]).assert().success();
+    server
+        .cmd()
+        .args(["identity", "info", "github_local"])
+        .assert()
+        .success();
+    server
+        .cmd()
+        .args(["identity", "remove", "github_local"])
+        .assert()
+        .success();
+
+    assert_eq!(server.list_user_owned_identities_requests().len(), 1);
+    assert_eq!(
+        server.get_user_owned_identity_requests()[0].name,
+        "github_local"
+    );
+    assert_eq!(
+        server.delete_user_owned_identity_requests()[0].name,
+        "github_local"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_add_fixed_token_reads_token_from_stdin() {
+    let server = MockServer::start_with_config(MockServerConfig::default().with_get_identity_spec(
+        GetIdentitySpecResponse {
+            identity_spec: Some(IdentitySpec {
+                name: "github_pat".to_string(),
+                version: "0.1.0".to_string(),
+                description: "GitHub PAT identity.".to_string(),
+                issuer: "github".to_string(),
+                identity_type: "fixed_token".to_string(),
+                manifest_yaml: fixed_token_spec_yaml("github_pat"),
+            }),
+        },
+    ))
+    .await;
+
+    server
+        .cmd()
+        .args([
+            "identity",
+            "add",
+            "github_local",
+            "--identity-spec",
+            "github_pat",
+            "--token-stdin",
+        ])
+        .write_stdin("pat-token\n")
+        .assert()
+        .success()
+        .stdout("Created identity github_local (github_pat)\n");
+
+    assert_eq!(server.get_identity_spec_requests()[0].name, "github_pat");
+    let requests = server.create_user_owned_identity_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].name, "github_local");
+    assert_eq!(requests[0].identity_spec, "github_pat");
+    match requests[0].setup.as_ref().expect("identity setup") {
+        create_user_owned_identity_request::Setup::FixedToken(setup) => {
+            assert_eq!(setup.token, "pat-token");
+        }
+    }
 
     server.shutdown().await;
 }

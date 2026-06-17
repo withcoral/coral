@@ -660,6 +660,29 @@ impl IdentityManager {
         self.list_identities(&owner).await
     }
 
+    async fn get_identity(
+        &self,
+        owner: &IdentityOwner,
+        identity_name: &str,
+    ) -> Result<IdentityRecord, AppError> {
+        let identity_name = validate_identity_name(identity_name)?;
+        self.store
+            .load_identity(owner, &identity_name)
+            .await?
+            .ok_or_else(|| AppError::IdentityNotFound(identity_name.to_string()))
+    }
+
+    pub(crate) async fn get_user_owned_identity(
+        &self,
+        principal: &UserPrincipal,
+        identity_name: &str,
+    ) -> Result<IdentityRecord, AppError> {
+        let span = info_span!("coral.app.identities.get_user_owned");
+        let _guard = span.enter();
+        let owner = IdentityOwner::for_user_principal(principal)?;
+        self.get_identity(&owner, identity_name).await
+    }
+
     async fn delete_identity(
         &self,
         owner: &IdentityOwner,
@@ -667,6 +690,22 @@ impl IdentityManager {
     ) -> Result<bool, AppError> {
         let identity_name = validate_identity_name(identity_name)?;
         self.store.delete_identity(owner, &identity_name).await
+    }
+
+    pub(crate) async fn delete_user_owned_identity(
+        &self,
+        principal: &UserPrincipal,
+        identity_name: &str,
+    ) -> Result<(), AppError> {
+        let span = info_span!("coral.app.identities.delete_user_owned");
+        let _guard = span.enter();
+        let owner = IdentityOwner::for_user_principal(principal)?;
+        let identity_name = validate_identity_name(identity_name)?;
+        if self.store.delete_identity(&owner, &identity_name).await? {
+            Ok(())
+        } else {
+            Err(AppError::IdentityNotFound(identity_name.to_string()))
+        }
     }
 
     pub(crate) async fn replace_user_owned_source_identity_binding(
@@ -2234,6 +2273,50 @@ audience:
 
     fn unexpected_manifest_only_registry_call(operation: &str) -> AppError {
         AppError::FailedPrecondition(format!("metadata validation should not {operation}"))
+    }
+
+    #[tokio::test]
+    async fn gets_user_owned_identity_record() {
+        let (_temp, manager, _identity_specs) = manager_with_github_pat_spec();
+        let principal = UserPrincipal::local();
+        let record = manager
+            .create_user_owned_fixed_token_identity(&principal, github_local_command("ghp_token"))
+            .await
+            .expect("create identity");
+
+        let loaded = manager
+            .get_user_owned_identity(&principal, "github_local")
+            .await
+            .expect("get identity");
+        assert_eq!(loaded, record);
+    }
+
+    #[tokio::test]
+    async fn deletes_user_owned_identity_record() {
+        let (_temp, manager, _identity_specs) = manager_with_github_pat_spec();
+        manager
+            .create_user_owned_fixed_token_identity(
+                &UserPrincipal::local(),
+                github_local_command("ghp_token"),
+            )
+            .await
+            .expect("create identity");
+
+        manager
+            .delete_user_owned_identity(&UserPrincipal::local(), "github_local")
+            .await
+            .expect("delete identity");
+
+        let listed = manager
+            .list_user_owned_identities(&UserPrincipal::local())
+            .await
+            .expect("list identities");
+        assert!(listed.is_empty(), "identity should be removed");
+        let error = manager
+            .delete_user_owned_identity(&UserPrincipal::local(), "github_local")
+            .await
+            .expect_err("second delete should report missing identity");
+        assert!(matches!(error, AppError::IdentityNotFound(name) if name == "github_local"));
     }
 
     #[tokio::test]
