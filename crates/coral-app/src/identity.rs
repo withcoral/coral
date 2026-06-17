@@ -213,6 +213,19 @@ impl SourceIdentityBinding {
         }
         Ok(())
     }
+
+    fn workspace_selection(&self) -> Result<SourceIdentitySelection, AppError> {
+        if self.owner != IdentityOwnerKind::Workspace {
+            return Err(AppError::InvalidInput(
+                "user-owned source identity selection must be resolved per user".to_string(),
+            ));
+        }
+        SourceIdentitySelection::new(self.identity.clone().ok_or_else(|| {
+            AppError::InvalidInput(
+                "workspace-owned source identity binding is missing identity".to_string(),
+            )
+        })?)
+    }
 }
 
 /// Concrete identity selected for one source-local surface.
@@ -340,6 +353,62 @@ pub trait RuntimeSourceIdentity: Send + Sync + fmt::Debug {
         request: &reqwest::Request,
         resolved_inputs: &BTreeMap<String, String>,
     ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestIdentityHttpAuthenticatorError>;
+}
+
+/// App-owned source identity manager. It owns binding resolution policy;
+/// providers only supply material for an already-selected binding.
+#[derive(Clone, Default)]
+pub(crate) struct IdentityManager {
+    providers: Arc<Vec<Arc<dyn SourceIdentityProvider>>>,
+}
+
+impl IdentityManager {
+    pub(crate) fn new(providers: Vec<Arc<dyn SourceIdentityProvider>>) -> Self {
+        Self {
+            providers: Arc::new(providers),
+        }
+    }
+
+    pub(crate) async fn resolve_source_identity_selection(
+        &self,
+        request: SourceIdentitySelectionRequest,
+    ) -> Result<SourceIdentitySelection, AppError> {
+        if request.binding.owner == IdentityOwnerKind::Workspace {
+            return request.binding.workspace_selection();
+        }
+        for provider in self.providers.iter() {
+            if let Some(selection) = provider.resolve_source_identity_selection(&request).await? {
+                return Ok(selection);
+            }
+        }
+        Err(AppError::FailedPrecondition(format!(
+            "no source identity provider resolved user-owned selection for source '{}' surface '{}' and user '{}'",
+            request.source_name, request.surface_id, request.user_id
+        )))
+    }
+
+    pub(crate) async fn resolve_source_identity(
+        &self,
+        request: SourceIdentityResolutionRequest,
+    ) -> Result<Arc<dyn RuntimeSourceIdentity>, AppError> {
+        for provider in self.providers.iter() {
+            if let Some(identity) = provider.resolve_source_identity(&request).await? {
+                return Ok(identity);
+            }
+        }
+        Err(AppError::FailedPrecondition(format!(
+            "no source identity provider resolved identity '{}' for source '{}' surface '{}'",
+            request.selection.identity, request.source_name, request.surface_id
+        )))
+    }
+}
+
+impl fmt::Debug for IdentityManager {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IdentityManager")
+            .field("provider_count", &self.providers.len())
+            .finish()
+    }
 }
 
 #[cfg(test)]

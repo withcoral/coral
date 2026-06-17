@@ -1,14 +1,18 @@
 //! Query-time loading, validation, and execution over installed sources.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
 use coral_engine::{
-    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
-    SourceValidationReport, StatusCode, TableInfo,
+    BoundRequestIdentityHttpAuthenticator, CatalogInfo, CoralQuery, CoreError, DescribeTableInfo,
+    QueryExecution, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
+    RequestIdentityHttpAuthenticatorError, RequestIdentityHttpAuthenticatorFactory,
+    RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
+    RuntimeIdentityRequirements, RuntimeSourceComponent, RuntimeSourcePackage,
+    SelectedRequestIdentity, SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -18,6 +22,12 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::episode::EpisodeId;
+use crate::features::Features;
+use crate::identity::{
+    IdentityManager, IdentityOwnerKind, SourceIdentityBinding, SourceIdentityProvider,
+    SourceIdentityResolutionRequest, SourceIdentitySelection, SourceIdentitySelectionRequest,
+    UserPrincipal,
+};
 use crate::query::QueryContext;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
@@ -43,6 +53,21 @@ pub(crate) struct ValidatedSource {
     pub(crate) report: SourceValidationReport,
 }
 
+type SourceIdentityBindingsSnapshot = BTreeMap<String, BTreeMap<String, SourceIdentityBinding>>;
+
+#[derive(Debug)]
+struct LoadedQuerySource {
+    query_source: QuerySource,
+    version: Option<String>,
+    identity_bindings: BTreeMap<String, SourceIdentityBinding>,
+}
+
+#[derive(Default)]
+pub(crate) struct QueryManagerOptions {
+    pub(crate) features: Features,
+    pub(crate) source_identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
+}
+
 #[derive(Clone)]
 pub(crate) struct QueryManager {
     config_store: ConfigStore,
@@ -50,9 +75,12 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    features: Features,
+    identity_manager: IdentityManager,
 }
 
 impl QueryManager {
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
@@ -60,13 +88,59 @@ impl QueryManager {
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
+        Self::new_with_options(
+            config_store,
+            credential_manager,
+            runtime_context,
+            layout,
+            engine_extensions_providers,
+            QueryManagerOptions::default(),
+        )
+    }
+
+    pub(crate) fn new_with_options(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        options: QueryManagerOptions,
+    ) -> Self {
         Self {
             config_store,
             credential_manager,
             runtime_context,
             layout,
             engine_extensions_providers,
+            features: options.features,
+            identity_manager: IdentityManager::new(options.source_identity_providers),
         }
+    }
+
+    fn load_query_runtime(
+        &self,
+        context: &QueryContext,
+    ) -> Result<(Vec<QuerySource>, QueryRuntimeConfig), QueryManagerError> {
+        let workspace_name = context.workspace_name();
+        let config = self
+            .config_store
+            .load_config()
+            .map_err(QueryManagerError::App)?;
+        let loaded_sources = self
+            .load_query_sources(workspace_name, &config)
+            .map_err(QueryManagerError::App)?;
+        let identity_bindings = identity_binding_snapshot_for_sources(&loaded_sources);
+        let sources = query_sources_from_loaded(loaded_sources);
+        let runtime = self
+            .runtime_config(
+                workspace_name,
+                context.principal(),
+                &sources,
+                identity_bindings,
+                &config,
+            )
+            .map_err(QueryManagerError::App)?;
+        Ok((sources, runtime))
     }
 
     pub(crate) async fn list_tables(
@@ -83,16 +157,7 @@ impl QueryManager {
             &trace_sql,
             context.episode_id(),
             async {
-                let config = self
-                    .config_store
-                    .load_config()
-                    .map_err(QueryManagerError::App)?;
-                let sources = self
-                    .load_query_sources(workspace_name, &config)
-                    .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .runtime_config(workspace_name, &sources, &config)
-                    .map_err(QueryManagerError::App)?;
+                let (sources, runtime) = self.load_query_runtime(context)?;
                 CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -115,16 +180,7 @@ impl QueryManager {
             &trace_sql,
             context.episode_id(),
             async {
-                let config = self
-                    .config_store
-                    .load_config()
-                    .map_err(QueryManagerError::App)?;
-                let sources = self
-                    .load_query_sources(workspace_name, &config)
-                    .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .runtime_config(workspace_name, &sources, &config)
-                    .map_err(QueryManagerError::App)?;
+                let (sources, runtime) = self.load_query_runtime(context)?;
                 CoralQuery::list_catalog(&sources, runtime, schema_filter)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -158,16 +214,7 @@ impl QueryManager {
             &trace_sql,
             context.episode_id(),
             async {
-                let config = self
-                    .config_store
-                    .load_config()
-                    .map_err(QueryManagerError::App)?;
-                let sources = self
-                    .load_query_sources(workspace_name, &config)
-                    .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .runtime_config(workspace_name, &sources, &config)
-                    .map_err(QueryManagerError::App)?;
+                let (sources, runtime) = self.load_query_runtime(context)?;
                 CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -189,16 +236,7 @@ impl QueryManager {
             sql,
             context.episode_id(),
             async {
-                let config = self
-                    .config_store
-                    .load_config()
-                    .map_err(QueryManagerError::App)?;
-                let sources = self
-                    .load_query_sources(workspace_name, &config)
-                    .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .runtime_config(workspace_name, &sources, &config)
-                    .map_err(QueryManagerError::App)?;
+                let (sources, runtime) = self.load_query_runtime(context)?;
                 CoralQuery::execute_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -220,16 +258,7 @@ impl QueryManager {
             sql,
             context.episode_id(),
             async {
-                let config = self
-                    .config_store
-                    .load_config()
-                    .map_err(QueryManagerError::App)?;
-                let sources = self
-                    .load_query_sources(workspace_name, &config)
-                    .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .runtime_config(workspace_name, &sources, &config)
-                    .map_err(QueryManagerError::App)?;
+                let (sources, runtime) = self.load_query_runtime(context)?;
                 CoralQuery::explain_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -241,9 +270,10 @@ impl QueryManager {
 
     pub(crate) async fn validate_source(
         &self,
-        workspace_name: &WorkspaceName,
+        context: &QueryContext,
         source_name: &SourceName,
     ) -> Result<ValidatedSource, QueryManagerError> {
+        let workspace_name = context.workspace_name();
         let config = self
             .config_store
             .load_config()
@@ -252,18 +282,32 @@ impl QueryManager {
             .get_source(workspace_name, source_name)
             .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
             .map_err(QueryManagerError::App)?;
-        let (query_source, version) = self
+        let loaded_source = self
             .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
-        let runtime = self
-            .runtime_config(workspace_name, std::slice::from_ref(&query_source), &config)
+        self.validate_source_identity_bindings(workspace_name, context.principal(), &loaded_source)
+            .await
             .map_err(QueryManagerError::App)?;
-        let report =
-            CoralQuery::validate_source(&query_source, runtime, query_source.test_queries())
-                .await
-                .map_err(QueryManagerError::Core)?;
+        let identity_bindings =
+            identity_binding_snapshot_for_sources(std::slice::from_ref(&loaded_source));
+        let runtime = self
+            .runtime_config(
+                workspace_name,
+                context.principal(),
+                std::slice::from_ref(&loaded_source.query_source),
+                identity_bindings,
+                &config,
+            )
+            .map_err(QueryManagerError::App)?;
+        let report = CoralQuery::validate_source(
+            &loaded_source.query_source,
+            runtime,
+            loaded_source.query_source.test_queries(),
+        )
+        .await
+        .map_err(QueryManagerError::Core)?;
         let mut source = source;
-        source.version = version;
+        source.version = loaded_source.version;
 
         Ok(ValidatedSource { source, report })
     }
@@ -272,7 +316,7 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         config: &AppConfig,
-    ) -> Result<Vec<QuerySource>, AppError> {
+    ) -> Result<Vec<LoadedQuerySource>, AppError> {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
             workspace = %workspace_name,
@@ -282,7 +326,7 @@ impl QueryManager {
         let mut query_sources = Vec::new();
         for source in config.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
-                Ok((query_source, _version)) => query_sources.push(query_source),
+                Ok(query_source) => query_sources.push(query_source),
                 Err(
                     error @ (AppError::Credentials(CredentialsError::Unavailable(_))
                     | AppError::MissingOrIncompatibleV4Materialization { .. }
@@ -307,10 +351,11 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
-    ) -> Result<(QuerySource, Option<String>), AppError> {
+    ) -> Result<LoadedQuerySource, AppError> {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
         let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
+            self.features.ensure_dsl_v4_enabled()?;
             let materialized = load_v4_materialization(
                 &self.layout,
                 workspace_name,
@@ -380,13 +425,80 @@ impl QueryManager {
         } else {
             QuerySource::from_manifest(&source_spec, source.variables.clone(), resolved_secrets)
         };
-        Ok((query_source, installed.candidate.version))
+        Ok(LoadedQuerySource {
+            query_source,
+            version: installed.candidate.version,
+            identity_bindings: source.identity_bindings.clone(),
+        })
+    }
+
+    fn request_identity_selector_and_factory(
+        &self,
+        workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
+        selected_sources: &[QuerySource],
+        identity_bindings: SourceIdentityBindingsSnapshot,
+    ) -> (
+        Option<Arc<dyn RequestIdentitySelector>>,
+        Option<RequestIdentityHttpAuthenticatorFactory>,
+    ) {
+        if !selected_sources
+            .iter()
+            .any(|source| identity_requirements_for_source(source).next().is_some())
+        {
+            return (None, None);
+        }
+        let selector = Arc::new(LazyRuntimeIdentitySelector {
+            workspace_name: workspace_name.clone(),
+            request_principal: request_principal.clone(),
+            source_identity_bindings: Arc::new(identity_bindings),
+            identity_manager: self.identity_manager.clone(),
+            selected_identities: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+        });
+        let authenticator_selector = Arc::clone(&selector);
+        let factory: RequestIdentityHttpAuthenticatorFactory =
+            Arc::new(move |selected| authenticator_selector.bound_authenticator_for(selected));
+        (Some(selector), Some(factory))
+    }
+
+    async fn validate_source_identity_bindings(
+        &self,
+        workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
+        loaded_source: &LoadedQuerySource,
+    ) -> Result<(), AppError> {
+        let mut source_identity_bindings = BTreeMap::new();
+        source_identity_bindings.insert(
+            loaded_source.query_source.source_name().to_string(),
+            loaded_source.identity_bindings.clone(),
+        );
+        let resolver = LazyRuntimeIdentitySelector {
+            workspace_name: workspace_name.clone(),
+            request_principal: request_principal.clone(),
+            source_identity_bindings: Arc::new(source_identity_bindings),
+            identity_manager: self.identity_manager.clone(),
+            selected_identities: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+        };
+        for requirements in identity_requirements_for_source(&loaded_source.query_source) {
+            let context = RequestIdentitySelectionContext::new(
+                loaded_source.query_source.source_name().to_string(),
+                requirements.surface_id,
+                requirements.requirements,
+            );
+            resolver
+                .select_identity(&context)
+                .await
+                .map_err(identity_selection_error_to_app_error)?;
+        }
+        Ok(())
     }
 
     fn runtime_config(
         &self,
         workspace_name: &WorkspaceName,
+        request_principal: &UserPrincipal,
         selected_sources: &[QuerySource],
+        identity_bindings: SourceIdentityBindingsSnapshot,
         config: &AppConfig,
     ) -> Result<QueryRuntimeConfig, AppError> {
         let mut extensions =
@@ -398,9 +510,20 @@ impl QueryManager {
             self.credential_manager.clone(),
             provider_input_resolver,
         )));
+        let (request_identity_selector, request_identity_http_authenticator_factory) = self
+            .request_identity_selector_and_factory(
+                workspace_name,
+                request_principal,
+                selected_sources,
+                identity_bindings,
+            );
         let mut runtime_context = self.runtime_context.clone();
         runtime_context.trace_context = Some(tracing::Span::current().context());
-        let mut runtime = QueryRuntimeConfig::new(runtime_context, extensions);
+        let mut runtime = QueryRuntimeConfig::new(runtime_context, extensions)
+            .with_request_identity_selector(request_identity_selector)
+            .with_request_identity_http_authenticator_factory(
+                request_identity_http_authenticator_factory,
+            );
         let selected_source_names = selected_sources
             .iter()
             .map(|source| source.source_name().to_string())
@@ -408,6 +531,204 @@ impl QueryManager {
         runtime.memory = config.memory_config()?;
         runtime.dependent_join = config.dependent_join_config(&selected_source_names)?;
         Ok(runtime)
+    }
+}
+
+fn query_sources_from_loaded(loaded_sources: Vec<LoadedQuerySource>) -> Vec<QuerySource> {
+    loaded_sources
+        .into_iter()
+        .map(|loaded| loaded.query_source)
+        .collect()
+}
+
+fn identity_binding_snapshot_for_sources(
+    loaded_sources: &[LoadedQuerySource],
+) -> SourceIdentityBindingsSnapshot {
+    loaded_sources
+        .iter()
+        .map(|loaded| {
+            (
+                loaded.query_source.source_name().to_string(),
+                loaded.identity_bindings.clone(),
+            )
+        })
+        .collect()
+}
+
+#[derive(Clone)]
+struct LazyRuntimeIdentitySelector {
+    workspace_name: WorkspaceName,
+    request_principal: UserPrincipal,
+    source_identity_bindings: Arc<SourceIdentityBindingsSnapshot>,
+    identity_manager: IdentityManager,
+    selected_identities:
+        Arc<std::sync::Mutex<BTreeMap<String, Arc<dyn crate::identity::RuntimeSourceIdentity>>>>,
+}
+
+impl fmt::Debug for LazyRuntimeIdentitySelector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LazyRuntimeIdentitySelector")
+            .field("workspace_name", &self.workspace_name)
+            .field("source_identity_bindings", &self.source_identity_bindings)
+            .field("identity_manager", &self.identity_manager)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LazyRuntimeIdentitySelector {
+    async fn resolve_runtime_identity(
+        &self,
+        identity: &RequestIdentitySelectionContext,
+    ) -> Result<
+        (
+            SourceIdentitySelection,
+            Arc<dyn crate::identity::RuntimeSourceIdentity>,
+        ),
+        AppError,
+    > {
+        SourceName::parse(identity.source_name())
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        let binding = identity_binding_for_surface(
+            &self.source_identity_bindings,
+            identity.source_name(),
+            identity.surface_id(),
+        )?;
+        let selection = self
+            .identity_manager
+            .resolve_source_identity_selection(SourceIdentitySelectionRequest {
+                workspace_name: self.workspace_name.as_str().to_string(),
+                user_id: self.request_principal.user_id().to_string(),
+                source_name: identity.source_name().to_string(),
+                surface_id: identity.surface_id().to_string(),
+                binding: binding.clone(),
+            })
+            .await?;
+        let user_id = (binding.owner == IdentityOwnerKind::User)
+            .then(|| self.request_principal.user_id().to_string());
+        let runtime_identity = self
+            .identity_manager
+            .resolve_source_identity(SourceIdentityResolutionRequest {
+                workspace_name: self.workspace_name.as_str().to_string(),
+                user_id,
+                source_name: identity.source_name().to_string(),
+                surface_id: identity.surface_id().to_string(),
+                binding,
+                selection: selection.clone(),
+                identity_requirements: identity.identity_requirements().clone(),
+            })
+            .await?;
+        if !identity.accepts_identity(
+            runtime_identity.identity_spec_id(),
+            runtime_identity.audience(),
+        ) {
+            return Err(AppError::FailedPrecondition(format!(
+                "resolved identity does not satisfy identity_requirements for source '{}' surface '{}'",
+                identity.source_name(),
+                identity.surface_id()
+            )));
+        }
+        Ok((selection, runtime_identity))
+    }
+
+    fn bound_authenticator_for(
+        &self,
+        selected: SelectedRequestIdentity,
+    ) -> Result<BoundRequestIdentityHttpAuthenticator, RequestIdentityHttpAuthenticatorError> {
+        let runtime_identity = self
+            .selected_identities
+            .lock()
+            .expect("selected identity cache lock")
+            .get(selected.identity_id())
+            .cloned()
+            .ok_or_else(|| {
+                RequestIdentityHttpAuthenticatorError::failed_precondition(format!(
+                    "selected identity '{}' was not resolved during identity selection",
+                    selected.identity_id()
+                ))
+            })?;
+        let bound: BoundRequestIdentityHttpAuthenticator = Arc::new(
+            move |request: &reqwest::Request, resolved_inputs: &BTreeMap<String, String>| {
+                let runtime_identity = Arc::clone(&runtime_identity);
+                let selected = selected.clone();
+                Box::pin(async move {
+                    runtime_identity
+                        .resolve_headers(&selected, request, resolved_inputs)
+                        .await
+                })
+            },
+        );
+        Ok(bound)
+    }
+}
+
+#[tonic::async_trait]
+impl RequestIdentitySelector for LazyRuntimeIdentitySelector {
+    async fn select_identity(
+        &self,
+        identity: &RequestIdentitySelectionContext,
+    ) -> Result<SelectedRequestIdentity, RequestIdentitySelectionError> {
+        let (selection, runtime_identity) = self
+            .resolve_runtime_identity(identity)
+            .await
+            .map_err(|error| app_error_to_identity_selection_error(&error))?;
+        let selected = SelectedRequestIdentity::new(
+            selection.identity,
+            runtime_identity.identity_spec_id().to_string(),
+            runtime_identity.audience().clone(),
+        );
+        self.selected_identities
+            .lock()
+            .expect("selected identity cache lock")
+            .insert(
+                selected.identity_id().to_string(),
+                Arc::clone(&runtime_identity),
+            );
+        Ok(selected)
+    }
+}
+
+fn identity_requirements_for_source(
+    source: &QuerySource,
+) -> impl Iterator<Item = RuntimeIdentityRequirements> + '_ {
+    source
+        .components()
+        .iter()
+        .filter_map(|component| match component {
+            RuntimeSourceComponent::Http(component) => component.identity_requirements.clone(),
+            RuntimeSourceComponent::File(_) | RuntimeSourceComponent::Mcp(_) => None,
+        })
+}
+
+fn identity_binding_for_surface(
+    source_identity_bindings: &SourceIdentityBindingsSnapshot,
+    source_name: &str,
+    surface_id: &str,
+) -> Result<SourceIdentityBinding, AppError> {
+    source_identity_bindings
+        .get(source_name)
+        .and_then(|bindings| bindings.get(surface_id))
+        .cloned()
+        .ok_or_else(|| {
+            AppError::FailedPrecondition(format!(
+                "source '{source_name}' surface '{surface_id}' declares identity_requirements but has no workspace identity binding"
+            ))
+        })
+}
+
+fn app_error_to_identity_selection_error(error: &AppError) -> RequestIdentitySelectionError {
+    let detail = error.to_string();
+    match error {
+        AppError::InvalidInput(_) => RequestIdentitySelectionError::invalid_input(detail),
+        _ => RequestIdentitySelectionError::failed_precondition(detail),
+    }
+}
+
+fn identity_selection_error_to_app_error(error: RequestIdentitySelectionError) -> AppError {
+    match error {
+        RequestIdentitySelectionError::InvalidInput(detail) => AppError::InvalidInput(detail),
+        RequestIdentitySelectionError::FailedPrecondition(detail) => {
+            AppError::FailedPrecondition(detail)
+        }
     }
 }
 
@@ -625,10 +946,11 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use coral_engine::{
-        EngineExtensions, QueryExecution, SourceInputResolutionContext, SourceInputResolver,
-        SourceInputResolverError,
+        EngineExtensions, QueryExecution, RuntimeHttpSourceComponent, SourceInputResolutionContext,
+        SourceInputResolver, SourceInputResolverError,
     };
     use coral_spec::parse_source_manifest_yaml;
+    use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
     use serde_json::{Value, json};
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
@@ -636,7 +958,7 @@ mod tests {
 
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
-    use crate::features::dsl_v4_features;
+    use crate::features::{Features, dsl_v4_features};
     use crate::identity::UserPrincipal;
     use crate::query::QueryAttribution;
     use crate::request_context::RequestContext;
@@ -652,15 +974,49 @@ mod tests {
         runtime_context: QueryRuntimeContext,
         providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> QueryManagerFixture {
+        query_manager_with_options(runtime_context, providers, Features::default(), Vec::new())
+    }
+
+    fn query_manager_with_features(
+        runtime_context: QueryRuntimeContext,
+        providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        features: Features,
+    ) -> QueryManagerFixture {
+        query_manager_with_options(runtime_context, providers, features, Vec::new())
+    }
+
+    fn query_manager_with_identity_providers(
+        runtime_context: QueryRuntimeContext,
+        providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
+    ) -> QueryManagerFixture {
+        query_manager_with_options(
+            runtime_context,
+            providers,
+            Features::default(),
+            identity_providers,
+        )
+    }
+
+    fn query_manager_with_options(
+        runtime_context: QueryRuntimeContext,
+        providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        features: Features,
+        identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
+    ) -> QueryManagerFixture {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        let manager = QueryManager::new(
+        let manager = QueryManager::new_with_options(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             runtime_context,
             layout,
             providers,
+            QueryManagerOptions {
+                features,
+                source_identity_providers: identity_providers,
+            },
         );
         QueryManagerFixture {
             _temp: temp,
@@ -680,7 +1036,7 @@ mod tests {
         use crate::query::service::QueryService;
 
         // Capture finished spans into memory via a scoped subscriber so the
-        // assertion exercises the request context -> manager -> span path end to end.
+        // assertion exercises the real metadata -> manager -> span path end to end.
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter.clone())
@@ -699,7 +1055,7 @@ mod tests {
             }),
             sql: "SELECT 1".to_string(),
         });
-        let episode_id = EpisodeId::parse("ep_trace_1").expect("episode id");
+        let episode_id = crate::episode::EpisodeId::parse("ep_trace_1").expect("episode id");
         request
             .extensions_mut()
             .insert(RequestContext::with_attribution(
@@ -886,7 +1242,13 @@ mod tests {
 
         let runtime = fixture
             .manager
-            .runtime_config(&WorkspaceName::default(), &[], &AppConfig::default())
+            .runtime_config(
+                &WorkspaceName::default(),
+                &UserPrincipal::local(),
+                &[],
+                BTreeMap::new(),
+                &AppConfig::default(),
+            )
             .expect("runtime config");
 
         let config = runtime
@@ -896,9 +1258,212 @@ mod tests {
         assert_eq!(config, 42);
     }
 
+    #[derive(Debug)]
+    struct TestRuntimeIdentity {
+        identity_spec_id: String,
+        audience: BTreeMap<String, Value>,
+    }
+
+    #[tonic::async_trait]
+    impl crate::identity::RuntimeSourceIdentity for TestRuntimeIdentity {
+        fn identity_spec_id(&self) -> &str {
+            &self.identity_spec_id
+        }
+
+        fn audience(&self) -> &BTreeMap<String, Value> {
+            &self.audience
+        }
+
+        async fn resolve_headers(
+            &self,
+            _identity: &SelectedRequestIdentity,
+            _request: &reqwest::Request,
+            _resolved_inputs: &BTreeMap<String, String>,
+        ) -> Result<
+            Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
+            RequestIdentityHttpAuthenticatorError,
+        > {
+            Ok(vec![(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_static("Bearer selected-token"),
+            )])
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestSourceIdentityProvider {
+        selection_user_ids: Arc<Mutex<Vec<String>>>,
+        resolution_user_ids: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    #[tonic::async_trait]
+    impl SourceIdentityProvider for TestSourceIdentityProvider {
+        async fn resolve_source_identity_selection(
+            &self,
+            request: &SourceIdentitySelectionRequest,
+        ) -> Result<Option<SourceIdentitySelection>, AppError> {
+            self.selection_user_ids
+                .lock()
+                .expect("selection lock")
+                .push(request.user_id.clone());
+            Ok(Some(
+                SourceIdentitySelection::new("github_saul").expect("selection"),
+            ))
+        }
+
+        async fn resolve_source_identity(
+            &self,
+            request: &SourceIdentityResolutionRequest,
+        ) -> Result<Option<Arc<dyn crate::identity::RuntimeSourceIdentity>>, AppError> {
+            self.resolution_user_ids
+                .lock()
+                .expect("resolution lock")
+                .push(request.user_id.clone());
+            let selected_requirement = request
+                .identity_requirements
+                .accepts
+                .first()
+                .expect("selected identity requirement");
+            assert_eq!(request.selection.identity, "github_saul");
+            assert_eq!(request.identity_requirements.accepts.len(), 1);
+            assert_eq!(selected_requirement.id, "github-rest-read");
+            Ok(Some(Arc::new(TestRuntimeIdentity {
+                identity_spec_id: "github_pat".to_string(),
+                audience: BTreeMap::from([("host".to_string(), json!("api.example.test"))]),
+            })))
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This integration-style unit test sets up source, binding, provider, and resolver state."
+    )]
+    #[tokio::test]
+    async fn runtime_config_resolves_user_source_identity_for_request_principal() {
+        let selection_user_ids = Arc::new(Mutex::new(Vec::new()));
+        let resolution_user_ids = Arc::new(Mutex::new(Vec::new()));
+        let fixture = query_manager_with_identity_providers(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            vec![Arc::new(TestSourceIdentityProvider {
+                selection_user_ids: Arc::clone(&selection_user_ids),
+                resolution_user_ids: Arc::clone(&resolution_user_ids),
+            })],
+        );
+        let requirements = IdentityRequirements {
+            accepts: vec![AcceptedIdentityRequirement {
+                id: "github-rest-read".to_string(),
+                identity_specs: vec!["github_pat".to_string()],
+                audience: BTreeMap::from([("host".to_string(), json!("api.example.test"))]),
+            }],
+        };
+        let mut http_manifest = parse_source_manifest_yaml(
+            r"
+name: github_v4_query
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://api.example.test
+tables:
+  - name: issues
+    description: Issues
+    request:
+      method: GET
+      path: /issues
+    response: {}
+    columns:
+      - name: id
+        type: Int64
+",
+        )
+        .expect("parse manifest")
+        .as_http()
+        .expect("http manifest")
+        .clone();
+        http_manifest.common.dsl_version = 4;
+        let source = QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "github_v4_query".to_string(),
+                authored_version: None,
+                description: "GitHub".to_string(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                components: vec![RuntimeSourceComponent::Http(
+                    RuntimeHttpSourceComponent::with_identity_requirements(
+                        http_manifest,
+                        "rest",
+                        requirements.clone(),
+                    ),
+                )],
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("runtime source");
+        let runtime = fixture
+            .manager
+            .runtime_config(
+                &WorkspaceName::default(),
+                &UserPrincipal::for_user("saul").expect("request principal"),
+                std::slice::from_ref(&source),
+                BTreeMap::from([(
+                    "github_v4_query".to_string(),
+                    BTreeMap::from([("rest".to_string(), SourceIdentityBinding::user_owned())]),
+                )]),
+                &AppConfig::default(),
+            )
+            .expect("runtime config");
+        let selector = runtime
+            .request_identity_selector
+            .expect("identity selector installed");
+        let factory = runtime
+            .request_identity_http_authenticator_factory
+            .expect("identity authenticator factory installed");
+        let selected = selector
+            .select_identity(&RequestIdentitySelectionContext::new(
+                "github_v4_query".to_string(),
+                "rest".to_string(),
+                requirements,
+            ))
+            .await
+            .expect("identity selected");
+        assert_eq!(selected.identity_id(), "github_saul");
+        assert_eq!(selected.identity_spec_id(), "github_pat");
+        let authenticator = factory(selected).expect("identity authenticator");
+        let request = reqwest::Request::new(
+            reqwest::Method::GET,
+            "https://api.example.test/issues".parse().expect("url"),
+        );
+        let headers = authenticator.as_ref()(&request, &BTreeMap::new())
+            .await
+            .expect("identity headers");
+
+        assert_eq!(
+            selection_user_ids
+                .lock()
+                .expect("selection lock")
+                .as_slice(),
+            &["saul".to_string()]
+        );
+        assert_eq!(
+            resolution_user_ids
+                .lock()
+                .expect("resolution lock")
+                .as_slice(),
+            &[Some("saul".to_string())]
+        );
+        let authorization = headers.first().expect("authorization header");
+        assert_eq!(authorization.0, reqwest::header::AUTHORIZATION);
+        assert_eq!(authorization.1, "Bearer selected-token");
+    }
+
     #[test]
     fn load_query_source_passes_present_optional_secrets_to_runtime() {
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let fixture = query_manager_with_features(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            dsl_v4_features(),
+        );
         fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = WorkspaceName::default();
         let source_name = SourceName::parse("optional_auth").expect("source name");
@@ -950,6 +1515,7 @@ tables:
             variables: BTreeMap::new(),
             secrets: vec!["API_KEY".to_string(), "OAUTH_TOKEN".to_string()],
             credential_storage: Some(CredentialStorageKind::File),
+            identity_bindings: BTreeMap::new(),
             origin: SourceOrigin::Imported,
         };
         fixture
@@ -968,13 +1534,13 @@ tables:
             )
             .expect("persist secret material");
 
-        let (query_source, _) = fixture
+        let loaded_source = fixture
             .manager
             .load_query_source(&workspace_name, &source)
             .expect("optional secret should load when present");
 
         assert_eq!(
-            query_source.secrets(),
+            loaded_source.query_source.secrets(),
             &BTreeMap::from([("OAUTH_TOKEN".to_string(), "oauth-token".to_string())])
         );
     }
@@ -990,7 +1556,11 @@ tables:
             .mount(&server)
             .await;
 
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let fixture = query_manager_with_features(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            dsl_v4_features(),
+        );
         fixture.manager.layout.ensure().expect("ensure layout");
         let source_manager = SourceManager::new_with_features(
             fixture.manager.config_store.clone(),
@@ -1046,6 +1616,8 @@ surfaces:
                         openapi_file.display()
                     ),
                     bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("import v4 source");
@@ -1071,8 +1643,77 @@ surfaces:
     }
 
     #[test]
-    fn load_query_sources_fails_closed_for_missing_v4_materialization() {
+    fn load_query_source_rejects_v4_when_dsl_v4_feature_is_disabled() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("github_v4_disabled").expect("source name");
+        let manifest_path = fixture
+            .manager
+            .layout
+            .manifest_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(
+            &manifest_path,
+            r"
+name: github_v4_disabled
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+",
+        )
+        .expect("write manifest");
+        let source = InstalledSource {
+            name: source_name,
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: Vec::new(),
+            credential_storage: None,
+            origin: SourceOrigin::Imported,
+            identity_bindings: BTreeMap::new(),
+        };
+
+        let error = fixture
+            .manager
+            .load_query_source(&workspace_name, &source)
+            .expect_err("v4 source should require feature opt-in");
+
+        assert!(
+            matches!(error, AppError::SourceUnservable(ref message) if message.contains("dsl_v4")),
+            "unexpected error: {error:#}"
+        );
+
+        fixture
+            .manager
+            .config_store
+            .upsert_source(&workspace_name, source)
+            .expect("persist v4 source");
+        let config = fixture
+            .manager
+            .config_store
+            .load_config()
+            .expect("load config");
+        let error = fixture
+            .manager
+            .load_query_sources(&workspace_name, &config)
+            .expect_err("normal query loading should fail on disabled v4 source");
+
+        assert!(
+            matches!(error, AppError::SourceUnservable(ref message) if message.contains("dsl_v4")),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn load_query_sources_fails_closed_for_missing_v4_materialization() {
+        let fixture = query_manager_with_features(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            dsl_v4_features(),
+        );
         fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = WorkspaceName::default();
         let source_name = SourceName::parse("github_v4_missing_artifacts").expect("source name");
@@ -1105,6 +1746,7 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: Vec::new(),
                     credential_storage: None,
+                    identity_bindings: BTreeMap::new(),
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -1147,6 +1789,7 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: vec!["GITHUB_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::Keychain),
+                    identity_bindings: BTreeMap::new(),
                     origin: SourceOrigin::Bundled,
                 },
             )
@@ -1222,6 +1865,10 @@ surfaces:
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This integration-style unit test sets up persisted credentials and resolver composition."
+    )]
     #[tokio::test]
     async fn runtime_config_composes_provider_input_resolver_with_refreshed_inputs() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -1247,6 +1894,7 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: vec!["API_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::File),
+                    identity_bindings: BTreeMap::new(),
                     origin: SourceOrigin::Bundled,
                 },
             )
@@ -1292,7 +1940,9 @@ tables:
             .manager
             .runtime_config(
                 &workspace_name,
+                &UserPrincipal::local(),
                 std::slice::from_ref(&source),
+                BTreeMap::new(),
                 &AppConfig::default(),
             )
             .expect("runtime config");

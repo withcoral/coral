@@ -9,6 +9,7 @@ use tracing::{info_span, warn};
 
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialStorageKind;
+use crate::identity::SourceIdentityBinding;
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
@@ -187,19 +188,23 @@ struct PersistedInstalledSource {
     secrets: Vec<String>,
     #[serde(default)]
     credential_storage: Option<CredentialStorageKind>,
+    #[serde(default)]
+    identity_bindings: BTreeMap<String, SourceIdentityBinding>,
     origin: SourceOrigin,
 }
 
 impl PersistedInstalledSource {
-    fn into_installed_source(self, source_name: SourceName) -> InstalledSource {
-        InstalledSource {
+    fn into_installed_source(self, source_name: SourceName) -> Result<InstalledSource, AppError> {
+        validate_identity_bindings(source_name.as_str(), &self.identity_bindings)?;
+        Ok(InstalledSource {
             name: source_name,
             version: self.version,
             variables: self.variables,
             secrets: self.secrets,
             credential_storage: self.credential_storage,
+            identity_bindings: self.identity_bindings,
             origin: self.origin,
-        }
+        })
     }
 }
 
@@ -210,6 +215,7 @@ impl From<&InstalledSource> for PersistedInstalledSource {
             variables: value.variables.clone(),
             secrets: value.secrets.clone(),
             credential_storage: value.credential_storage,
+            identity_bindings: value.identity_bindings.clone(),
             origin: value.origin,
         }
     }
@@ -527,6 +533,15 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
                     .expect("source config entry should be a table after initialization");
                 source_table.remove("credential_storage");
             }
+            if source.identity_bindings.is_empty() {
+                let source_table = source_item
+                    .as_table_mut()
+                    .expect("source config entry should be a table after initialization");
+                source_table.remove("identity_bindings");
+            } else {
+                source_item["identity_bindings"] =
+                    Item::Value(render_identity_bindings(&source.identity_bindings));
+            }
             source_item["origin"] = value(source.origin.as_config_value());
         }
     }
@@ -607,7 +622,7 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
             let workspace_name = WorkspaceName::parse(&workspace_name)?;
             for (source_name, source) in workspace_config.sources {
                 let source_name = SourceName::parse(&source_name)?;
-                catalog.upsert_source(&workspace_name, source.into_installed_source(source_name));
+                catalog.upsert_source(&workspace_name, source.into_installed_source(source_name)?);
             }
         }
         Ok(Self {
@@ -781,6 +796,42 @@ fn positive_optional(field: &str, value: Option<usize>) -> Result<Option<usize>,
     }
 }
 
+fn validate_identity_bindings(
+    source_name: &str,
+    bindings: &BTreeMap<String, SourceIdentityBinding>,
+) -> Result<(), AppError> {
+    for (surface_id, binding) in bindings {
+        validate_surface_id(surface_id).map_err(|error| {
+            AppError::InvalidInput(format!(
+                "source '{source_name}' identity binding surface '{surface_id}' is invalid: {error}"
+            ))
+        })?;
+        binding.validate()?;
+    }
+    Ok(())
+}
+
+fn validate_surface_id(surface_id: &str) -> Result<(), AppError> {
+    if surface_id.is_empty() {
+        return Err(AppError::InvalidInput("missing surface id".to_string()));
+    }
+    let mut chars = surface_id.chars();
+    let Some(first) = chars.next() else {
+        return Err(AppError::InvalidInput("missing surface id".to_string()));
+    };
+    if !first.is_ascii_lowercase() {
+        return Err(AppError::InvalidInput(
+            "surface id must start with a lowercase ASCII letter".to_string(),
+        ));
+    }
+    if chars.any(|ch| !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')) {
+        return Err(AppError::InvalidInput(
+            "surface id must contain only lowercase ASCII letters, digits, or '_'".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn render_inline_table(values: &BTreeMap<String, String>) -> Value {
     let mut table = InlineTable::new();
     for (key, value) in values {
@@ -792,6 +843,21 @@ fn render_inline_table(values: &BTreeMap<String, String>) -> Value {
 
 fn render_string_array(values: &[String]) -> Value {
     values.iter().cloned().collect()
+}
+
+fn render_identity_bindings(values: &BTreeMap<String, SourceIdentityBinding>) -> Value {
+    let mut table = InlineTable::new();
+    for (surface_id, binding) in values {
+        let mut binding_table = InlineTable::new();
+        binding_table.insert("owner", Value::from(binding.owner.as_config_value()));
+        if let Some(identity) = &binding.identity {
+            binding_table.insert("identity", Value::from(identity.clone()));
+        }
+        binding_table.fmt();
+        table.insert(surface_id, Value::InlineTable(binding_table));
+    }
+    table.fmt();
+    Value::InlineTable(table)
 }
 
 #[cfg(test)]
@@ -831,6 +897,7 @@ mod tests {
             )]),
             secrets: vec!["GITHUB_TOKEN".to_string()],
             credential_storage: None,
+            identity_bindings: BTreeMap::new(),
             origin: SourceOrigin::Imported,
         }
     }

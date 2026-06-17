@@ -35,13 +35,6 @@ impl QueryContext {
         &self.workspace_name
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "QueryContext intentionally carries principal state before query authorization consumes it."
-        )
-    )]
     pub(crate) fn principal(&self) -> &UserPrincipal {
         self.request_context.principal()
     }

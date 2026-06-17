@@ -55,11 +55,11 @@ use crate::feedback::service::FeedbackService;
 use crate::identities::{
     IdentityManagementHandle, IdentityManager, IdentityService, IdentityStore,
 };
-use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
+use crate::identity::{SingleUserPrincipalProvider, SourceIdentityProvider, UserPrincipalProvider};
 use crate::identity_specs::{
     IdentitySpecManager, IdentitySpecRegistry, IdentitySpecService, IdentitySpecUsageProvider,
 };
-use crate::query::manager::QueryManager;
+use crate::query::manager::{QueryManager, QueryManagerOptions};
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
@@ -97,6 +97,7 @@ pub(crate) struct ServerConfig {
     identity_spec_usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
     feature_overrides: FeatureOverrides,
     identity_store: Option<Arc<dyn IdentityStore>>,
+    source_identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
@@ -119,6 +120,7 @@ impl ServerConfig {
             identity_spec_usage_providers: Vec::new(),
             feature_overrides: FeatureOverrides::default(),
             identity_store: None,
+            source_identity_providers: Vec::new(),
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             management_authorizer: Arc::new(AllowAllManagementAuthorizer),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
@@ -184,6 +186,15 @@ impl ServerConfig {
 
     pub(crate) fn with_identity_store(mut self, identity_store: Arc<dyn IdentityStore>) -> Self {
         self.identity_store = Some(identity_store);
+        self
+    }
+
+    pub(crate) fn add_source_identity_provider(
+        mut self,
+        source_identity_provider: Arc<dyn SourceIdentityProvider>,
+    ) -> Self {
+        self.source_identity_providers
+            .push(source_identity_provider);
         self
     }
 
@@ -363,6 +374,21 @@ impl ServerBuilder {
     }
 
     #[must_use]
+    /// Adds a source identity provider for query-time identity resolution.
+    ///
+    /// Providers are evaluated in call order before the built-in identity
+    /// provider.
+    pub fn add_source_identity_provider(
+        mut self,
+        source_identity_provider: Arc<dyn SourceIdentityProvider>,
+    ) -> Self {
+        self.config = self
+            .config
+            .add_source_identity_provider(source_identity_provider);
+        self
+    }
+
+    #[must_use]
     /// Enables or disables local stderr log rendering for this server.
     ///
     /// `MCP` stdio adapters can enable this for diagnostics while keeping
@@ -443,8 +469,10 @@ impl ServerBuilder {
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
-            features,
+            features.clone(),
         );
+        let mut source_identity_providers = self.config.source_identity_providers;
+        source_identity_providers.push(Arc::new(identity_manager.clone()));
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let episode_store = EpisodeStore::new(layout.clone());
@@ -455,12 +483,16 @@ impl ServerBuilder {
             .query_runtime_context()
             .with_body_capture_max_bytes(body_capture_max_bytes);
 
-        let query_manager = QueryManager::new(
+        let query_manager = QueryManager::new_with_options(
             config_store,
             credential_manager,
             query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
+            QueryManagerOptions {
+                features,
+                source_identity_providers,
+            },
         );
         let trace_service = if telemetry_config.trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))

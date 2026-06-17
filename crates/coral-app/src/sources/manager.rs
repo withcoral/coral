@@ -16,6 +16,7 @@ use crate::credentials::{
     CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind, CredentialsError,
 };
 use crate::features::Features;
+use crate::identity::SourceIdentityBinding;
 use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
@@ -58,12 +59,16 @@ pub(crate) struct CreateBundledSourceWithOAuthCommand {
 pub(crate) struct ImportSourceCommand {
     pub(crate) manifest_yaml: String,
     pub(crate) bindings: SourceBindings,
+    pub(crate) identity_bindings: BTreeMap<String, SourceIdentityBinding>,
+    pub(crate) replace_identity_bindings: bool,
 }
 
 pub(crate) struct ImportSourceWithCredentialsCommand {
     pub(crate) manifest_yaml: String,
     pub(crate) bindings: SourceBindings,
     pub(crate) oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
+    pub(crate) identity_bindings: BTreeMap<String, SourceIdentityBinding>,
+    pub(crate) replace_identity_bindings: bool,
 }
 
 #[derive(Default)]
@@ -147,6 +152,7 @@ struct PersistSourceRequest<'a> {
     candidate: &'a CandidateSource,
     manifest_yaml: Option<&'a str>,
     bindings: ValidatedBindings,
+    identity_bindings: BTreeMap<String, SourceIdentityBinding>,
     origin: SourceOrigin,
     credential_storage: Option<CredentialStorageKind>,
     materialization_tmp: Option<PathBuf>,
@@ -285,6 +291,7 @@ impl SourceManager {
             workspace_name,
             &candidate,
             &command.bindings,
+            BTreeMap::new(),
             None,
             &bundled.manifest_yaml,
             SourceOrigin::Bundled,
@@ -305,6 +312,7 @@ impl SourceManager {
             &command.bindings,
             command.oauth_credential_retrievals,
             events,
+            BTreeMap::new(),
             None,
             &bundled.manifest_yaml,
             SourceOrigin::Bundled,
@@ -323,10 +331,18 @@ impl SourceManager {
         let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
+        let identity_bindings = self.effective_source_identity_bindings(
+            workspace_name,
+            &candidate.name,
+            &command.identity_bindings,
+            command.replace_identity_bindings,
+        )?;
+        validate_import_identity_bindings(&manifest, &identity_bindings)?;
         self.install_validated_source(
             workspace_name,
             &candidate,
             &command.bindings,
+            identity_bindings,
             Some(&manifest_yaml),
             &manifest_yaml,
             SourceOrigin::Imported,
@@ -345,12 +361,20 @@ impl SourceManager {
         let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
+        let identity_bindings = self.effective_source_identity_bindings(
+            workspace_name,
+            &candidate.name,
+            &command.identity_bindings,
+            command.replace_identity_bindings,
+        )?;
+        validate_import_identity_bindings(&manifest, &identity_bindings)?;
         self.install_source_with_oauth(
             workspace_name,
             &candidate,
             &command.bindings,
             command.oauth_credential_retrievals,
             events,
+            identity_bindings,
             Some(&manifest_yaml),
             &manifest_yaml,
             SourceOrigin::Imported,
@@ -362,11 +386,16 @@ impl SourceManager {
     /// the source. Shared tail of the non-OAuth install entry points; the
     /// caller supplies the resolved `candidate` plus the per-origin
     /// `manifest_yaml`/`origin`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Shared non-OAuth install tail for the source-lifecycle entry points; the parameters are the irreducible per-call inputs and match the OAuth tail below."
+    )]
     fn install_validated_source(
         &self,
         workspace_name: &WorkspaceName,
         candidate: &CandidateSource,
         bindings: &SourceBindings,
+        identity_bindings: BTreeMap<String, SourceIdentityBinding>,
         manifest_yaml: Option<&str>,
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
@@ -398,6 +427,7 @@ impl SourceManager {
                 candidate,
                 manifest_yaml,
                 bindings,
+                identity_bindings,
                 origin,
                 credential_storage,
                 materialization_tmp: self
@@ -429,6 +459,7 @@ impl SourceManager {
         bindings: &SourceBindings,
         oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
         events: ImportSourceEventSender,
+        identity_bindings: BTreeMap<String, SourceIdentityBinding>,
         manifest_yaml: Option<&str>,
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
@@ -474,6 +505,7 @@ impl SourceManager {
                 candidate,
                 manifest_yaml,
                 bindings,
+                identity_bindings,
                 origin,
                 credential_storage,
                 materialization_tmp: self
@@ -702,6 +734,7 @@ impl SourceManager {
             variables,
             secrets: visible_secret_keys,
             credential_storage,
+            identity_bindings: request.identity_bindings,
             origin: request.origin,
         };
         if let Err(error) = self
@@ -828,6 +861,23 @@ impl SourceManager {
             .config_store
             .load_catalog()?
             .contains(workspace_name, source_name))
+    }
+
+    fn effective_source_identity_bindings(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        requested: &BTreeMap<String, SourceIdentityBinding>,
+        replace_identity_bindings: bool,
+    ) -> Result<BTreeMap<String, SourceIdentityBinding>, AppError> {
+        if replace_identity_bindings || !requested.is_empty() {
+            return Ok(requested.clone());
+        }
+        match self.config_store.get_source(workspace_name, source_name) {
+            Ok(source) => Ok(source.identity_bindings),
+            Err(AppError::SourceNotFound(_)) => Ok(BTreeMap::new()),
+            Err(error) => Err(error),
+        }
     }
 
     fn read_source_material(
@@ -1270,6 +1320,51 @@ fn validate_bindings(
     })
 }
 
+fn validate_import_identity_bindings(
+    manifest: &ValidatedSourceManifest,
+    bindings: &BTreeMap<String, SourceIdentityBinding>,
+) -> Result<(), AppError> {
+    let Some(v4) = manifest.as_v4() else {
+        if bindings.is_empty() {
+            return Ok(());
+        }
+        return Err(AppError::InvalidInput(
+            "source identity bindings can only be configured for DSL v4 sources".to_string(),
+        ));
+    };
+
+    for surface in v4
+        .surfaces
+        .iter()
+        .filter(|surface| surface.identity_requirements.is_some())
+    {
+        if !bindings.contains_key(&surface.id) {
+            return Err(AppError::InvalidInput(format!(
+                "source '{}' surface '{}' declares identity_requirements but no identity binding was provided",
+                manifest.schema_name(),
+                surface.id
+            )));
+        }
+    }
+
+    for (surface_id, binding) in bindings {
+        binding.validate()?;
+        let surface = v4.surface(surface_id).ok_or_else(|| {
+            AppError::InvalidInput(format!(
+                "source '{}' identity binding targets unknown surface '{surface_id}'",
+                manifest.schema_name()
+            ))
+        })?;
+        surface.identity_requirements.as_ref().ok_or_else(|| {
+            AppError::InvalidInput(format!(
+                "source '{}' surface '{surface_id}' does not declare identity_requirements",
+                manifest.schema_name()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 fn source_needs_stored_material_for_validation(
     candidate: &CandidateSource,
     bindings: &SourceBindings,
@@ -1537,6 +1632,7 @@ mod tests {
         CredentialStore,
     };
     use crate::features::dsl_v4_features;
+    use crate::identity::{IdentityOwnerKind, SourceIdentityBinding};
     use crate::sources::SourceName;
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
     use crate::state::{AppStateLayout, ConfigStore};
@@ -1699,6 +1795,25 @@ surfaces:
         default: http://127.0.0.1:1
     base_url: "{{{{input.API_BASE}}}}"
 "#,
+            openapi_file.display()
+        )
+    }
+
+    fn manifest_v4_with_identity_requirement(openapi_file: &std::path::Path) -> String {
+        format!(
+            r"
+name: github_v4_identity
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    identity_requirements:
+      accepts:
+        - id: github-rest-read
+          identity_specs: [github_pat]
+          audience: {{host: api.example.test}}
+",
             openapi_file.display()
         )
     }
@@ -1937,6 +2052,7 @@ tables:
                     variables: BTreeMap::new(),
                     secrets: vec!["OTHER_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::Keychain),
+                    identity_bindings: BTreeMap::new(),
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -2009,6 +2125,8 @@ tables:
                 &ImportSourceCommand {
                     manifest_yaml: manifest_v4_with_file_descriptor(&openapi_file),
                     bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect_err("v4 source import should require feature opt-in");
@@ -2037,7 +2155,7 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout);
+        let manager = source_manager_with_dsl_v4(config_store, credential_manager, layout);
         let (event_tx, mut event_rx) = import_event_channel();
 
         let error = manager
@@ -2046,6 +2164,8 @@ tables:
                 ImportSourceWithCredentialsCommand {
                     manifest_yaml: manifest_v4_with_file_descriptor(&openapi_file),
                     bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                     oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
                         input_key: "API_TOKEN".to_string(),
                         method_index: 0,
@@ -2087,6 +2207,8 @@ tables:
                 &ImportSourceCommand {
                     manifest_yaml: manifest_v4_with_file_descriptor(&openapi_file),
                     bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("import v4 source");
@@ -2111,6 +2233,47 @@ tables:
     }
 
     #[test]
+    fn import_v4_source_persists_identity_bindings() {
+        let temp = TempDir::new().expect("temp dir");
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = source_manager_with_dsl_v4(config_store, credential_manager, layout);
+        let mut identity_bindings = BTreeMap::new();
+        identity_bindings.insert("rest".to_string(), SourceIdentityBinding::user_owned());
+
+        let installed = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_v4_with_identity_requirement(&openapi_file),
+                    bindings: SourceBindings::default(),
+                    identity_bindings,
+                    replace_identity_bindings: false,
+                },
+            )
+            .expect("import v4 source with identity binding");
+
+        let binding = installed
+            .identity_bindings
+            .get("rest")
+            .expect("rest identity binding");
+        assert_eq!(binding.owner, IdentityOwnerKind::User);
+        assert_eq!(binding.identity, None);
+        let source_name = SourceName::parse("github_v4_identity").expect("source");
+        let stored = manager
+            .get_source(&default_workspace(), &source_name)
+            .expect("stored source");
+        assert_eq!(stored.identity_bindings, installed.identity_bindings);
+    }
+
+    #[test]
     fn import_v4_source_rejects_runtime_schema_collision_before_persistence() {
         let temp = TempDir::new().expect("temp dir");
         let descriptor_temp = TempDir::new().expect("descriptor temp dir");
@@ -2132,6 +2295,8 @@ tables:
                     manifest_yaml: manifest_without_secrets()
                         .replace("public_messages", "github_v4_rest"),
                     bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("install existing source");
@@ -2146,6 +2311,8 @@ tables:
                         "rest",
                     ),
                     bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect_err("surface namespace should collide with installed source schema");
@@ -2193,6 +2360,8 @@ tables:
                 &ImportSourceCommand {
                     manifest_yaml: manifest_v4_with_input_and_derived_base_url(&openapi_file),
                     bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect_err("source add should reject derived base_url input token defaults");
@@ -2231,6 +2400,8 @@ tables:
                 &ImportSourceCommand {
                     manifest_yaml: manifest_v4_with_file_descriptor(Path::new("openapi.yaml")),
                     bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect_err("raw relative descriptors should fail in app import");
@@ -2264,6 +2435,8 @@ tables:
                 &ImportSourceCommand {
                     manifest_yaml: manifest_v4_without_description_or_base_url(&openapi_file),
                     bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("import v4 source");
@@ -2314,6 +2487,8 @@ tables:
                             value: "secret-token".to_string(),
                         }],
                     },
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect_err("secret persistence should fail");
@@ -2407,6 +2582,8 @@ tables:
                             value: "secret-token".to_string(),
                         }],
                     },
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("import source");
@@ -2445,6 +2622,8 @@ tables:
                             value: "secret-token".to_string(),
                         }],
                     },
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("import source");
@@ -2508,6 +2687,8 @@ tables:
                 &ImportSourceCommand {
                     manifest_yaml: manifest_without_secrets(),
                     bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("import source");
@@ -2548,6 +2729,8 @@ tables:
                 &ImportSourceCommand {
                     manifest_yaml: manifest_with_secret(),
                     bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect_err("missing required secret should fail validation");
@@ -2584,6 +2767,8 @@ tables:
                             value: "old-token".to_string(),
                         }],
                     },
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("initial import");
@@ -2603,6 +2788,8 @@ tables:
                             value: "new-token".to_string(),
                         }],
                     },
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("replace malformed credential material");
@@ -2637,6 +2824,8 @@ tables:
                             value: "secret-token".to_string(),
                         }],
                     },
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("initial import");
@@ -2694,6 +2883,8 @@ tables:
                 &ImportSourceCommand {
                     manifest_yaml: manifest_with_secret(),
                     bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("import source");
@@ -2738,6 +2929,8 @@ tables:
                 &ImportSourceCommand {
                     manifest_yaml: manifest_with_secret(),
                     bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect_err("stored material I/O error should fail import");
@@ -2796,6 +2989,8 @@ tables:
                             value: "manual-token".to_string(),
                         }],
                     },
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("import source");
@@ -2844,6 +3039,8 @@ tables:
                             value: "old-token".to_string(),
                         }],
                     },
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("install source");
@@ -2870,6 +3067,8 @@ tables:
                             value: "manual-token".to_string(),
                         }],
                     },
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
         });
@@ -2950,6 +3149,8 @@ tables:
                     method_index: 0,
                     credential_inputs: Vec::new(),
                 }],
+                identity_bindings: BTreeMap::new(),
+                replace_identity_bindings: false,
             },
             event_tx,
         );
@@ -3039,6 +3240,8 @@ tables:
                             value: "old-token".to_string(),
                         }],
                     },
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
             )
             .expect("install source");
@@ -3060,6 +3263,8 @@ tables:
                         method_index: 0,
                         credential_inputs: Vec::new(),
                     }],
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
                 event_tx,
             )
@@ -3127,6 +3332,8 @@ tables:
                         method_index: 0,
                         credential_inputs: Vec::new(),
                     }],
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 },
                 event_tx,
             )

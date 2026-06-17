@@ -1,5 +1,6 @@
 //! Implements the gRPC `SourceService` for source lifecycle APIs.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -37,6 +38,7 @@ use crate::authorization::{
 };
 use crate::bootstrap::{AppError, app_status};
 use crate::credentials::CredentialStorageKind;
+use crate::query::QueryContext;
 use crate::query::manager::QueryManager;
 use crate::request_context::RequestContext;
 use crate::sources::SourceName;
@@ -283,6 +285,8 @@ impl SourceServiceApi for SourceService {
                 let command = ImportSourceCommand {
                     manifest_yaml: request.manifest_yaml,
                     bindings: source_bindings_from_proto(request.variables, request.secrets),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
                 };
                 let installed = run_blocking_source_operation(move || {
                     sources.import_source(&workspace_name, &command)
@@ -306,6 +310,8 @@ impl SourceServiceApi for SourceService {
                     .map(oauth_credential_retrieval_from_proto)
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(app_status)?,
+                identity_bindings: BTreeMap::new(),
+                replace_identity_bindings: false,
             };
             let stream =
                 import_source_response_stream(response_workspace_name, move |event_sender| {
@@ -359,18 +365,19 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
         instrument_grpc(span, async move {
+            let workspace_name = workspace_name_from_proto(request.get_ref().workspace.as_ref())?;
+            let context = QueryContext::from_request(workspace_name, &request)?;
             let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let result = queries
-                .validate_source(&workspace_name, &source_name)
+                .validate_source(&context, &source_name)
                 .await
                 .map_err(query_status)?;
             let crate::query::manager::ValidatedSource { source, report } = result;
-            let source = installed_source_to_proto(&workspace_name, source);
+            let source = installed_source_to_proto(context.workspace_name(), source);
             Ok(Response::new(validate_source_response_to_proto(
                 source,
-                &workspace_name,
+                context.workspace_name(),
                 report,
             )))
         })
