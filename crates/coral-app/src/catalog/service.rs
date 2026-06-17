@@ -1,5 +1,7 @@
 //! Implements the gRPC `CatalogService`.
 
+use std::sync::Arc;
+
 use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
 use coral_api::v1::{
     CatalogCounts as ProtoCatalogCounts, CatalogItemKind as ProtoCatalogItemKind,
@@ -9,6 +11,7 @@ use coral_api::v1::{
 };
 use tonic::{Request, Response, Status};
 
+use crate::authorization::{WorkspaceReadAuthorizer, authorization_status};
 use crate::bootstrap::app_status;
 use crate::catalog::discovery::{
     CatalogDiscovery, CatalogItemKind, CatalogTableRef, ListColumnsQuery, Pagination,
@@ -25,12 +28,17 @@ use crate::transport::{
 #[derive(Clone)]
 pub(crate) struct CatalogService {
     catalog: CatalogDiscovery,
+    workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
 }
 
 impl CatalogService {
-    pub(crate) fn new(query_manager: QueryManager) -> Self {
+    pub(crate) fn new(
+        query_manager: QueryManager,
+        workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
+    ) -> Self {
         Self {
             catalog: CatalogDiscovery::new(query_manager),
+            workspace_read_authorizer,
         }
     }
 }
@@ -43,9 +51,14 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<ListCatalogResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
+        let workspace_read_authorizer = Arc::clone(&self.workspace_read_authorizer);
         instrument_grpc(span, async move {
             let workspace_name = workspace_name_from_proto(request.get_ref().workspace.as_ref())?;
             let context = QueryContext::from_request(workspace_name.clone(), &request)?;
+            workspace_read_authorizer
+                .authorize_workspace_read(context.principal(), context.workspace_name().as_str())
+                .await
+                .map_err(authorization_status)?;
             let request = request.into_inner();
             let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
             let schema_name = optional_trimmed(&request.schema_name);
@@ -84,9 +97,14 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<SearchCatalogResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
+        let workspace_read_authorizer = Arc::clone(&self.workspace_read_authorizer);
         instrument_grpc(span, async move {
             let workspace_name = workspace_name_from_proto(request.get_ref().workspace.as_ref())?;
             let context = QueryContext::from_request(workspace_name.clone(), &request)?;
+            workspace_read_authorizer
+                .authorize_workspace_read(context.principal(), context.workspace_name().as_str())
+                .await
+                .map_err(authorization_status)?;
             let request = request.into_inner();
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
@@ -128,9 +146,14 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<DescribeTableResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
+        let workspace_read_authorizer = Arc::clone(&self.workspace_read_authorizer);
         instrument_grpc(span, async move {
             let workspace_name = workspace_name_from_proto(request.get_ref().workspace.as_ref())?;
             let context = QueryContext::from_request(workspace_name.clone(), &request)?;
+            workspace_read_authorizer
+                .authorize_workspace_read(context.principal(), context.workspace_name().as_str())
+                .await
+                .map_err(authorization_status)?;
             let request = request.into_inner();
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
             let table_name = required_trimmed(&request.table_name, "table_name")?;
@@ -152,9 +175,14 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<ListColumnsResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
+        let workspace_read_authorizer = Arc::clone(&self.workspace_read_authorizer);
         instrument_grpc(span, async move {
             let workspace_name = workspace_name_from_proto(request.get_ref().workspace.as_ref())?;
             let context = QueryContext::from_request(workspace_name.clone(), &request)?;
+            workspace_read_authorizer
+                .authorize_workspace_read(context.principal(), context.workspace_name().as_str())
+                .await
+                .map_err(authorization_status)?;
             let request = request.into_inner();
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
             let table_name = required_trimmed(&request.table_name, "table_name")?;

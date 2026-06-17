@@ -1132,6 +1132,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+    use crate::authorization::AllowAllWorkspaceReadAuthorizer;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
     use crate::features::{Features, dsl_v4_features};
     use crate::identity::UserPrincipal;
@@ -1239,7 +1240,10 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
-        let service = QueryService::new(fixture.manager.clone());
+        let service = QueryService::new(
+            fixture.manager.clone(),
+            Arc::new(AllowAllWorkspaceReadAuthorizer),
+        );
 
         let mut request = Request::new(ExecuteSqlRequest {
             workspace: Some(Workspace {
@@ -2392,10 +2396,7 @@ tables:
             layout.clone(),
             Arc::new(LocalSourceArtifactStore::new(layout)),
             Vec::new(),
-            QueryManagerOptions {
-                features: Features::default(),
-                source_identity_providers: Vec::new(),
-            },
+            QueryManagerOptions::default(),
         )
     }
 

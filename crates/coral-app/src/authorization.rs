@@ -1,4 +1,4 @@
-//! Product authorization seam for management-plane mutations.
+//! Product authorization seams for product runtimes.
 
 use std::fmt;
 
@@ -104,11 +104,64 @@ pub trait ManagementAuthorizer: fmt::Debug + Send + Sync + 'static {
         principal: &UserPrincipal,
         mutation: ManagementMutation<'_>,
     ) -> Result<(), AuthorizationError>;
+
+    /// Returns whether every management mutation is allowed without filtering.
+    ///
+    /// Product runtimes should keep the default `false`; the default OSS
+    /// allow-all authorizer overrides this to preserve local single-user
+    /// behavior on loopback transports.
+    fn allows_all_management_mutations(&self) -> bool {
+        false
+    }
+}
+
+/// Product-provided authorization policy for workspace data-plane reads.
+///
+/// OSS Coral installs [`AllowAllWorkspaceReadAuthorizer`] by default to
+/// preserve local single-user behavior. Product runtimes can replace it to gate
+/// SQL query, catalog, and source metadata reads for multi-user workspace
+/// control planes.
+#[tonic::async_trait]
+pub trait WorkspaceReadAuthorizer: fmt::Debug + Send + Sync + 'static {
+    /// Authorizes reading query-visible data from a workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorizationError`] when the principal is not allowed to read
+    /// from the workspace.
+    async fn authorize_workspace_read(
+        &self,
+        principal: &UserPrincipal,
+        workspace_id: &str,
+    ) -> Result<(), AuthorizationError>;
+
+    /// Returns whether every workspace read is allowed without filtering.
+    ///
+    /// Product runtimes should keep the default `false`; the default OSS
+    /// allow-all authorizer overrides this to preserve local single-user
+    /// behavior on loopback transports.
+    fn allows_all_workspace_reads(&self) -> bool {
+        false
+    }
+
+    /// Returns whether workspace reads may proceed without a scoped workspace
+    /// authorization decision.
+    ///
+    /// Product runtimes should keep the default `false`; this lets native gRPC
+    /// public-bind validation reject authorizers that are safe only for local
+    /// single-user transports.
+    fn allows_unscoped_workspace_reads(&self) -> bool {
+        false
+    }
 }
 
 /// Default OSS authorizer for local single-user usage.
 #[derive(Debug, Default)]
 pub struct AllowAllManagementAuthorizer;
+
+/// Default OSS workspace read authorizer for local single-user usage.
+#[derive(Debug, Default)]
+pub struct AllowAllWorkspaceReadAuthorizer;
 
 #[tonic::async_trait]
 impl ManagementAuthorizer for AllowAllManagementAuthorizer {
@@ -118,6 +171,29 @@ impl ManagementAuthorizer for AllowAllManagementAuthorizer {
         _mutation: ManagementMutation<'_>,
     ) -> Result<(), AuthorizationError> {
         Ok(())
+    }
+
+    fn allows_all_management_mutations(&self) -> bool {
+        true
+    }
+}
+
+#[tonic::async_trait]
+impl WorkspaceReadAuthorizer for AllowAllWorkspaceReadAuthorizer {
+    async fn authorize_workspace_read(
+        &self,
+        _principal: &UserPrincipal,
+        _workspace_id: &str,
+    ) -> Result<(), AuthorizationError> {
+        Ok(())
+    }
+
+    fn allows_all_workspace_reads(&self) -> bool {
+        true
+    }
+
+    fn allows_unscoped_workspace_reads(&self) -> bool {
+        true
     }
 }
 

@@ -42,7 +42,10 @@ use tower::{Layer, Service};
 use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
-use crate::authorization::{AllowAllManagementAuthorizer, ManagementAuthorizer};
+use crate::authorization::{
+    AllowAllManagementAuthorizer, AllowAllWorkspaceReadAuthorizer, ManagementAuthorizer,
+    WorkspaceReadAuthorizer,
+};
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
@@ -143,6 +146,7 @@ pub(crate) struct ServerConfig {
     source_identity_provider_factories: Vec<SourceIdentityProviderFactory>,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
+    workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     grpc_route_extenders: Vec<GrpcRouteExtender>,
     enable_stderr_logs: bool,
@@ -170,6 +174,7 @@ impl ServerConfig {
             source_identity_provider_factories: Vec::new(),
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             management_authorizer: Arc::new(AllowAllManagementAuthorizer),
+            workspace_read_authorizer: Arc::new(AllowAllWorkspaceReadAuthorizer),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             grpc_route_extenders: Vec::new(),
             enable_stderr_logs: false,
@@ -213,6 +218,14 @@ impl ServerConfig {
         management_authorizer: Arc<dyn ManagementAuthorizer>,
     ) -> Self {
         self.management_authorizer = management_authorizer;
+        self
+    }
+
+    pub(crate) fn with_workspace_read_authorizer(
+        mut self,
+        workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
+    ) -> Self {
+        self.workspace_read_authorizer = workspace_read_authorizer;
         self
     }
 
@@ -284,6 +297,33 @@ impl ServerConfig {
     pub(crate) fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
         self.enable_stderr_logs = enable_stderr_logs;
         self
+    }
+
+    fn validate_native_grpc_bind_security(&self) -> Result<(), AppError> {
+        if !matches!(self.mode, ServerMode::NativeGrpc) {
+            return Ok(());
+        }
+        let Some(bind_addr) = self.native_grpc_bind_addr else {
+            return Ok(());
+        };
+        if bind_addr.ip().is_loopback() {
+            return Ok(());
+        }
+        if self.management_authorizer.allows_all_management_mutations() {
+            return Err(AppError::InvalidInput(format!(
+                "native gRPC bind address {bind_addr} is not loopback; configure a management authorizer before binding publicly"
+            )));
+        }
+        if self.workspace_read_authorizer.allows_all_workspace_reads()
+            || self
+                .workspace_read_authorizer
+                .allows_unscoped_workspace_reads()
+        {
+            return Err(AppError::InvalidInput(format!(
+                "native gRPC bind address {bind_addr} is not loopback; configure a workspace read authorizer before binding publicly"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -417,6 +457,21 @@ impl ServerBuilder {
         self.config = self
             .config
             .with_management_authorizer(management_authorizer);
+        self
+    }
+
+    #[must_use]
+    /// Sets the server-side workspace read authorizer.
+    ///
+    /// The default authorizer allows every read, preserving local single-user
+    /// behavior.
+    pub fn with_workspace_read_authorizer(
+        mut self,
+        workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
+    ) -> Self {
+        self.config = self
+            .config
+            .with_workspace_read_authorizer(workspace_read_authorizer);
         self
     }
 
@@ -608,6 +663,7 @@ impl ServerBuilder {
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
+        self.config.validate_native_grpc_bind_security()?;
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
@@ -690,6 +746,7 @@ impl ServerBuilder {
                 trace_service,
                 user_principal_provider,
                 management_authorizer: self.config.management_authorizer,
+                workspace_read_authorizer: self.config.workspace_read_authorizer,
                 identity_spec_manager,
                 identity_manager,
                 grpc_route_extenders: self.config.grpc_route_extenders,
@@ -857,6 +914,7 @@ struct ServerServices {
     trace_service: Option<TraceService>,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
+    workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
     identity_spec_manager: IdentitySpecManager,
     identity_manager: IdentityManager,
     grpc_route_extenders: Vec<GrpcRouteExtender>,
@@ -953,6 +1011,7 @@ async fn start_server(
         trace_service,
         user_principal_provider,
         management_authorizer,
+        workspace_read_authorizer,
         identity_spec_manager,
         identity_manager,
         grpc_route_extenders,
@@ -964,9 +1023,13 @@ async fn start_server(
         identity_spec_manager.clone(),
         identity_manager.clone(),
         Arc::clone(&management_authorizer),
+        Arc::clone(&workspace_read_authorizer),
     );
-    let catalog_service = CatalogService::new(query_manager.clone());
-    let query_service = QueryService::new(query_manager);
+    let catalog_service = CatalogService::new(
+        query_manager.clone(),
+        Arc::clone(&workspace_read_authorizer),
+    );
+    let query_service = QueryService::new(query_manager, workspace_read_authorizer);
     let feedback_service = FeedbackService::new(feedback_manager);
     let identity_spec_service =
         IdentitySpecService::new(identity_spec_manager, management_authorizer);
@@ -1237,6 +1300,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    use coral_api::v1::catalog_service_client::CatalogServiceClient;
     use coral_api::v1::episode_service_client::EpisodeServiceClient;
     use coral_api::v1::identity_spec_service_client::IdentitySpecServiceClient;
     use coral_api::v1::query_service_client::QueryServiceClient;
@@ -1247,10 +1311,12 @@ mod tests {
     };
     use coral_api::v1::{
         AddIdentitySpecRequest, CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
-        DeleteIdentitySpecRequest, DeleteSourceRequest, ExecuteSqlRequest, GetTraceRequest,
-        GetTraceResponse, IdentitySpecInputValue, ImportSourceRequest, ImportSourceResponse,
-        ListSourcesRequest, ListTracesRequest, ListTracesResponse, OpenEpisodeRequest, Workspace,
-        import_source_response,
+        DeleteIdentitySpecRequest, DeleteSourceRequest, DescribeTableRequest,
+        DiscoverSourcesRequest, ExecuteSqlRequest, ExplainSqlRequest, GetSourceInfoRequest,
+        GetSourceRequest, GetTraceRequest, GetTraceResponse, IdentitySpecInputValue,
+        ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListColumnsRequest,
+        ListSourcesRequest, ListTracesRequest, ListTracesResponse, OpenEpisodeRequest,
+        SearchCatalogRequest, ValidateSourceRequest, Workspace, import_source_response,
     };
     use coral_api::{
         HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
@@ -1283,11 +1349,11 @@ mod tests {
     use crate::transport::workspace_to_proto;
     use crate::workspaces::WorkspaceName;
     use crate::{
-        AllowAllManagementAuthorizer, AppError, AuthorizationError, AwsEngineExtensionsProvider,
-        ManagementAuthorizer, ManagementMutation, NoopEngineExtensionsProvider,
-        ResourceMutationKind, RuntimeSourceIdentity, SingleUserPrincipalProvider,
-        SourceIdentityProvider, SourceIdentityResolutionRequest, UserPrincipal,
-        UserPrincipalProvider,
+        AllowAllManagementAuthorizer, AllowAllWorkspaceReadAuthorizer, AppError,
+        AuthorizationError, AwsEngineExtensionsProvider, ManagementAuthorizer, ManagementMutation,
+        NoopEngineExtensionsProvider, ResourceMutationKind, RuntimeSourceIdentity,
+        SingleUserPrincipalProvider, SourceIdentityProvider, SourceIdentityResolutionRequest,
+        UserPrincipal, UserPrincipalProvider, WorkspaceReadAuthorizer,
     };
 
     fn default_workspace() -> Workspace {
@@ -1473,6 +1539,22 @@ enabled = false
     }
 
     #[derive(Debug)]
+    struct RejectingWorkspaceReadAuthorizer;
+
+    #[tonic::async_trait]
+    impl WorkspaceReadAuthorizer for RejectingWorkspaceReadAuthorizer {
+        async fn authorize_workspace_read(
+            &self,
+            _principal: &UserPrincipal,
+            workspace_id: &str,
+        ) -> Result<(), AuthorizationError> {
+            Err(AuthorizationError::forbidden(format!(
+                "workspace read rejected for {workspace_id}"
+            )))
+        }
+    }
+
+    #[derive(Debug)]
     struct NoopSourceIdentityProvider;
 
     #[tonic::async_trait]
@@ -1555,6 +1637,11 @@ enabled = false
         ) -> Result<Response<GetTraceResponse>, Status> {
             Err(Status::unimplemented("unused in test"))
         }
+    }
+
+    fn assert_workspace_read_denied(status: &tonic::Status) {
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert!(status.message().contains("workspace read rejected"));
     }
 
     #[tokio::test]
@@ -1799,6 +1886,148 @@ type: fixed_token
             status.message().contains("1 stored identity"),
             "unexpected status: {status:?}"
         );
+
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn query_and_catalog_services_enforce_workspace_read_authorizer() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_workspace_read_authorizer(Arc::new(RejectingWorkspaceReadAuthorizer))
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut query_client = QueryServiceClient::new(channel.clone());
+        let mut catalog_client = CatalogServiceClient::new(channel);
+
+        let status = query_client
+            .execute_sql(Request::new(ExecuteSqlRequest {
+                workspace: Some(default_workspace()),
+                sql: "SELECT 1".to_string(),
+            }))
+            .await
+            .expect_err("query should be denied");
+        assert_workspace_read_denied(&status);
+
+        let status = query_client
+            .explain_sql(Request::new(ExplainSqlRequest {
+                workspace: Some(default_workspace()),
+                sql: "SELECT 1".to_string(),
+            }))
+            .await
+            .expect_err("query planning should be denied");
+        assert_workspace_read_denied(&status);
+
+        let status = catalog_client
+            .list_catalog(Request::new(ListCatalogRequest {
+                workspace: Some(default_workspace()),
+                ..ListCatalogRequest::default()
+            }))
+            .await
+            .expect_err("catalog listing should be denied");
+        assert_workspace_read_denied(&status);
+
+        let status = catalog_client
+            .search_catalog(Request::new(SearchCatalogRequest {
+                workspace: Some(default_workspace()),
+                pattern: "missing".to_string(),
+                ignore_case: true,
+                ..SearchCatalogRequest::default()
+            }))
+            .await
+            .expect_err("catalog search should be denied");
+        assert_workspace_read_denied(&status);
+
+        let status = catalog_client
+            .describe_table(Request::new(DescribeTableRequest {
+                workspace: Some(default_workspace()),
+                schema_name: "missing".to_string(),
+                table_name: "missing".to_string(),
+            }))
+            .await
+            .expect_err("table description should be denied");
+        assert_workspace_read_denied(&status);
+
+        let status = catalog_client
+            .list_columns(Request::new(ListColumnsRequest {
+                workspace: Some(default_workspace()),
+                schema_name: "missing".to_string(),
+                table_name: "missing".to_string(),
+                ..ListColumnsRequest::default()
+            }))
+            .await
+            .expect_err("column listing should be denied");
+        assert_workspace_read_denied(&status);
+
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn source_read_services_enforce_workspace_read_authorizer() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_workspace_read_authorizer(Arc::new(RejectingWorkspaceReadAuthorizer))
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut source_client = SourceServiceClient::new(channel);
+
+        let status = source_client
+            .discover_sources(Request::new(DiscoverSourcesRequest {
+                workspace: Some(default_workspace()),
+            }))
+            .await
+            .expect_err("source discovery should be denied");
+        assert_workspace_read_denied(&status);
+
+        let status = source_client
+            .list_sources(Request::new(ListSourcesRequest {
+                workspace: Some(default_workspace()),
+            }))
+            .await
+            .expect_err("source listing should be denied");
+        assert_workspace_read_denied(&status);
+
+        let status = source_client
+            .get_source(Request::new(GetSourceRequest {
+                workspace: Some(default_workspace()),
+                name: "missing".to_string(),
+            }))
+            .await
+            .expect_err("source lookup should be denied");
+        assert_workspace_read_denied(&status);
+
+        let status = source_client
+            .get_source_info(Request::new(GetSourceInfoRequest {
+                workspace: Some(default_workspace()),
+                name: "missing".to_string(),
+            }))
+            .await
+            .expect_err("source info should be denied");
+        assert_workspace_read_denied(&status);
+
+        let status = source_client
+            .validate_source(Request::new(ValidateSourceRequest {
+                workspace: Some(default_workspace()),
+                name: "missing".to_string(),
+            }))
+            .await
+            .expect_err("source validation should be denied");
+        assert_workspace_read_denied(&status);
+
         server.shutdown().await.expect("shutdown");
     }
 
@@ -2107,6 +2336,7 @@ type: fixed_token
                 trace_service: Some(trace_service),
                 user_principal_provider,
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
+                workspace_read_authorizer: Arc::new(AllowAllWorkspaceReadAuthorizer),
                 identity_spec_manager,
                 identity_manager: identity_manager.clone(),
                 grpc_route_extenders: Vec::new(),
@@ -2183,6 +2413,41 @@ type: fixed_token
             ServerMode::NativeGrpc.bind_addr(None),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 0))
         );
+    }
+
+    #[test]
+    fn native_grpc_public_bind_rejects_default_authorizers() {
+        let bind_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0));
+
+        let error = super::ServerConfig::new()
+            .with_native_grpc_bind_addr(bind_addr)
+            .validate_native_grpc_bind_security()
+            .expect_err("public native gRPC bind should require explicit authorizers");
+
+        assert!(
+            error.to_string().contains("management authorizer"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn native_grpc_public_bind_accepts_explicit_authorizers() {
+        let bind_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0));
+
+        super::ServerConfig::new()
+            .with_native_grpc_bind_addr(bind_addr)
+            .with_management_authorizer(Arc::new(DenyingSourceManagementAuthorizer))
+            .with_workspace_read_authorizer(Arc::new(RejectingWorkspaceReadAuthorizer))
+            .validate_native_grpc_bind_security()
+            .expect("explicit authorizers should allow public native gRPC bind");
+    }
+
+    #[test]
+    fn native_grpc_loopback_bind_accepts_default_authorizers() {
+        super::ServerConfig::new()
+            .with_native_grpc_bind_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .validate_native_grpc_bind_security()
+            .expect("loopback bind should preserve local allow-all defaults");
     }
 
     #[test]
@@ -2564,6 +2829,7 @@ tables:
                 trace_service: None,
                 user_principal_provider: Arc::new(SingleUserPrincipalProvider),
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
+                workspace_read_authorizer: Arc::new(AllowAllWorkspaceReadAuthorizer),
                 identity_spec_manager,
                 identity_manager: identity_manager.clone(),
                 grpc_route_extenders: Vec::new(),
@@ -2684,6 +2950,7 @@ tables:
                 trace_service: None,
                 user_principal_provider: Arc::new(SingleUserPrincipalProvider),
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
+                workspace_read_authorizer: Arc::new(AllowAllWorkspaceReadAuthorizer),
                 identity_spec_manager,
                 identity_manager: identity_manager.clone(),
                 grpc_route_extenders: Vec::new(),
@@ -2800,6 +3067,7 @@ tables:
                 trace_service: None,
                 user_principal_provider: Arc::new(SingleUserPrincipalProvider),
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
+                workspace_read_authorizer: Arc::new(AllowAllWorkspaceReadAuthorizer),
                 identity_spec_manager,
                 identity_manager: identity_manager.clone(),
                 grpc_route_extenders: Vec::new(),

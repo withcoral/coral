@@ -1,5 +1,7 @@
 //! Implements the gRPC `QueryService`.
 
+use std::sync::Arc;
+
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
@@ -10,6 +12,7 @@ use coral_api::v1::{
 };
 use tonic::{Request, Response, Status};
 
+use crate::authorization::{WorkspaceReadAuthorizer, authorization_status};
 use crate::bootstrap::core_status;
 use crate::query::QueryContext;
 use crate::query::manager::QueryManager;
@@ -18,12 +21,17 @@ use crate::transport::{grpc_span, instrument_grpc, query_status, workspace_name_
 #[derive(Clone)]
 pub(crate) struct QueryService {
     queries: QueryManager,
+    workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
 }
 
 impl QueryService {
-    pub(crate) fn new(query_manager: QueryManager) -> Self {
+    pub(crate) fn new(
+        query_manager: QueryManager,
+        workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
+    ) -> Self {
         Self {
             queries: query_manager,
+            workspace_read_authorizer,
         }
     }
 }
@@ -36,9 +44,14 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
+        let workspace_read_authorizer = Arc::clone(&self.workspace_read_authorizer);
         instrument_grpc(span, async move {
             let workspace_name = workspace_name_from_proto(request.get_ref().workspace.as_ref())?;
             let context = QueryContext::from_request(workspace_name, &request)?;
+            workspace_read_authorizer
+                .authorize_workspace_read(context.principal(), context.workspace_name().as_str())
+                .await
+                .map_err(authorization_status)?;
             let inner = request.into_inner();
             let execution = queries
                 .execute_sql(&context, &inner.sql)
@@ -64,9 +77,14 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ExplainSqlResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
+        let workspace_read_authorizer = Arc::clone(&self.workspace_read_authorizer);
         instrument_grpc(span, async move {
             let workspace_name = workspace_name_from_proto(request.get_ref().workspace.as_ref())?;
             let context = QueryContext::from_request(workspace_name, &request)?;
+            workspace_read_authorizer
+                .authorize_workspace_read(context.principal(), context.workspace_name().as_str())
+                .await
+                .map_err(authorization_status)?;
             let inner = request.into_inner();
             let plan = queries
                 .explain_sql(&context, &inner.sql)
