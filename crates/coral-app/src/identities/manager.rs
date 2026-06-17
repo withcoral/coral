@@ -410,6 +410,24 @@ impl IdentityManagementHandle {
         self.manager.list_identities(owner).await
     }
 
+    /// Validates that an identity exists under `owner` and still matches its
+    /// installed identity spec without reading credential material.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the store cannot be read or the identity is
+    /// orphaned because its installed spec is missing, changed, or has a
+    /// different type.
+    pub async fn validate_identity_metadata(
+        &self,
+        owner: &IdentityOwner,
+        identity_name: &str,
+    ) -> Result<Option<IdentityRecord>, AppError> {
+        self.manager
+            .validate_identity_metadata(owner, identity_name)
+            .await
+    }
+
     /// Deletes an identity stored under `owner`.
     ///
     /// # Errors
@@ -618,6 +636,19 @@ impl IdentityManager {
         self.store.list_identities(owner).await
     }
 
+    async fn validate_identity_metadata(
+        &self,
+        owner: &IdentityOwner,
+        identity_name: &str,
+    ) -> Result<Option<IdentityRecord>, AppError> {
+        let identity_name = validate_identity_name(identity_name)?;
+        let Some(record) = self.store.load_identity(owner, &identity_name).await? else {
+            return Ok(None);
+        };
+        self.load_spec_manifest_for_record(&record)?;
+        Ok(Some(record))
+    }
+
     pub(crate) async fn list_user_owned_identities(
         &self,
         principal: &UserPrincipal,
@@ -737,7 +768,28 @@ impl IdentityManager {
         &self,
         record: &IdentityRecord,
     ) -> Result<IdentitySpecRecord, AppError> {
-        let spec = match self.identity_specs.get_identity_spec(&record.identity_spec) {
+        Self::validate_loaded_spec_for_record(
+            record,
+            self.identity_specs.get_identity_spec(&record.identity_spec),
+        )
+    }
+
+    fn load_spec_manifest_for_record(
+        &self,
+        record: &IdentityRecord,
+    ) -> Result<IdentitySpecRecord, AppError> {
+        Self::validate_loaded_spec_for_record(
+            record,
+            self.identity_specs
+                .get_identity_spec_manifest(&record.identity_spec),
+        )
+    }
+
+    fn validate_loaded_spec_for_record(
+        record: &IdentityRecord,
+        loaded: Result<IdentitySpecRecord, AppError>,
+    ) -> Result<IdentitySpecRecord, AppError> {
+        let spec = match loaded {
             Ok(spec) => spec,
             Err(AppError::IdentitySpecNotFound(_)) => {
                 return Err(AppError::FailedPrecondition(format!(
@@ -1483,17 +1535,8 @@ fn validate_identity_spec_reference_unlocked(
 ) -> Result<(), AppError> {
     let spec = identity_specs
         .load_identity_spec_manifest_unlocked_for_state_lock(&record.identity_spec)?;
-    let fingerprint = identity_spec_fingerprint(&spec.manifest)?;
-    if spec.manifest.issuer != record.issuer
-        || spec.manifest.identity_type.label() != record.identity_type.as_str()
-        || record.identity_spec_fingerprint.as_deref() != Some(fingerprint.as_str())
-    {
-        return Err(AppError::FailedPrecondition(format!(
-            "identity '{}' references identity spec '{}' that changed before the identity could be stored",
-            record.name, record.identity_spec
-        )));
-    }
-    Ok(())
+    validate_record_identity_type(record, spec.manifest.identity_type)?;
+    validate_record_identity_spec_fingerprint(record, &spec.manifest)
 }
 
 fn checked_add_identity_count(
@@ -1571,6 +1614,7 @@ mod tests {
     use crate::identity::{
         SourceIdentityBinding, SourceIdentitySelection, SourceIdentitySelectionRequest,
     };
+    use crate::identity_specs::{IdentitySpecRegistry, IdentitySpecRegistryRecord};
     use tempfile::TempDir;
 
     #[test]
@@ -1648,6 +1692,14 @@ mod tests {
     }
 
     fn fixed_identity_spec_yaml_with_issuer(issuer: &str) -> String {
+        fixed_identity_spec_yaml_with(issuer, "github.com")
+    }
+
+    fn fixed_identity_spec_yaml_for_host(host: &str) -> String {
+        fixed_identity_spec_yaml_with("github", host)
+    }
+
+    fn fixed_identity_spec_yaml_with(issuer: &str, host: &str) -> String {
         format!(
             r"
 kind: identity
@@ -1657,7 +1709,7 @@ version: 0.1.0
 issuer: {issuer}
 type: fixed_token
 audience:
-  host: github.com
+  host: {host}
 "
         )
     }
@@ -1956,7 +2008,7 @@ audience:
             .expect_err("stale identity spec reference must be rejected");
 
         assert!(
-            matches!(error, AppError::FailedPrecondition(ref message) if message.contains("changed before the identity could be stored")),
+            matches!(error, AppError::FailedPrecondition(ref message) if message.contains("has changed since the identity was created")),
             "unexpected error: {error:?}"
         );
         let layout = test_layout(&temp);
@@ -2013,6 +2065,148 @@ audience:
                 reqwest::header::HeaderValue::from_static("Bearer ghp_token")
             )]
         );
+    }
+
+    #[tokio::test]
+    async fn handle_validates_identity_metadata_without_credential_material() {
+        let (_temp, manager, identity_specs) = manager_with_github_pat_spec();
+        manager
+            .create_user_owned_fixed_token_identity(
+                &UserPrincipal::local(),
+                github_local_command("identity-token"),
+            )
+            .await
+            .expect("create identity");
+        let owner = local_owner();
+        let identity_name = github_local_name();
+        let record = manager
+            .store
+            .load_identity(&owner, &identity_name)
+            .await
+            .expect("load identity")
+            .expect("identity");
+        manager
+            .store
+            .replace_identity(&record, &BTreeMap::new())
+            .await
+            .expect("remove credential material");
+        let handle = manager.handle();
+
+        let validated = handle
+            .validate_identity_metadata(&owner, "github_local")
+            .await
+            .expect("validate metadata")
+            .expect("identity");
+
+        assert_eq!(validated.name.as_str(), "github_local");
+        identity_specs
+            .remove_identity_spec("github_pat", true)
+            .expect("force remove spec");
+        identity_specs
+            .add_identity_spec(&fixed_identity_spec_yaml_for_host("api.github.com"))
+            .expect("add changed spec");
+        let error = handle
+            .validate_identity_metadata(&owner, "github_local")
+            .await
+            .expect_err("changed identity spec should fail metadata validation");
+        assert!(
+            error
+                .to_string()
+                .contains("has changed since the identity was created"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_validates_identity_metadata_from_manifest_only_registry_path() {
+        let temp = TempDir::new().expect("tempdir");
+        let layout = test_layout(&temp);
+        let manifest_yaml = fixed_identity_spec_yaml();
+        let manifest = coral_spec::parse_identity_manifest_yaml(&manifest_yaml).expect("manifest");
+        let identity_specs = IdentitySpecManager::new_with_registry(
+            layout.clone(),
+            Arc::new(ManifestOnlyIdentitySpecRegistry { manifest_yaml }),
+            dsl_v4_features(),
+            Vec::new(),
+        );
+        let manager = IdentityManager::new(layout, identity_specs);
+        let owner = local_owner();
+        let record = IdentityRecord {
+            owner: owner.clone(),
+            name: github_local_name(),
+            identity_spec: manifest.name.clone(),
+            identity_spec_fingerprint: Some(
+                identity_spec_fingerprint(&manifest).expect("fingerprint"),
+            ),
+            issuer: manifest.issuer.clone(),
+            identity_type: manifest.identity_type.label().to_string(),
+            metadata: BTreeMap::new(),
+        };
+        manager
+            .store
+            .replace_identity(&record, &BTreeMap::new())
+            .await
+            .expect("store identity");
+
+        let validated = manager
+            .handle()
+            .validate_identity_metadata(&owner, "github_local")
+            .await
+            .expect("validate metadata")
+            .expect("identity");
+
+        assert_eq!(validated, record);
+    }
+
+    #[derive(Debug)]
+    struct ManifestOnlyIdentitySpecRegistry {
+        manifest_yaml: String,
+    }
+
+    impl IdentitySpecRegistry for ManifestOnlyIdentitySpecRegistry {
+        fn list_identity_specs(&self) -> Result<Vec<IdentitySpecRegistryRecord>, AppError> {
+            Err(unexpected_manifest_only_registry_call(
+                "list identity specs",
+            ))
+        }
+
+        fn get_identity_spec(
+            &self,
+            _name: &str,
+        ) -> Result<Option<IdentitySpecRegistryRecord>, AppError> {
+            Err(unexpected_manifest_only_registry_call(
+                "hydrate identity spec input material",
+            ))
+        }
+
+        fn get_identity_spec_manifest_yaml(&self, name: &str) -> Result<Option<String>, AppError> {
+            if name != "github_pat" {
+                return Err(AppError::FailedPrecondition(format!(
+                    "unexpected identity spec lookup '{name}'"
+                )));
+            }
+            Ok(Some(self.manifest_yaml.clone()))
+        }
+
+        fn upsert_identity_spec(
+            &self,
+            _name: &str,
+            _record: IdentitySpecRegistryRecord,
+        ) -> Result<(), AppError> {
+            Err(unexpected_manifest_only_registry_call(
+                "upsert identity specs",
+            ))
+        }
+
+        fn remove_identity_spec(&self, _name: &str) -> Result<(), AppError> {
+            Err(unexpected_manifest_only_registry_call(
+                "remove identity specs",
+            ))
+        }
+    }
+
+    fn unexpected_manifest_only_registry_call(operation: &str) -> AppError {
+        AppError::FailedPrecondition(format!("metadata validation should not {operation}"))
     }
 
     #[tokio::test]
