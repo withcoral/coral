@@ -28,6 +28,7 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::bootstrap::{AppError, app_status};
+use crate::features::{Feature, Features};
 use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::search::index::{
     CatalogSearchFieldRole, CatalogSearchHit, CatalogSearchResultType, CatalogSearchSurfaceKind,
@@ -86,9 +87,13 @@ pub(crate) struct SearchService {
 }
 
 impl SearchService {
-    pub(crate) fn new(query_manager: QueryManager, indexes: SearchIndexRefresher) -> Self {
+    pub(crate) fn new(
+        query_manager: QueryManager,
+        indexes: SearchIndexRefresher,
+        features: Features,
+    ) -> Self {
         Self {
-            search: UniversalSearch::new(query_manager, indexes),
+            search: UniversalSearch::new(query_manager, indexes, features),
         }
     }
 }
@@ -291,13 +296,15 @@ impl SearchServiceApi for SearchService {
 struct UniversalSearch {
     queries: QueryManager,
     indexes: SearchIndexRefresher,
+    features: Features,
 }
 
 impl UniversalSearch {
-    fn new(query_manager: QueryManager, indexes: SearchIndexRefresher) -> Self {
+    fn new(query_manager: QueryManager, indexes: SearchIndexRefresher, features: Features) -> Self {
         Self {
             queries: query_manager,
             indexes,
+            features,
         }
     }
 
@@ -338,9 +345,19 @@ impl UniversalSearch {
             limit,
             observed_queue_drain,
         );
-        let source_native_results = self
-            .provider_native_search_provider(workspace_name, catalog, query, terms)
-            .await;
+        let source_native_results = if self.features.enabled(Feature::SearchProviderFanout) {
+            self.provider_native_search_provider(workspace_name, catalog, query, terms)
+                .await
+        } else {
+            ProviderResults::new(
+                SearchProvider::SourceNative,
+                Vec::new(),
+                ProviderRunStatus {
+                    state: SearchProviderState::NotEnabled,
+                    note: "Provider-native search fan-out is disabled; enable the search_provider_fanout feature to execute opted-in source-native search functions".to_string(),
+                },
+            )
+        };
         vec![catalog_results, observed_results, source_native_results]
     }
 

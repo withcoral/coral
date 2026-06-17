@@ -63,6 +63,11 @@ async fn search_returns_typed_metadata_and_native_search_results() {
         SearchProvider::ObservedValues,
         SearchProviderState::Empty,
     );
+    assert_provider_state(
+        &response,
+        SearchProvider::SourceNative,
+        SearchProviderState::NotEnabled,
+    );
     assert!(!response.truncation.expect("truncation").truncated);
     assert!(
         harness
@@ -112,7 +117,7 @@ async fn search_returns_typed_metadata_and_native_search_results() {
 #[tokio::test]
 async fn search_executes_opted_in_provider_native_search_function() {
     let _guard = search_test_lock().lock().await;
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_search_provider_fanout().await;
     let fixture = SearchHttpFixture::new().await;
     harness
         .import_source(fixture.manifest_yaml(), Vec::new(), Vec::new())

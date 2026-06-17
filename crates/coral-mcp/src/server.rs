@@ -470,16 +470,19 @@ impl ServerHandler for CoralMcpServer {
                 .load_catalog_counts()
                 .await
                 .map_err(|status| status_to_error_data(&status))?;
-            let native_search_function_names = match self.load_native_search_function_names().await
-            {
-                Ok(names) => Some(names),
-                Err(status) => {
-                    tracing::warn!(
-                        error = %status,
-                        "failed to load native search function names for MCP tool descriptions"
-                    );
-                    None
+            let native_search_function_names = if self.options.search_provider_fanout_enabled {
+                match self.load_native_search_function_names().await {
+                    Ok(names) => Some(names),
+                    Err(status) => {
+                        tracing::warn!(
+                            error = %status,
+                            "failed to load native search function names for MCP tool descriptions"
+                        );
+                        None
+                    }
                 }
+            } else {
+                None
             };
             let source_names = match self.load_sources().await {
                 Ok(sources) => sources.into_iter().map(|source| source.name).collect(),
@@ -496,6 +499,7 @@ impl ServerHandler for CoralMcpServer {
                 visible_function_count,
                 source_names,
                 native_search_function_names,
+                self.options.search_provider_fanout_enabled,
             );
             let mut tools = vec![
                 sql_tool(&tool_context),

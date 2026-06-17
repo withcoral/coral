@@ -15,6 +15,9 @@ use crate::state::{
 pub enum Feature {
     /// Expose the optional MCP `feedback` tool.
     Feedback,
+    /// Allow Universal Search to execute opted-in provider-native search
+    /// functions through configured source credentials.
+    SearchProviderFanout,
     /// Experimental trajectory-memory episodes (in progress): will associate each
     /// query with the intent it served (`OpenEpisode` + the `coral-episode-id`
     /// metadata key). No effect yet — the capture path is wired in a follow-up.
@@ -77,6 +80,14 @@ const FEATURE_SPECS: &[FeatureSpec] = &[
         description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
         enable_flag: "enable-feedback",
         disable_flag: "disable-feedback",
+    },
+    FeatureSpec {
+        feature: Feature::SearchProviderFanout,
+        key: "search_provider_fanout",
+        default_enabled: false,
+        description: "Allows Universal Search to execute opted-in provider-native search functions through configured source credentials. Off by default.",
+        enable_flag: "enable-search-provider-fanout",
+        disable_flag: "disable-search-provider-fanout",
     },
     FeatureSpec {
         feature: Feature::Episodes,
@@ -213,6 +224,12 @@ pub struct FeatureStore {
 }
 
 impl FeatureStore {
+    /// Creates a feature store for an already-discovered Coral app state layout.
+    #[must_use]
+    pub(crate) fn from_layout(layout: AppStateLayout) -> Self {
+        Self { layout }
+    }
+
     /// Discovers the Coral app state layout used for runtime feature config.
     ///
     /// # Errors
@@ -344,6 +361,7 @@ mod tests {
         let features = Features::default();
 
         assert!(!features.enabled(Feature::Feedback));
+        assert!(!features.enabled(Feature::SearchProviderFanout));
     }
 
     #[test]
@@ -371,6 +389,7 @@ mod tests {
         let features = Features::from_raw_overrides(&raw);
 
         assert!(!features.enabled(Feature::Feedback));
+        assert!(!features.enabled(Feature::SearchProviderFanout));
     }
 
     #[test]
@@ -423,5 +442,6 @@ mod tests {
 
         assert!(error.to_string().contains("unknown feature 'nope'"));
         assert!(error.to_string().contains("feedback"));
+        assert!(error.to_string().contains("search_provider_fanout"));
     }
 }

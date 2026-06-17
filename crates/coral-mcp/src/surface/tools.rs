@@ -15,6 +15,7 @@ pub(crate) struct ToolDescriptionContext {
     pub(crate) visible_function_count: usize,
     connected_source_names: Vec<String>,
     native_search_function_names: Option<NativeSearchFunctionNames>,
+    search_provider_fanout_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +38,7 @@ impl ToolDescriptionContext {
         visible_function_count: usize,
         mut connected_source_names: Vec<String>,
         native_search_function_names: Option<NativeSearchFunctionNames>,
+        search_provider_fanout_enabled: bool,
     ) -> Self {
         connected_source_names.sort();
         connected_source_names.dedup();
@@ -45,6 +47,7 @@ impl ToolDescriptionContext {
             visible_function_count,
             connected_source_names,
             native_search_function_names,
+            search_provider_fanout_enabled,
         }
     }
 
@@ -56,6 +59,9 @@ impl ToolDescriptionContext {
     }
 
     fn native_search_execution_sentence(&self) -> String {
+        if !self.search_provider_fanout_enabled {
+            return "Provider-native search execution is disabled for this session; search will not call source-native search functions through configured source credentials.".to_string();
+        }
         match self.native_search_function_names.as_ref() {
             Some(functions) if functions.names.is_empty() && !functions.has_more => {
                 "No provider-native search functions are currently configured for automatic Universal Search execution.".to_string()
@@ -79,6 +85,18 @@ impl ToolDescriptionContext {
                 "Provider-native search function names are currently unavailable; search may still execute source-native searches authorized by configured source manifests.".to_string()
             }
         }
+    }
+
+    fn provider_search_result_sentence(&self) -> &'static str {
+        if self.search_provider_fanout_enabled {
+            "Provider-native rows are returned as `provider_search_result` results containing source/function provenance, the executed SQL call, row ordinal, common id/title/url/snippet/score fields when available, and the full structured row payload."
+        } else {
+            "Provider-native rows are not returned unless the `search_provider_fanout` feature is enabled."
+        }
+    }
+
+    fn search_open_world(&self) -> bool {
+        self.search_provider_fanout_enabled
     }
 }
 
@@ -195,8 +213,9 @@ pub(crate) fn search_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "search",
         format!(
-            "Search Coral with one plain-text keyword/identifier query. Use it before SQL when you know a domain concept, source name, table/function name, column/filter name, native provider-search target, or previously seen value but not the exact Coral surface. Good queries combine salient terms such as source, entity, action, and identifier names, for example `github deployment sha`, `notion page updated`, `acme/repo pull author`, or `datadog timeout service`. The search engine tokenizes common technical identifiers, including dotted, slashed, hyphenated, underscored, @, and # terms. Catalog matches cover schema names, table names, function names, qualified names, descriptions, guide text, required filters, column names/types/descriptions, table-function kind, arguments, allowed argument values, result columns, and native provider-search table functions. {} Provider-native rows are returned as `provider_search_result` results containing source/function provenance, the executed SQL call, row ordinal, common id/title/url/snippet/score fields when available, and the full structured row payload. Observed-value matches can also return values and field paths from successful prior SQL results when the local observed-value index has data. It is not SQL, regex, wildcard, boolean, or structured provider/type/scope filtering syntax; this tool accepts only `query` and has no pagination. Provider statuses are informational coverage/error metadata from each provider before final ranking and truncation; `results_found` can mean candidates existed below the returned window. If results are truncated or a provider reports matches without returned rows, retry with a more targeted query. {} {} table(s) and {} table function(s) are currently visible. Results are ranked hints; verify them with list_catalog, describe_table, list_columns, and ordinary Coral SQL.",
+            "Search Coral with one plain-text keyword/identifier query. Use it before SQL when you know a domain concept, source name, table/function name, column/filter name, native provider-search target, or previously seen value but not the exact Coral surface. Good queries combine salient terms such as source, entity, action, and identifier names, for example `github deployment sha`, `notion page updated`, `acme/repo pull author`, or `datadog timeout service`. The search engine tokenizes common technical identifiers, including dotted, slashed, hyphenated, underscored, @, and # terms. Catalog matches cover schema names, table names, function names, qualified names, descriptions, guide text, required filters, column names/types/descriptions, table-function kind, arguments, allowed argument values, result columns, and native provider-search table functions. {} {} Observed-value matches can also return values and field paths from successful prior SQL results when the local observed-value index has data. It is not SQL, regex, wildcard, boolean, or structured provider/type/scope filtering syntax; this tool accepts only `query` and has no pagination. Provider statuses are informational coverage/error metadata from each provider before final ranking and truncation; `results_found` can mean candidates existed below the returned window. If results are truncated or a provider reports matches without returned rows, retry with a more targeted query. {} {} table(s) and {} table function(s) are currently visible. Results are ranked hints; verify them with list_catalog, describe_table, list_columns, and ordinary Coral SQL.",
             context.native_search_execution_sentence(),
+            context.provider_search_result_sentence(),
             context.connected_sources_sentence(),
             context.visible_table_count,
             context.visible_function_count
@@ -219,7 +238,7 @@ pub(crate) fn search_tool(context: &ToolDescriptionContext) -> Tool {
             .read_only(true)
             .destructive(false)
             .idempotent(true)
-            .open_world(true),
+            .open_world(context.search_open_world()),
     )
 }
 
@@ -833,6 +852,7 @@ mod tests {
                 ],
                 false,
             )),
+            true,
         );
 
         let sql_tool = sql_tool(&context);
@@ -886,6 +906,7 @@ mod tests {
                 vec!["github.search_issues".to_string()],
                 true,
             )),
+            true,
         );
 
         let search_description = search_tool(&context)
@@ -896,6 +917,30 @@ mod tests {
         assert!(
             search_description
                 .contains("More provider-native search functions may exist; this list is capped")
+        );
+    }
+
+    #[test]
+    fn search_description_disables_provider_fanout_by_default() {
+        let context = ToolDescriptionContext::new(
+            42,
+            3,
+            vec!["github".to_string()],
+            Some(NativeSearchFunctionNames::new(
+                vec!["github.search_issues".to_string()],
+                false,
+            )),
+            false,
+        );
+
+        let tool = search_tool(&context);
+        let search_description = tool.description.expect("search description");
+
+        assert!(search_description.contains("Provider-native search execution is disabled"));
+        assert!(search_description.contains("Provider-native rows are not returned"));
+        assert_eq!(
+            tool.annotations.expect("annotations").open_world_hint,
+            Some(false)
         );
     }
 }

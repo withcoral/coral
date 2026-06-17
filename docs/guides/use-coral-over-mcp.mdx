@@ -15,7 +15,7 @@ Before setting up a client, make sure you have [connected at least one source](/
 | Type     | Name             | Description                                             |
 | -------- | ---------------- | ------------------------------------------------------- |
 | Tool     | `sql`            | Execute read-only SQL against the Coral database        |
-| Tool     | `search`         | Find likely catalog items, columns, filters, observed values, native search paths, and provider search rows |
+| Tool     | `search`         | Find likely catalog items, columns, filters, observed values, native search paths, and, when enabled, provider search rows |
 | Tool     | `list_catalog`   | List database tables and table functions with pagination |
 | Tool     | `describe_table` | Show compact metadata for one database table            |
 | Tool     | `list_columns`   | List columns for one database table with pagination     |
@@ -37,11 +37,11 @@ Agents should treat the discovery tools as catalog helpers, not as replacement p
 - For table functions, use `sql_call_example` and fill in the required arguments.
 - Do not quote the whole `schema.item` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
 
-**`search`**: one-query discovery over Coral metadata, previously observed values, and provider-native search functions that explicitly opt in to Universal Search execution.
+**`search`**: one-query discovery over Coral metadata, previously observed values, and provider-native search paths. When the `search_provider_fanout` feature is enabled, it can also execute provider-native search functions that explicitly opt in to Universal Search execution.
 
 - Arguments: required `query` only.
-- Returns typed results such as `catalog_item`, `column_hint`, `observed_value`, `native_search_path`, and `provider_search_result`, plus provider-status and truncation metadata.
-- `provider_search_result` rows include the executed SQL call, source/function provenance, row ordinal, common id/title/url/snippet/score fields when available, and the full structured row payload.
+- Returns typed results such as `catalog_item`, `column_hint`, `observed_value`, and `native_search_path`, plus provider-status and truncation metadata.
+- When `search_provider_fanout` is enabled, it can also return `provider_search_result` rows with the executed SQL call, source/function provenance, row ordinal, common id/title/url/snippet/score fields when available, and the full structured row payload.
 - Use it to turn a plain-text query, identifier, or phrase into candidate sources, SQL surfaces, columns, filters, table-function calls, or executed provider-search rows.
 - Provider-status metadata reports provider coverage and errors before final global ranking/truncation. `results_found` means a provider produced candidates, not that one of those candidates must appear in the returned `results` window.
 - The MCP search tool is not paginated. If results are truncated or a provider reports matches without returned rows, retry with a more targeted keyword/identifier query instead of paging.
@@ -65,6 +65,7 @@ For deeper introspection, query `coral.tables`, `coral.columns`, `coral.filters`
 ### Searching a provider's data
 
 Some sources expose native search endpoints (for example, GitHub issue search) as table functions with `kind = 'search'`. Prefer these over scanning a regular table when the agent needs ranked, query-driven results. They return provider-ranked candidates, so agents should preserve any returned rank columns and use the returned ids plus catalog-described tables to fetch full detail rows when the search result itself is incomplete.
+Universal Search only executes these provider-native functions automatically when `search_provider_fanout` is enabled and the source manifest explicitly opts that function in. Otherwise, `search` returns the table-function path and agents should call it explicitly through `sql`.
 
 ## Query result format
 
@@ -288,6 +289,7 @@ Agents should treat the discovery tools as catalog helpers, not as replacement p
 
 - Arguments: required `query` only.
 - Returns typed hints such as `catalog_item`, `column_hint`, `observed_value`, and `native_search_path`, plus provider-status and truncation metadata.
+- When `search_provider_fanout` is enabled, it can also execute opted-in provider-native search functions and return `provider_search_result` rows.
 - Use it when the agent has a clue but does not know which source, table, table function, column, or filter to try first.
 - Results are not evidence. Agents must verify useful hints with ordinary `sql` queries or explicit table-function calls before answering.
 
@@ -309,6 +311,7 @@ When the agent needs metadata it can filter, join, sort, or aggregate before wri
 ### Searching a provider's data
 
 Some sources expose native search endpoints (for example, GitHub issue search) as table functions with `kind = 'search'`. Prefer these over scanning a regular table when the agent needs ranked, query-driven results. They return provider-ranked candidates, so agents should preserve any returned rank columns and use the returned ids plus catalog-described tables to fetch full detail rows when the search result itself is incomplete.
+Universal Search only executes these provider-native functions automatically when `search_provider_fanout` is enabled and the source manifest explicitly opts that function in. Otherwise, `search` returns the table-function path and agents should call it explicitly through `sql`.
 
 ## Query result format
 

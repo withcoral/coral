@@ -59,6 +59,9 @@ pub fn search_response_json(
 pub struct McpOptions {
     /// Expose the feedback submission tool.
     pub feedback_enabled: bool,
+    /// Allow the search tool to execute opted-in provider-native search
+    /// functions through configured source credentials.
+    pub search_provider_fanout_enabled: bool,
     /// Optional W3C traceparent used to parent each MCP request span.
     pub trace_parent: Option<String>,
 }

@@ -44,6 +44,7 @@ use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::episode::service::EpisodeService;
 use crate::episode::store::EpisodeStore;
+use crate::features::{FeatureOverrides, FeatureStore, Features};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
@@ -85,6 +86,7 @@ pub(crate) struct ServerConfig {
     mode: ServerMode,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
+    feature_overrides: FeatureOverrides,
     enable_stderr_logs: bool,
 }
 
@@ -101,6 +103,7 @@ impl ServerConfig {
             mode: ServerMode::NativeGrpc,
             engine_extensions_providers: Vec::new(),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
+            feature_overrides: FeatureOverrides::default(),
             enable_stderr_logs: false,
         }
     }
@@ -127,6 +130,11 @@ impl ServerConfig {
     #[must_use]
     pub(crate) fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
         self.enable_stderr_logs = enable_stderr_logs;
+        self
+    }
+
+    pub(crate) fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
+        self.feature_overrides = feature_overrides;
         self
     }
 }
@@ -230,6 +238,13 @@ impl ServerBuilder {
         self
     }
 
+    #[must_use]
+    /// Applies process-local runtime feature overrides to this server instance.
+    pub fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
+        self.config = self.config.with_feature_overrides(feature_overrides);
+        self
+    }
+
     /// Disables hosted feedback upload for tests and controlled local harnesses.
     #[doc(hidden)]
     #[must_use]
@@ -252,6 +267,8 @@ impl ServerBuilder {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
+        let features = FeatureStore::from_layout(layout.clone())
+            .load_with_overrides(&self.config.feature_overrides)?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
             .trace_history
@@ -295,12 +312,15 @@ impl ServerBuilder {
             None
         };
         start_server(
-            source_manager,
-            query_manager,
-            feedback_manager,
-            episode_store,
-            trace_service,
+            ServerServices {
+                source_manager,
+                query_manager,
+                feedback_manager,
+                episode_store,
+                trace_service,
+            },
             layout,
+            features,
             self.config.mode,
         )
         .await
@@ -377,15 +397,27 @@ impl Drop for RunningServer {
     }
 }
 
-async fn start_server(
+struct ServerServices {
     source_manager: SourceManager,
     query_manager: QueryManager,
     feedback_manager: FeedbackManager,
     episode_store: EpisodeStore,
     trace_service: Option<TraceService>,
+}
+
+async fn start_server(
+    services: ServerServices,
     layout: AppStateLayout,
+    features: Features,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
+    let ServerServices {
+        source_manager,
+        query_manager,
+        feedback_manager,
+        episode_store,
+        trace_service,
+    } = services;
     let search_index_refresher = SearchIndexRefresher::new(layout);
     let source_service = SourceService::new(
         source_manager,
@@ -393,7 +425,8 @@ async fn start_server(
         search_index_refresher.clone(),
     );
     let catalog_service = CatalogService::new(query_manager.clone());
-    let search_service = SearchService::new(query_manager.clone(), search_index_refresher);
+    let search_service =
+        SearchService::new(query_manager.clone(), search_index_refresher, features);
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
     let episode_service = EpisodeService::new(episode_store);
@@ -665,11 +698,12 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider, is_grpc_web_content_type,
-        is_native_grpc_content_type, start_server,
+        ServerBuilder, ServerMode, ServerServices, StaticAsset, StaticAssetsProvider,
+        is_grpc_web_content_type, is_native_grpc_content_type, start_server,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::episode::store::EpisodeStore;
+    use crate::features::Features;
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
@@ -798,12 +832,15 @@ enabled = false
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
-            source_manager,
-            query_manager,
-            feedback_manager,
-            episode_store,
-            Some(trace_service),
+            ServerServices {
+                source_manager,
+                query_manager,
+                feedback_manager,
+                episode_store,
+                trace_service: Some(trace_service),
+            },
             layout,
+            Features::default(),
             ServerMode::NativeGrpc,
         )
         .await
@@ -1180,12 +1217,15 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let running = start_server(
-            source_manager,
-            query_manager,
-            feedback_manager,
-            episode_store,
-            None,
+            ServerServices {
+                source_manager,
+                query_manager,
+                feedback_manager,
+                episode_store,
+                trace_service: None,
+            },
             layout,
+            Features::default(),
             ServerMode::NativeGrpc,
         )
         .await
@@ -1282,12 +1322,15 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let running = start_server(
-            source_manager,
-            query_manager,
-            feedback_manager,
-            episode_store,
-            None,
+            ServerServices {
+                source_manager,
+                query_manager,
+                feedback_manager,
+                episode_store,
+                trace_service: None,
+            },
             layout,
+            Features::default(),
             ServerMode::NativeGrpc,
         )
         .await
@@ -1384,12 +1427,15 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let running = start_server(
-            source_manager,
-            query_manager,
-            feedback_manager,
-            episode_store,
-            None,
+            ServerServices {
+                source_manager,
+                query_manager,
+                feedback_manager,
+                episode_store,
+                trace_service: None,
+            },
             layout,
+            Features::default(),
             ServerMode::NativeGrpc,
         )
         .await

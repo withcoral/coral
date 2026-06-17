@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::{ImportSourceRequest, import_source_response};
+use coral_app::features::{Feature, FeatureOverrides};
 use coral_client::{
     AppClient, SourceClient, default_workspace,
     local::{RunningServer, ServerBuilder},
@@ -225,9 +226,15 @@ async fn start_session(temp: &TempDir) -> TestSession {
 }
 
 async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> TestSession {
+    let search_provider_fanout_enabled = options.search_provider_fanout_enabled;
+    let mut feature_overrides = FeatureOverrides::default();
+    if search_provider_fanout_enabled {
+        feature_overrides.set(Feature::SearchProviderFanout, true);
+    }
     let server = ServerBuilder::new()
         .with_config_dir(temp.path().join("coral-config"))
         .with_noop_feedback_uploads()
+        .with_feature_overrides(feature_overrides)
         .start()
         .await
         .expect("start server");
@@ -427,7 +434,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .annotations
         .as_ref()
         .expect("search annotations");
-    assert_eq!(search_annotations.open_world_hint, Some(true));
+    assert_eq!(search_annotations.open_world_hint, Some(false));
     for tool in &initial_tools {
         let Some(output_schema) = &tool.output_schema else {
             continue;
@@ -888,7 +895,7 @@ async fn list_catalog_surfaces_table_functions() {
             .description
             .as_deref()
             .expect("search description")
-            .contains("searchy.search_issues")
+            .contains("Provider-native search execution is disabled")
     );
     assert!(tools.iter().all(|tool| tool.name != "list_tables"));
     assert!(tools.iter().all(|tool| tool.name != "search_tables"));

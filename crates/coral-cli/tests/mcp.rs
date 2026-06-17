@@ -283,6 +283,21 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .contains("3 table(s) and 0 table function(s) are currently visible")
     );
     assert!(
+        tools[1]
+            .description
+            .as_deref()
+            .expect("search description")
+            .contains("Provider-native search execution is disabled")
+    );
+    assert_eq!(
+        tools[1]
+            .annotations
+            .as_ref()
+            .expect("search annotations")
+            .open_world_hint,
+        Some(false)
+    );
+    assert!(
         tools[2]
             .description
             .as_deref()
@@ -300,16 +315,10 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
         .expect("count request pagination");
     assert_eq!(count_pagination.limit, 1);
     assert_eq!(count_pagination.offset, 0);
-    let native_search_request = catalog_requests
-        .iter()
-        .find(|request| request.kind == 2)
-        .expect("tools/list should request table functions for native search descriptions");
-    let native_search_pagination = native_search_request
-        .pagination
-        .as_ref()
-        .expect("native search request pagination");
-    assert_eq!(native_search_pagination.limit, 200);
-    assert_eq!(native_search_pagination.offset, 0);
+    assert!(
+        catalog_requests.iter().all(|request| request.kind != 2),
+        "tools/list should not request table functions for native search descriptions unless provider fan-out is enabled"
+    );
 
     let resources = client.list_all_resources().await?;
     assert_eq!(
@@ -335,6 +344,50 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
         .await?;
     let tables_json: Value = serde_json::from_str(text_content(&tables))?;
     assert_eq!(tables_json["tables"][0]["name"], "local_messages.events");
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_search_provider_fanout_flag_loads_native_search_descriptions()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client_with_args(&server, &["--enable-search-provider-fanout"]).await?;
+
+    let tools = client.list_all_tools().await?;
+    let search_tool = tools
+        .iter()
+        .find(|tool| tool.name == "search")
+        .expect("search tool");
+    assert!(
+        search_tool
+            .description
+            .as_deref()
+            .expect("search description")
+            .contains("No provider-native search functions are currently configured")
+    );
+    assert_eq!(
+        search_tool
+            .annotations
+            .as_ref()
+            .expect("search annotations")
+            .open_world_hint,
+        Some(true)
+    );
+
+    let catalog_requests = server.list_catalog_requests();
+    let native_search_request = catalog_requests
+        .iter()
+        .find(|request| request.kind == 2)
+        .expect("tools/list should request table functions for native search descriptions");
+    let native_search_pagination = native_search_request
+        .pagination
+        .as_ref()
+        .expect("native search request pagination");
+    assert_eq!(native_search_pagination.limit, 200);
+    assert_eq!(native_search_pagination.offset, 0);
 
     client.cancel().await?;
     server.shutdown().await;

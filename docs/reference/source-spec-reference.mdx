@@ -616,11 +616,14 @@ used when SQL does not specify a `LIMIT`, `max_top_k` caps candidates requested
 per provider call, and `max_calls_per_query` caps provider calls for one SQL
 query.
 
-To let Universal Search execute a provider-native search function directly from
-`coral search` or the MCP `search` tool, add an explicit `universal_search`
-block. Execution is never inferred from `kind: search` alone. Exactly one
-function argument must receive the search query, and every other argument must
-declare a `default` value. If that argument declares a `values` enum, the
+To make a provider-native search function eligible for Universal Search
+execution from `coral search` or the MCP `search` tool, add an explicit
+`universal_search` block. Execution also requires the
+`search_provider_fanout` runtime feature; without that feature, eligible
+functions still appear as native search paths but are not executed
+automatically. Execution is never inferred from `kind: search` alone. Exactly
+one function argument must receive the search query, and every other argument
+must declare a `default` value. If that argument declares a `values` enum, the
 default must be one of those values:
 
 ```yaml
