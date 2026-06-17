@@ -11,11 +11,12 @@ use arrow::record_batch::RecordBatch;
 use coral_spec::backends::file::FileSourceManifest;
 use coral_spec::backends::http::HttpSourceManifest;
 use coral_spec::backends::mcp::McpSourceManifest;
+use coral_spec::v4::IdentityRequirements;
 use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
 use opentelemetry::Context as OtelContext;
 
 use super::ColumnInfo;
-use crate::EngineExtensions;
+use crate::{EngineExtensions, RequestIdentityResolutionContext, RequestIdentityResolver};
 
 /// One managed source selected into the current query runtime.
 #[derive(Debug, Clone)]
@@ -51,11 +52,72 @@ pub struct RuntimeSourcePackage {
 #[derive(Debug, Clone)]
 pub enum RuntimeSourceComponent {
     /// HTTP-backed runtime component.
-    Http(HttpSourceManifest),
+    Http(RuntimeHttpSourceComponent),
     /// File-backed runtime component.
     File(FileSourceManifest),
     /// MCP-backed runtime component.
     Mcp(McpSourceManifest),
+}
+
+/// Backend-ready HTTP component plus optional app-owned runtime metadata.
+#[derive(Debug, Clone)]
+pub struct RuntimeHttpSourceComponent {
+    /// HTTP runtime manifest executed by the engine.
+    pub manifest: HttpSourceManifest,
+    /// Request identity requirements associated with this component.
+    pub identity_requirements: Option<RuntimeIdentityRequirements>,
+}
+
+/// Identity requirements attached to one app-assembled runtime component.
+#[derive(Debug, Clone)]
+pub struct RuntimeIdentityRequirements {
+    /// Authored DSL v4 surface id that produced this runtime component.
+    pub surface_id: String,
+    /// Accepted request identities for this runtime component.
+    pub requirements: IdentityRequirements,
+}
+
+impl RuntimeHttpSourceComponent {
+    #[must_use]
+    /// Builds an HTTP runtime component without request identity requirements.
+    pub fn new(manifest: HttpSourceManifest) -> Self {
+        Self {
+            manifest,
+            identity_requirements: None,
+        }
+    }
+
+    #[must_use]
+    /// Builds an HTTP runtime component with request identity requirements.
+    pub fn with_identity_requirements(
+        manifest: HttpSourceManifest,
+        surface_id: impl Into<String>,
+        requirements: IdentityRequirements,
+    ) -> Self {
+        Self {
+            manifest,
+            identity_requirements: Some(RuntimeIdentityRequirements {
+                surface_id: surface_id.into(),
+                requirements,
+            }),
+        }
+    }
+
+    /// Builds the request-time identity-resolution context for this component,
+    /// or `None` when the component declares no identity requirements.
+    #[must_use]
+    pub fn identity_resolution_context(
+        &self,
+        source_name: impl Into<Arc<str>>,
+    ) -> Option<RequestIdentityResolutionContext> {
+        self.identity_requirements.as_ref().map(|identity| {
+            RequestIdentityResolutionContext::new(
+                source_name,
+                identity.surface_id.clone(),
+                identity.requirements.clone(),
+            )
+        })
+    }
 }
 
 impl QuerySource {
@@ -200,7 +262,7 @@ impl RuntimeSourceComponent {
     /// Returns the runtime schema name declared by this component.
     pub fn source_name(&self) -> &str {
         match self {
-            Self::Http(manifest) => &manifest.common.name,
+            Self::Http(component) => &component.manifest.common.name,
             Self::File(manifest) => &manifest.common.name,
             Self::Mcp(manifest) => &manifest.common.name,
         }
@@ -209,7 +271,9 @@ impl RuntimeSourceComponent {
 
 fn components_from_manifest(source_spec: &ValidatedSourceManifest) -> Vec<RuntimeSourceComponent> {
     if let Some(http) = source_spec.as_http() {
-        return vec![RuntimeSourceComponent::Http(http.clone())];
+        return vec![RuntimeSourceComponent::Http(
+            RuntimeHttpSourceComponent::new(http.clone()),
+        )];
     }
     if let Some(file) = source_spec.as_file() {
         return vec![RuntimeSourceComponent::File(file.clone())];
@@ -378,6 +442,8 @@ pub struct QueryRuntimeConfig {
     pub extensions: EngineExtensions,
     /// Engine-wide query memory policy.
     pub memory: QueryMemoryConfig,
+    /// Request-time resolver for app-selected source identities.
+    pub request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
     /// Runtime policy for dependent predicate pushdown.
     pub dependent_join: DependentJoinConfig,
 }
@@ -390,8 +456,19 @@ impl QueryRuntimeConfig {
             context,
             extensions,
             memory: QueryMemoryConfig::default(),
+            request_identity_resolver: None,
             dependent_join: DependentJoinConfig::default(),
         }
+    }
+
+    /// Installs an app-selected request identity resolver for this runtime.
+    #[must_use]
+    pub fn with_request_identity_resolver(
+        mut self,
+        resolver: Option<Arc<dyn RequestIdentityResolver>>,
+    ) -> Self {
+        self.request_identity_resolver = resolver;
+        self
     }
 }
 

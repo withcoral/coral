@@ -63,16 +63,18 @@ mod runtime;
 pub use backends::mcp::discover_tool_catalog as discover_mcp_tool_catalog;
 pub use composition::{
     EngineExtensions, QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
-    RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
+    RequestAuthenticatorError, RequestIdentityResolutionContext, RequestIdentityResolver,
+    RequestIdentityResolverError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
     SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
 };
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
     DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution, QueryMemoryConfig,
     QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure,
-    QueryTestResult, QueryTestSuccess, RuntimeSourceComponent, RuntimeSourcePackage,
-    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
-    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    QueryTestResult, QueryTestSuccess, RuntimeHttpSourceComponent, RuntimeIdentityRequirements,
+    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode,
+    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
+    TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.

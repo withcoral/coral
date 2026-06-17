@@ -13,7 +13,6 @@ use tracing::Instrument as _;
 use tracing::field;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::auth::resolve_auth_headers;
 use crate::backends::http::error::{pagination_error, provider_error};
@@ -27,6 +26,10 @@ use crate::backends::http::trace::{
     trace_reqwest_error, trace_reqwest_error_type,
 };
 use crate::backends::shared::template::{RenderContext, resolve_value_source, value_to_string};
+use crate::{
+    RequestAuthenticator, RequestIdentityResolutionContext, RequestIdentityResolver,
+    RequestIdentityResolverError,
+};
 use coral_spec::backends::http::RateLimitSpec;
 use coral_spec::{AuthSpec, HeaderSpec, HttpMethod, ResponseBodyFormat};
 
@@ -36,6 +39,8 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) auth: &'a AuthSpec,
     pub(super) request_headers: &'a [HeaderSpec],
     pub(super) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
+    pub(super) identity_context: Option<&'a RequestIdentityResolutionContext>,
+    pub(super) request_identity_resolver: Option<&'a dyn RequestIdentityResolver>,
     pub(super) trace_context: Option<&'a OtelContext>,
     pub(super) table_headers: &'a [HeaderSpec],
     pub(super) table_name: &'a str,
@@ -71,6 +76,8 @@ pub(super) async fn execute_request(
         auth,
         request_headers,
         request_authenticators,
+        identity_context,
+        request_identity_resolver,
         trace_context,
         table_headers,
         table_name,
@@ -189,7 +196,12 @@ pub(super) async fn execute_request(
         }
 
         body_capture.record_request(&request_span, request_id, body);
-        let built = match resolve_auth_headers(
+        if let (Some(identity_context), None) = (identity_context, request_identity_resolver) {
+            let error = missing_identity_resolver_error(identity_context);
+            record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+            return Err(error);
+        }
+        let mut built = match resolve_auth_headers(
             auth,
             request,
             request_authenticators,
@@ -201,6 +213,29 @@ pub(super) async fn execute_request(
                 return Err(error);
             }
         };
+        if let (Some(identity_context), Some(resolver)) =
+            (identity_context, request_identity_resolver)
+        {
+            let identity_headers = match resolver
+                .resolve_identity_headers(identity_context, &built, render_context.resolved_inputs)
+                .await
+            {
+                Ok(headers) => headers,
+                Err(error) => {
+                    let error = identity_resolver_error(identity_context, &error);
+                    record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+                    return Err(error);
+                }
+            };
+            for (name, value) in identity_headers {
+                if built.headers().contains_key(&name) {
+                    let error = identity_header_conflict_error(identity_context, &name);
+                    record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+                    return Err(error);
+                }
+                built.headers_mut().insert(name, value);
+            }
+        }
         let response = match http.execute(built).instrument(request_span.clone()).await {
             Ok(response) => response,
             Err(error) => {
@@ -376,6 +411,52 @@ pub(super) async fn execute_request(
     }
 }
 
+fn identity_resolver_error(
+    identity_context: &RequestIdentityResolutionContext,
+    error: &RequestIdentityResolverError,
+) -> DataFusionError {
+    let detail = format!(
+        "request identity resolver failed for source '{}' surface '{}': {error}",
+        identity_context.source_name(),
+        identity_context.surface_id()
+    );
+    let error = match error {
+        RequestIdentityResolverError::InvalidInput(_) => {
+            RequestIdentityResolverError::invalid_input(detail)
+        }
+        RequestIdentityResolverError::FailedPrecondition(_) => {
+            RequestIdentityResolverError::failed_precondition(detail)
+        }
+    };
+    DataFusionError::External(Box::new(error))
+}
+
+fn missing_identity_resolver_error(
+    identity_context: &RequestIdentityResolutionContext,
+) -> DataFusionError {
+    DataFusionError::External(Box::new(RequestIdentityResolverError::failed_precondition(
+        format!(
+            "source '{}' surface '{}' declares identity_requirements but no request identity resolver is installed",
+            identity_context.source_name(),
+            identity_context.surface_id()
+        ),
+    )))
+}
+
+fn identity_header_conflict_error(
+    identity_context: &RequestIdentityResolutionContext,
+    name: &HeaderName,
+) -> DataFusionError {
+    DataFusionError::External(Box::new(RequestIdentityResolverError::failed_precondition(
+        format!(
+            "request identity resolver attempted to overwrite header '{}' for source '{}' surface '{}'",
+            name.as_str(),
+            identity_context.source_name(),
+            identity_context.surface_id()
+        ),
+    )))
+}
+
 fn request_error(
     source_schema: &str,
     table_name: &str,
@@ -498,6 +579,8 @@ mod tests {
                 auth: &AuthSpec::default(),
                 request_headers: &[],
                 request_authenticators: &HashMap::new(),
+                identity_context: None,
+                request_identity_resolver: None,
                 trace_context: None,
                 table_headers: &[],
                 table_name: "items",

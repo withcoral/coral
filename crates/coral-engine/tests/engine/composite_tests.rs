@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use coral_engine::{CoralQuery, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
+use coral_engine::{
+    CoralQuery, QuerySource, RuntimeHttpSourceComponent, RuntimeSourceComponent,
+    RuntimeSourcePackage,
+};
 use coral_spec::backends::http::HttpSourceManifest;
 use coral_spec::parse_source_manifest_yaml;
 use coral_spec::{FilterMode, FilterSpec};
@@ -38,8 +41,8 @@ async fn multi_component_source_executes_across_component_tables() {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             components: vec![
-                RuntimeSourceComponent::Http(issues),
-                RuntimeSourceComponent::Http(pulls),
+                RuntimeSourceComponent::Http(RuntimeHttpSourceComponent::new(issues)),
+                RuntimeSourceComponent::Http(RuntimeHttpSourceComponent::new(pulls)),
             ],
         },
         BTreeMap::new(),
@@ -124,8 +127,8 @@ async fn multi_component_source_can_register_multiple_schemas() {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             components: vec![
-                RuntimeSourceComponent::Http(issues),
-                RuntimeSourceComponent::Http(pulls),
+                RuntimeSourceComponent::Http(RuntimeHttpSourceComponent::new(issues)),
+                RuntimeSourceComponent::Http(RuntimeHttpSourceComponent::new(pulls)),
             ],
         },
         BTreeMap::new(),
@@ -162,12 +165,14 @@ async fn selected_sources_reject_runtime_schema_collisions() {
             description: "Composite GitHub runtime package".to_string(),
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
-            components: vec![RuntimeSourceComponent::Http(http_component(
-                &server.uri(),
-                "github_v4_rest",
-                "issues",
-                "/issues",
-            ))],
+            components: vec![RuntimeSourceComponent::Http(
+                RuntimeHttpSourceComponent::new(http_component(
+                    &server.uri(),
+                    "github_v4_rest",
+                    "issues",
+                    "/issues",
+                )),
+            )],
         },
         BTreeMap::new(),
         BTreeMap::new(),
@@ -180,12 +185,14 @@ async fn selected_sources_reject_runtime_schema_collisions() {
             description: "Conflicting runtime package".to_string(),
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
-            components: vec![RuntimeSourceComponent::Http(http_component(
-                &server.uri(),
-                "github_v4_rest",
-                "pulls",
-                "/pulls",
-            ))],
+            components: vec![RuntimeSourceComponent::Http(
+                RuntimeHttpSourceComponent::new(http_component(
+                    &server.uri(),
+                    "github_v4_rest",
+                    "pulls",
+                    "/pulls",
+                )),
+            )],
         },
         BTreeMap::new(),
         BTreeMap::new(),
@@ -217,8 +224,8 @@ async fn validate_source_reports_only_component_schemas_for_multi_schema_source(
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             components: vec![
-                RuntimeSourceComponent::Http(issues),
-                RuntimeSourceComponent::Http(pulls),
+                RuntimeSourceComponent::Http(RuntimeHttpSourceComponent::new(issues)),
+                RuntimeSourceComponent::Http(RuntimeHttpSourceComponent::new(pulls)),
             ],
         },
         BTreeMap::new(),
