@@ -453,7 +453,8 @@ impl IdentityManagementHandle {
         owner: &IdentityOwner,
         identity_name: &str,
     ) -> Result<Option<Arc<dyn RuntimeSourceIdentity>>, AppError> {
-        self.manager.resolve_identity(owner, identity_name).await
+        let identity_name = validate_identity_name(identity_name)?;
+        self.manager.resolve_identity(owner, &identity_name).await
     }
 }
 
@@ -807,11 +808,10 @@ impl IdentityManager {
     async fn resolve_identity(
         &self,
         owner: &IdentityOwner,
-        identity_name: &str,
+        identity_name: &IdentityName,
     ) -> Result<Option<Arc<dyn RuntimeSourceIdentity>>, AppError> {
-        let identity_name = validate_identity_name(identity_name)?;
-        let material_guard = self.store.material_guard(owner, &identity_name).await?;
-        let record = self.store.load_identity(owner, &identity_name).await?;
+        let material_guard = self.store.material_guard(owner, identity_name).await?;
+        let record = self.store.load_identity(owner, identity_name).await?;
         let Some(record) = record else {
             return Ok(None);
         };
@@ -1267,8 +1267,8 @@ impl SourceIdentityProvider for IdentityManager {
                 IdentityOwner::workspace(workspace_name.as_str())?
             }
         };
-        self.resolve_identity(&owner, &request.selection.identity)
-            .await
+        let identity_name = validate_identity_name(&request.selection.identity)?;
+        self.resolve_identity(&owner, &identity_name).await
     }
 }
 
@@ -1654,6 +1654,82 @@ mod tests {
         );
     }
 
+    #[derive(Debug)]
+    struct MinimalIdentityStore;
+
+    #[tonic::async_trait]
+    impl IdentityStore for MinimalIdentityStore {
+        async fn list_identities(
+            &self,
+            _owner: &IdentityOwner,
+        ) -> Result<Vec<IdentityRecord>, AppError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_identity(
+            &self,
+            _owner: &IdentityOwner,
+            _identity_name: &IdentityName,
+        ) -> Result<Option<IdentityRecord>, AppError> {
+            Ok(None)
+        }
+
+        async fn replace_identity(
+            &self,
+            _record: &IdentityRecord,
+            _material: &BTreeMap<String, String>,
+        ) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        async fn delete_identity(
+            &self,
+            _owner: &IdentityOwner,
+            _identity_name: &IdentityName,
+        ) -> Result<bool, AppError> {
+            Ok(false)
+        }
+
+        async fn material_guard(
+            &self,
+            _owner: &IdentityOwner,
+            _identity_name: &IdentityName,
+        ) -> Result<Box<dyn IdentityMaterialGuard>, AppError> {
+            Err(AppError::FailedPrecondition(
+                "minimal store has no material guard".to_string(),
+            ))
+        }
+
+        fn count_identities_for_spec(&self, _identity_spec_name: &str) -> Result<u32, AppError> {
+            Ok(0)
+        }
+    }
+
+    #[tokio::test]
+    async fn identity_store_source_binding_optional_methods_fail_closed() {
+        let store = MinimalIdentityStore;
+
+        let load_error = store
+            .load_optional_source_identity_binding("user", "workspace", "source", "surface")
+            .await
+            .expect_err("optional load should fail closed");
+        assert!(matches!(
+            load_error,
+            AppError::FailedPrecondition(message)
+                if message.contains("does not support source identity bindings")
+        ));
+
+        let delete_error = store
+            .delete_source_identity_binding("user", "workspace", "source", "surface")
+            .await
+            .expect_err("delete should fail closed");
+        assert!(matches!(
+            delete_error,
+            AppError::FailedPrecondition(message)
+                if message.contains("does not support source identity bindings")
+        ));
+    }
+
     fn test_layout(temp: &TempDir) -> AppStateLayout {
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -1737,56 +1813,6 @@ audience:
     fn material(key: &str, value: &str) -> BTreeMap<String, String> {
         BTreeMap::from([(key.to_string(), value.to_string())])
     }
-
-    #[derive(Debug)]
-    struct MinimalIdentityStore;
-
-    #[tonic::async_trait]
-    impl IdentityStore for MinimalIdentityStore {
-        async fn list_identities(
-            &self,
-            _owner: &IdentityOwner,
-        ) -> Result<Vec<IdentityRecord>, AppError> {
-            Ok(Vec::new())
-        }
-
-        async fn load_identity(
-            &self,
-            _owner: &IdentityOwner,
-            _identity_name: &IdentityName,
-        ) -> Result<Option<IdentityRecord>, AppError> {
-            Ok(None)
-        }
-
-        async fn replace_identity(
-            &self,
-            _record: &IdentityRecord,
-            _material: &BTreeMap<String, String>,
-        ) -> Result<(), AppError> {
-            Ok(())
-        }
-
-        async fn delete_identity(
-            &self,
-            _owner: &IdentityOwner,
-            _identity_name: &IdentityName,
-        ) -> Result<bool, AppError> {
-            Ok(false)
-        }
-
-        async fn material_guard(
-            &self,
-            _owner: &IdentityOwner,
-            _identity_name: &IdentityName,
-        ) -> Result<Box<dyn IdentityMaterialGuard>, AppError> {
-            Err(AppError::IdentityNotFound("missing".to_string()))
-        }
-
-        fn count_identities_for_spec(&self, _identity_spec_name: &str) -> Result<u32, AppError> {
-            Ok(0)
-        }
-    }
-
     fn resolution_request(identity_name: &str) -> SourceIdentityResolutionRequest {
         SourceIdentityResolutionRequest {
             workspace_name: "default".to_string(),
