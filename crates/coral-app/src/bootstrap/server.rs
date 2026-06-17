@@ -17,6 +17,7 @@ use axum::response::Response as AxumResponse;
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
 use coral_api::v1::episode_service_server::EpisodeServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
+use coral_api::v1::identity_service_server::IdentityServiceServer;
 use coral_api::v1::identity_spec_service_server::IdentitySpecServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
@@ -51,6 +52,9 @@ use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
+use crate::identities::{
+    IdentityManagementHandle, IdentityService, UserOwnedIdentityManager, UserOwnedIdentityStore,
+};
 use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
 use crate::identity_specs::{
     IdentitySpecManager, IdentitySpecRegistry, IdentitySpecService, IdentitySpecUsageProvider,
@@ -59,7 +63,7 @@ use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
-use crate::state::ConfigStore;
+use crate::state::{AppStateLayout, ConfigStore};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcRequestContextLayer;
@@ -92,6 +96,7 @@ pub(crate) struct ServerConfig {
     identity_spec_registry: Option<Arc<dyn IdentitySpecRegistry>>,
     identity_spec_usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
     feature_overrides: FeatureOverrides,
+    user_owned_identity_store: Option<Arc<dyn UserOwnedIdentityStore>>,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
@@ -113,6 +118,7 @@ impl ServerConfig {
             identity_spec_registry: None,
             identity_spec_usage_providers: Vec::new(),
             feature_overrides: FeatureOverrides::default(),
+            user_owned_identity_store: None,
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             management_authorizer: Arc::new(AllowAllManagementAuthorizer),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
@@ -173,6 +179,14 @@ impl ServerConfig {
 
     pub(crate) fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
         self.feature_overrides = feature_overrides;
+        self
+    }
+
+    pub(crate) fn with_user_owned_identity_store(
+        mut self,
+        user_owned_identity_store: Arc<dyn UserOwnedIdentityStore>,
+    ) -> Self {
+        self.user_owned_identity_store = Some(user_owned_identity_store);
         self
     }
 
@@ -342,6 +356,21 @@ impl ServerBuilder {
     }
 
     #[must_use]
+    /// Sets the durable user-owned identity store.
+    ///
+    /// The default store persists identities under the local Coral config
+    /// directory.
+    pub fn with_user_owned_identity_store(
+        mut self,
+        user_owned_identity_store: Arc<dyn UserOwnedIdentityStore>,
+    ) -> Self {
+        self.config = self
+            .config
+            .with_user_owned_identity_store(user_owned_identity_store);
+        self
+    }
+
+    #[must_use]
     /// Enables or disables local stderr log rendering for this server.
     ///
     /// `MCP` stdio adapters can enable this for diagnostics while keeping
@@ -406,6 +435,11 @@ impl ServerBuilder {
                 self.config.identity_spec_usage_providers,
             )
         };
+        let user_owned_identity_manager = user_owned_identity_manager_for_server(
+            layout.clone(),
+            identity_spec_manager.clone(),
+            self.config.user_owned_identity_store,
+        );
         let source_manager = SourceManager::new_with_features(
             config_store.clone(),
             credential_manager.clone(),
@@ -444,10 +478,22 @@ impl ServerBuilder {
                 user_principal_provider: self.config.user_principal_provider,
                 management_authorizer: self.config.management_authorizer,
                 identity_spec_manager,
+                user_owned_identity_manager,
             },
             self.config.mode,
         )
         .await
+    }
+}
+
+fn user_owned_identity_manager_for_server(
+    layout: AppStateLayout,
+    identity_spec_manager: IdentitySpecManager,
+    store: Option<Arc<dyn UserOwnedIdentityStore>>,
+) -> UserOwnedIdentityManager {
+    match store {
+        Some(store) => UserOwnedIdentityManager::new_with_store(identity_spec_manager, store),
+        None => UserOwnedIdentityManager::new(layout, identity_spec_manager),
     }
 }
 
@@ -460,6 +506,7 @@ struct ServerServices {
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
     identity_spec_manager: IdentitySpecManager,
+    user_owned_identity_manager: UserOwnedIdentityManager,
 }
 
 /// Running Coral server.
@@ -469,6 +516,7 @@ struct ServerServices {
 /// does not wait for the task to finish.
 pub struct RunningServer {
     endpoint_uri: String,
+    identity_management: IdentityManagementHandle,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
 }
@@ -482,6 +530,12 @@ impl RunningServer {
     /// over server configuration.
     pub fn endpoint_uri(&self) -> &str {
         &self.endpoint_uri
+    }
+
+    #[must_use]
+    /// Returns the identity management handle used by this server.
+    pub fn identity_management(&self) -> &IdentityManagementHandle {
+        &self.identity_management
     }
 
     /// Shuts the server down and waits for the background task to finish.
@@ -545,6 +599,7 @@ async fn start_server(
         user_principal_provider,
         management_authorizer,
         identity_spec_manager,
+        user_owned_identity_manager,
     } = services;
     let source_service = SourceService::new(
         source_manager,
@@ -556,10 +611,13 @@ async fn start_server(
     let feedback_service = FeedbackService::new(feedback_manager);
     let identity_spec_service =
         IdentitySpecService::new(identity_spec_manager, management_authorizer);
+    let identity_management = user_owned_identity_manager.handle();
+    let identity_service = IdentityService::new(user_owned_identity_manager);
     let episode_service = EpisodeService::new(episode_store);
     let mut routes = Routes::default()
         .add_service(SourceServiceServer::new(source_service))
         .add_service(IdentitySpecServiceServer::new(identity_spec_service))
+        .add_service(IdentityServiceServer::new(identity_service))
         .add_service(
             CatalogServiceServer::new(catalog_service)
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
@@ -606,6 +664,7 @@ async fn start_server(
 
     Ok(RunningServer {
         endpoint_uri,
+        identity_management,
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
         task: Mutex::new(Some(task)),
     })
@@ -839,6 +898,7 @@ mod tests {
     use crate::episode::store::EpisodeStore;
     use crate::features::{Feature, FeatureOverrides};
     use crate::feedback::manager::FeedbackManager;
+    use crate::identities::UserOwnedIdentityManager;
     use crate::identity_specs::IdentitySpecManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
@@ -858,6 +918,13 @@ mod tests {
 
     fn test_identity_spec_manager(layout: &AppStateLayout) -> IdentitySpecManager {
         IdentitySpecManager::new(layout.clone())
+    }
+
+    fn test_user_owned_identity_manager(
+        layout: &AppStateLayout,
+        identity_specs: &IdentitySpecManager,
+    ) -> UserOwnedIdentityManager {
+        UserOwnedIdentityManager::new(layout.clone(), identity_specs.clone())
     }
 
     fn disable_internal_tracing(config_dir: &Path) {
@@ -1207,6 +1274,8 @@ type: fixed_token
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let identity_spec_manager = test_identity_spec_manager(&layout);
+        let user_owned_identity_manager =
+            test_user_owned_identity_manager(&layout, &identity_spec_manager);
         start_server(
             ServerServices {
                 source_manager,
@@ -1217,6 +1286,7 @@ type: fixed_token
                 user_principal_provider,
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
                 identity_spec_manager,
+                user_owned_identity_manager,
             },
             ServerMode::NativeGrpc,
         )
@@ -1630,6 +1700,8 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let identity_spec_manager = test_identity_spec_manager(&layout);
+        let user_owned_identity_manager =
+            test_user_owned_identity_manager(&layout, &identity_spec_manager);
         let running = start_server(
             ServerServices {
                 source_manager,
@@ -1640,6 +1712,7 @@ tables:
                 user_principal_provider: Arc::new(SingleUserPrincipalProvider),
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
                 identity_spec_manager,
+                user_owned_identity_manager,
             },
             ServerMode::NativeGrpc,
         )
@@ -1737,6 +1810,8 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let identity_spec_manager = test_identity_spec_manager(&layout);
+        let user_owned_identity_manager =
+            test_user_owned_identity_manager(&layout, &identity_spec_manager);
         let running = start_server(
             ServerServices {
                 source_manager,
@@ -1747,6 +1822,7 @@ tables:
                 user_principal_provider: Arc::new(SingleUserPrincipalProvider),
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
                 identity_spec_manager,
+                user_owned_identity_manager,
             },
             ServerMode::NativeGrpc,
         )
@@ -1844,6 +1920,8 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let identity_spec_manager = test_identity_spec_manager(&layout);
+        let user_owned_identity_manager =
+            test_user_owned_identity_manager(&layout, &identity_spec_manager);
         let running = start_server(
             ServerServices {
                 source_manager,
@@ -1854,6 +1932,7 @@ tables:
                 user_principal_provider: Arc::new(SingleUserPrincipalProvider),
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
                 identity_spec_manager,
+                user_owned_identity_manager,
             },
             ServerMode::NativeGrpc,
         )

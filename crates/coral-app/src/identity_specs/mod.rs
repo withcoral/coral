@@ -11,4 +11,5 @@ pub use manager::{
     IdentitySpecUsageProvider, identity_spec_input_material_from_manifest,
     identity_spec_input_material_from_manifest_with_existing, identity_spec_manifest_metadata,
 };
+pub(crate) use manager::{identity_spec_fingerprint, validate_identity_spec_name};
 pub(crate) use service::IdentitySpecService;

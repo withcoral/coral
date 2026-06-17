@@ -8,9 +8,7 @@ use std::sync::Arc;
 
 use coral_spec::{IdentityManifest, ManifestInputKind, parse_identity_manifest_yaml};
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
 use serde_json::Value;
-#[cfg(test)]
 use sha2::{Digest as _, Sha256};
 use tracing::{info_span, warn};
 
@@ -384,6 +382,13 @@ impl IdentitySpecManager {
         let name = validate_identity_spec_name(name)?;
         let _lock = FileLock::shared(self.layout.state_lock())?;
         self.load_identity_spec_manifest_unlocked(&name)
+    }
+
+    pub(crate) fn load_identity_spec_manifest_unlocked_for_state_lock(
+        &self,
+        name: &str,
+    ) -> Result<IdentitySpecRecord, AppError> {
+        self.load_identity_spec_manifest_unlocked(name)
     }
 
     #[cfg(test)]
@@ -834,7 +839,6 @@ fn checked_add_identity_count(
 /// The manifest serializes with `serde` (struct fields in declaration order)
 /// and `canonical_json_value` sorts any free-form JSON objects (such as
 /// `audience` values), so semantically equal manifests fingerprint equally.
-#[cfg(test)]
 pub(crate) fn identity_spec_fingerprint(manifest: &IdentityManifest) -> Result<String, AppError> {
     let encode_error = |error: &dyn std::fmt::Display| {
         AppError::FailedPrecondition(format!(
@@ -849,7 +853,6 @@ pub(crate) fn identity_spec_fingerprint(manifest: &IdentityManifest) -> Result<S
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-#[cfg(test)]
 fn canonical_json_value(value: Value) -> Value {
     match value {
         Value::Object(map) => {

@@ -16,9 +16,10 @@ use crate::workspaces::WorkspaceName;
 
 use self::oauth::{OAuthCredentialService, RefreshOAuthCredentialRequest};
 
-#[cfg(test)]
-pub(crate) use store::parse_env_file;
 pub(crate) use store::{CredentialStore, CredentialsError};
+pub(crate) use store::{
+    parse_env_file, remove_file_if_exists_unlocked, render_env_file, write_file_unlocked,
+};
 
 /// Opaque credential material captured for best-effort rollback.
 #[derive(Clone)]

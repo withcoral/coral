@@ -125,17 +125,43 @@ impl AppStateLayout {
         self.config_dir.join("identities")
     }
 
-    #[cfg(test)]
+    pub(crate) fn user_owned_identities_root(&self, user_id: &str) -> PathBuf {
+        self.identities_root().join("users").join(user_id)
+    }
+
+    pub(crate) fn user_owned_identity_dir(&self, user_id: &str, identity_name: &str) -> PathBuf {
+        self.user_owned_identities_root(user_id).join(identity_name)
+    }
+
     pub(crate) fn user_owned_identity_manifest_file(
         &self,
         user_id: &str,
         identity_name: &str,
     ) -> PathBuf {
-        self.identities_root()
+        self.user_owned_identity_dir(user_id, identity_name)
+            .join(INSTALLED_IDENTITY_FILE_NAME)
+    }
+
+    pub(crate) fn user_owned_identity_material_file(
+        &self,
+        user_id: &str,
+        identity_name: &str,
+    ) -> PathBuf {
+        self.user_owned_identity_dir(user_id, identity_name)
+            .join(INSTALLED_SECRETS_FILE_NAME)
+    }
+
+    pub(crate) fn user_owned_identity_refresh_lock_file(
+        &self,
+        user_id: &str,
+        identity_name: &str,
+    ) -> PathBuf {
+        self.config_dir
+            .join("locks")
+            .join("identities")
             .join("users")
             .join(user_id)
-            .join(identity_name)
-            .join(INSTALLED_IDENTITY_FILE_NAME)
+            .join(format!("{identity_name}.refresh.lock"))
     }
 
     pub(crate) fn source_dir(
