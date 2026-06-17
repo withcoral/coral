@@ -1,6 +1,6 @@
 //! JSONL-backed span export for local trace capture.
 
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -404,6 +404,7 @@ pub(crate) struct TraceSummaryRecord {
     pub(crate) trace_id: String,
     pub(crate) root_span_id: String,
     pub(crate) name: String,
+    pub(crate) workspaces: BTreeSet<String>,
     pub(crate) query: String,
     pub(crate) status: StoredTraceStatus,
     pub(crate) start_time_unix_nanos: i64,
@@ -453,6 +454,7 @@ struct TraceAggregate {
     end_time_unix_nanos: i64,
     span_count: u32,
     error_count: u32,
+    workspaces: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -486,6 +488,7 @@ struct TraceListAggregate {
     span_count: u32,
     error_count: u32,
     found_root_span: bool,
+    workspaces: BTreeSet<String>,
     primary: Option<TracePrimaryCandidate>,
 }
 
@@ -725,6 +728,7 @@ impl TraceListAggregate {
             span_count: 0,
             error_count: 0,
             found_root_span: false,
+            workspaces: BTreeSet::new(),
             primary: None,
         };
         aggregate.record_span(span);
@@ -739,6 +743,9 @@ impl TraceListAggregate {
             self.error_count = self.error_count.saturating_add(1);
         }
         self.found_root_span |= is_root_span_parent(span.parent_span_id.as_deref());
+        if let Some(workspace) = workspace_from_attributes_json(&span.attributes_json) {
+            self.workspaces.insert(workspace);
+        }
 
         let primary = TracePrimaryCandidate::from_span(span);
         if self
@@ -757,6 +764,7 @@ impl TraceListAggregate {
             end_time_unix_nanos: self.end_time_unix_nanos,
             span_count: self.span_count,
             error_count: self.error_count,
+            workspaces: self.workspaces,
         };
         summary_from_list_aggregate(&aggregate, self.primary.as_ref())
     }
@@ -1057,6 +1065,7 @@ fn summary_from_spans(trace_id: &str, spans: &[TraceSpanRecord]) -> TraceSummary
         end_time_unix_nanos,
         span_count: usize_to_u32(spans.len()),
         error_count: usize_to_u32(error_count),
+        workspaces: trace_workspaces(spans.iter().map(|span| span.attributes_json.as_str())),
     };
     let primary = spans.iter().min_by_key(|span| {
         (
@@ -1086,6 +1095,7 @@ fn summary_from_list_aggregate(
             trace_id: aggregate.trace_id.clone(),
             root_span_id: String::new(),
             name: "trace".to_string(),
+            workspaces: aggregate.workspaces.clone(),
             query: String::new(),
             status: fallback_status,
             start_time_unix_nanos: aggregate.start_time_unix_nanos,
@@ -1107,11 +1117,11 @@ fn summary_from_list_aggregate(
             let row_count = attributes
                 .as_ref()
                 .and_then(|attrs| attr_u64(attrs, "row_count"));
-
             TraceSummaryRecord {
                 trace_id: aggregate.trace_id.clone(),
                 root_span_id: primary.span_id.clone(),
                 name: primary.name.clone(),
+                workspaces: aggregate.workspaces.clone(),
                 query: attributes
                     .as_ref()
                     .and_then(|attrs| attr_string(attrs, "sql"))
@@ -1146,6 +1156,7 @@ fn summary_from_aggregate(
             trace_id: aggregate.trace_id.clone(),
             root_span_id: String::new(),
             name: "trace".to_string(),
+            workspaces: aggregate.workspaces.clone(),
             query: String::new(),
             status: fallback_status,
             start_time_unix_nanos: aggregate.start_time_unix_nanos,
@@ -1167,11 +1178,11 @@ fn summary_from_aggregate(
             let row_count = attributes
                 .as_ref()
                 .and_then(|attrs| attr_u64(attrs, "row_count"));
-
             TraceSummaryRecord {
                 trace_id: aggregate.trace_id.clone(),
                 root_span_id: primary.span_id.clone(),
                 name: primary.name.clone(),
+                workspaces: aggregate.workspaces.clone(),
                 query: attributes
                     .as_ref()
                     .and_then(|attrs| attr_string(attrs, "sql"))
@@ -1236,6 +1247,18 @@ fn status_from_attributes(attributes: Option<&JsonValue>) -> Option<StoredTraceS
         "error" => Some(StoredTraceStatus::Error),
         _ => None,
     }
+}
+
+fn trace_workspaces<'a>(attributes_json: impl IntoIterator<Item = &'a str>) -> BTreeSet<String> {
+    attributes_json
+        .into_iter()
+        .filter_map(workspace_from_attributes_json)
+        .collect()
+}
+
+fn workspace_from_attributes_json(attributes_json: &str) -> Option<String> {
+    let attributes = parse_attributes(attributes_json)?;
+    attr_string(&attributes, "workspace").filter(|workspace| !workspace.is_empty())
 }
 
 fn attr_string(attributes: &JsonValue, key: &str) -> Option<String> {

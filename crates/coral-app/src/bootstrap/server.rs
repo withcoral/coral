@@ -39,7 +39,10 @@ use tower::{Layer, Service};
 
 use super::env::AppEnvironment;
 use super::error::AppError;
-use crate::authorization::{AllowAllManagementAuthorizer, ManagementAuthorizer};
+use crate::authorization::{
+    AllowAllManagementAuthorizer, AllowAllWorkspaceReadAuthorizer, ManagementAuthorizer,
+    WorkspaceReadAuthorizer,
+};
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
@@ -168,6 +171,7 @@ pub struct ServerBuilder {
     user_owned_identity_store: Option<Arc<dyn UserOwnedIdentityStore>>,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
+    workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     grpc_route_extenders: Vec<GrpcRouteExtender>,
     enable_stderr_logs: bool,
@@ -198,6 +202,7 @@ impl ServerBuilder {
             user_owned_identity_store: None,
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             management_authorizer: Arc::new(AllowAllManagementAuthorizer),
+            workspace_read_authorizer: Arc::new(AllowAllWorkspaceReadAuthorizer),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             grpc_route_extenders: Vec::new(),
             enable_stderr_logs: false,
@@ -288,6 +293,20 @@ impl ServerBuilder {
         management_authorizer: Arc<dyn ManagementAuthorizer>,
     ) -> Self {
         self.management_authorizer = management_authorizer;
+        self
+    }
+
+    #[must_use]
+    /// Sets the product-specific workspace read authorizer.
+    ///
+    /// The default authorizer allows all reads to preserve OSS single-user
+    /// behavior. Product runtimes can install a stricter policy for multi-user
+    /// query and catalog access.
+    pub fn with_workspace_read_authorizer(
+        mut self,
+        workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
+    ) -> Self {
+        self.workspace_read_authorizer = workspace_read_authorizer;
         self
     }
 
@@ -565,6 +584,7 @@ impl ServerBuilder {
             user_owned_identity_manager,
             user_principal_provider: self.user_principal_provider,
             management_authorizer: self.management_authorizer,
+            workspace_read_authorizer: self.workspace_read_authorizer,
             feedback_manager,
             trace_service,
             mode: self.mode,
@@ -689,6 +709,7 @@ struct ServerServices {
     user_owned_identity_manager: UserOwnedIdentityManager,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
+    workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
     feedback_manager: FeedbackManager,
     trace_service: Option<TraceService>,
     mode: ServerMode,
@@ -705,6 +726,7 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
         user_owned_identity_manager,
         user_principal_provider,
         management_authorizer,
+        workspace_read_authorizer,
         feedback_manager,
         trace_service,
         mode,
@@ -719,14 +741,22 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
         user_owned_identity_manager.clone(),
         Arc::clone(&user_principal_provider),
         Arc::clone(&management_authorizer),
+        Arc::clone(&workspace_read_authorizer),
     );
-    let catalog_service =
-        CatalogService::new(query_manager.clone(), Arc::clone(&user_principal_provider));
+    let catalog_service = CatalogService::new(
+        query_manager.clone(),
+        Arc::clone(&user_principal_provider),
+        Arc::clone(&workspace_read_authorizer),
+    );
     let identity_service = IdentityService::new(
         user_owned_identity_manager,
         Arc::clone(&user_principal_provider),
     );
-    let query_service = QueryService::new(query_manager, Arc::clone(&user_principal_provider));
+    let query_service = QueryService::new(
+        query_manager,
+        Arc::clone(&user_principal_provider),
+        Arc::clone(&workspace_read_authorizer),
+    );
     let identity_spec_service = IdentitySpecService::new(
         identity_spec_manager,
         Arc::clone(&user_principal_provider),
@@ -756,8 +786,9 @@ async fn start_server(services: ServerServices) -> Result<RunningServer, AppErro
                 .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
         ));
     if let Some(trace_service) = trace_service {
-        let trace_service =
-            trace_service.with_user_principal_provider(Arc::clone(&user_principal_provider));
+        let trace_service = trace_service
+            .with_user_principal_provider(Arc::clone(&user_principal_provider))
+            .with_workspace_read_authorizer(Arc::clone(&workspace_read_authorizer));
         routes = routes.add_service(GrpcMethodAnnotatedService::new(
             TraceServiceServer::new(trace_service)
                 .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
@@ -993,15 +1024,19 @@ mod tests {
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
-        ExecuteSqlRequest, ExecuteSqlResponse, ImportSourceRequest, ImportSourceResponse,
-        ListCatalogRequest, ListIdentitySpecsRequest, ListSourcesRequest, ListTracesRequest,
-        ListTracesResponse, ListUserOwnedIdentitiesRequest, SubmitFeedbackRequest, Workspace,
+        DiscoverSourcesRequest, ExecuteSqlRequest, ExecuteSqlResponse, GetSourceInfoRequest,
+        GetSourceRequest, ImportSourceRequest, ImportSourceResponse, ListCatalogRequest,
+        ListIdentitySpecsRequest, ListSourcesRequest, ListTracesRequest, ListTracesResponse,
+        ListUserOwnedIdentitiesRequest, SubmitFeedbackRequest, ValidateSourceRequest, Workspace,
         import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
 
-    use crate::authorization::AllowAllManagementAuthorizer;
+    use crate::authorization::{
+        AllowAllManagementAuthorizer, AllowAllWorkspaceReadAuthorizer, AuthorizationError,
+        WorkspaceReadAuthorizer,
+    };
     use crate::identities::UserOwnedIdentityManager;
     use crate::identity_specs::IdentitySpecManager;
     use tempfile::TempDir;
@@ -1042,6 +1077,22 @@ mod tests {
             Err(UserPrincipalError::unauthenticated(
                 "rejected user principal",
             ))
+        }
+    }
+
+    #[derive(Debug)]
+    struct RejectingWorkspaceReadAuthorizer;
+
+    #[tonic::async_trait]
+    impl WorkspaceReadAuthorizer for RejectingWorkspaceReadAuthorizer {
+        async fn authorize_workspace_read(
+            &self,
+            _principal: &UserPrincipal,
+            workspace_id: &str,
+        ) -> Result<(), AuthorizationError> {
+            Err(AuthorizationError::forbidden(format!(
+                "workspace read rejected for {workspace_id}"
+            )))
         }
     }
 
@@ -1096,6 +1147,7 @@ enabled = false
             user_owned_identity_manager,
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             management_authorizer: Arc::new(AllowAllManagementAuthorizer),
+            workspace_read_authorizer: Arc::new(AllowAllWorkspaceReadAuthorizer),
             feedback_manager: FeedbackManager::new(layout.clone()),
             trace_service,
             mode: ServerMode::NativeGrpc,
@@ -1350,6 +1402,85 @@ enabled = false
         )
         .await;
         expect_unauthenticated("traces", list_traces(&mut trace_client)).await;
+
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn query_and_catalog_services_enforce_workspace_read_authorizer() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_workspace_read_authorizer(Arc::new(RejectingWorkspaceReadAuthorizer))
+            .start()
+            .await
+            .expect("start server");
+        let channel = connect(&server).await;
+        let mut query_client = QueryServiceClient::new(channel.clone());
+        let mut catalog_client = CatalogServiceClient::new(channel.clone());
+        let mut source_client = SourceServiceClient::new(channel);
+
+        let status = execute_sql(&mut query_client, "SELECT 1")
+            .await
+            .expect_err("query should be denied by workspace read authorizer");
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert!(status.message().contains("workspace read rejected"));
+
+        let status = catalog_client
+            .list_catalog(Request::new(ListCatalogRequest {
+                workspace: Some(default_workspace()),
+                ..ListCatalogRequest::default()
+            }))
+            .await
+            .expect_err("catalog should be denied by workspace read authorizer");
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert!(status.message().contains("workspace read rejected"));
+
+        let status = source_client
+            .discover_sources(Request::new(DiscoverSourcesRequest {
+                workspace: Some(default_workspace()),
+            }))
+            .await
+            .expect_err("source discovery should be denied by workspace read authorizer");
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert!(status.message().contains("workspace read rejected"));
+
+        let status = source_client
+            .list_sources(Request::new(list_sources_request()))
+            .await
+            .expect_err("source listing should be denied by workspace read authorizer");
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert!(status.message().contains("workspace read rejected"));
+
+        let status = source_client
+            .get_source(Request::new(GetSourceRequest {
+                workspace: Some(default_workspace()),
+                name: "missing".to_string(),
+            }))
+            .await
+            .expect_err("source lookup should be denied by workspace read authorizer");
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert!(status.message().contains("workspace read rejected"));
+
+        let status = source_client
+            .get_source_info(Request::new(GetSourceInfoRequest {
+                workspace: Some(default_workspace()),
+                name: "missing".to_string(),
+            }))
+            .await
+            .expect_err("source info should be denied by workspace read authorizer");
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert!(status.message().contains("workspace read rejected"));
+
+        let status = source_client
+            .validate_source(Request::new(ValidateSourceRequest {
+                workspace: Some(default_workspace()),
+                name: "missing".to_string(),
+            }))
+            .await
+            .expect_err("source validation should be denied by workspace read authorizer");
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert!(status.message().contains("workspace read rejected"));
 
         server.shutdown().await.expect("shutdown");
     }

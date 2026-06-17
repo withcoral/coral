@@ -55,7 +55,8 @@ mod transport;
 mod workspaces;
 
 pub use authorization::{
-    AllowAllManagementAuthorizer, AuthorizationError, ManagementAuthorizer, SourceMutationKind,
+    AllowAllManagementAuthorizer, AllowAllWorkspaceReadAuthorizer, AuthorizationError,
+    ManagementAuthorizer, SourceMutationKind, WorkspaceReadAuthorizer,
 };
 pub use bootstrap::{
     AppError, RunningServer, ServerBuilder, ServerExtensionContext, ServerMode, StaticAsset,

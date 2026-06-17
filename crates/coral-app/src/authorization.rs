@@ -75,9 +75,50 @@ pub trait ManagementAuthorizer: fmt::Debug + Send + Sync + 'static {
     ) -> Result<(), AuthorizationError>;
 }
 
+/// Product-provided authorization policy for workspace data-plane reads.
+///
+/// OSS Coral installs [`AllowAllWorkspaceReadAuthorizer`] by default to
+/// preserve local single-user behavior. Product runtimes can replace it to gate
+/// SQL query and catalog reads for multi-user workspace control planes.
+#[tonic::async_trait]
+pub trait WorkspaceReadAuthorizer: fmt::Debug + Send + Sync + 'static {
+    /// Authorizes reading query-visible data from a workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorizationError`] when the principal is not allowed to read
+    /// from the workspace.
+    async fn authorize_workspace_read(
+        &self,
+        principal: &UserPrincipal,
+        workspace_id: &str,
+    ) -> Result<(), AuthorizationError>;
+
+    /// Returns whether reads without recoverable workspace metadata are allowed.
+    ///
+    /// Product runtimes should keep the default `false` so trace records that
+    /// cannot be mapped to a workspace fail closed.
+    fn allows_unscoped_workspace_reads(&self) -> bool {
+        false
+    }
+
+    /// Returns whether every workspace read is allowed without filtering.
+    ///
+    /// Product runtimes should keep the default `false`; the default OSS
+    /// allow-all authorizer overrides this to preserve local single-user trace
+    /// pagination behavior.
+    fn allows_all_workspace_reads(&self) -> bool {
+        false
+    }
+}
+
 /// Default OSS authorizer for local single-user usage.
 #[derive(Debug, Default)]
 pub struct AllowAllManagementAuthorizer;
+
+/// Default OSS workspace read authorizer for local single-user usage.
+#[derive(Debug, Default)]
+pub struct AllowAllWorkspaceReadAuthorizer;
 
 #[tonic::async_trait]
 impl ManagementAuthorizer for AllowAllManagementAuthorizer {
@@ -95,6 +136,25 @@ impl ManagementAuthorizer for AllowAllManagementAuthorizer {
         _kind: SourceMutationKind,
     ) -> Result<(), AuthorizationError> {
         Ok(())
+    }
+}
+
+#[tonic::async_trait]
+impl WorkspaceReadAuthorizer for AllowAllWorkspaceReadAuthorizer {
+    async fn authorize_workspace_read(
+        &self,
+        _principal: &UserPrincipal,
+        _workspace_id: &str,
+    ) -> Result<(), AuthorizationError> {
+        Ok(())
+    }
+
+    fn allows_unscoped_workspace_reads(&self) -> bool {
+        true
+    }
+
+    fn allows_all_workspace_reads(&self) -> bool {
+        true
     }
 }
 

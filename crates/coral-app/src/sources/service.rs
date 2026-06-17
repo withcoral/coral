@@ -39,7 +39,9 @@ use coral_spec::{
 };
 use tonic::{Request, Response, Status};
 
-use crate::authorization::{ManagementAuthorizer, SourceMutationKind, authorization_status};
+use crate::authorization::{
+    ManagementAuthorizer, SourceMutationKind, WorkspaceReadAuthorizer, authorization_status,
+};
 use crate::bootstrap::{AppError, app_status};
 use crate::credentials::CredentialStorageKind;
 use crate::credentials::oauth::{OAuthProgressEvent, OAuthProgressEventSender};
@@ -72,6 +74,7 @@ pub(crate) struct SourceService {
     user_owned_identities: UserOwnedIdentityManager,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
+    workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
 }
 
 impl SourceService {
@@ -82,6 +85,7 @@ impl SourceService {
         user_owned_identity_manager: UserOwnedIdentityManager,
         user_principal_provider: Arc<dyn UserPrincipalProvider>,
         management_authorizer: Arc<dyn ManagementAuthorizer>,
+        workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
     ) -> Self {
         Self {
             sources: source_manager,
@@ -90,6 +94,7 @@ impl SourceService {
             user_owned_identities: user_owned_identity_manager,
             user_principal_provider,
             management_authorizer,
+            workspace_read_authorizer,
         }
     }
 }
@@ -104,11 +109,18 @@ impl SourceServiceApi for SourceService {
         request: Request<DiscoverSourcesRequest>,
     ) -> Result<Response<DiscoverSourcesResponse>, Status> {
         let sources = self.sources.clone();
+        let workspace_read_authorizer = Arc::clone(&self.workspace_read_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                authorize_workspace_read(
+                    workspace_read_authorizer.as_ref(),
+                    &principal,
+                    &workspace_name,
+                )
+                .await?;
                 let sources = sources
                     .discover_sources(&workspace_name)
                     .map_err(app_status)?
@@ -126,11 +138,18 @@ impl SourceServiceApi for SourceService {
         request: Request<ListSourcesRequest>,
     ) -> Result<Response<ListSourcesResponse>, Status> {
         let sources = self.sources.clone();
+        let workspace_read_authorizer = Arc::clone(&self.workspace_read_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                authorize_workspace_read(
+                    workspace_read_authorizer.as_ref(),
+                    &principal,
+                    &workspace_name,
+                )
+                .await?;
                 let sources: Vec<_> = sources
                     .list_workspace_sources(&workspace_name)
                     .map_err(app_status)?
@@ -148,11 +167,18 @@ impl SourceServiceApi for SourceService {
         request: Request<GetSourceRequest>,
     ) -> Result<Response<GetSourceResponse>, Status> {
         let sources = self.sources.clone();
+        let workspace_read_authorizer = Arc::clone(&self.workspace_read_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                authorize_workspace_read(
+                    workspace_read_authorizer.as_ref(),
+                    &principal,
+                    &workspace_name,
+                )
+                .await?;
                 let source_name = SourceName::parse(&request.name).map_err(app_status)?;
                 let source = sources
                     .get_source(&workspace_name, &source_name)
@@ -170,11 +196,18 @@ impl SourceServiceApi for SourceService {
         request: Request<GetSourceInfoRequest>,
     ) -> Result<Response<GetSourceInfoResponse>, Status> {
         let sources = self.sources.clone();
+        let workspace_read_authorizer = Arc::clone(&self.workspace_read_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                authorize_workspace_read(
+                    workspace_read_authorizer.as_ref(),
+                    &principal,
+                    &workspace_name,
+                )
+                .await?;
                 let source_name = SourceName::parse(&request.name).map_err(app_status)?;
                 let source = sources
                     .get_source_info(&workspace_name, &source_name)
@@ -417,11 +450,18 @@ impl SourceServiceApi for SourceService {
         request: Request<ValidateSourceRequest>,
     ) -> Result<Response<ValidateSourceResponse>, Status> {
         let queries = self.queries.clone();
+        let workspace_read_authorizer = Arc::clone(&self.workspace_read_authorizer);
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
             |principal, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+                authorize_workspace_read(
+                    workspace_read_authorizer.as_ref(),
+                    &principal,
+                    &workspace_name,
+                )
+                .await?;
                 let source_name = SourceName::parse(&request.name).map_err(app_status)?;
                 let result = queries
                     .validate_source(&workspace_name, &principal, &source_name)
@@ -444,6 +484,17 @@ type CreateBundledSourceWithOAuthResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<CreateBundledSourceWithOAuthResponse, Status>> + Send>>;
 type ImportSourceResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
+
+async fn authorize_workspace_read(
+    authorizer: &dyn WorkspaceReadAuthorizer,
+    principal: &UserPrincipal,
+    workspace_name: &WorkspaceName,
+) -> Result<(), Status> {
+    authorizer
+        .authorize_workspace_read(principal, workspace_name.as_str())
+        .await
+        .map_err(authorization_status)
+}
 
 /// Builds the import-source response stream: OAuth progress events while
 /// `import` runs, then the installed source.

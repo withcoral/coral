@@ -11,6 +11,7 @@ use coral_api::v1::{
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
+use crate::authorization::{WorkspaceReadAuthorizer, authorization_status};
 use crate::bootstrap::core_status;
 use crate::identity::UserPrincipalProvider;
 use crate::query::manager::QueryManager;
@@ -20,16 +21,19 @@ use crate::transport::{instrument_authenticated_grpc, query_status, workspace_na
 pub(crate) struct QueryService {
     queries: QueryManager,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
 }
 
 impl QueryService {
     pub(crate) fn new(
         query_manager: QueryManager,
         user_principal_provider: Arc<dyn UserPrincipalProvider>,
+        workspace_read_authorizer: Arc<dyn WorkspaceReadAuthorizer>,
     ) -> Self {
         Self {
             queries: query_manager,
             user_principal_provider,
+            workspace_read_authorizer,
         }
     }
 }
@@ -41,11 +45,16 @@ impl QueryServiceApi for QueryService {
         request: Request<ExecuteSqlRequest>,
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
         let queries = self.queries.clone();
+        let workspace_read_authorizer = Arc::clone(&self.workspace_read_authorizer);
         Box::pin(instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
             |principal, inner| async move {
                 let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+                workspace_read_authorizer
+                    .authorize_workspace_read(&principal, workspace_name.as_str())
+                    .await
+                    .map_err(authorization_status)?;
                 let execution = queries
                     .execute_sql_with_context(&workspace_name, &principal, &inner.sql)
                     .await
@@ -70,11 +79,16 @@ impl QueryServiceApi for QueryService {
         request: Request<ExplainSqlRequest>,
     ) -> Result<Response<ExplainSqlResponse>, Status> {
         let queries = self.queries.clone();
+        let workspace_read_authorizer = Arc::clone(&self.workspace_read_authorizer);
         Box::pin(instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
             |principal, inner| async move {
                 let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+                workspace_read_authorizer
+                    .authorize_workspace_read(&principal, workspace_name.as_str())
+                    .await
+                    .map_err(authorization_status)?;
                 let plan = queries
                     .explain_sql_with_context(&workspace_name, &principal, &inner.sql)
                     .await
