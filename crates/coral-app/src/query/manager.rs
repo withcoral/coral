@@ -35,6 +35,7 @@ use crate::query::extensions::{
 #[cfg(test)]
 use crate::source_artifacts::LocalSourceArtifactStore;
 use crate::source_artifacts::SourceArtifactStore;
+use crate::source_registry::{SourceRegistry, installed_source_from_record};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::incompatible_materialization_error;
@@ -72,6 +73,7 @@ pub(crate) struct QueryManagerOptions {
 #[derive(Clone)]
 pub(crate) struct QueryManager {
     config_store: ConfigStore,
+    source_registry: Arc<dyn SourceRegistry>,
     credential_manager: CredentialManager,
     runtime_context: QueryRuntimeContext,
     #[cfg(test)]
@@ -83,8 +85,13 @@ pub(crate) struct QueryManager {
 }
 
 impl QueryManager {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one-time wiring constructor; every argument is a distinct runtime dependency"
+    )]
     pub(crate) fn new(
         config_store: ConfigStore,
+        source_registry: Arc<dyn SourceRegistry>,
         credential_manager: CredentialManager,
         runtime_context: QueryRuntimeContext,
         #[cfg(test)] layout: AppStateLayout,
@@ -95,6 +102,7 @@ impl QueryManager {
     ) -> Self {
         Self {
             config_store,
+            source_registry,
             credential_manager,
             runtime_context,
             #[cfg(test)]
@@ -133,9 +141,11 @@ impl QueryManager {
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
         options: QueryManagerOptions,
     ) -> Self {
+        let source_registry = Arc::new(config_store.clone());
         let artifact_store = Arc::new(LocalSourceArtifactStore::new(layout.clone()));
         Self::new(
             config_store,
+            source_registry,
             credential_manager,
             runtime_context,
             layout,
@@ -143,6 +153,29 @@ impl QueryManager {
             engine_extensions_providers,
             options,
         )
+    }
+
+    fn list_registry_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledSource>, AppError> {
+        self.source_registry
+            .list_workspace_sources(workspace_name.as_str())?
+            .into_iter()
+            .map(|record| installed_source_from_record(workspace_name, record))
+            .collect()
+    }
+
+    fn require_registry_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<InstalledSource, AppError> {
+        self.source_registry
+            .get_source(workspace_name.as_str(), source_name.as_str())?
+            .map(|record| installed_source_from_record(workspace_name, record))
+            .transpose()?
+            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
     }
 
     fn load_query_runtime(
@@ -155,7 +188,7 @@ impl QueryManager {
             .load_config()
             .map_err(QueryManagerError::App)?;
         let loaded_sources = self
-            .load_query_sources(workspace_name, &config)
+            .load_query_sources(workspace_name)
             .map_err(QueryManagerError::App)?;
         let identity_bindings = identity_binding_snapshot_for_sources(&loaded_sources);
         let sources = query_sources_from_loaded(loaded_sources);
@@ -306,9 +339,8 @@ impl QueryManager {
             .config_store
             .load_config()
             .map_err(QueryManagerError::App)?;
-        let source = config
-            .get_source(workspace_name, source_name)
-            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
+        let source = self
+            .require_registry_source(workspace_name, source_name)
             .map_err(QueryManagerError::App)?;
         let loaded_source = self
             .load_query_source(workspace_name, &source)
@@ -343,7 +375,6 @@ impl QueryManager {
     fn load_query_sources(
         &self,
         workspace_name: &WorkspaceName,
-        config: &AppConfig,
     ) -> Result<Vec<LoadedQuerySource>, AppError> {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
@@ -352,7 +383,7 @@ impl QueryManager {
         );
         let _guard = span.enter();
         let mut query_sources = Vec::new();
-        for source in config.workspace_sources(workspace_name) {
+        for source in self.list_registry_sources(workspace_name)? {
             match self.load_query_source(workspace_name, &source) {
                 Ok(query_source) => query_sources.push(query_source),
                 Err(
@@ -1727,14 +1758,9 @@ surfaces:
             .config_store
             .upsert_source(&workspace_name, source)
             .expect("persist v4 source");
-        let config = fixture
-            .manager
-            .config_store
-            .load_config()
-            .expect("load config");
         let error = fixture
             .manager
-            .load_query_sources(&workspace_name, &config)
+            .load_query_sources(&workspace_name)
             .expect_err("normal query loading should fail on disabled v4 source");
 
         assert!(
@@ -1788,14 +1814,9 @@ surfaces:
             )
             .expect("persist source");
 
-        let config = fixture
-            .manager
-            .config_store
-            .load_config()
-            .expect("load config");
         let error = fixture
             .manager
-            .load_query_sources(&workspace_name, &config)
+            .load_query_sources(&workspace_name)
             .expect_err("missing materialization should fail closed");
 
         assert!(
@@ -1841,10 +1862,8 @@ surfaces:
             layout,
             Vec::new(),
         );
-        let config = manager.config_store.load_config().expect("load config");
-
         let error = manager
-            .load_query_sources(&workspace_name, &config)
+            .load_query_sources(&workspace_name)
             .expect_err("unavailable keychain should fail closed");
 
         assert!(

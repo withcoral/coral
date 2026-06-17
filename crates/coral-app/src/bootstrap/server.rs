@@ -621,22 +621,22 @@ impl ServerBuilder {
             &extension_context,
             &identity_manager,
         );
-        let (source_manager, source_artifact_store) = source_manager_for_server(
+        let source_stores = source_stores_for_server(
             layout.clone(),
             config_store.clone(),
             self.config.source_registry,
             self.config.source_artifact_store,
+        );
+        let source_manager = source_manager_for_server(
+            &source_stores,
             credential_manager.clone(),
+            layout.clone(),
             features.clone(),
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let episode_store = EpisodeStore::new(layout.clone());
-        let query_runtime_context = env.query_runtime_context().with_body_capture_max_bytes(
-            telemetry_config
-                .trace_history
-                .http_body_recording_max_bytes(),
-        );
+        let query_runtime_context = query_runtime_context(&env, &telemetry_config);
 
         let query_manager_options = QueryManagerOptions {
             features,
@@ -647,7 +647,7 @@ impl ServerBuilder {
             credential_manager,
             query_runtime_context,
             layout,
-            source_artifact_store,
+            source_stores,
             self.config.engine_extensions_providers,
             query_manager_options,
         );
@@ -728,25 +728,37 @@ fn source_identity_providers_for_server(
     providers
 }
 
-fn source_manager_for_server(
+struct ServerSourceStores {
+    registry: Arc<dyn SourceRegistry>,
+    artifact_store: Arc<dyn SourceArtifactStore>,
+}
+
+fn source_stores_for_server(
     layout: AppStateLayout,
     config_store: ConfigStore,
     source_registry: Option<Arc<dyn SourceRegistry>>,
     source_artifact_store: Option<Arc<dyn SourceArtifactStore>>,
+) -> ServerSourceStores {
+    ServerSourceStores {
+        registry: source_registry.unwrap_or_else(|| Arc::new(config_store)),
+        artifact_store: source_artifact_store
+            .unwrap_or_else(|| Arc::new(LocalSourceArtifactStore::new(layout))),
+    }
+}
+
+fn source_manager_for_server(
+    source_stores: &ServerSourceStores,
     credential_manager: CredentialManager,
+    layout: AppStateLayout,
     features: Features,
-) -> (SourceManager, Arc<dyn SourceArtifactStore>) {
-    let source_registry = source_registry.unwrap_or_else(|| Arc::new(config_store));
-    let source_artifact_store = source_artifact_store
-        .unwrap_or_else(|| Arc::new(LocalSourceArtifactStore::new(layout.clone())));
-    let source_manager = SourceManager::new_with_source_registry_and_artifact_store(
-        source_registry,
-        Arc::clone(&source_artifact_store),
+) -> SourceManager {
+    SourceManager::new_with_source_registry_and_artifact_store(
+        Arc::clone(&source_stores.registry),
+        Arc::clone(&source_stores.artifact_store),
         credential_manager,
         layout,
         features,
-    );
-    (source_manager, source_artifact_store)
+    )
 }
 
 fn query_manager_for_server(
@@ -754,16 +766,17 @@ fn query_manager_for_server(
     credential_manager: CredentialManager,
     query_runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
-    source_artifact_store: Arc<dyn SourceArtifactStore>,
+    source_stores: ServerSourceStores,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     options: QueryManagerOptions,
 ) -> QueryManager {
     QueryManager::new(
         config_store,
+        source_stores.registry,
         credential_manager,
         query_runtime_context,
         layout,
-        source_artifact_store,
+        source_stores.artifact_store,
         engine_extensions_providers,
         options,
     )
@@ -778,6 +791,17 @@ fn trace_service_for_server(
     } else {
         None
     }
+}
+
+fn query_runtime_context(
+    env: &AppEnvironment,
+    telemetry_config: &TelemetryConfig,
+) -> coral_engine::QueryRuntimeContext {
+    env.query_runtime_context().with_body_capture_max_bytes(
+        telemetry_config
+            .trace_history
+            .http_body_recording_max_bytes(),
+    )
 }
 
 struct ServerServices {

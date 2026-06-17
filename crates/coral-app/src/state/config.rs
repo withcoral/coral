@@ -39,18 +39,6 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    pub(crate) fn workspace_sources(&self, workspace_name: &WorkspaceName) -> Vec<InstalledSource> {
-        self.catalog.workspace_sources(workspace_name)
-    }
-
-    pub(crate) fn get_source(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Option<InstalledSource> {
-        self.catalog.get_source(workspace_name, source_name)
-    }
-
     pub(crate) fn dependent_join_config(
         &self,
         selected_source_names: &[String],
