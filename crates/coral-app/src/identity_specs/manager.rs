@@ -129,6 +129,13 @@ pub struct IdentitySpecRegistryRecord {
     pub input_material: BTreeMap<String, String>,
 }
 
+/// Complete rollback snapshot for one installed global identity spec.
+#[derive(Debug, Clone)]
+pub(crate) struct IdentitySpecSnapshot {
+    record: IdentitySpecRecord,
+    input_material: BTreeMap<String, String>,
+}
+
 /// Durable storage backend for global identity specs.
 pub trait IdentitySpecRegistry: Send + Sync + std::fmt::Debug + 'static {
     /// Lists all installed identity specs.
@@ -390,6 +397,52 @@ impl IdentitySpecManager {
     ) -> Result<IdentitySpecRecord, AppError> {
         let name = validate_identity_spec_name(name)?;
         self.load_identity_spec_manifest_unlocked(&name)
+    }
+
+    pub(crate) fn snapshot_identity_spec(
+        &self,
+        name: &str,
+    ) -> Result<Option<IdentitySpecSnapshot>, AppError> {
+        self.features.ensure_dsl_v4_enabled()?;
+        let name = validate_identity_spec_name(name)?;
+        let _lock = FileLock::shared(self.layout.state_lock())?;
+        let Some(stored) = self.registry.get_identity_spec(name.as_str())? else {
+            return Ok(None);
+        };
+        let record = parse_identity_spec_record(&stored.manifest_yaml)?;
+        Ok(Some(IdentitySpecSnapshot {
+            record,
+            input_material: stored.input_material,
+        }))
+    }
+
+    pub(crate) fn rollback_identity_spec_snapshot_if_current_matches(
+        &self,
+        installed: &IdentitySpecSnapshot,
+        previous: Option<&IdentitySpecSnapshot>,
+    ) -> Result<bool, AppError> {
+        self.features.ensure_dsl_v4_enabled()?;
+        let name = validate_identity_spec_name(&installed.record.manifest.name)?;
+        let _lock = FileLock::exclusive(self.layout.state_lock())?;
+        let Some(current) = self.registry.get_identity_spec(name.as_str())? else {
+            return Ok(false);
+        };
+        if current.manifest_yaml != installed.record.manifest_yaml
+            || current.input_material != installed.input_material
+        {
+            return Ok(false);
+        }
+        match previous {
+            Some(previous) => self.registry.upsert_identity_spec(
+                name.as_str(),
+                IdentitySpecRegistryRecord {
+                    manifest_yaml: previous.record.manifest_yaml.clone(),
+                    input_material: previous.input_material.clone(),
+                },
+            )?,
+            None => self.registry.remove_identity_spec(name.as_str())?,
+        }
+        Ok(true)
     }
 
     pub(crate) fn resolve_identity_spec_inputs(
@@ -1671,6 +1724,60 @@ oauth:
         assert_eq!(
             identity_spec_fingerprint(&left).expect("left fingerprint"),
             identity_spec_fingerprint(&right).expect("right fingerprint")
+        );
+    }
+
+    #[test]
+    fn conditional_identity_spec_rollback_removes_matching_import() {
+        let (_temp, manager, _layout) = manager();
+        add_spec(
+            &manager,
+            &identity_yaml_with_audience("github_oauth", "0.1.0", "github.com"),
+        );
+        let installed = manager
+            .snapshot_identity_spec("github_oauth")
+            .expect("snapshot")
+            .expect("installed spec");
+
+        let rolled_back = manager
+            .rollback_identity_spec_snapshot_if_current_matches(&installed, None)
+            .expect("rollback");
+
+        assert!(rolled_back);
+        assert!(matches!(
+            manager.get_identity_spec("github_oauth"),
+            Err(AppError::IdentitySpecNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn conditional_identity_spec_rollback_skips_concurrent_update() {
+        let (_temp, manager, _layout) = manager();
+        add_spec(
+            &manager,
+            &identity_yaml_with_audience("github_oauth", "0.1.0", "github.com"),
+        );
+        let installed = manager
+            .snapshot_identity_spec("github_oauth")
+            .expect("snapshot")
+            .expect("installed spec");
+        add_spec(
+            &manager,
+            &identity_yaml_with_audience("github_oauth", "0.1.0", "api.github.com"),
+        );
+
+        let rolled_back = manager
+            .rollback_identity_spec_snapshot_if_current_matches(&installed, None)
+            .expect("rollback");
+
+        assert!(!rolled_back);
+        assert_eq!(
+            stored_spec(&manager, "github_oauth")
+                .manifest
+                .audience
+                .get("host")
+                .and_then(serde_json::Value::as_str),
+            Some("api.github.com")
         );
     }
 

@@ -164,6 +164,11 @@ struct SourceRollbackState {
     credential_material: Option<CredentialMaterialSnapshot>,
 }
 
+pub(crate) struct SourceImportRollback {
+    source_name: SourceName,
+    previous: Option<SourceRollbackState>,
+}
+
 fn materialization_inputs_from_bindings(
     bindings: &ValidatedBindings,
     stored_material: &BTreeMap<String, String>,
@@ -606,6 +611,65 @@ impl SourceManager {
             self.layout.workspace_dir(workspace_name).parent(),
         );
         Ok(removed)
+    }
+
+    pub(crate) fn snapshot_source_import_rollback(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<SourceImportRollback, AppError> {
+        let credential_set_id = CredentialSetId::for_source(source_name);
+        let credential_guard = self
+            .credential_manager
+            .material_guard(workspace_name, &credential_set_id)?;
+        let previous =
+            self.load_source_rollback_state(workspace_name, source_name, &credential_guard)?;
+        Ok(SourceImportRollback {
+            source_name: source_name.clone(),
+            previous,
+        })
+    }
+
+    pub(crate) fn rollback_source_import(
+        &self,
+        workspace_name: &WorkspaceName,
+        rollback: SourceImportRollback,
+    ) -> Result<(), AppError> {
+        let SourceImportRollback {
+            source_name,
+            previous,
+        } = rollback;
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let credential_guard = self
+            .credential_manager
+            .material_guard(workspace_name, &credential_set_id)?;
+        let current_source = match self.config_store.get_source(workspace_name, &source_name) {
+            Ok(source) => Some(source),
+            Err(AppError::SourceNotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+        let new_material_storage = current_source
+            .as_ref()
+            .and_then(InstalledSource::credential_storage_for_material);
+        let remove_result = if previous.is_none() {
+            match self
+                .config_store
+                .remove_source(workspace_name, &source_name)
+            {
+                Ok(()) | Err(AppError::SourceNotFound(_)) => Ok(()),
+                Err(error) => Err(error),
+            }
+        } else {
+            Ok(())
+        };
+        self.restore_source_rollback_state(
+            workspace_name,
+            &source_name,
+            previous,
+            new_material_storage,
+            &credential_guard,
+        );
+        remove_result
     }
 
     fn describe_bundled_source(

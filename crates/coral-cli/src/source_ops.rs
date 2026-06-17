@@ -129,6 +129,8 @@ pub(crate) async fn import_source(
             variables,
             secrets,
             oauth_credential_retrievals: Vec::new(),
+            identity_spec_manifest_yamls: Vec::new(),
+            identity_spec_inputs: Vec::new(),
             identity_bindings: identity_bindings.source_bindings,
             replace_identity_bindings: identity_bindings.replace_existing,
         }))
@@ -222,6 +224,8 @@ pub(crate) async fn import_source_with_credentials(
             variables: inputs.variables,
             secrets: inputs.secrets,
             oauth_credential_retrievals: inputs.oauth_credential_retrievals,
+            identity_spec_manifest_yamls: Vec::new(),
+            identity_spec_inputs: Vec::new(),
             identity_bindings: identity_bindings.source_bindings,
             replace_identity_bindings: identity_bindings.replace_existing,
         }))

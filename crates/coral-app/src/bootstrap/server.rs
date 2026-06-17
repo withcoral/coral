@@ -646,6 +646,7 @@ async fn start_server(
     let source_service = SourceService::new(
         source_manager,
         query_manager.clone(),
+        identity_spec_manager.clone(),
         identity_manager.clone(),
         Arc::clone(&management_authorizer),
     );
@@ -956,7 +957,7 @@ mod tests {
     use crate::{
         AllowAllManagementAuthorizer, AppError, AuthorizationError, AwsEngineExtensionsProvider,
         ManagementAuthorizer, ManagementMutation, NoopEngineExtensionsProvider,
-        SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider,
+        ResourceMutationKind, SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider,
     };
 
     fn default_workspace() -> Workspace {
@@ -1082,6 +1083,27 @@ enabled = false
         }
     }
 
+    #[derive(Debug)]
+    struct DenyingIdentitySpecManagementAuthorizer;
+
+    #[tonic::async_trait]
+    impl ManagementAuthorizer for DenyingIdentitySpecManagementAuthorizer {
+        async fn authorize_management_mutation(
+            &self,
+            _principal: &UserPrincipal,
+            mutation: ManagementMutation<'_>,
+        ) -> Result<(), AuthorizationError> {
+            match mutation {
+                ManagementMutation::IdentitySpec {
+                    kind: ResourceMutationKind::Upsert,
+                } => Err(AuthorizationError::forbidden(
+                    "identity spec mutation denied",
+                )),
+                _ => Ok(()),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn grpc_services_reject_unauthenticated_requests() {
         let temp = TempDir::new().expect("temp dir");
@@ -1181,6 +1203,8 @@ enabled = false
                 oauth_credential_retrievals: Vec::new(),
                 identity_bindings: Vec::new(),
                 replace_identity_bindings: false,
+                identity_spec_manifest_yamls: Vec::new(),
+                identity_spec_inputs: Vec::new(),
             }))
             .await
             .expect_err("source import should be authorization-gated");
@@ -1194,6 +1218,42 @@ enabled = false
             .await
             .expect_err("source deletion should be authorization-gated");
         assert_eq!(delete_status.code(), Code::PermissionDenied);
+
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn import_source_identity_spec_bundle_requires_identity_spec_authorization() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_management_authorizer(Arc::new(DenyingIdentitySpecManagementAuthorizer))
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut source_client = SourceServiceClient::new(channel);
+
+        let status = source_client
+            .import_source(Request::new(ImportSourceRequest {
+                workspace: Some(default_workspace()),
+                manifest_yaml: "not a manifest".to_string(),
+                variables: Vec::new(),
+                secrets: Vec::new(),
+                oauth_credential_retrievals: Vec::new(),
+                identity_bindings: Vec::new(),
+                replace_identity_bindings: false,
+                identity_spec_manifest_yamls: vec!["not an identity spec".to_string()],
+                identity_spec_inputs: Vec::new(),
+            }))
+            .await
+            .expect_err("identity spec bundle import should be authorization-gated");
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert_eq!(status.message(), "identity spec mutation denied");
 
         server.shutdown().await.expect("shutdown");
     }
@@ -1616,6 +1676,8 @@ tables:
                 variables: Vec::new(),
                 secrets: Vec::new(),
                 oauth_credential_retrievals: Vec::new(),
+                identity_spec_manifest_yamls: Vec::new(),
+                identity_spec_inputs: Vec::new(),
                 identity_bindings: Vec::new(),
                 replace_identity_bindings: false,
             }))
@@ -1918,6 +1980,8 @@ tables:
                 variables: Vec::new(),
                 secrets: Vec::new(),
                 oauth_credential_retrievals: Vec::new(),
+                identity_spec_manifest_yamls: Vec::new(),
+                identity_spec_inputs: Vec::new(),
                 identity_bindings: Vec::new(),
                 replace_identity_bindings: false,
             }))
@@ -2120,6 +2184,8 @@ tables:
                 variables: Vec::new(),
                 secrets: Vec::new(),
                 oauth_credential_retrievals: Vec::new(),
+                identity_spec_manifest_yamls: Vec::new(),
+                identity_spec_inputs: Vec::new(),
                 identity_bindings: Vec::new(),
                 replace_identity_bindings: false,
             }))

@@ -1,6 +1,6 @@
 //! Implements the gRPC `SourceService` for source lifecycle APIs.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -12,11 +12,11 @@ use coral_api::v1::{
     CreateBundledSourceWithOAuthResponse, CredentialMetadata, DeleteSourceRequest,
     DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
     GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
-    IdentityOwner as ProtoIdentityOwner, ImportSourceRequest, ImportSourceResponse,
-    ListSourcesRequest, ListSourcesResponse, OAuthCredentialAuthorization, OAuthCredentialClient,
-    OAuthCredentialClientId, OAuthCredentialClientSecret, OAuthCredentialCompleted,
-    OAuthCredentialEndpoints, OAuthCredentialInput, OAuthCredentialMethod,
-    OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
+    IdentityOwner as ProtoIdentityOwner, IdentitySpecImportInputs, ImportSourceRequest,
+    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, OAuthCredentialAuthorization,
+    OAuthCredentialClient, OAuthCredentialClientId, OAuthCredentialClientSecret,
+    OAuthCredentialCompleted, OAuthCredentialEndpoints, OAuthCredentialInput,
+    OAuthCredentialMethod, OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
     OauthCredentialClientSecretTransport, OauthCredentialFlowType, OauthCredentialPkceMode,
     OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter, Source,
     SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
@@ -32,12 +32,13 @@ use coral_spec::{
     ManifestCredentialMethodKind, ManifestCredentialSpec, ManifestInputKind, ManifestInputSpec,
     ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthFlowKind,
     ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
-    parse_source_manifest_yaml,
+    parse_identity_manifest_yaml, parse_source_manifest_yaml,
 };
 use tonic::{Request, Response, Status};
 
 use crate::authorization::{
-    ManagementAuthorizer, ManagementMutation, WorkspaceSourceMutationKind, authorization_status,
+    ManagementAuthorizer, ManagementMutation, ResourceMutationKind, WorkspaceSourceMutationKind,
+    authorization_status,
 };
 use crate::bootstrap::{AppError, app_status};
 use crate::credentials::CredentialStorageKind;
@@ -46,6 +47,7 @@ use crate::identity::{
     IdentityOwnerKind as AppSourceIdentityOwner, SourceIdentityBinding as AppSourceIdentityBinding,
     SourceIdentitySelection as AppSourceIdentitySelection, UserPrincipal,
 };
+use crate::identity_specs::{IdentitySpecInputValue, IdentitySpecManager, IdentitySpecSnapshot};
 use crate::query::QueryContext;
 use crate::query::manager::QueryManager;
 use crate::request_context::RequestContext;
@@ -53,8 +55,8 @@ use crate::sources::SourceName;
 use crate::sources::manager::{
     CreateBundledSourceCommand, CreateBundledSourceWithOAuthCommand, ImportSourceCommand,
     ImportSourceEventSender, ImportSourceWithCredentialsCommand, ImportSourceWithCredentialsEvent,
-    PendingImportSourceWithCredentialsEvent, SourceBinding, SourceBindings, SourceManager,
-    SourceOAuthCredentialRetrieval,
+    PendingImportSourceWithCredentialsEvent, SourceBinding, SourceBindings, SourceImportRollback,
+    SourceManager, SourceOAuthCredentialRetrieval,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::transport::{
@@ -71,6 +73,7 @@ use tokio_stream::StreamExt as _;
 pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
+    identity_specs: IdentitySpecManager,
     identity_instances: IdentityManager,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
 }
@@ -79,12 +82,14 @@ impl SourceService {
     pub(crate) fn new(
         source_manager: SourceManager,
         query_manager: QueryManager,
+        identity_spec_manager: IdentitySpecManager,
         identity_instance_manager: IdentityManager,
         management_authorizer: Arc<dyn ManagementAuthorizer>,
     ) -> Self {
         Self {
             sources: source_manager,
             queries: query_manager,
+            identity_specs: identity_spec_manager,
             identity_instances: identity_instance_manager,
             management_authorizer,
         }
@@ -277,6 +282,7 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let management_authorizer = Arc::clone(&self.management_authorizer);
+        let identity_specs = self.identity_specs.clone();
         let identity_instances = self.identity_instances.clone();
         instrument_grpc(span, async move {
             let principal = RequestContext::from_request(&request)?.principal().clone();
@@ -292,7 +298,25 @@ impl SourceServiceApi for SourceService {
                 )
                 .await
                 .map_err(authorization_status)?;
-            handle_import_source(sources, identity_instances, principal, request).await
+            if !request.identity_spec_manifest_yamls.is_empty() {
+                management_authorizer
+                    .authorize_management_mutation(
+                        &principal,
+                        ManagementMutation::IdentitySpec {
+                            kind: ResourceMutationKind::Upsert,
+                        },
+                    )
+                    .await
+                    .map_err(authorization_status)?;
+            }
+            handle_import_source(
+                sources,
+                identity_specs,
+                identity_instances,
+                principal,
+                request,
+            )
+            .await
         })
         .await
     }
@@ -357,30 +381,40 @@ impl SourceServiceApi for SourceService {
 
 async fn handle_import_source(
     sources: SourceManager,
+    identity_specs: IdentitySpecManager,
     identity_instances: IdentityManager,
     principal: UserPrincipal,
     request: ImportSourceRequest,
 ) -> Result<Response<ImportSourceResponseStreamBox>, Status> {
     let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
     let response_workspace_name = workspace_name.clone();
-    let identity_bindings = import_source_identity_bindings_from_proto(request.identity_bindings)
+    let ParsedImportSourceIdentityBindings {
+        source_bindings,
+        user_selections,
+    } = import_source_identity_bindings_from_proto(request.identity_bindings)
         .map_err(app_status)?;
-    let user_principal = (!identity_bindings.user_selections.is_empty()).then_some(principal);
+    let identity_context = ImportSourceIdentityContext {
+        identity_specs,
+        identity_instances,
+        identity_spec_manifest_yamls: request.identity_spec_manifest_yamls,
+        identity_spec_inputs: identity_spec_import_inputs_from_proto(request.identity_spec_inputs)
+            .map_err(app_status)?,
+        user_principal: (!user_selections.is_empty()).then_some(principal),
+        user_identity_bindings: user_selections,
+    };
     if request.oauth_credential_retrievals.is_empty() {
         let command = ImportSourceCommand {
             manifest_yaml: request.manifest_yaml,
             bindings: source_bindings_from_proto(request.variables, request.secrets),
-            identity_bindings: identity_bindings.source_bindings,
+            identity_bindings: source_bindings,
             replace_identity_bindings: request.replace_identity_bindings,
         };
         return handle_import_source_without_credentials(
             sources,
-            identity_instances,
-            user_principal,
+            identity_context,
             workspace_name,
             response_workspace_name,
             command,
-            identity_bindings.user_selections,
         )
         .await;
     }
@@ -394,61 +428,84 @@ async fn handle_import_source(
             .map(oauth_credential_retrieval_from_proto)
             .collect::<Result<Vec<_>, _>>()
             .map_err(app_status)?,
-        identity_bindings: identity_bindings.source_bindings,
+        identity_bindings: source_bindings,
         replace_identity_bindings: request.replace_identity_bindings,
     };
     handle_import_source_with_credentials(
         sources,
-        identity_instances,
-        user_principal,
+        identity_context,
         workspace_name,
         response_workspace_name,
         command,
-        identity_bindings.user_selections,
     )
     .await
 }
 
+struct ImportSourceIdentityContext {
+    identity_specs: IdentitySpecManager,
+    identity_instances: IdentityManager,
+    identity_spec_manifest_yamls: Vec<String>,
+    identity_spec_inputs: Vec<IdentitySpecImportInputValues>,
+    user_principal: Option<UserPrincipal>,
+    user_identity_bindings: BTreeMap<String, AppSourceIdentitySelection>,
+}
+
 async fn handle_import_source_without_credentials(
     sources: SourceManager,
-    identity_instances: IdentityManager,
-    user_principal: Option<UserPrincipal>,
+    identity_context: ImportSourceIdentityContext,
     workspace_name: WorkspaceName,
     response_workspace_name: WorkspaceName,
     command: ImportSourceCommand,
-    user_identity_bindings: BTreeMap<String, AppSourceIdentitySelection>,
 ) -> Result<Response<ImportSourceResponseStreamBox>, Status> {
     let source_name = source_name_from_manifest_yaml(&command.manifest_yaml).map_err(app_status)?;
+    let identity_spec_guard = install_identity_specs_for_import_or_status(&identity_context)?;
     let prepared_user_bindings =
         prepare_user_source_identity_bindings_for_import(ValidateUserSourceIdentityImport {
             sources: &sources,
-            identities: &identity_instances,
-            principal: user_principal.as_ref(),
+            identities: &identity_context.identity_instances,
+            principal: identity_context.user_principal.as_ref(),
             workspace_name: &workspace_name,
             manifest_yaml: &command.manifest_yaml,
             requested_identity_bindings: &command.identity_bindings,
             replace_identity_bindings: command.replace_identity_bindings,
-            user_identity_bindings: &user_identity_bindings,
+            user_identity_bindings: &identity_context.user_identity_bindings,
         })
         .await?;
-    let import_workspace_name = workspace_name.clone();
-    let import_result = run_blocking_source_operation(move || {
-        sources.import_source(&import_workspace_name, &command)
-    })
-    .await;
-    let installed = match import_result {
-        Ok(installed) => installed,
-        Err(error) => return Err(error),
-    };
-    persist_user_source_identity_bindings_for_import(
-        &identity_instances,
-        user_principal.as_ref(),
+    let user_binding_guard = persist_user_source_identity_bindings_for_import(
+        &identity_context.identity_instances,
+        identity_context.user_principal.as_ref(),
         &workspace_name,
         &source_name,
         &prepared_user_bindings,
-        &user_identity_bindings,
+        &identity_context.user_identity_bindings,
     )
     .await?;
+    let source_rollback = sources
+        .snapshot_source_import_rollback(&workspace_name, &source_name)
+        .map_err(app_status)?;
+    let import_workspace_name = workspace_name.clone();
+    let import_sources = sources.clone();
+    let mut import_task = PendingBlockingSourceImport::spawn(
+        BlockingSourceImportCleanup {
+            sources,
+            workspace_name: workspace_name.clone(),
+            rollback: source_rollback,
+        },
+        move || import_sources.import_source(&import_workspace_name, &command),
+    );
+    let import_result = import_task.await_result().await;
+    let installed = match import_result {
+        Ok(installed) => installed,
+        Err(error) => {
+            return Err(restore_user_source_identity_bindings_after_import_error(
+                user_binding_guard,
+                error,
+            )
+            .await);
+        }
+    };
+    user_binding_guard.commit();
+    identity_spec_guard.commit();
     let response = ImportSourceResponse {
         event: Some(import_source_response::Event::Source(
             installed_source_to_proto(&response_workspace_name, installed),
@@ -459,47 +516,53 @@ async fn handle_import_source_without_credentials(
 
 async fn handle_import_source_with_credentials(
     sources: SourceManager,
-    identity_instances: IdentityManager,
-    user_principal: Option<UserPrincipal>,
+    identity_context: ImportSourceIdentityContext,
     workspace_name: WorkspaceName,
     response_workspace_name: WorkspaceName,
     command: ImportSourceWithCredentialsCommand,
-    user_identity_bindings: BTreeMap<String, AppSourceIdentitySelection>,
 ) -> Result<Response<ImportSourceResponseStreamBox>, Status> {
     let span = tracing::Span::current();
     let source_name = source_name_from_manifest_yaml(&command.manifest_yaml).map_err(app_status)?;
+    let identity_spec_guard = install_identity_specs_for_import_or_status(&identity_context)?;
     let prepared_user_bindings =
         prepare_user_source_identity_bindings_for_import(ValidateUserSourceIdentityImport {
             sources: &sources,
-            identities: &identity_instances,
-            principal: user_principal.as_ref(),
+            identities: &identity_context.identity_instances,
+            principal: identity_context.user_principal.as_ref(),
             workspace_name: &workspace_name,
             manifest_yaml: &command.manifest_yaml,
             requested_identity_bindings: &command.identity_bindings,
             replace_identity_bindings: command.replace_identity_bindings,
-            user_identity_bindings: &user_identity_bindings,
+            user_identity_bindings: &identity_context.user_identity_bindings,
         })
         .await?;
     let stream = import_source_response_stream(response_workspace_name, move |event_sender| {
         instrument_grpc(span, async move {
+            let identity_spec_guard = identity_spec_guard;
+            let user_binding_guard = persist_user_source_identity_bindings_for_import(
+                &identity_context.identity_instances,
+                identity_context.user_principal.as_ref(),
+                &workspace_name,
+                &source_name,
+                &prepared_user_bindings,
+                &identity_context.user_identity_bindings,
+            )
+            .await?;
             let import_result = sources
                 .import_source_with_credentials(&workspace_name, command, event_sender)
                 .await
                 .map_err(app_status);
             match import_result {
                 Ok(installed) => {
-                    persist_user_source_identity_bindings_for_import(
-                        &identity_instances,
-                        user_principal.as_ref(),
-                        &workspace_name,
-                        &source_name,
-                        &prepared_user_bindings,
-                        &user_identity_bindings,
-                    )
-                    .await?;
+                    user_binding_guard.commit();
+                    identity_spec_guard.commit();
                     Ok(installed)
                 }
-                Err(error) => Err(error),
+                Err(error) => Err(restore_user_source_identity_bindings_after_import_error(
+                    user_binding_guard,
+                    error,
+                )
+                .await),
             }
         })
     });
@@ -522,6 +585,91 @@ where
         .await
         .map_err(|error| Status::internal(format!("source operation task failed: {error}")))?
         .map_err(app_status)
+}
+
+struct BlockingSourceImportCleanup {
+    sources: SourceManager,
+    workspace_name: WorkspaceName,
+    rollback: SourceImportRollback,
+}
+
+impl BlockingSourceImportCleanup {
+    fn rollback(self) {
+        if let Err(error) = self
+            .sources
+            .rollback_source_import(&self.workspace_name, self.rollback)
+        {
+            tracing::warn!(
+                workspace = %self.workspace_name,
+                error = %error,
+                "failed to roll back cancelled source import"
+            );
+        }
+    }
+}
+
+struct PendingBlockingSourceImport {
+    handle: Option<task::JoinHandle<Result<InstalledSource, AppError>>>,
+    cleanup: Option<BlockingSourceImportCleanup>,
+}
+
+impl PendingBlockingSourceImport {
+    fn spawn<F>(cleanup: BlockingSourceImportCleanup, operation: F) -> Self
+    where
+        F: FnOnce() -> Result<InstalledSource, AppError> + Send + 'static,
+    {
+        let span = tracing::Span::current();
+        let handle = task::spawn_blocking(move || span.in_scope(operation));
+        Self {
+            handle: Some(handle),
+            cleanup: Some(cleanup),
+        }
+    }
+
+    async fn await_result(&mut self) -> Result<InstalledSource, Status> {
+        let handle = self
+            .handle
+            .take()
+            .expect("pending blocking source import must have a join handle");
+        match handle.await {
+            Ok(result) => {
+                self.cleanup = None;
+                result.map_err(app_status)
+            }
+            Err(error) => {
+                if let Some(cleanup) = self.cleanup.take() {
+                    cleanup.rollback();
+                }
+                Err(Status::internal(format!(
+                    "source operation task failed: {error}"
+                )))
+            }
+        }
+    }
+}
+
+impl Drop for PendingBlockingSourceImport {
+    fn drop(&mut self) {
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
+        let Some(cleanup) = self.cleanup.take() else {
+            return;
+        };
+        task::spawn(async move {
+            match handle.await {
+                Ok(Ok(_installed)) => cleanup.rollback(),
+                Ok(Err(_error)) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "cancelled source import task failed before rollback cleanup"
+                    );
+                    cleanup.rollback();
+                }
+            }
+        });
+    }
 }
 
 fn import_source_response_stream<F, Fut>(
@@ -674,6 +822,179 @@ fn source_name_from_manifest_yaml(manifest_yaml: &str) -> Result<SourceName, App
     SourceName::parse(manifest.schema_name())
 }
 
+#[derive(Debug, Clone)]
+struct IdentitySpecImportRollback {
+    name: String,
+    previous: Option<IdentitySpecSnapshot>,
+    installed: IdentitySpecSnapshot,
+}
+
+struct IdentitySpecImportGuard {
+    identity_specs: IdentitySpecManager,
+    rollback: Option<Vec<IdentitySpecImportRollback>>,
+}
+
+impl IdentitySpecImportGuard {
+    fn new(identity_specs: IdentitySpecManager, rollback: Vec<IdentitySpecImportRollback>) -> Self {
+        Self {
+            identity_specs,
+            rollback: Some(rollback),
+        }
+    }
+
+    fn commit(mut self) {
+        self.rollback = None;
+    }
+}
+
+impl Drop for IdentitySpecImportGuard {
+    fn drop(&mut self) {
+        if let Some(rollback) = self.rollback.take() {
+            rollback_identity_specs_for_import(&self.identity_specs, rollback);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct IdentitySpecImportInputValues {
+    identity_spec_name: String,
+    inputs: Vec<IdentitySpecInputValue>,
+}
+
+fn identity_spec_import_inputs_from_proto(
+    inputs: Vec<IdentitySpecImportInputs>,
+) -> Result<Vec<IdentitySpecImportInputValues>, AppError> {
+    let mut seen = BTreeSet::new();
+    let mut values = Vec::new();
+    for input_group in inputs {
+        if !seen.insert(input_group.identity_spec_name.clone()) {
+            return Err(AppError::InvalidInput(format!(
+                "identity spec inputs for '{}' are repeated",
+                input_group.identity_spec_name
+            )));
+        }
+        values.push(IdentitySpecImportInputValues {
+            identity_spec_name: input_group.identity_spec_name,
+            inputs: input_group
+                .input_values
+                .into_iter()
+                .map(|input| IdentitySpecInputValue {
+                    key: input.key,
+                    value: input.value,
+                })
+                .collect(),
+        });
+    }
+    Ok(values)
+}
+
+fn install_identity_specs_for_import_or_status(
+    context: &ImportSourceIdentityContext,
+) -> Result<IdentitySpecImportGuard, Status> {
+    install_identity_specs_for_import(
+        &context.identity_specs,
+        &context.identity_spec_manifest_yamls,
+        &context.identity_spec_inputs,
+    )
+    .map(|rollback| IdentitySpecImportGuard::new(context.identity_specs.clone(), rollback))
+    .map_err(app_status)
+}
+
+fn install_identity_specs_for_import(
+    identity_specs: &IdentitySpecManager,
+    manifest_yamls: &[String],
+    input_groups: &[IdentitySpecImportInputValues],
+) -> Result<Vec<IdentitySpecImportRollback>, AppError> {
+    let mut parsed = Vec::new();
+    let mut parsed_names = BTreeSet::new();
+    for manifest_yaml in manifest_yamls {
+        let manifest = parse_identity_manifest_yaml(manifest_yaml)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        let name = manifest.name.clone();
+        if !parsed_names.insert(name.clone()) {
+            return Err(AppError::InvalidInput(format!(
+                "identity spec '{name}' is repeated in the source import"
+            )));
+        }
+        parsed.push((manifest_yaml, name));
+    }
+
+    if let Some(unknown_name) = input_groups
+        .iter()
+        .map(|input_group| input_group.identity_spec_name.as_str())
+        .find(|name| !parsed_names.contains(*name))
+    {
+        return Err(AppError::InvalidInput(format!(
+            "identity spec inputs were provided for '{unknown_name}', but no matching identity spec was included in the source import"
+        )));
+    }
+
+    let mut inputs_by_spec = input_groups
+        .iter()
+        .map(|input_group| {
+            (
+                input_group.identity_spec_name.as_str(),
+                input_group.inputs.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut rollback = Vec::new();
+    for (manifest_yaml, name) in parsed {
+        let previous = match identity_specs.snapshot_identity_spec(&name) {
+            Ok(previous) => previous,
+            Err(error) => {
+                rollback_identity_specs_for_import(identity_specs, rollback);
+                return Err(error);
+            }
+        };
+        let inputs = inputs_by_spec.remove(name.as_str()).unwrap_or_default();
+        if let Err(error) = identity_specs.add_identity_spec_with_inputs(manifest_yaml, inputs) {
+            rollback_identity_specs_for_import(identity_specs, rollback);
+            return Err(error);
+        }
+        let installed = identity_specs
+            .snapshot_identity_spec(&name)?
+            .ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "identity spec '{name}' was not stored after source import installation"
+                ))
+            })?;
+        rollback.push(IdentitySpecImportRollback {
+            name,
+            previous,
+            installed,
+        });
+    }
+    Ok(rollback)
+}
+
+fn rollback_identity_specs_for_import(
+    identity_specs: &IdentitySpecManager,
+    rollback: Vec<IdentitySpecImportRollback>,
+) {
+    for item in rollback.into_iter().rev() {
+        match identity_specs.rollback_identity_spec_snapshot_if_current_matches(
+            &item.installed,
+            item.previous.as_ref(),
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(
+                    identity_spec = item.name,
+                    "skipped identity spec import rollback because the current spec no longer matches the imported spec"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    identity_spec = item.name,
+                    error = %error,
+                    "failed to roll back identity spec import"
+                );
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ValidateUserSourceIdentityImport<'a> {
     sources: &'a SourceManager,
@@ -813,6 +1134,64 @@ struct PreparedUserSourceIdentityBindings {
     effective_identity_bindings: BTreeMap<String, AppSourceIdentityBinding>,
 }
 
+struct UserSourceIdentityBindingImportGuard {
+    identities: IdentityManager,
+    principal: Option<UserPrincipal>,
+    workspace_name: WorkspaceName,
+    source_name: SourceName,
+    snapshot: Option<UserSourceIdentityBindingSnapshot>,
+}
+
+impl UserSourceIdentityBindingImportGuard {
+    fn commit(mut self) {
+        self.snapshot = None;
+    }
+
+    async fn rollback(mut self) -> Result<(), AppError> {
+        let Some(snapshot) = self.snapshot.take() else {
+            return Ok(());
+        };
+        restore_user_source_identity_bindings(
+            &self.identities,
+            self.principal.as_ref(),
+            &self.workspace_name,
+            &self.source_name,
+            snapshot,
+        )
+        .await
+    }
+}
+
+impl Drop for UserSourceIdentityBindingImportGuard {
+    fn drop(&mut self) {
+        let Some(snapshot) = self.snapshot.take() else {
+            return;
+        };
+        let identities = self.identities.clone();
+        let principal = self.principal.clone();
+        let workspace_name = self.workspace_name.clone();
+        let source_name = self.source_name.clone();
+        tokio::spawn(async move {
+            if let Err(error) = restore_user_source_identity_bindings(
+                &identities,
+                principal.as_ref(),
+                &workspace_name,
+                &source_name,
+                snapshot,
+            )
+            .await
+            {
+                tracing::warn!(
+                    workspace = %workspace_name,
+                    source = %source_name,
+                    error = %error,
+                    "failed to roll back user-owned source identity bindings after import cancellation"
+                );
+            }
+        });
+    }
+}
+
 async fn prepare_user_source_identity_bindings_for_import(
     request: ValidateUserSourceIdentityImport<'_>,
 ) -> Result<PreparedUserSourceIdentityBindings, Status> {
@@ -831,7 +1210,7 @@ async fn persist_user_source_identity_bindings_for_import(
     source_name: &SourceName,
     prepared: &PreparedUserSourceIdentityBindings,
     user_identity_bindings: &BTreeMap<String, AppSourceIdentitySelection>,
-) -> Result<(), Status> {
+) -> Result<UserSourceIdentityBindingImportGuard, Status> {
     let snapshot = snapshot_user_source_identity_bindings(
         identities,
         principal,
@@ -866,7 +1245,25 @@ async fn persist_user_source_identity_bindings_for_import(
         }
         return Err(app_status(error));
     }
-    Ok(())
+    Ok(UserSourceIdentityBindingImportGuard {
+        identities: identities.clone(),
+        principal: principal.cloned(),
+        workspace_name: workspace_name.clone(),
+        source_name: source_name.clone(),
+        snapshot: Some(snapshot),
+    })
+}
+
+async fn restore_user_source_identity_bindings_after_import_error(
+    guard: UserSourceIdentityBindingImportGuard,
+    import_error: Status,
+) -> Status {
+    if let Err(restore_error) = guard.rollback().await {
+        return app_status(AppError::FailedPrecondition(format!(
+            "source import failed: {import_error}; failed to restore previous user-owned source identity bindings: {restore_error}"
+        )));
+    }
+    import_error
 }
 
 async fn snapshot_user_source_identity_bindings(
@@ -1280,6 +1677,57 @@ mod tests {
         ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
         ManifestOAuthRedirectUriPortMode,
     };
+    use tempfile::TempDir;
+
+    use crate::features::dsl_v4_features;
+    use crate::state::AppStateLayout;
+
+    fn test_identity_spec_manager() -> (TempDir, IdentitySpecManager) {
+        let temp = TempDir::new().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("layout");
+        (
+            temp,
+            IdentitySpecManager::new_with_usage_providers(layout, dsl_v4_features(), Vec::new()),
+        )
+    }
+
+    fn test_fixed_identity_spec_yaml() -> String {
+        r"
+kind: identity
+spec_version: 1
+name: github_pat
+version: 0.1.0
+issuer: github
+type: fixed_token
+audience:
+  host: github.com
+"
+        .to_string()
+    }
+
+    #[test]
+    fn identity_spec_import_guard_rolls_back_on_drop() {
+        let (_temp, identity_specs) = test_identity_spec_manager();
+        let rollback = install_identity_specs_for_import(
+            &identity_specs,
+            &[test_fixed_identity_spec_yaml()],
+            &[],
+        )
+        .expect("install identity spec");
+        let guard = IdentitySpecImportGuard::new(identity_specs.clone(), rollback);
+        identity_specs
+            .get_identity_spec("github_pat")
+            .expect("installed identity spec");
+
+        drop(guard);
+
+        assert!(matches!(
+            identity_specs.get_identity_spec("github_pat"),
+            Err(AppError::IdentitySpecNotFound(_))
+        ));
+    }
 
     #[test]
     fn converts_credential_methods_to_source_input_spec() {

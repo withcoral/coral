@@ -3,6 +3,7 @@ syntax = "proto3";
 package coral.v1;
 
 import "coral/v1/catalog.proto";
+import "coral/v1/identity_specs.proto";
 import "coral/v1/resources.proto";
 
 // How one installed source entered Coral ownership.
@@ -344,6 +345,10 @@ message ImportSourceRequest {
   repeated SourceSecret secrets = 4;
   // OAuth credential retrievals the app should run before validation and import.
   repeated OAuthCredentialRetrieval oauth_credential_retrievals = 5;
+  // Global identity specs authored in the same import bundle as this source.
+  // The app installs these specs before importing the source manifest. They do
+  // not create identity instances or source bindings.
+  repeated string identity_spec_manifest_yamls = 6;
   // Source-surface identity bindings to persist with the imported source.
   //
   // Workspace-owned bindings use identity as the workspace identity name.
@@ -362,6 +367,18 @@ message ImportSourceRequest {
   // compatibility with callers that cannot distinguish omitted and empty
   // repeated fields.
   bool replace_identity_bindings = 9;
+  // Setup input values for identity specs imported with this source. Values are
+  // grouped by identity spec name and stored as identity-spec-owned material,
+  // not as source or identity instance material.
+  repeated IdentitySpecImportInputs identity_spec_inputs = 10;
+}
+
+// Setup inputs for one identity spec imported with a source bundle.
+message IdentitySpecImportInputs {
+  // Identity spec name matching one identity_spec_manifest_yamls entry.
+  string identity_spec_name = 1;
+  // Setup input values owned by the installed identity spec.
+  repeated IdentitySpecInputValue input_values = 2;
 }
 
 // Streaming event emitted while importing a source.

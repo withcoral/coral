@@ -5,6 +5,7 @@ mod service;
 
 pub(crate) use manager::{
     IdentitySpecInputValue, IdentitySpecManager, IdentitySpecName, IdentitySpecRecord,
+    IdentitySpecSnapshot,
 };
 pub use manager::{
     IdentitySpecManifestMetadata, IdentitySpecRegistry, IdentitySpecRegistryRecord,

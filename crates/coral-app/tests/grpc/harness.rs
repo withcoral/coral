@@ -117,6 +117,8 @@ impl GrpcHarness {
                 variables,
                 secrets,
                 oauth_credential_retrievals: Vec::new(),
+                identity_spec_manifest_yamls: Vec::new(),
+                identity_spec_inputs: Vec::new(),
                 identity_bindings: Vec::new(),
                 replace_identity_bindings: false,
             }))
