@@ -1259,33 +1259,14 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
             }
         }
         (None, Some(file)) => {
-            let (manifest_yaml, manifest) = source_ops::load_validated_manifest_file(&file)?;
-            let identity_bindings = source_ops::import_source_identity_bindings_from_args(
+            import_source_file(
+                app,
+                file,
+                interactive,
                 &user_identity_bindings,
                 &workspace_identity_bindings,
-            )?;
-            if interactive {
-                let inputs = source_ops::prompt_for_inputs_with_credential_methods(
-                    manifest.declared_inputs(),
-                )?;
-                source_ops::import_source_with_credentials(
-                    app,
-                    manifest_yaml,
-                    inputs,
-                    identity_bindings,
-                )
-                .await?
-            } else {
-                let (variables, secrets) = source_ops::collect_inputs_from_env(
-                    manifest.declared_inputs(),
-                    format!(
-                        "coral source add --interactive --file {}",
-                        source_ops::shell_quote_arg(&file.display().to_string())
-                    ),
-                )?;
-                source_ops::import_source(app, manifest_yaml, variables, secrets, identity_bindings)
-                    .await?
-            }
+            )
+            .await?
         }
         _ => unreachable!("clap enforces exactly one of name or file"),
     };
@@ -1297,6 +1278,63 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
     source_ops::validate_and_warn(app, &response.name, source_ops::TableDisplayLimit::DEFAULT)
         .await
         .map_err(Into::into)
+}
+
+async fn import_source_file(
+    app: &AppClient,
+    file: PathBuf,
+    interactive: bool,
+    user_identity_bindings: &[String],
+    workspace_identity_bindings: &[String],
+) -> Result<coral_api::v1::Source, CliError> {
+    let loaded = source_ops::load_validated_manifest_file(&file)?;
+    let interactive_command = format!(
+        "coral source add --interactive --file {}",
+        source_ops::shell_quote_arg(&file.display().to_string())
+    );
+    let identity_spec_manifest_yamls = loaded.identity_spec_manifest_yamls();
+    let identity_bindings = source_ops::import_source_identity_bindings_from_args(
+        user_identity_bindings,
+        workspace_identity_bindings,
+    )?;
+
+    if interactive {
+        let inputs = source_ops::prompt_for_inputs_with_credential_methods(
+            loaded.manifest.declared_inputs(),
+        )?;
+        let identity_spec_inputs =
+            source_ops::prompt_identity_spec_inputs_for_import(&loaded.identity_manifests)?;
+        return source_ops::import_source_with_credentials(
+            app,
+            loaded.manifest_yaml,
+            inputs,
+            identity_spec_manifest_yamls,
+            identity_spec_inputs,
+            identity_bindings,
+        )
+        .await
+        .map_err(Into::into);
+    }
+
+    let (variables, secrets) = source_ops::collect_inputs_from_env(
+        loaded.manifest.declared_inputs(),
+        interactive_command.clone(),
+    )?;
+    let identity_spec_inputs = source_ops::identity_spec_inputs_for_import_from_env(
+        &loaded.identity_manifests,
+        &interactive_command,
+    )?;
+    source_ops::import_source(
+        app,
+        loaded.manifest_yaml,
+        variables,
+        secrets,
+        identity_spec_manifest_yamls,
+        identity_spec_inputs,
+        identity_bindings,
+    )
+    .await
+    .map_err(Into::into)
 }
 
 #[cfg(test)]

@@ -853,6 +853,113 @@ surfaces:
     server.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_imports_manifest_bundle_identity_specs() {
+    let server = MockServer::start().await;
+    let source_dir = tempdir().expect("source dir");
+    let openapi_file = source_dir.path().join("openapi.yaml");
+    std::fs::write(
+        &openapi_file,
+        r"
+openapi: 3.0.3
+paths: {}
+",
+    )
+    .expect("write descriptor");
+    let bundle_file = source_dir.path().join("github-bundle.yaml");
+    std::fs::write(
+        &bundle_file,
+        r"
+---
+kind: identity
+spec_version: 1
+name: github_oauth
+version: 0.1.0
+issuer: github
+type: oauth
+audience:
+  host: github.com
+inputs:
+  GITHUB_OAUTH_CLIENT_SECRET:
+    kind: secret
+    required: true
+oauth:
+  method:
+    flow:
+      type: authorization_code
+      pkce: required
+    redirect_uri: http://127.0.0.1:53682/oauth/callback
+    endpoints:
+      authorization_url: https://github.com/login/oauth/authorize
+      token_url: https://github.com/login/oauth/access_token
+    client:
+      id:
+        default: client-id
+      secret:
+        input: GITHUB_OAUTH_CLIENT_SECRET
+        transport: request_body
+---
+name: github_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: openapi.yaml
+    identity_requirements:
+      accepts:
+        - id: github-rest-read
+          identity_specs:
+            - github_oauth
+          audience:
+            host: github.com
+",
+    )
+    .expect("write bundle");
+
+    server
+        .cmd()
+        .env("GITHUB_OAUTH_CLIENT_SECRET", "github-secret")
+        .args([
+            "source",
+            "add",
+            "--file",
+            bundle_file.to_str().expect("bundle path utf8"),
+        ])
+        .assert()
+        .success();
+
+    let requests = server.import_source_requests();
+    assert_eq!(requests.len(), 1, "expected one import_source call");
+    let request = &requests[0];
+    assert!(
+        request.manifest_yaml.contains("name: github_v4"),
+        "expected source document in import request: {}",
+        request.manifest_yaml
+    );
+    assert!(
+        !request.manifest_yaml.contains("kind: identity"),
+        "source import manifest should not include bundled identity docs: {}",
+        request.manifest_yaml
+    );
+    assert_eq!(request.identity_spec_manifest_yamls.len(), 1);
+    assert!(
+        request.identity_spec_manifest_yamls[0].contains("name: github_oauth"),
+        "expected bundled identity manifest yaml: {}",
+        request.identity_spec_manifest_yamls[0]
+    );
+    assert_eq!(request.identity_spec_inputs.len(), 1);
+    let input_group = &request.identity_spec_inputs[0];
+    assert_eq!(input_group.identity_spec_name, "github_oauth");
+    assert_eq!(input_group.input_values.len(), 1);
+    assert_eq!(
+        input_group.input_values[0].key,
+        "GITHUB_OAUTH_CLIENT_SECRET"
+    );
+    assert_eq!(input_group.input_values[0].value, "github-secret");
+
+    server.shutdown().await;
+}
+
 fn fixed_token_spec_yaml(name: &str) -> String {
     format!(
         r"

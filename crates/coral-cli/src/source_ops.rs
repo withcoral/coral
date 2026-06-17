@@ -16,21 +16,22 @@ use coral_api::v1::{
     CreateUserOwnedIdentityResponse, DeleteIdentitySpecRequest, DeleteSourceRequest,
     DeleteUserOwnedIdentityRequest, DiscoverSourcesRequest, FixedTokenUserOwnedIdentitySetup,
     GetIdentitySpecRequest, GetSourceInfoRequest, GetUserOwnedIdentityRequest, Identity,
-    IdentityOwner, IdentitySpec, IdentitySpecInputValue, ImportSourceRequest, ImportSourceResponse,
-    ListIdentitySpecsRequest, ListSourcesRequest, ListUserOwnedIdentitiesRequest,
-    OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
-    SourceCredentialStorage, SourceIdentityBinding, SourceInfo, SourceOrigin, SourceSecret,
-    SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
-    create_bundled_source_with_o_auth_response, create_user_owned_identity_request,
-    create_user_owned_identity_response, import_source_response, query_test_result,
-    source_input_spec::Input as ProtoSourceInput,
+    IdentityOwner, IdentitySpec, IdentitySpecImportInputs, IdentitySpecInputValue,
+    ImportSourceRequest, ImportSourceResponse, ListIdentitySpecsRequest, ListSourcesRequest,
+    ListUserOwnedIdentitiesRequest, OAuthCredentialInput, OAuthCredentialRetrieval,
+    QueryTestFailure, QueryTestSuccess, Source, SourceCredentialStorage, SourceIdentityBinding,
+    SourceInfo, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
+    ValidateSourceResponse, create_bundled_source_with_o_auth_response,
+    create_user_owned_identity_request, create_user_owned_identity_response,
+    import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::v4::SurfaceDescriptor;
 use coral_spec::{
-    IdentityManifest, IdentitySpecConfig, ManifestCredentialMethod, ManifestCredentialMethodKind,
-    ManifestCredentialSpec, ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec,
-    ValidatedSourceManifest, parse_identity_manifest_yaml, parse_source_manifest_yaml,
+    IdentityManifest, IdentityManifestDocument, IdentitySpecConfig, ManifestCredentialMethod,
+    ManifestCredentialMethodKind, ManifestCredentialSpec, ManifestInputKind, ManifestInputSpec,
+    ManifestOAuthCredentialSpec, ValidatedSourceManifest, parse_identity_manifest_yaml,
+    parse_manifest_bundle_yaml, parse_source_manifest_yaml,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
@@ -264,6 +265,8 @@ pub(crate) async fn import_source(
     manifest_yaml: String,
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
+    identity_spec_manifest_yamls: Vec<String>,
+    identity_spec_inputs: Vec<IdentitySpecImportInputs>,
     identity_bindings: ImportSourceIdentityBindings,
 ) -> Result<Source, anyhow::Error> {
     let mut responses = app
@@ -274,8 +277,8 @@ pub(crate) async fn import_source(
             variables,
             secrets,
             oauth_credential_retrievals: Vec::new(),
-            identity_spec_manifest_yamls: Vec::new(),
-            identity_spec_inputs: Vec::new(),
+            identity_spec_manifest_yamls,
+            identity_spec_inputs,
             identity_bindings: identity_bindings.source_bindings,
             replace_identity_bindings: identity_bindings.replace_existing,
         }))
@@ -349,6 +352,8 @@ pub(crate) async fn import_source_with_credentials(
     app: &AppClient,
     manifest_yaml: String,
     inputs: CollectedSourceInputs,
+    identity_spec_manifest_yamls: Vec<String>,
+    identity_spec_inputs: Vec<IdentitySpecImportInputs>,
     identity_bindings: ImportSourceIdentityBindings,
 ) -> Result<Source, anyhow::Error> {
     if inputs.oauth_credential_retrievals.is_empty() {
@@ -357,6 +362,8 @@ pub(crate) async fn import_source_with_credentials(
             manifest_yaml,
             inputs.variables,
             inputs.secrets,
+            identity_spec_manifest_yamls,
+            identity_spec_inputs,
             identity_bindings,
         )
         .await;
@@ -369,8 +376,8 @@ pub(crate) async fn import_source_with_credentials(
             variables: inputs.variables,
             secrets: inputs.secrets,
             oauth_credential_retrievals: inputs.oauth_credential_retrievals,
-            identity_spec_manifest_yamls: Vec::new(),
-            identity_spec_inputs: Vec::new(),
+            identity_spec_manifest_yamls,
+            identity_spec_inputs,
             identity_bindings: identity_bindings.source_bindings,
             replace_identity_bindings: identity_bindings.replace_existing,
         }))
@@ -686,16 +693,38 @@ async fn validate_source_request(
         .into_inner())
 }
 
+pub(crate) struct LoadedManifestFile {
+    pub(crate) manifest_yaml: String,
+    pub(crate) manifest: ValidatedSourceManifest,
+    pub(crate) identity_manifests: Vec<IdentityManifestDocument>,
+}
+
+impl LoadedManifestFile {
+    pub(crate) fn identity_spec_manifest_yamls(&self) -> Vec<String> {
+        self.identity_manifests
+            .iter()
+            .map(|document| document.manifest_yaml.clone())
+            .collect()
+    }
+}
+
 pub(crate) fn load_validated_manifest_file(
     file: &Path,
-) -> Result<(String, ValidatedSourceManifest), anyhow::Error> {
-    let manifest_yaml = std::fs::read_to_string(file)?;
-    let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
+) -> Result<LoadedManifestFile, anyhow::Error> {
+    let raw = std::fs::read_to_string(file)?;
+    let bundle = parse_manifest_bundle_yaml(raw.as_str())?;
     let manifest_dir = manifest_file_parent_dir(file)?;
-    let manifest_yaml =
-        durable_manifest_file_yaml(&manifest_yaml, &manifest, manifest_dir.as_path())?;
+    let manifest_yaml = durable_manifest_file_yaml(
+        &bundle.source_manifest_yaml,
+        &bundle.source_manifest,
+        manifest_dir.as_path(),
+    )?;
     let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
-    Ok((manifest_yaml, manifest))
+    Ok(LoadedManifestFile {
+        manifest_yaml,
+        manifest,
+        identity_manifests: bundle.identity_manifests,
+    })
 }
 
 pub(crate) fn load_validated_identity_spec_file(file: &Path) -> Result<String, anyhow::Error> {
@@ -1023,6 +1052,39 @@ pub(crate) fn identity_spec_inputs_for_add(
         return prompt_identity_spec_inputs(manifest);
     }
     collect_identity_spec_inputs_from_env(manifest, interactive_command)
+}
+
+pub(crate) fn prompt_identity_spec_inputs_for_import(
+    identity_manifests: &[IdentityManifestDocument],
+) -> Result<Vec<IdentitySpecImportInputs>, anyhow::Error> {
+    identity_spec_inputs_for_import_with(identity_manifests, |manifest| {
+        prompt_identity_spec_inputs(manifest)
+    })
+}
+
+pub(crate) fn identity_spec_inputs_for_import_from_env(
+    identity_manifests: &[IdentityManifestDocument],
+    interactive_command: &str,
+) -> Result<Vec<IdentitySpecImportInputs>, anyhow::Error> {
+    identity_spec_inputs_for_import_with(identity_manifests, |manifest| {
+        collect_identity_spec_inputs_from_env(manifest, interactive_command.to_string())
+    })
+}
+
+fn identity_spec_inputs_for_import_with(
+    identity_manifests: &[IdentityManifestDocument],
+    collect_inputs: impl Fn(&IdentityManifest) -> Result<Vec<IdentitySpecInputValue>, anyhow::Error>,
+) -> Result<Vec<IdentitySpecImportInputs>, anyhow::Error> {
+    identity_manifests
+        .iter()
+        .filter(|document| !document.manifest.inputs.is_empty())
+        .map(|document| {
+            Ok(IdentitySpecImportInputs {
+                identity_spec_name: document.manifest.name.clone(),
+                input_values: collect_inputs(&document.manifest)?,
+            })
+        })
+        .collect()
 }
 
 fn collect_identity_spec_inputs_from_env(
