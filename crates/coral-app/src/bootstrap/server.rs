@@ -132,6 +132,7 @@ impl ServerExtensionContext {
 pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerMode,
+    native_grpc_bind_addr: Option<SocketAddr>,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     source_registry: Option<Arc<dyn SourceRegistry>>,
     source_artifact_store: Option<Arc<dyn SourceArtifactStore>>,
@@ -158,6 +159,7 @@ impl ServerConfig {
         Self {
             config_dir: None,
             mode: ServerMode::NativeGrpc,
+            native_grpc_bind_addr: None,
             engine_extensions_providers: Vec::new(),
             source_registry: None,
             source_artifact_store: None,
@@ -181,6 +183,11 @@ impl ServerConfig {
 
     pub(crate) fn with_mode(mut self, mode: ServerMode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    pub(crate) fn with_native_grpc_bind_addr(mut self, bind_addr: SocketAddr) -> Self {
+        self.native_grpc_bind_addr = Some(bind_addr);
         self
     }
 
@@ -298,9 +305,11 @@ pub enum ServerMode {
 }
 
 impl ServerMode {
-    fn bind_addr(&self) -> SocketAddr {
+    fn bind_addr(&self, native_grpc_bind_addr: Option<SocketAddr>) -> SocketAddr {
         match self {
-            Self::NativeGrpc => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            Self::NativeGrpc => {
+                native_grpc_bind_addr.unwrap_or_else(|| SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            }
             Self::EmbeddedUi { port, .. } => SocketAddr::from((Ipv4Addr::LOCALHOST, *port)),
         }
     }
@@ -343,6 +352,17 @@ impl ServerBuilder {
     /// Selects the local server mode.
     pub fn with_mode(mut self, mode: ServerMode) -> Self {
         self.config = self.config.with_mode(mode);
+        self
+    }
+
+    #[must_use]
+    /// Overrides the address used by native gRPC mode.
+    ///
+    /// The default native gRPC address remains `127.0.0.1:0` for local callers.
+    /// Runtimes that install their own authentication can bind a public address
+    /// such as `0.0.0.0:50051`.
+    pub fn with_native_grpc_bind_addr(mut self, bind_addr: SocketAddr) -> Self {
+        self.config = self.config.with_native_grpc_bind_addr(bind_addr);
         self
     }
 
@@ -592,15 +612,8 @@ impl ServerBuilder {
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
-        let internal_trace_store_dir = telemetry_config
-            .trace_history
-            .enabled
-            .then(|| layout.local_trace_store_dir());
-        let installed_trace_store = crate::telemetry::init_tracing(
-            &telemetry_config,
-            self.config.enable_stderr_logs,
-            internal_trace_store_dir.clone(),
-        )?;
+        let installed_trace_store =
+            init_tracing_for_server(&layout, &telemetry_config, self.config.enable_stderr_logs)?;
         let config_store = ConfigStore::new(layout.clone());
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
@@ -667,7 +680,7 @@ impl ServerBuilder {
             query_manager_options,
         );
         let user_principal_provider = self.config.user_principal_provider;
-        let trace_service = trace_service_for_server(&telemetry_config, installed_trace_store);
+        let trace_service = trace_service_from_config(&telemetry_config, installed_trace_store);
         start_server(
             ServerServices {
                 source_manager,
@@ -683,6 +696,7 @@ impl ServerBuilder {
                 extension_context,
             },
             self.config.mode,
+            self.config.native_grpc_bind_addr,
         )
         .await
     }
@@ -748,6 +762,22 @@ struct ServerSourceStores {
     artifact_store: Arc<dyn SourceArtifactStore>,
 }
 
+fn init_tracing_for_server(
+    layout: &AppStateLayout,
+    telemetry_config: &TelemetryConfig,
+    enable_stderr_logs: bool,
+) -> Result<Option<InstalledLocalTraceStore>, AppError> {
+    let internal_trace_store_dir = telemetry_config
+        .trace_history
+        .enabled
+        .then(|| layout.local_trace_store_dir());
+    crate::telemetry::init_tracing(
+        telemetry_config,
+        enable_stderr_logs,
+        internal_trace_store_dir,
+    )
+}
+
 fn source_stores_for_server(
     layout: AppStateLayout,
     config_store: ConfigStore,
@@ -797,17 +827,6 @@ fn query_manager_for_server(
     )
 }
 
-fn trace_service_for_server(
-    telemetry_config: &TelemetryConfig,
-    installed_trace_store: Option<InstalledLocalTraceStore>,
-) -> Option<TraceService> {
-    if telemetry_config.trace_history.enabled {
-        installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
-    } else {
-        None
-    }
-}
-
 fn query_runtime_context(
     env: &AppEnvironment,
     telemetry_config: &TelemetryConfig,
@@ -817,6 +836,17 @@ fn query_runtime_context(
             .trace_history
             .http_body_recording_max_bytes(),
     )
+}
+
+fn trace_service_from_config(
+    telemetry_config: &TelemetryConfig,
+    installed_trace_store: Option<InstalledLocalTraceStore>,
+) -> Option<TraceService> {
+    if telemetry_config.trace_history.enabled {
+        installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
+    } else {
+        None
+    }
 }
 
 struct ServerServices {
@@ -913,6 +943,7 @@ impl Drop for RunningServer {
 async fn start_server(
     services: ServerServices,
     mode: ServerMode,
+    native_grpc_bind_addr: Option<SocketAddr>,
 ) -> Result<RunningServer, AppError> {
     let ServerServices {
         source_manager,
@@ -973,7 +1004,7 @@ async fn start_server(
         routes = extend_routes(&extension_context, routes);
     }
 
-    let listener = TcpListener::bind(mode.bind_addr()).await?;
+    let listener = TcpListener::bind(mode.bind_addr(native_grpc_bind_addr)).await?;
     let endpoint_uri = format!("http://{}", listener.local_addr()?);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
@@ -1200,7 +1231,7 @@ mod tests {
 
     use std::borrow::Cow;
     use std::collections::BTreeMap;
-    use std::net::{Ipv4Addr, TcpListener};
+    use std::net::{Ipv4Addr, SocketAddr, TcpListener};
     use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
@@ -2085,6 +2116,7 @@ type: fixed_token
                 ),
             },
             ServerMode::NativeGrpc,
+            None,
         )
         .await
         .expect("start server")
@@ -2140,6 +2172,17 @@ type: fixed_token
             Duration::from_mins(1),
         ));
         let _builder = ServerBuilder::new().add_grpc_service(service);
+    }
+
+    #[test]
+    fn native_grpc_mode_uses_configured_bind_addr() {
+        let bind_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0));
+
+        assert_eq!(ServerMode::NativeGrpc.bind_addr(Some(bind_addr)), bind_addr);
+        assert_eq!(
+            ServerMode::NativeGrpc.bind_addr(None),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 0))
+        );
     }
 
     #[test]
@@ -2530,6 +2573,7 @@ tables:
                 ),
             },
             ServerMode::NativeGrpc,
+            None,
         )
         .await
         .expect("start server");
@@ -2649,6 +2693,7 @@ tables:
                 ),
             },
             ServerMode::NativeGrpc,
+            None,
         )
         .await
         .expect("start server");
@@ -2764,6 +2809,7 @@ tables:
                 ),
             },
             ServerMode::NativeGrpc,
+            None,
         )
         .await
         .expect("start server");

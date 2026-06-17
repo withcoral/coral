@@ -356,7 +356,7 @@ fn decode_grpc_error(status: &Status) -> GrpcErrorTelemetry {
 }
 
 /// One OAuth progress event mapped onto the shared credential proto pair.
-pub(crate) enum OAuthProgressProto {
+pub enum OAuthProgressProto {
     /// Authorization-in-progress response payload.
     Authorization(coral_api::v1::OAuthCredentialAuthorization),
     /// Authorization-completed response payload.

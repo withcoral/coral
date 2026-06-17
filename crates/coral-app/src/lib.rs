@@ -78,6 +78,10 @@ pub use coral_engine::{
     RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
     SelectedRequestIdentity,
 };
+pub use coral_spec::v4::{
+    Diagnostic, Fingerprint, MaterializedSurface, ProjectionCatalog, SemanticIr,
+    V4MaterializedSource, V4SourceManifest, validate_materialized_source,
+};
 pub use credentials::oauth::{OAuthProgressEvent, OAuthProgressEventSender};
 pub use identities::{
     CreateFixedTokenIdentityCommand, CreateOAuthIdentityCommand, IdentityCredentialInput,
@@ -108,5 +112,5 @@ pub use source_registry::{
     source_spec_manifest_metadata,
 };
 pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
-pub use transport::oauth_operation_response_stream;
+pub use transport::{OAuthProgressProto, oauth_operation_response_stream};
 pub use workspaces::DEFAULT_WORKSPACE_ID;
