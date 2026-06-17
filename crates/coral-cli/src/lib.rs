@@ -259,6 +259,20 @@ struct SourceAddArgs {
     /// environment variables matching each input key.
     #[arg(long)]
     interactive: bool,
+
+    /// User-owned source identity binding for imported DSL v4 sources, as `SURFACE=IDENTITY[:ACCEPTED_IDENTITY]`
+    #[arg(
+        long = "user-identity-binding",
+        value_name = "SURFACE=IDENTITY[:ACCEPTED_IDENTITY]"
+    )]
+    user_identity_bindings: Vec<String>,
+
+    /// Workspace-owned source identity binding for imported DSL v4 sources, as `SURFACE=IDENTITY[:ACCEPTED_IDENTITY]`
+    #[arg(
+        long = "workspace-identity-binding",
+        value_name = "SURFACE=IDENTITY[:ACCEPTED_IDENTITY]"
+    )]
+    workspace_identity_bindings: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -789,12 +803,22 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
         name,
         file,
         interactive,
+        user_identity_bindings,
+        workspace_identity_bindings,
     } = args;
     if interactive {
         source_ops::require_interactive()?;
     }
+    let has_identity_binding_args =
+        !user_identity_bindings.is_empty() || !workspace_identity_bindings.is_empty();
     let response = match (name, file) {
         (Some(name), None) => {
+            if has_identity_binding_args {
+                return Err(anyhow::anyhow!(
+                    "source identity bindings are only supported with `coral source add --file`"
+                )
+                .into());
+            }
             let bundled_name = source_ops::source_name_arg(Some(&name))?;
             let discover = source_ops::discover_sources(app).await?;
             let available = discover
@@ -821,11 +845,21 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
         }
         (None, Some(file)) => {
             let (manifest_yaml, manifest) = source_ops::load_validated_manifest_file(&file)?;
+            let identity_bindings = source_ops::import_source_identity_bindings_from_args(
+                &user_identity_bindings,
+                &workspace_identity_bindings,
+            )?;
             if interactive {
                 let inputs = source_ops::prompt_for_inputs_with_credential_methods(
                     manifest.declared_inputs(),
                 )?;
-                source_ops::import_source_with_credentials(app, manifest_yaml, inputs).await?
+                source_ops::import_source_with_credentials(
+                    app,
+                    manifest_yaml,
+                    inputs,
+                    identity_bindings,
+                )
+                .await?
             } else {
                 let (variables, secrets) = source_ops::collect_inputs_from_env(
                     manifest.declared_inputs(),
@@ -834,7 +868,8 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
                         source_ops::shell_quote_arg(&file.display().to_string())
                     ),
                 )?;
-                source_ops::import_source(app, manifest_yaml, variables, secrets).await?
+                source_ops::import_source(app, manifest_yaml, variables, secrets, identity_bindings)
+                    .await?
             }
         }
         _ => unreachable!("clap enforces exactly one of name or file"),

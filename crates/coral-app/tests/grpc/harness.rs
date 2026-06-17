@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use coral_api::v1::{
     ExecuteSqlRequest, ImportSourceRequest, ListCatalogRequest, ListSourcesRequest,
@@ -14,6 +15,8 @@ use coral_client::{
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tonic::Request;
+
+const TEST_USER_ID_HEADER: &str = "x-coral-test-user";
 
 pub(crate) struct GrpcHarness {
     temp_dir: TempDir,
@@ -39,10 +42,25 @@ impl GrpcHarness {
         Self::start_with_parts(temp_dir, config_dir).await
     }
 
+    pub(crate) async fn start_with_metadata_user_principal_provider(config_dir: PathBuf) -> Self {
+        let temp_dir = TempDir::new().expect("temp dir");
+        Self::start_with_configured_parts(temp_dir, config_dir, |builder| {
+            builder.with_user_principal_provider(Arc::new(MetadataUserPrincipalProvider))
+        })
+        .await
+    }
+
     async fn start_with_parts(temp_dir: TempDir, config_dir: PathBuf) -> Self {
+        Self::start_with_configured_parts(temp_dir, config_dir, |builder| builder).await
+    }
+
+    async fn start_with_configured_parts(
+        temp_dir: TempDir,
+        config_dir: PathBuf,
+        configure: impl FnOnce(ServerBuilder) -> ServerBuilder,
+    ) -> Self {
         ensure_file_credentials_config(&config_dir);
-        let server = ServerBuilder::new()
-            .with_config_dir(&config_dir)
+        let server = configure(ServerBuilder::new().with_config_dir(&config_dir))
             .start()
             .await
             .expect("start server");
@@ -99,6 +117,9 @@ impl GrpcHarness {
                 variables,
                 secrets,
                 oauth_credential_retrievals: Vec::new(),
+                identity_bindings: Vec::new(),
+                user_identity_bindings: Vec::new(),
+                replace_identity_bindings: false,
             }))
             .await
             .expect("import source")
@@ -176,6 +197,62 @@ impl GrpcHarness {
         )
         .expect("query rows")
     }
+
+    pub(crate) async fn execute_sql_rows_as(&self, user_id: &str, sql: &str) -> Vec<Value> {
+        let response = self
+            .query_client()
+            .execute_sql(request_as(
+                user_id,
+                ExecuteSqlRequest {
+                    workspace: Some(default_workspace()),
+                    sql: sql.to_string(),
+                },
+            ))
+            .await
+            .expect("execute sql")
+            .into_inner();
+        batches_to_json_rows(
+            decode_execute_sql_response(&response)
+                .expect("decode query response")
+                .batches(),
+        )
+        .expect("query rows")
+    }
+}
+
+#[derive(Debug)]
+struct MetadataUserPrincipalProvider;
+
+#[tonic::async_trait]
+impl coral_app::UserPrincipalProvider for MetadataUserPrincipalProvider {
+    async fn principal_for_metadata(
+        &self,
+        metadata: &tonic::metadata::MetadataMap,
+    ) -> Result<coral_app::UserPrincipal, coral_app::AppError> {
+        let user_id = metadata
+            .get(TEST_USER_ID_HEADER)
+            .ok_or_else(|| {
+                coral_app::AppError::Unauthenticated(format!(
+                    "missing {TEST_USER_ID_HEADER} metadata"
+                ))
+            })?
+            .to_str()
+            .map_err(|error| {
+                coral_app::AppError::Unauthenticated(format!(
+                    "invalid {TEST_USER_ID_HEADER} metadata: {error}"
+                ))
+            })?;
+        coral_app::UserPrincipal::for_user(user_id)
+    }
+}
+
+pub(crate) fn request_as<T>(user_id: &str, message: T) -> Request<T> {
+    let mut request = Request::new(message);
+    request.metadata_mut().insert(
+        TEST_USER_ID_HEADER,
+        user_id.parse().expect("valid test user metadata value"),
+    );
+    request
 }
 
 fn ensure_file_credentials_config(config_dir: &Path) {

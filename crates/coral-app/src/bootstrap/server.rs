@@ -646,6 +646,7 @@ async fn start_server(
     let source_service = SourceService::new(
         source_manager,
         query_manager.clone(),
+        identity_instance_manager.clone(),
         Arc::clone(&management_authorizer),
     );
     let catalog_service = CatalogService::new(query_manager.clone());
@@ -1178,6 +1179,9 @@ enabled = false
                 variables: Vec::new(),
                 secrets: Vec::new(),
                 oauth_credential_retrievals: Vec::new(),
+                identity_bindings: Vec::new(),
+                user_identity_bindings: Vec::new(),
+                replace_identity_bindings: false,
             }))
             .await
             .expect_err("source import should be authorization-gated");
@@ -1613,6 +1617,9 @@ tables:
                 variables: Vec::new(),
                 secrets: Vec::new(),
                 oauth_credential_retrievals: Vec::new(),
+                identity_bindings: Vec::new(),
+                user_identity_bindings: Vec::new(),
+                replace_identity_bindings: false,
             }))
             .send()
             .await
@@ -1913,6 +1920,9 @@ tables:
                 variables: Vec::new(),
                 secrets: Vec::new(),
                 oauth_credential_retrievals: Vec::new(),
+                identity_bindings: Vec::new(),
+                user_identity_bindings: Vec::new(),
+                replace_identity_bindings: false,
             }))
             .await
             .expect("create source")
@@ -2113,6 +2123,9 @@ tables:
                 variables: Vec::new(),
                 secrets: Vec::new(),
                 oauth_credential_retrievals: Vec::new(),
+                identity_bindings: Vec::new(),
+                user_identity_bindings: Vec::new(),
+                replace_identity_bindings: false,
             }))
             .await
             .expect("import wide source")

@@ -7,6 +7,8 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use coral_engine::RequestIdentitySelectionContext;
+use coral_spec::v4::IdentityRequirements;
 use coral_spec::{
     IdentityManifest, IdentitySpecConfig, IdentitySpecType, ManifestOAuthCredentialSpec,
 };
@@ -287,6 +289,21 @@ pub trait IdentityStore: Send + Sync + std::fmt::Debug + 'static {
         Err(source_identity_binding_store_unsupported())
     }
 
+    /// Loads one per-user source identity selection if present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the store cannot be read.
+    async fn load_optional_source_identity_binding(
+        &self,
+        _user_id: &str,
+        _workspace_name: &str,
+        _source_name: &str,
+        _surface_id: &str,
+    ) -> Result<Option<SourceIdentitySelection>, AppError> {
+        Err(source_identity_binding_store_unsupported())
+    }
+
     /// Loads one per-user source identity selection.
     ///
     /// # Errors
@@ -294,11 +311,32 @@ pub trait IdentityStore: Send + Sync + std::fmt::Debug + 'static {
     /// Returns [`AppError`] when the store cannot be read.
     async fn load_source_identity_binding(
         &self,
+        user_id: &str,
+        workspace_name: &str,
+        source_name: &str,
+        surface_id: &str,
+    ) -> Result<SourceIdentitySelection, AppError> {
+        self.load_optional_source_identity_binding(user_id, workspace_name, source_name, surface_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "user '{user_id}' has no selected identity for source '{source_name}' surface '{surface_id}'"
+                ))
+            })
+    }
+
+    /// Deletes one per-user source identity selection if present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the store cannot be written.
+    async fn delete_source_identity_binding(
+        &self,
         _user_id: &str,
         _workspace_name: &str,
         _source_name: &str,
         _surface_id: &str,
-    ) -> Result<SourceIdentitySelection, AppError> {
+    ) -> Result<bool, AppError> {
         Err(source_identity_binding_store_unsupported())
     }
 
@@ -597,6 +635,100 @@ impl IdentityManager {
     ) -> Result<bool, AppError> {
         let identity_name = validate_identity_name(identity_name)?;
         self.store.delete_identity(owner, &identity_name).await
+    }
+
+    pub(crate) async fn replace_user_owned_source_identity_binding(
+        &self,
+        principal: &UserPrincipal,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        surface_id: &str,
+        selection: &SourceIdentitySelection,
+    ) -> Result<(), AppError> {
+        let span = info_span!("coral.app.identities.replace_user_owned_source_binding");
+        let _guard = span.enter();
+        let user_id = validate_user_id(principal.user_id())?;
+        let surface_id = validate_source_surface_id(surface_id)?;
+        selection.validate()?;
+        self.store
+            .replace_source_identity_binding(
+                &user_id,
+                workspace_name.as_str(),
+                source_name.as_str(),
+                &surface_id,
+                selection,
+            )
+            .await
+    }
+
+    pub(crate) async fn load_user_owned_source_identity_binding(
+        &self,
+        principal: &UserPrincipal,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        surface_id: &str,
+    ) -> Result<Option<SourceIdentitySelection>, AppError> {
+        let user_id = validate_user_id(principal.user_id())?;
+        let surface_id = validate_source_surface_id(surface_id)?;
+        self.store
+            .load_optional_source_identity_binding(
+                &user_id,
+                workspace_name.as_str(),
+                source_name.as_str(),
+                &surface_id,
+            )
+            .await
+    }
+
+    pub(crate) async fn delete_user_owned_source_identity_binding(
+        &self,
+        principal: &UserPrincipal,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        surface_id: &str,
+    ) -> Result<bool, AppError> {
+        let user_id = validate_user_id(principal.user_id())?;
+        let surface_id = validate_source_surface_id(surface_id)?;
+        self.store
+            .delete_source_identity_binding(
+                &user_id,
+                workspace_name.as_str(),
+                source_name.as_str(),
+                &surface_id,
+            )
+            .await
+    }
+
+    pub(crate) async fn validate_user_owned_source_identity_selection(
+        &self,
+        principal: &UserPrincipal,
+        source_name: &SourceName,
+        surface_id: &str,
+        selection: &SourceIdentitySelection,
+        requirements: &IdentityRequirements,
+    ) -> Result<(), AppError> {
+        let owner = IdentityOwnerKey::for_user_principal(principal)?;
+        let identity_name = validate_identity_name(&selection.identity)?;
+        let record = self
+            .store
+            .load_identity(&owner, &identity_name)
+            .await?
+            .ok_or_else(|| AppError::IdentityNotFound(identity_name.to_string()))?;
+        let spec = self.load_spec_for_record(&record)?;
+        let context = RequestIdentitySelectionContext::new(
+            source_name.as_str().to_string(),
+            surface_id.to_string(),
+            requirements.clone(),
+        );
+        if !context.accepts_identity(&record.identity_spec, &spec.manifest.audience) {
+            return Err(AppError::FailedPrecondition(format!(
+                "identity '{}' does not satisfy selected identity requirements for source '{}' surface '{}'",
+                selection.identity,
+                source_name.as_str(),
+                surface_id
+            )));
+        }
+        Ok(())
     }
 
     /// Loads the installed identity spec backing `record`, reporting orphaned
@@ -904,13 +1036,13 @@ impl IdentityStore for FileIdentityStore {
         .await?
     }
 
-    async fn load_source_identity_binding(
+    async fn load_optional_source_identity_binding(
         &self,
         user_id: &str,
         workspace_name: &str,
         source_name: &str,
         surface_id: &str,
-    ) -> Result<SourceIdentitySelection, AppError> {
+    ) -> Result<Option<SourceIdentitySelection>, AppError> {
         let store = self.clone();
         let user_id = user_id.to_string();
         let workspace_name = workspace_name.to_string();
@@ -929,14 +1061,61 @@ impl IdentityStore for FileIdentityStore {
                 &surface_id,
             );
             if !path.exists() {
-                return Err(AppError::FailedPrecondition(format!(
-                    "user '{user_id}' has no selected identity for source '{}' surface '{surface_id}'",
-                    source_name.as_str()
-                )));
+                return Ok(None);
             }
             let raw = fs::read_to_string(&path)?;
             let document: UserSourceIdentityBindingDocument = serde_yaml::from_str(&raw)?;
-            document.into_selection()
+            document.into_selection().map(Some)
+        })
+        .await?
+    }
+
+    async fn load_source_identity_binding(
+        &self,
+        user_id: &str,
+        workspace_name: &str,
+        source_name: &str,
+        surface_id: &str,
+    ) -> Result<SourceIdentitySelection, AppError> {
+        let selection = self
+            .load_optional_source_identity_binding(user_id, workspace_name, source_name, surface_id)
+            .await?;
+        selection.ok_or_else(|| {
+            AppError::FailedPrecondition(format!(
+                "user '{user_id}' has no selected identity for source '{source_name}' surface '{surface_id}'"
+            ))
+        })
+    }
+
+    async fn delete_source_identity_binding(
+        &self,
+        user_id: &str,
+        workspace_name: &str,
+        source_name: &str,
+        surface_id: &str,
+    ) -> Result<bool, AppError> {
+        let store = self.clone();
+        let user_id = user_id.to_string();
+        let workspace_name = workspace_name.to_string();
+        let source_name = source_name.to_string();
+        let surface_id = surface_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let user_id = validate_user_id(&user_id)?;
+            let workspace_name = WorkspaceName::parse(&workspace_name)?;
+            let source_name = SourceName::parse(&source_name)?;
+            let surface_id = validate_source_surface_id(&surface_id)?;
+            let _lock = FileLock::exclusive(store.layout.state_lock())?;
+            let path = store.layout.user_owned_source_identity_binding_file(
+                &user_id,
+                &workspace_name,
+                &source_name,
+                &surface_id,
+            );
+            if !path.exists() {
+                return Ok(false);
+            }
+            fs::remove_file(path)?;
+            Ok(true)
         })
         .await?
     }
@@ -1688,6 +1867,15 @@ audience:
             "unexpected error: {replace_error:?}"
         );
 
+        let optional_error = store
+            .load_optional_source_identity_binding("local", "default", "github_v4", "rest")
+            .await
+            .expect_err("default optional source binding reads should fail closed");
+        assert!(
+            matches!(optional_error, AppError::FailedPrecondition(ref message) if message.contains("does not support source identity bindings")),
+            "unexpected error: {optional_error:?}"
+        );
+
         let load_error = store
             .load_source_identity_binding("local", "default", "github_v4", "rest")
             .await
@@ -1695,6 +1883,15 @@ audience:
         assert!(
             matches!(load_error, AppError::FailedPrecondition(ref message) if message.contains("does not support source identity bindings")),
             "unexpected error: {load_error:?}"
+        );
+
+        let delete_error = store
+            .delete_source_identity_binding("local", "default", "github_v4", "rest")
+            .await
+            .expect_err("default source binding deletes should fail closed");
+        assert!(
+            matches!(delete_error, AppError::FailedPrecondition(ref message) if message.contains("does not support source identity bindings")),
+            "unexpected error: {delete_error:?}"
         );
     }
 

@@ -18,7 +18,7 @@ use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
 use coral_api::v1::{
     DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, Source,
-    SourceCredentialStorage, SourceInfo, SourceOrigin,
+    SourceCredentialStorage, SourceIdentityOwner, SourceInfo, SourceOrigin,
 };
 use tempfile::tempdir;
 use tonic::Code;
@@ -124,6 +124,7 @@ async fn source_list_renders_dash_for_missing_authored_version() {
                 variables: Vec::new(),
                 origin: SourceOrigin::Imported as i32,
                 credential_storage: SourceCredentialStorage::File as i32,
+                identity_bindings: Vec::new(),
             }],
         },
     ))
@@ -790,6 +791,67 @@ surfaces:
         !manifest_yaml.contains("file: openapi.yaml"),
         "expected relative descriptor to be replaced before import: {manifest_yaml}"
     );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_file_sends_user_identity_bindings() {
+    let server = MockServer::start().await;
+    let source_dir = tempdir().expect("source dir");
+    let openapi_file = source_dir.path().join("openapi.yaml");
+    std::fs::write(
+        &openapi_file,
+        r"
+openapi: 3.0.3
+paths: {}
+",
+    )
+    .expect("write descriptor");
+    let manifest_file = source_dir.path().join("manifest.yaml");
+    std::fs::write(
+        &manifest_file,
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: openapi.yaml
+    identity_requirements:
+      accepts:
+        - id: github-rest-read
+          identity_specs: [github_pat]
+          audience: {host: github.com}
+",
+    )
+    .expect("write manifest");
+
+    server
+        .cmd()
+        .args([
+            "source",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("manifest path utf8"),
+            "--user-identity-binding",
+            "rest=local_github",
+        ])
+        .assert()
+        .success();
+
+    let requests = server.import_source_requests();
+    assert_eq!(requests.len(), 1, "expected one import_source call");
+    assert_eq!(requests[0].identity_bindings.len(), 1);
+    let source_binding = &requests[0].identity_bindings[0];
+    assert_eq!(source_binding.surface_id, "rest");
+    assert_eq!(source_binding.owner, SourceIdentityOwner::User as i32);
+    assert_eq!(source_binding.identity, "");
+    assert_eq!(requests[0].user_identity_bindings.len(), 1);
+    let user_binding = &requests[0].user_identity_bindings[0];
+    assert_eq!(user_binding.surface_id, "rest");
+    assert_eq!(user_binding.identity, "local_github");
+    assert!(requests[0].replace_identity_bindings);
 
     server.shutdown().await;
 }

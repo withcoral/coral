@@ -863,6 +863,24 @@ impl SourceManager {
             .contains(workspace_name, source_name))
     }
 
+    pub(crate) fn effective_source_identity_bindings_for_import(
+        &self,
+        workspace_name: &WorkspaceName,
+        manifest_yaml: &str,
+        requested: &BTreeMap<String, SourceIdentityBinding>,
+        replace_identity_bindings: bool,
+    ) -> Result<BTreeMap<String, SourceIdentityBinding>, AppError> {
+        let manifest = parse_source_manifest_yaml(manifest_yaml)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        let source_name = SourceName::parse(manifest.schema_name())?;
+        self.effective_source_identity_bindings(
+            workspace_name,
+            &source_name,
+            requested,
+            replace_identity_bindings,
+        )
+    }
+
     fn effective_source_identity_bindings(
         &self,
         workspace_name: &WorkspaceName,

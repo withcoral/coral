@@ -19,17 +19,20 @@ use coral_api::v1::{
     OauthCredentialClientSecretTransport, OauthCredentialFlowType, OauthCredentialPkceMode,
     OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter, Source,
     SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
-    SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo, SourceInputSpec,
+    SourceCredentialStorage as ProtoSourceCredentialStorage,
+    SourceIdentityBinding as ProtoSourceIdentityBinding,
+    SourceIdentityOwner as ProtoSourceIdentityOwner, SourceInfo, SourceInputSpec,
     SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
-    SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
-    create_bundled_source_with_o_auth_response, import_source_response,
-    source_credential_method::Method as ProtoCredentialMethod,
+    SourceVariableInput, UserSourceIdentityBinding as ProtoUserSourceIdentityBinding,
+    ValidateSourceRequest, ValidateSourceResponse, create_bundled_source_with_o_auth_response,
+    import_source_response, source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_spec::{
     ManifestCredentialMethodKind, ManifestCredentialSpec, ManifestInputKind, ManifestInputSpec,
     ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthFlowKind,
     ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
+    parse_source_manifest_yaml,
 };
 use tonic::{Request, Response, Status};
 
@@ -38,6 +41,12 @@ use crate::authorization::{
 };
 use crate::bootstrap::{AppError, app_status};
 use crate::credentials::CredentialStorageKind;
+use crate::identities::IdentityInstanceManager;
+use crate::identity::{
+    SourceIdentityBinding as AppSourceIdentityBinding,
+    SourceIdentityOwner as AppSourceIdentityOwner,
+    SourceIdentitySelection as AppSourceIdentitySelection, UserPrincipal,
+};
 use crate::query::QueryContext;
 use crate::query::manager::QueryManager;
 use crate::request_context::RequestContext;
@@ -63,6 +72,7 @@ use tokio_stream::StreamExt as _;
 pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
+    identity_instances: IdentityInstanceManager,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
 }
 
@@ -70,11 +80,13 @@ impl SourceService {
     pub(crate) fn new(
         source_manager: SourceManager,
         query_manager: QueryManager,
+        identity_instance_manager: IdentityInstanceManager,
         management_authorizer: Arc<dyn ManagementAuthorizer>,
     ) -> Self {
         Self {
             sources: source_manager,
             queries: query_manager,
+            identity_instances: identity_instance_manager,
             management_authorizer,
         }
     }
@@ -266,7 +278,8 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let management_authorizer = Arc::clone(&self.management_authorizer);
-        instrument_grpc(span.clone(), async move {
+        let identity_instances = self.identity_instances.clone();
+        instrument_grpc(span, async move {
             let principal = RequestContext::from_request(&request)?.principal().clone();
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
@@ -280,49 +293,7 @@ impl SourceServiceApi for SourceService {
                 )
                 .await
                 .map_err(authorization_status)?;
-            let response_workspace_name = workspace_name.clone();
-            if request.oauth_credential_retrievals.is_empty() {
-                let command = ImportSourceCommand {
-                    manifest_yaml: request.manifest_yaml,
-                    bindings: source_bindings_from_proto(request.variables, request.secrets),
-                    identity_bindings: BTreeMap::new(),
-                    replace_identity_bindings: false,
-                };
-                let installed = run_blocking_source_operation(move || {
-                    sources.import_source(&workspace_name, &command)
-                })
-                .await?;
-                let response = ImportSourceResponse {
-                    event: Some(import_source_response::Event::Source(
-                        installed_source_to_proto(&response_workspace_name, installed),
-                    )),
-                };
-                return Ok(Response::new(
-                    Box::pin(tokio_stream::once(Ok(response))) as Self::ImportSourceStream
-                ));
-            }
-            let command = ImportSourceWithCredentialsCommand {
-                manifest_yaml: request.manifest_yaml,
-                bindings: source_bindings_from_proto(request.variables, request.secrets),
-                oauth_credential_retrievals: request
-                    .oauth_credential_retrievals
-                    .into_iter()
-                    .map(oauth_credential_retrieval_from_proto)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(app_status)?,
-                identity_bindings: BTreeMap::new(),
-                replace_identity_bindings: false,
-            };
-            let stream =
-                import_source_response_stream(response_workspace_name, move |event_sender| {
-                    instrument_grpc(span, async move {
-                        sources
-                            .import_source_with_credentials(&workspace_name, command, event_sender)
-                            .await
-                            .map_err(app_status)
-                    })
-                });
-            Ok(Response::new(stream))
+            handle_import_source(sources, identity_instances, principal, request).await
         })
         .await
     }
@@ -383,6 +354,160 @@ impl SourceServiceApi for SourceService {
         })
         .await
     }
+}
+
+async fn handle_import_source(
+    sources: SourceManager,
+    identity_instances: IdentityInstanceManager,
+    principal: UserPrincipal,
+    request: ImportSourceRequest,
+) -> Result<Response<ImportSourceResponseStreamBox>, Status> {
+    let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+    let response_workspace_name = workspace_name.clone();
+    let identity_bindings =
+        source_identity_bindings_from_proto(request.identity_bindings).map_err(app_status)?;
+    let user_identity_bindings =
+        user_source_identity_bindings_from_proto(request.user_identity_bindings)
+            .map_err(app_status)?;
+    let user_principal = (!user_identity_bindings.is_empty()).then_some(principal);
+    if request.oauth_credential_retrievals.is_empty() {
+        let command = ImportSourceCommand {
+            manifest_yaml: request.manifest_yaml,
+            bindings: source_bindings_from_proto(request.variables, request.secrets),
+            identity_bindings,
+            replace_identity_bindings: request.replace_identity_bindings,
+        };
+        return handle_import_source_without_credentials(
+            sources,
+            identity_instances,
+            user_principal,
+            workspace_name,
+            response_workspace_name,
+            command,
+            user_identity_bindings,
+        )
+        .await;
+    }
+
+    let command = ImportSourceWithCredentialsCommand {
+        manifest_yaml: request.manifest_yaml,
+        bindings: source_bindings_from_proto(request.variables, request.secrets),
+        oauth_credential_retrievals: request
+            .oauth_credential_retrievals
+            .into_iter()
+            .map(oauth_credential_retrieval_from_proto)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(app_status)?,
+        identity_bindings,
+        replace_identity_bindings: request.replace_identity_bindings,
+    };
+    handle_import_source_with_credentials(
+        sources,
+        identity_instances,
+        user_principal,
+        workspace_name,
+        response_workspace_name,
+        command,
+        user_identity_bindings,
+    )
+    .await
+}
+
+async fn handle_import_source_without_credentials(
+    sources: SourceManager,
+    identity_instances: IdentityInstanceManager,
+    user_principal: Option<UserPrincipal>,
+    workspace_name: WorkspaceName,
+    response_workspace_name: WorkspaceName,
+    command: ImportSourceCommand,
+    user_identity_bindings: BTreeMap<String, AppSourceIdentitySelection>,
+) -> Result<Response<ImportSourceResponseStreamBox>, Status> {
+    let source_name = source_name_from_manifest_yaml(&command.manifest_yaml).map_err(app_status)?;
+    let prepared_user_bindings =
+        prepare_user_source_identity_bindings_for_import(ValidateUserSourceIdentityImport {
+            sources: &sources,
+            identities: &identity_instances,
+            principal: user_principal.as_ref(),
+            workspace_name: &workspace_name,
+            manifest_yaml: &command.manifest_yaml,
+            requested_identity_bindings: &command.identity_bindings,
+            replace_identity_bindings: command.replace_identity_bindings,
+            user_identity_bindings: &user_identity_bindings,
+        })
+        .await?;
+    let import_workspace_name = workspace_name.clone();
+    let import_result = run_blocking_source_operation(move || {
+        sources.import_source(&import_workspace_name, &command)
+    })
+    .await;
+    let installed = match import_result {
+        Ok(installed) => installed,
+        Err(error) => return Err(error),
+    };
+    persist_user_source_identity_bindings_for_import(
+        &identity_instances,
+        user_principal.as_ref(),
+        &workspace_name,
+        &source_name,
+        &prepared_user_bindings,
+        &user_identity_bindings,
+    )
+    .await?;
+    let response = ImportSourceResponse {
+        event: Some(import_source_response::Event::Source(
+            installed_source_to_proto(&response_workspace_name, installed),
+        )),
+    };
+    Ok(Response::new(Box::pin(tokio_stream::once(Ok(response)))))
+}
+
+async fn handle_import_source_with_credentials(
+    sources: SourceManager,
+    identity_instances: IdentityInstanceManager,
+    user_principal: Option<UserPrincipal>,
+    workspace_name: WorkspaceName,
+    response_workspace_name: WorkspaceName,
+    command: ImportSourceWithCredentialsCommand,
+    user_identity_bindings: BTreeMap<String, AppSourceIdentitySelection>,
+) -> Result<Response<ImportSourceResponseStreamBox>, Status> {
+    let span = tracing::Span::current();
+    let source_name = source_name_from_manifest_yaml(&command.manifest_yaml).map_err(app_status)?;
+    let prepared_user_bindings =
+        prepare_user_source_identity_bindings_for_import(ValidateUserSourceIdentityImport {
+            sources: &sources,
+            identities: &identity_instances,
+            principal: user_principal.as_ref(),
+            workspace_name: &workspace_name,
+            manifest_yaml: &command.manifest_yaml,
+            requested_identity_bindings: &command.identity_bindings,
+            replace_identity_bindings: command.replace_identity_bindings,
+            user_identity_bindings: &user_identity_bindings,
+        })
+        .await?;
+    let stream = import_source_response_stream(response_workspace_name, move |event_sender| {
+        instrument_grpc(span, async move {
+            let import_result = sources
+                .import_source_with_credentials(&workspace_name, command, event_sender)
+                .await
+                .map_err(app_status);
+            match import_result {
+                Ok(installed) => {
+                    persist_user_source_identity_bindings_for_import(
+                        &identity_instances,
+                        user_principal.as_ref(),
+                        &workspace_name,
+                        &source_name,
+                        &prepared_user_bindings,
+                        &user_identity_bindings,
+                    )
+                    .await?;
+                    Ok(installed)
+                }
+                Err(error) => Err(error),
+            }
+        })
+    });
+    Ok(Response::new(stream))
 }
 
 type CreateBundledSourceWithOAuthResponseStreamBox =
@@ -495,6 +620,374 @@ fn source_bindings_from_proto(
     }
 }
 
+fn source_identity_bindings_from_proto(
+    bindings: Vec<ProtoSourceIdentityBinding>,
+) -> Result<BTreeMap<String, AppSourceIdentityBinding>, AppError> {
+    let mut result = BTreeMap::new();
+    for binding in bindings {
+        let (surface_id, binding) = source_identity_binding_from_proto(binding)?;
+        if result.insert(surface_id.clone(), binding).is_some() {
+            return Err(AppError::InvalidInput(format!(
+                "source identity binding for surface '{surface_id}' is repeated"
+            )));
+        }
+    }
+    Ok(result)
+}
+
+fn source_identity_binding_from_proto(
+    binding: ProtoSourceIdentityBinding,
+) -> Result<(String, AppSourceIdentityBinding), AppError> {
+    let owner = match ProtoSourceIdentityOwner::try_from(binding.owner) {
+        Ok(ProtoSourceIdentityOwner::User) => AppSourceIdentityOwner::User,
+        Ok(ProtoSourceIdentityOwner::Workspace) => AppSourceIdentityOwner::Workspace,
+        Ok(ProtoSourceIdentityOwner::Unspecified) | Err(_) => {
+            return Err(AppError::InvalidInput(format!(
+                "source identity binding for surface '{}' has invalid owner",
+                binding.surface_id
+            )));
+        }
+    };
+    let surface_id = binding.surface_id;
+    let binding = match owner {
+        AppSourceIdentityOwner::User => {
+            if !binding.identity.is_empty() {
+                return Err(AppError::InvalidInput(format!(
+                    "user-owned source identity binding for surface '{surface_id}' must not include identity"
+                )));
+            }
+            AppSourceIdentityBinding::user_owned()
+        }
+        AppSourceIdentityOwner::Workspace => {
+            AppSourceIdentityBinding::workspace_owned(binding.identity)?
+        }
+    };
+    Ok((surface_id, binding))
+}
+
+fn user_source_identity_bindings_from_proto(
+    bindings: Vec<ProtoUserSourceIdentityBinding>,
+) -> Result<BTreeMap<String, AppSourceIdentitySelection>, AppError> {
+    let mut result = BTreeMap::new();
+    for binding in bindings {
+        let surface_id = binding.surface_id;
+        let selection = AppSourceIdentitySelection::new(binding.identity)?;
+        if result.insert(surface_id.clone(), selection).is_some() {
+            return Err(AppError::InvalidInput(format!(
+                "user source identity binding for surface '{surface_id}' is repeated"
+            )));
+        }
+    }
+    Ok(result)
+}
+
+fn source_name_from_manifest_yaml(manifest_yaml: &str) -> Result<SourceName, AppError> {
+    let manifest = parse_source_manifest_yaml(manifest_yaml)
+        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    SourceName::parse(manifest.schema_name())
+}
+
+#[derive(Clone, Copy)]
+struct ValidateUserSourceIdentityImport<'a> {
+    sources: &'a SourceManager,
+    identities: &'a IdentityInstanceManager,
+    principal: Option<&'a UserPrincipal>,
+    workspace_name: &'a WorkspaceName,
+    manifest_yaml: &'a str,
+    requested_identity_bindings: &'a BTreeMap<String, AppSourceIdentityBinding>,
+    replace_identity_bindings: bool,
+    user_identity_bindings: &'a BTreeMap<String, AppSourceIdentitySelection>,
+}
+
+async fn validate_user_source_identity_import(
+    request: ValidateUserSourceIdentityImport<'_>,
+) -> Result<BTreeMap<String, AppSourceIdentityBinding>, AppError> {
+    let effective_identity_bindings = request
+        .sources
+        .effective_source_identity_bindings_for_import(
+            request.workspace_name,
+            request.manifest_yaml,
+            request.requested_identity_bindings,
+            request.replace_identity_bindings,
+        )?;
+    let required_identity_bindings =
+        if request.replace_identity_bindings || !request.requested_identity_bindings.is_empty() {
+            &effective_identity_bindings
+        } else {
+            request.requested_identity_bindings
+        };
+    validate_user_source_identity_bindings_for_slots(
+        &effective_identity_bindings,
+        required_identity_bindings,
+        request.user_identity_bindings,
+    )?;
+    validate_user_source_identity_selections(
+        request.identities,
+        request.principal,
+        request.manifest_yaml,
+        &effective_identity_bindings,
+        request.user_identity_bindings,
+    )
+    .await?;
+    Ok(effective_identity_bindings)
+}
+
+fn validate_user_source_identity_bindings_for_slots(
+    slots: &BTreeMap<String, AppSourceIdentityBinding>,
+    required_slots: &BTreeMap<String, AppSourceIdentityBinding>,
+    selections: &BTreeMap<String, AppSourceIdentitySelection>,
+) -> Result<(), AppError> {
+    for (surface_id, slot) in required_slots {
+        if slot.owner == AppSourceIdentityOwner::User && !selections.contains_key(surface_id) {
+            return Err(AppError::InvalidInput(format!(
+                "user-owned source identity binding for surface '{surface_id}' requires a user_identity_binding selection"
+            )));
+        }
+    }
+    if slots.is_empty() {
+        return Ok(());
+    }
+    for surface_id in selections.keys() {
+        require_user_owned_slot(slots, surface_id)?;
+    }
+    Ok(())
+}
+
+fn require_user_owned_slot(
+    slots: &BTreeMap<String, AppSourceIdentityBinding>,
+    surface_id: &str,
+) -> Result<(), AppError> {
+    match slots.get(surface_id) {
+        Some(slot) if slot.owner == AppSourceIdentityOwner::User => Ok(()),
+        Some(_) => Err(AppError::InvalidInput(format!(
+            "user_identity_binding for surface '{surface_id}' targets a workspace-owned source identity binding"
+        ))),
+        None => Err(AppError::InvalidInput(format!(
+            "user_identity_binding targets unknown source identity surface '{surface_id}'"
+        ))),
+    }
+}
+
+async fn validate_user_source_identity_selections(
+    identities: &IdentityInstanceManager,
+    principal: Option<&UserPrincipal>,
+    manifest_yaml: &str,
+    slots: &BTreeMap<String, AppSourceIdentityBinding>,
+    selections: &BTreeMap<String, AppSourceIdentitySelection>,
+) -> Result<(), AppError> {
+    if selections.is_empty() {
+        return Ok(());
+    }
+    let principal = principal.ok_or_else(|| {
+        AppError::FailedPrecondition(
+            "cannot validate user-owned source identity bindings without a request user principal"
+                .to_string(),
+        )
+    })?;
+    let manifest = parse_source_manifest_yaml(manifest_yaml)
+        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    let source_name = SourceName::parse(manifest.schema_name())?;
+    let v4 = manifest.as_v4().ok_or_else(|| {
+        AppError::InvalidInput(
+            "user_identity_bindings can only be configured for DSL v4 sources".to_string(),
+        )
+    })?;
+    for (surface_id, selection) in selections {
+        require_user_owned_slot(slots, surface_id)?;
+        let surface = v4.surface(surface_id).ok_or_else(|| {
+            AppError::InvalidInput(format!(
+                "source '{}' user_identity_binding targets unknown surface '{surface_id}'",
+                manifest.schema_name()
+            ))
+        })?;
+        let requirements = surface.identity_requirements.as_ref().ok_or_else(|| {
+            AppError::InvalidInput(format!(
+                "source '{}' surface '{surface_id}' does not declare identity_requirements",
+                manifest.schema_name()
+            ))
+        })?;
+        identities
+            .validate_user_owned_source_identity_selection(
+                principal,
+                &source_name,
+                surface_id,
+                selection,
+                requirements,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+type UserSourceIdentityBindingSnapshot = BTreeMap<String, Option<AppSourceIdentitySelection>>;
+
+struct PreparedUserSourceIdentityBindings {
+    effective_identity_bindings: BTreeMap<String, AppSourceIdentityBinding>,
+}
+
+async fn prepare_user_source_identity_bindings_for_import(
+    request: ValidateUserSourceIdentityImport<'_>,
+) -> Result<PreparedUserSourceIdentityBindings, Status> {
+    let effective_identity_bindings = validate_user_source_identity_import(request)
+        .await
+        .map_err(app_status)?;
+    Ok(PreparedUserSourceIdentityBindings {
+        effective_identity_bindings,
+    })
+}
+
+async fn persist_user_source_identity_bindings_for_import(
+    identities: &IdentityInstanceManager,
+    principal: Option<&UserPrincipal>,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    prepared: &PreparedUserSourceIdentityBindings,
+    user_identity_bindings: &BTreeMap<String, AppSourceIdentitySelection>,
+) -> Result<(), Status> {
+    let snapshot = snapshot_user_source_identity_bindings(
+        identities,
+        principal,
+        workspace_name,
+        source_name,
+        user_identity_bindings,
+    )
+    .await
+    .map_err(app_status)?;
+    if let Err(error) = persist_user_source_identity_bindings(
+        identities,
+        principal,
+        workspace_name,
+        source_name,
+        &prepared.effective_identity_bindings,
+        user_identity_bindings,
+    )
+    .await
+    {
+        if let Err(restore_error) = restore_user_source_identity_bindings(
+            identities,
+            principal,
+            workspace_name,
+            source_name,
+            snapshot,
+        )
+        .await
+        {
+            return Err(app_status(AppError::FailedPrecondition(format!(
+                "failed to persist user-owned source identity bindings: {error}; failed to restore previous user-owned source identity bindings: {restore_error}"
+            ))));
+        }
+        return Err(app_status(error));
+    }
+    Ok(())
+}
+
+async fn snapshot_user_source_identity_bindings(
+    identities: &IdentityInstanceManager,
+    principal: Option<&UserPrincipal>,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    bindings: &BTreeMap<String, AppSourceIdentitySelection>,
+) -> Result<UserSourceIdentityBindingSnapshot, AppError> {
+    if bindings.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let principal = principal.ok_or_else(|| {
+        AppError::FailedPrecondition(
+            "cannot persist user-owned source identity bindings without a request user principal"
+                .to_string(),
+        )
+    })?;
+    let mut snapshot = BTreeMap::new();
+    for surface_id in bindings.keys() {
+        let previous = identities
+            .load_user_owned_source_identity_binding(
+                principal,
+                workspace_name,
+                source_name,
+                surface_id,
+            )
+            .await?;
+        snapshot.insert(surface_id.clone(), previous);
+    }
+    Ok(snapshot)
+}
+
+async fn persist_user_source_identity_bindings(
+    identities: &IdentityInstanceManager,
+    principal: Option<&UserPrincipal>,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    slots: &BTreeMap<String, AppSourceIdentityBinding>,
+    bindings: &BTreeMap<String, AppSourceIdentitySelection>,
+) -> Result<(), AppError> {
+    if bindings.is_empty() {
+        return Ok(());
+    }
+    let principal = principal.ok_or_else(|| {
+        AppError::FailedPrecondition(
+            "cannot persist user-owned source identity bindings without a request user principal"
+                .to_string(),
+        )
+    })?;
+    for (surface_id, selection) in bindings {
+        require_user_owned_slot(slots, surface_id)?;
+        identities
+            .replace_user_owned_source_identity_binding(
+                principal,
+                workspace_name,
+                source_name,
+                surface_id,
+                selection,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+async fn restore_user_source_identity_bindings(
+    identities: &IdentityInstanceManager,
+    principal: Option<&UserPrincipal>,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    snapshot: UserSourceIdentityBindingSnapshot,
+) -> Result<(), AppError> {
+    if snapshot.is_empty() {
+        return Ok(());
+    }
+    let principal = principal.ok_or_else(|| {
+        AppError::FailedPrecondition(
+            "cannot restore user-owned source identity bindings without a request user principal"
+                .to_string(),
+        )
+    })?;
+    for (surface_id, previous) in snapshot {
+        match previous {
+            Some(selection) => {
+                identities
+                    .replace_user_owned_source_identity_binding(
+                        principal,
+                        workspace_name,
+                        source_name,
+                        &surface_id,
+                        &selection,
+                    )
+                    .await?;
+            }
+            None => {
+                identities
+                    .delete_user_owned_source_identity_binding(
+                        principal,
+                        workspace_name,
+                        source_name,
+                        &surface_id,
+                    )
+                    .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn source_variable_from_proto(variable: SourceVariable) -> SourceBinding {
     SourceBinding {
         key: variable.key,
@@ -605,6 +1098,26 @@ fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSo
             .collect(),
         origin: proto_source_origin(source.origin) as i32,
         credential_storage: proto_source_credential_storage(credential_storage) as i32,
+        identity_bindings: source
+            .identity_bindings
+            .into_iter()
+            .map(|(surface_id, binding)| source_identity_binding_to_proto(surface_id, binding))
+            .collect(),
+    }
+}
+
+fn source_identity_binding_to_proto(
+    surface_id: String,
+    binding: AppSourceIdentityBinding,
+) -> ProtoSourceIdentityBinding {
+    let owner = match binding.owner {
+        AppSourceIdentityOwner::User => ProtoSourceIdentityOwner::User,
+        AppSourceIdentityOwner::Workspace => ProtoSourceIdentityOwner::Workspace,
+    };
+    ProtoSourceIdentityBinding {
+        surface_id,
+        identity: binding.identity.unwrap_or_default(),
+        owner: owner as i32,
     }
 }
 

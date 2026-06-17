@@ -26,6 +26,37 @@ enum SourceCredentialStorage {
   SOURCE_CREDENTIAL_STORAGE_KEYCHAIN = 2;
 }
 
+// Scope that owns provider-facing identity material for a source binding.
+enum SourceIdentityOwner {
+  // Source identity owner was not specified.
+  SOURCE_IDENTITY_OWNER_UNSPECIFIED = 0;
+  // Identity material is owned by the current Coral user principal.
+  SOURCE_IDENTITY_OWNER_USER = 1;
+  // Identity material is owned by the workspace and independent of a user principal.
+  SOURCE_IDENTITY_OWNER_WORKSPACE = 2;
+}
+
+// One workspace source-surface identity slot.
+message SourceIdentityBinding {
+  // DSL v4 surface id being configured.
+  string surface_id = 1;
+  // Stable identity name used by workspace-owned bindings.
+  //
+  // User-owned bindings leave this empty because the concrete identity is
+  // selected independently by each Coral user principal.
+  string identity = 2;
+  // Scope that owns the identity material.
+  SourceIdentityOwner owner = 3;
+}
+
+// One source-surface identity selection owned by the request user.
+message UserSourceIdentityBinding {
+  // DSL v4 surface id being configured.
+  string surface_id = 1;
+  // Stable user-owned identity name.
+  string identity = 2;
+}
+
 // One configured non-secret source variable.
 message SourceVariable {
   // Logical variable key expected by the source manifest.
@@ -63,6 +94,8 @@ message Source {
   SourceOrigin origin = 6;
   // Where this installed source's credential material is stored.
   SourceCredentialStorage credential_storage = 7;
+  // Workspace source-surface identity bindings configured for this source.
+  repeated SourceIdentityBinding identity_bindings = 8;
 }
 
 // One manifest-declared source input prompt.
@@ -327,6 +360,18 @@ message ImportSourceRequest {
   repeated SourceSecret secrets = 4;
   // OAuth credential retrievals the app should run before validation and import.
   repeated OAuthCredentialRetrieval oauth_credential_retrievals = 5;
+  // Workspace source-surface identity bindings to persist with the imported
+  // source. Omitted bindings preserve any existing bindings for the source.
+  repeated SourceIdentityBinding identity_bindings = 7;
+  // Source-surface identity selections to persist for the request user.
+  repeated UserSourceIdentityBinding user_identity_bindings = 8;
+  // When true, replace stored source identity bindings with identity_bindings
+  // exactly, including clearing them when identity_bindings is empty.
+  //
+  // When false, an empty identity_bindings list preserves existing bindings for
+  // compatibility with callers that cannot distinguish omitted and empty
+  // repeated fields.
+  bool replace_identity_bindings = 9;
 }
 
 // Streaming event emitted while importing a source.

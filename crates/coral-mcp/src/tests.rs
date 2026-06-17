@@ -175,6 +175,9 @@ async fn add_demo_source(source_client: &mut SourceClient, manifest_yaml: String
             variables: Vec::new(),
             secrets: Vec::new(),
             oauth_credential_retrievals: Vec::new(),
+            identity_bindings: Vec::new(),
+            user_identity_bindings: Vec::new(),
+            replace_identity_bindings: false,
         }))
         .await
         .expect("add source")

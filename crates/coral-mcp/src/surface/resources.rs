@@ -152,6 +152,7 @@ mod tests {
             variables: Vec::new(),
             origin: 0,
             credential_storage: SourceCredentialStorage::Unspecified as i32,
+            identity_bindings: Vec::new(),
         }
     }
 

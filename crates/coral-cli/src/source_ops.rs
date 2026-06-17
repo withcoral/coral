@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{IsTerminal, Read as _, Write, stdin, stdout};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -15,9 +15,10 @@ use coral_api::v1::{
     CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DiscoverSourcesRequest,
     GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
     OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
-    SourceCredentialStorage, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
-    ValidateSourceRequest, ValidateSourceResponse, create_bundled_source_with_o_auth_response,
-    import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
+    SourceCredentialStorage, SourceIdentityBinding, SourceIdentityOwner, SourceInfo, SourceOrigin,
+    SourceSecret, SourceVariable, UserSourceIdentityBinding, ValidateSourceRequest,
+    ValidateSourceResponse, create_bundled_source_with_o_auth_response, import_source_response,
+    query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::v4::SurfaceDescriptor;
@@ -118,6 +119,7 @@ pub(crate) async fn import_source(
     manifest_yaml: String,
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
+    identity_bindings: ImportSourceIdentityBindings,
 ) -> Result<Source, anyhow::Error> {
     let mut responses = app
         .source_client()
@@ -127,6 +129,9 @@ pub(crate) async fn import_source(
             variables,
             secrets,
             oauth_credential_retrievals: Vec::new(),
+            identity_bindings: identity_bindings.source_bindings,
+            user_identity_bindings: identity_bindings.user_selections,
+            replace_identity_bindings: identity_bindings.replace_existing,
         }))
         .await?
         .into_inner();
@@ -198,9 +203,17 @@ pub(crate) async fn import_source_with_credentials(
     app: &AppClient,
     manifest_yaml: String,
     inputs: CollectedSourceInputs,
+    identity_bindings: ImportSourceIdentityBindings,
 ) -> Result<Source, anyhow::Error> {
     if inputs.oauth_credential_retrievals.is_empty() {
-        return import_source(app, manifest_yaml, inputs.variables, inputs.secrets).await;
+        return import_source(
+            app,
+            manifest_yaml,
+            inputs.variables,
+            inputs.secrets,
+            identity_bindings,
+        )
+        .await;
     }
     let response = app
         .source_client()
@@ -210,9 +223,103 @@ pub(crate) async fn import_source_with_credentials(
             variables: inputs.variables,
             secrets: inputs.secrets,
             oauth_credential_retrievals: inputs.oauth_credential_retrievals,
+            identity_bindings: identity_bindings.source_bindings,
+            user_identity_bindings: identity_bindings.user_selections,
+            replace_identity_bindings: identity_bindings.replace_existing,
         }))
         .await?;
     source_from_import_credential_stream(response.into_inner(), &inputs.oauth_labels).await
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ImportSourceIdentityBindings {
+    source_bindings: Vec<SourceIdentityBinding>,
+    user_selections: Vec<UserSourceIdentityBinding>,
+    replace_existing: bool,
+}
+
+pub(crate) fn import_source_identity_bindings_from_args(
+    user_bindings: &[String],
+    workspace_bindings: &[String],
+) -> Result<ImportSourceIdentityBindings, anyhow::Error> {
+    let mut seen_surfaces = BTreeSet::new();
+    let mut identity_bindings = Vec::new();
+    let mut user_identity_bindings = Vec::new();
+
+    for value in user_bindings {
+        let binding = parse_cli_identity_binding(value, "--user-identity-binding")?;
+        reject_repeated_identity_binding_surface(&mut seen_surfaces, &binding.surface_id)?;
+        identity_bindings.push(SourceIdentityBinding {
+            surface_id: binding.surface_id.clone(),
+            identity: String::new(),
+            owner: SourceIdentityOwner::User as i32,
+        });
+        user_identity_bindings.push(UserSourceIdentityBinding {
+            surface_id: binding.surface_id,
+            identity: binding.identity,
+        });
+    }
+
+    for value in workspace_bindings {
+        let binding = parse_cli_identity_binding(value, "--workspace-identity-binding")?;
+        reject_repeated_identity_binding_surface(&mut seen_surfaces, &binding.surface_id)?;
+        identity_bindings.push(SourceIdentityBinding {
+            surface_id: binding.surface_id,
+            identity: binding.identity,
+            owner: SourceIdentityOwner::Workspace as i32,
+        });
+    }
+
+    Ok(ImportSourceIdentityBindings {
+        replace_existing: !identity_bindings.is_empty(),
+        source_bindings: identity_bindings,
+        user_selections: user_identity_bindings,
+    })
+}
+
+struct CliIdentityBinding {
+    surface_id: String,
+    identity: String,
+}
+
+fn parse_cli_identity_binding(
+    value: &str,
+    flag_name: &str,
+) -> Result<CliIdentityBinding, anyhow::Error> {
+    let (surface_id, selection) = value
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("{flag_name} must use SURFACE=IDENTITY"))?;
+    let surface_id = non_empty_cli_identity_part(surface_id, flag_name, "surface")?;
+    if selection.contains(':') {
+        bail!("{flag_name} must use SURFACE=IDENTITY");
+    }
+    let identity = non_empty_cli_identity_part(selection, flag_name, "identity")?;
+    Ok(CliIdentityBinding {
+        surface_id,
+        identity,
+    })
+}
+
+fn non_empty_cli_identity_part(
+    value: &str,
+    flag_name: &str,
+    label: &str,
+) -> Result<String, anyhow::Error> {
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("{flag_name} has an empty {label}");
+    }
+    Ok(value.to_string())
+}
+
+fn reject_repeated_identity_binding_surface(
+    seen_surfaces: &mut BTreeSet<String>,
+    surface_id: &str,
+) -> Result<(), anyhow::Error> {
+    if seen_surfaces.insert(surface_id.to_string()) {
+        return Ok(());
+    }
+    bail!("source identity binding for surface '{surface_id}' is repeated")
 }
 
 async fn source_from_bundled_credential_stream(

@@ -57,6 +57,7 @@ fn mock_source() -> Source {
         variables: Vec::new(),
         origin: SourceOrigin::Bundled as i32,
         credential_storage: SourceCredentialStorage::File as i32,
+        identity_bindings: Vec::new(),
     }
 }
 
@@ -460,6 +461,7 @@ impl Default for MockServerConfig {
                         variables: Vec::new(),
                         origin: SourceOrigin::Bundled as i32,
                         credential_storage: SourceCredentialStorage::File as i32,
+                        identity_bindings: Vec::new(),
                     },
                     Source {
                         workspace: Some(workspace()),
@@ -469,6 +471,7 @@ impl Default for MockServerConfig {
                         variables: Vec::new(),
                         origin: SourceOrigin::Imported as i32,
                         credential_storage: SourceCredentialStorage::File as i32,
+                        identity_bindings: Vec::new(),
                     },
                 ],
             }),

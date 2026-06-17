@@ -4,27 +4,210 @@
     reason = "test code: assertion-style indexing is idiomatic in tests"
 )]
 
-use std::fs;
+use std::{fs, path::PathBuf};
 
 use coral_api::v1::{
-    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
-    ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
-    ListCatalogRequest, OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest,
-    QueryTestFailure, QueryTestSuccess, SourceCredentialStorage, SourceOrigin, SourceSecret,
-    SourceVariable, ValidateSourceRequest, Workspace, catalog_item, import_source_response,
-    query_test_result, source_credential_method::Method as ProtoCredentialMethod,
+    AddIdentitySpecRequest, CreateBundledSourceRequest,
+    CreateUserOwnedIdentityWithFixedTokenRequest, DeleteSourceRequest, DiscoverSourcesRequest,
+    ExecuteSqlRequest, ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest,
+    ImportSourceRequest, ListCatalogRequest, ListUserOwnedIdentitiesRequest,
+    OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest, QueryTestFailure,
+    QueryTestSuccess, Source, SourceCredentialStorage, SourceIdentityBinding, SourceIdentityOwner,
+    SourceOrigin, SourceSecret, SourceVariable, UserSourceIdentityBinding, ValidateSourceRequest,
+    Workspace, catalog_item, import_source_response, query_test_result,
+    source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::default_workspace;
 use tempfile::TempDir;
 use tonic::Request;
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::harness::{
     FailingHttpFixture, GrpcHarness, fixture_function_only_manifest_yaml,
     fixture_manifest_with_inputs_yaml, fixture_manifest_with_multiple_tables_yaml,
     fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
-    fixture_manifest_yaml, invalid_manifest_yaml, source_dir,
+    fixture_manifest_yaml, invalid_manifest_yaml, request_as, source_dir,
 };
+
+fn fixed_token_identity_spec_yaml() -> String {
+    r"kind: identity
+spec_version: 1
+name: test_pat
+version: 0.1.0
+issuer: test
+type: fixed_token
+audience:
+  host: 127.0.0.1
+"
+    .to_string()
+}
+
+fn identity_openapi_yaml() -> &'static str {
+    r"
+openapi: 3.0.3
+paths:
+  /issues:
+    get:
+      operationId: issues/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: integer}
+                    title: {type: string}
+"
+}
+
+fn identity_source_manifest_yaml(descriptor_path: &std::path::Path, base_url: &str) -> String {
+    format!(
+        r"
+name: identity_github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    base_url: {base_url}
+    identity_requirements:
+      accepts:
+        - id: github-rest-read
+          identity_specs: [test_pat]
+          audience: {{host: 127.0.0.1}}
+",
+        descriptor_path.display()
+    )
+}
+
+fn identity_source_manifest_with_required_variable_yaml(
+    descriptor_path: &std::path::Path,
+) -> String {
+    format!(
+        r#"
+name: identity_github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    inputs:
+      API_BASE:
+        kind: variable
+    base_url: "{{{{input.API_BASE}}}}"
+    identity_requirements:
+      accepts:
+        - id: github-rest-read
+          identity_specs: [test_pat]
+          audience: {{host: 127.0.0.1}}
+"#,
+        descriptor_path.display()
+    )
+}
+
+struct IdentitySourceFixture {
+    _temp: TempDir,
+    config_dir: PathBuf,
+    descriptor_path: PathBuf,
+}
+
+fn identity_source_fixture() -> IdentitySourceFixture {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::write(
+        config_dir.join("config.toml"),
+        "[features]\ndsl_v4 = true\n",
+    )
+    .expect("write feature config");
+    let descriptor_dir = temp.path().join("descriptors");
+    fs::create_dir_all(&descriptor_dir).expect("descriptor dir");
+    let descriptor_path = descriptor_dir.join("identity-openapi.yaml");
+    fs::write(&descriptor_path, identity_openapi_yaml()).expect("write OpenAPI descriptor");
+    IdentitySourceFixture {
+        _temp: temp,
+        config_dir,
+        descriptor_path,
+    }
+}
+
+fn assert_user_owned_rest_identity_binding(source: &Source) {
+    assert_eq!(source.identity_bindings.len(), 1);
+    let binding = &source.identity_bindings[0];
+    assert_eq!(binding.surface_id, "rest");
+    assert_eq!(binding.identity, "");
+    assert_eq!(binding.owner, SourceIdentityOwner::User as i32);
+}
+
+async fn install_test_fixed_token_identity(harness: &GrpcHarness) {
+    harness
+        .identity_spec_client()
+        .add_identity_spec(Request::new(AddIdentitySpecRequest {
+            manifest_yaml: fixed_token_identity_spec_yaml(),
+            inputs: Vec::new(),
+        }))
+        .await
+        .expect("add identity spec");
+    harness
+        .identity_client()
+        .create_user_owned_identity_with_fixed_token(Request::new(
+            CreateUserOwnedIdentityWithFixedTokenRequest {
+                name: "test_local".to_string(),
+                identity_spec: "test_pat".to_string(),
+                token: "test-token".to_string(),
+            },
+        ))
+        .await
+        .expect("create identity");
+}
+
+async fn create_and_assert_scoped_fixed_token_identity(
+    harness: &GrpcHarness,
+    config_dir: &std::path::Path,
+    user_id: &str,
+    token: &str,
+) {
+    let created = harness
+        .identity_client()
+        .create_user_owned_identity_with_fixed_token(request_as(
+            user_id,
+            CreateUserOwnedIdentityWithFixedTokenRequest {
+                name: "test_local".to_string(),
+                identity_spec: "test_pat".to_string(),
+                token: token.to_string(),
+            },
+        ))
+        .await
+        .expect("create identity")
+        .into_inner()
+        .identity
+        .expect("created identity");
+    assert_eq!(created.name, "test_local");
+
+    let listed = harness
+        .identity_client()
+        .list_user_owned_identities(request_as(user_id, ListUserOwnedIdentitiesRequest {}))
+        .await
+        .expect("list identities")
+        .into_inner()
+        .identities;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "test_local");
+
+    let material_file = config_dir
+        .join("identities")
+        .join("users")
+        .join(user_id)
+        .join("test_local")
+        .join("secrets.env");
+    let material = fs::read_to_string(material_file).expect("identity material");
+    assert!(material.contains(&format!("TOKEN={token}")));
+}
 
 #[tokio::test]
 async fn import_source_persists_and_lists() {
@@ -69,6 +252,250 @@ async fn import_source_persists_and_lists() {
         listed[0].credential_storage,
         SourceCredentialStorage::Unspecified as i32
     );
+}
+
+#[tokio::test]
+async fn import_source_persists_user_identity_binding_for_queries() {
+    let fixture = identity_source_fixture();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/issues"))
+        .and(header("authorization", "Bearer test-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {"id": 42, "title": "identity-backed query"}
+        ])))
+        .mount(&server)
+        .await;
+    let harness = GrpcHarness::start_with_config_dir(fixture.config_dir.clone()).await;
+    install_test_fixed_token_identity(&harness).await;
+
+    let mut stream = harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml: identity_source_manifest_yaml(&fixture.descriptor_path, &server.uri()),
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+            identity_bindings: vec![SourceIdentityBinding {
+                surface_id: "rest".to_string(),
+                identity: String::new(),
+                owner: SourceIdentityOwner::User as i32,
+            }],
+            user_identity_bindings: vec![UserSourceIdentityBinding {
+                surface_id: "rest".to_string(),
+                identity: "test_local".to_string(),
+            }],
+            replace_identity_bindings: false,
+        }))
+        .await
+        .expect("import source")
+        .into_inner();
+    let imported = stream
+        .message()
+        .await
+        .expect("import source stream")
+        .and_then(|response| match response.event {
+            Some(import_source_response::Event::Source(source)) => Some(source),
+            _ => None,
+        })
+        .expect("import source response");
+    assert_eq!(imported.name, "identity_github");
+    assert_user_owned_rest_identity_binding(&imported);
+
+    let fetched = harness
+        .source_client()
+        .get_source(Request::new(GetSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "identity_github".to_string(),
+        }))
+        .await
+        .expect("get imported source")
+        .into_inner()
+        .source
+        .expect("source");
+    assert_user_owned_rest_identity_binding(&fetched);
+
+    let rows = harness
+        .execute_sql_rows("SELECT id, title FROM identity_github.issues")
+        .await;
+    assert_eq!(
+        rows,
+        vec![serde_json::json!({"id": 42, "title": "identity-backed query"})]
+    );
+}
+
+#[tokio::test]
+async fn user_identity_source_bindings_are_scoped_to_request_principal() {
+    let fixture = identity_source_fixture();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/issues"))
+        .and(header("authorization", "Bearer alice-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {"id": 7, "title": "alice scoped query"}
+        ])))
+        .mount(&server)
+        .await;
+    let harness =
+        GrpcHarness::start_with_metadata_user_principal_provider(fixture.config_dir.clone()).await;
+
+    harness
+        .identity_spec_client()
+        .add_identity_spec(request_as(
+            "alice",
+            AddIdentitySpecRequest {
+                manifest_yaml: fixed_token_identity_spec_yaml(),
+                inputs: Vec::new(),
+            },
+        ))
+        .await
+        .expect("add identity spec");
+
+    for (user_id, token) in [("alice", "alice-token"), ("bob", "bob-token")] {
+        create_and_assert_scoped_fixed_token_identity(
+            &harness,
+            &fixture.config_dir,
+            user_id,
+            token,
+        )
+        .await;
+    }
+
+    let mut stream = harness
+        .source_client()
+        .import_source(request_as(
+            "alice",
+            ImportSourceRequest {
+                workspace: Some(default_workspace()),
+                manifest_yaml: identity_source_manifest_yaml(
+                    &fixture.descriptor_path,
+                    &server.uri(),
+                ),
+                variables: Vec::new(),
+                secrets: Vec::new(),
+                oauth_credential_retrievals: Vec::new(),
+                identity_bindings: vec![SourceIdentityBinding {
+                    surface_id: "rest".to_string(),
+                    identity: String::new(),
+                    owner: SourceIdentityOwner::User as i32,
+                }],
+                user_identity_bindings: vec![UserSourceIdentityBinding {
+                    surface_id: "rest".to_string(),
+                    identity: "test_local".to_string(),
+                }],
+                replace_identity_bindings: false,
+            },
+        ))
+        .await
+        .expect("import source")
+        .into_inner();
+    let imported = stream
+        .message()
+        .await
+        .expect("import source stream")
+        .and_then(|response| match response.event {
+            Some(import_source_response::Event::Source(source)) => Some(source),
+            _ => None,
+        })
+        .expect("import source response");
+    assert_user_owned_rest_identity_binding(&imported);
+
+    let rows = harness
+        .execute_sql_rows_as("alice", "SELECT id, title FROM identity_github.issues")
+        .await;
+    assert_eq!(
+        rows,
+        vec![serde_json::json!({"id": 7, "title": "alice scoped query"})]
+    );
+
+    let bob_status = harness
+        .query_client()
+        .execute_sql(request_as(
+            "bob",
+            ExecuteSqlRequest {
+                workspace: Some(default_workspace()),
+                sql: "SELECT id, title FROM identity_github.issues".to_string(),
+            },
+        ))
+        .await
+        .expect_err("bob should not use alice's source identity binding");
+    assert_eq!(bob_status.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        bob_status.message().contains(
+            "user 'bob' has no selected identity for source 'identity_github' surface 'rest'"
+        ),
+        "unexpected status message: {}",
+        bob_status.message()
+    );
+}
+
+#[tokio::test]
+async fn import_source_rolls_back_user_identity_binding_when_import_fails() {
+    let fixture = identity_source_fixture();
+    let binding_path = fixture
+        .config_dir
+        .join("identities/source-bindings/users/local/default/identity_github/rest/binding.yaml");
+    let harness = GrpcHarness::start_with_config_dir(fixture.config_dir.clone()).await;
+    install_test_fixed_token_identity(&harness).await;
+
+    let error = harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml: identity_source_manifest_with_required_variable_yaml(
+                &fixture.descriptor_path,
+            ),
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+            identity_bindings: vec![SourceIdentityBinding {
+                surface_id: "rest".to_string(),
+                identity: String::new(),
+                owner: SourceIdentityOwner::User as i32,
+            }],
+            user_identity_bindings: vec![UserSourceIdentityBinding {
+                surface_id: "rest".to_string(),
+                identity: "test_local".to_string(),
+            }],
+            replace_identity_bindings: false,
+        }))
+        .await
+        .expect_err("missing required source variable should fail");
+
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(harness.list_sources().await.is_empty());
+    assert!(!binding_path.exists());
+}
+
+#[tokio::test]
+async fn import_source_rejects_user_owned_identity_binding_without_user_selection() {
+    let fixture = identity_source_fixture();
+    let harness = GrpcHarness::start_with_config_dir(fixture.config_dir.clone()).await;
+
+    let error = harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml: identity_source_manifest_yaml(
+                &fixture.descriptor_path,
+                "http://127.0.0.1:1",
+            ),
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+            identity_bindings: vec![SourceIdentityBinding {
+                surface_id: "rest".to_string(),
+                identity: String::new(),
+                owner: SourceIdentityOwner::User as i32,
+            }],
+            user_identity_bindings: Vec::new(),
+            replace_identity_bindings: false,
+        }))
+        .await
+        .expect_err("user-owned source slot requires a request-user selection");
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(harness.list_sources().await.is_empty());
 }
 
 #[tokio::test]
@@ -133,6 +560,9 @@ async fn import_duplicate_source_overwrites_existing_source() {
             variables: Vec::new(),
             secrets: Vec::new(),
             oauth_credential_retrievals: Vec::new(),
+            identity_bindings: Vec::new(),
+            user_identity_bindings: Vec::new(),
+            replace_identity_bindings: false,
         }))
         .await
         .expect("duplicate import should overwrite")
@@ -174,6 +604,9 @@ async fn import_invalid_manifest_returns_invalid_argument() {
             variables: Vec::new(),
             secrets: Vec::new(),
             oauth_credential_retrievals: Vec::new(),
+            identity_bindings: Vec::new(),
+            user_identity_bindings: Vec::new(),
+            replace_identity_bindings: false,
         }))
         .await
         .expect_err("invalid manifest should fail");
@@ -590,6 +1023,9 @@ async fn import_source_missing_required_secret_returns_invalid_argument() {
             }],
             secrets: Vec::new(),
             oauth_credential_retrievals: Vec::new(),
+            identity_bindings: Vec::new(),
+            user_identity_bindings: Vec::new(),
+            replace_identity_bindings: false,
         }))
         .await
         .expect_err("missing required secret should fail");
@@ -616,6 +1052,9 @@ async fn import_source_missing_required_variable_returns_invalid_argument() {
                 value: "secret-token".to_string(),
             }],
             oauth_credential_retrievals: Vec::new(),
+            identity_bindings: Vec::new(),
+            user_identity_bindings: Vec::new(),
+            replace_identity_bindings: false,
         }))
         .await
         .expect_err("missing required variable should fail");
@@ -645,6 +1084,9 @@ async fn import_source_unknown_variable_returns_invalid_argument() {
                 value: "secret-token".to_string(),
             }],
             oauth_credential_retrievals: Vec::new(),
+            identity_bindings: Vec::new(),
+            user_identity_bindings: Vec::new(),
+            replace_identity_bindings: false,
         }))
         .await
         .expect_err("unknown variable should fail");
@@ -676,6 +1118,9 @@ async fn import_source_unknown_secret_returns_invalid_argument() {
                 },
             ],
             oauth_credential_retrievals: Vec::new(),
+            identity_bindings: Vec::new(),
+            user_identity_bindings: Vec::new(),
+            replace_identity_bindings: false,
         }))
         .await
         .expect_err("unknown secret should fail");
@@ -711,6 +1156,9 @@ async fn import_source_repeated_variable_returns_invalid_argument() {
                 value: "secret-token".to_string(),
             }],
             oauth_credential_retrievals: Vec::new(),
+            identity_bindings: Vec::new(),
+            user_identity_bindings: Vec::new(),
+            replace_identity_bindings: false,
         }))
         .await
         .expect_err("repeated variable should fail");
@@ -746,6 +1194,9 @@ async fn import_source_repeated_secret_returns_invalid_argument() {
                 },
             ],
             oauth_credential_retrievals: Vec::new(),
+            identity_bindings: Vec::new(),
+            user_identity_bindings: Vec::new(),
+            replace_identity_bindings: false,
         }))
         .await
         .expect_err("repeated secret should fail");
@@ -1381,6 +1832,9 @@ async fn import_rolls_back_on_config_write_failure() {
                 value: "secret-token".to_string(),
             }],
             oauth_credential_retrievals: Vec::new(),
+            identity_bindings: Vec::new(),
+            user_identity_bindings: Vec::new(),
+            replace_identity_bindings: false,
         }))
         .await
         .expect_err("config write should fail");
