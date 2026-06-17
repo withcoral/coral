@@ -4,6 +4,8 @@ use coral_api::v1::Workspace;
 use coral_api::v1::catalog_service_client::CatalogServiceClient;
 use coral_api::v1::episode_service_client::EpisodeServiceClient;
 use coral_api::v1::feedback_service_client::FeedbackServiceClient;
+use coral_api::v1::identity_service_client::IdentityServiceClient;
+use coral_api::v1::identity_spec_service_client::IdentitySpecServiceClient;
 use coral_api::v1::query_service_client::QueryServiceClient;
 use coral_api::v1::source_service_client::SourceServiceClient;
 use coral_api::{
@@ -33,6 +35,12 @@ type GrpcService = InstrumentedGrpcService<RawGrpcService>;
 /// Public source-management gRPC client.
 pub type SourceClient = SourceServiceClient<GrpcService>;
 
+/// Public global identity-spec gRPC client.
+pub type IdentitySpecClient = IdentitySpecServiceClient<GrpcService>;
+
+/// Public stored-identity gRPC client.
+pub type IdentityClient = IdentityServiceClient<GrpcService>;
+
 /// Public catalog-discovery gRPC client.
 pub type CatalogClient = CatalogServiceClient<GrpcService>;
 
@@ -51,6 +59,8 @@ pub type EpisodeClient = EpisodeServiceClient<GrpcService>;
 #[derive(Clone)]
 pub struct AppClient {
     source: SourceClient,
+    identity_spec: IdentitySpecClient,
+    identity: IdentityClient,
     catalog: CatalogClient,
     query: QueryClient,
     feedback: FeedbackClient,
@@ -100,6 +110,16 @@ impl AppClient {
             &grpc_endpoint,
             static_metadata.clone(),
         ));
+        let identity_spec_client = IdentitySpecClient::new(grpc_service(
+            channel.clone(),
+            &grpc_endpoint,
+            static_metadata.clone(),
+        ));
+        let identity_client = IdentityClient::new(grpc_service(
+            channel.clone(),
+            &grpc_endpoint,
+            static_metadata.clone(),
+        ));
         let catalog_client = CatalogClient::new(grpc_service(
             channel.clone(),
             &grpc_endpoint,
@@ -121,6 +141,8 @@ impl AppClient {
             EpisodeClient::new(grpc_service(channel, &grpc_endpoint, static_metadata));
         Ok(Self {
             source: source_client,
+            identity_spec: identity_spec_client,
+            identity: identity_client,
             catalog: catalog_client,
             query: query_client,
             feedback: feedback_client,
@@ -132,6 +154,18 @@ impl AppClient {
     /// Returns a cloned source-management client.
     pub fn source_client(&self) -> SourceClient {
         self.source.clone()
+    }
+
+    #[must_use]
+    /// Returns a cloned global identity-spec client.
+    pub fn identity_spec_client(&self) -> IdentitySpecClient {
+        self.identity_spec.clone()
+    }
+
+    #[must_use]
+    /// Returns a cloned stored-identity client.
+    pub fn identity_client(&self) -> IdentityClient {
+        self.identity.clone()
     }
 
     #[must_use]
