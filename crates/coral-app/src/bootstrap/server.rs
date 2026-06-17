@@ -1029,7 +1029,7 @@ async fn start_server(
         query_manager.clone(),
         Arc::clone(&workspace_read_authorizer),
     );
-    let query_service = QueryService::new(query_manager, workspace_read_authorizer);
+    let query_service = QueryService::new(query_manager, Arc::clone(&workspace_read_authorizer));
     let feedback_service = FeedbackService::new(feedback_manager);
     let identity_spec_service =
         IdentitySpecService::new(identity_spec_manager, management_authorizer);
@@ -1058,6 +1058,8 @@ async fn start_server(
                 .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
         );
     if let Some(trace_service) = trace_service {
+        let trace_service =
+            trace_service.with_workspace_read_authorizer(Arc::clone(&workspace_read_authorizer));
         routes = routes.add_service(
             TraceServiceServer::new(trace_service)
                 .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
