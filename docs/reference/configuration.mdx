@@ -10,10 +10,63 @@ Coral stores local configuration in `config.toml` inside its platform-specific [
 Coral writes source installation state to `config.toml` when you run commands such as `coral source add` and `coral source remove`.
 
 This state includes installed-source metadata and non-secret source variables. Source secrets are stored separately within the same local trust boundary.
+Global identity specs installed with `coral identity-spec add` or bundled in
+`coral source add --file` live under `identity-specs/` in the same local state
+directory and are shared by every workspace. Declared identity-spec input
+material, including secret inputs, is stored with the installed identity spec
+through Coral credential storage rather than with identities created from the
+spec.
+User-owned identities created with `coral identity add` live under
+`identities/users/local/` in the same local state directory. A user-owned
+identity is provider-facing credential material owned by a Coral user principal.
+OSS Coral has one user principal, `local`; products built on Coral can provide
+workspace-owned identity storage through Coral's runtime identity provider seam.
+Ownership is independent of identity type, so user-owned and workspace-owned
+identity stores can hold OAuth or fixed-token identities.
+User-owned source-surface selections live separately under
+`identities/source-bindings/users/<user>/<workspace>/<source>/<surface>/`.
 
 <Note>
   Prefer the `coral source` commands for source state instead of editing workspace entries manually.
 </Note>
+
+DSL v4 sources that declare surface `identity_requirements` may also carry
+workspace source-surface identity bindings. Bindings live on the installed
+source entry because surface ids are source-local:
+
+```toml
+[workspaces.default.sources.github_v4]
+variables = {}
+secrets = []
+identity_bindings = { rest = { owner = "user" } }
+origin = "imported"
+```
+
+For user-owned identity slots, app config stores only the owner because the
+concrete identity and accepted branch can differ per Coral user principal:
+
+```toml
+identity_bindings = { rest = { owner = "user" } }
+```
+
+In OSS Coral the only user principal is `local`. To change that user's selected
+identity for an imported DSL v4 source, re-run `coral source add --file` with
+the same source manifest and choose a different compatible identity. CLI source
+re-import replaces the source's identity binding set with the bindings required
+by the new manifest, so removing a surface identity requirement clears the stale
+workspace binding from config.
+
+For workspace-owned identity slots, app config stores the concrete workspace
+selection because all callers share it:
+
+```toml
+identity_bindings = { rest = { owner = "workspace", identity = "github_workspace", accepted_identity = "github-rest-read" } }
+```
+
+Each binding key is a surface id. `owner` is either `user` or `workspace`.
+`identity` names an existing identity reference and `accepted_identity`
+optionally selects one entry from the surface's `identity_requirements.accepts`
+list for workspace-owned bindings.
 
 ## Runtime features
 
@@ -41,6 +94,7 @@ Feature values must be booleans. Unknown feature keys are preserved in `config.t
 
 | Feature | Default | Description |
 | ------- | ------- | ----------- |
+| `dsl_v4` | `false` | Experimental. Enables preview DSL v4 manifests imported with `coral source add --file`. |
 | `feedback` | `false` | Experimental. Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral. |
 
 ## OpenTelemetry

@@ -29,9 +29,149 @@ test_queries:
 | ------------- | -------------------------------------------------- |
 | `name`        | Source name, also used as the SQL schema name      |
 | `version`     | Source spec version string                         |
-| `dsl_version` | Coral source spec DSL version (currently `3`)      |
-| `backend`     | How data is fetched: `http`, `file`, or `mcp` |
+| `dsl_version` | Coral source spec DSL version: `3` or `4`      |
+| `backend`     | DSL v3 only. How data is fetched: `http`, `file`, or `mcp` |
 | `test_queries` | Optional read-only SQL checks Coral runs during source validation |
+
+DSL v4 top-level fields are limited to `name`, `version`, `dsl_version`,
+`description`, `test_queries`, and `surfaces`. Top-level `backend`, `inputs`,
+`tables`, `functions`, HTTP runtime fields, and projection override fields are
+rejected for DSL v4.
+
+## DSL v4 surfaces
+
+DSL v4 is surface-first. It keeps existing DSL v3 support intact while adding a
+new manifest shape for imported upstream surfaces:
+
+```yaml
+name: github_v4
+version: 2.0.0
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/pinned/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    inputs:
+      GITHUB_API_BASE:
+        kind: variable
+        default: https://api.github.com
+    base_url: "{{input.GITHUB_API_BASE}}"
+    identity_requirements:
+      accepts:
+        - id: github-rest-read
+          identity_specs:
+            - github_oauth
+            - github_pat
+          audience:
+            host: github.com
+    request_headers:
+      - name: X-GitHub-Api-Version
+        from: literal
+        value: "2022-11-28"
+```
+
+Enable the `dsl_v4` runtime feature before importing a `dsl_version: 4` source:
+
+```shellscript
+coral features enable dsl_v4
+```
+
+Each surface requires:
+
+- `id`: stable source-local identifier matching `[a-z][a-z0-9_]*`
+- `type`: `openapi` or `mcp`
+- `namespace_suffix`: optional source-relative relation namespace suffix. When
+  omitted, the surface uses the installed source name as its relation namespace.
+  When present, Coral exposes the surface as `<source_name>_<namespace_suffix>`.
+  In a multi-surface source, at most one surface may omit `namespace_suffix`.
+
+OpenAPI surfaces declare:
+
+- exactly one descriptor location, either `url` or `file`
+- `sha256`: optional lowercase hex SHA-256 of the exact descriptor bytes
+- `base_url`: optional runtime base URL template. If omitted, Coral derives it
+  from the OpenAPI document's first non-empty `servers[].url` during source
+  add/materialization, substituting OpenAPI server variable defaults.
+- `inputs`: optional surface-scoped variables and secrets. Reusing an input key
+  across surfaces is valid only when the declarations are structurally
+  identical.
+- `identity_requirements`: optional request identity contract. Use this when
+  access should come from a configured source-surface identity binding.
+- `auth`: optional OpenAPI HTTP authentication config for source-owned
+  credentials. Do not combine this with `identity_requirements` for the same
+  credential path.
+- `request_headers`: optional non-auth headers applied to every request, such
+  as API version or User-Agent.
+- `rate_limit`: optional retry/rate-limit response header configuration.
+
+MCP surfaces declare:
+
+- `server`: MCP server launch or streamable HTTP connection config
+- `inputs`: optional surface-scoped variables and secrets referenced by the MCP
+  server config
+
+Remote OpenAPI descriptors must use HTTPS and can be pinned by `sha256`. Local
+`file` descriptors are for imported development sources only; they must be
+regular files under the current working directory, must not be symlinks, and
+are bounded to the same descriptor size limit as remote descriptors. Bundled
+sources should not depend on local OpenAPI files.
+
+### Identity requirements
+
+Surface `identity_requirements` declare which bound identities can satisfy the
+surface:
+
+```yaml
+identity_requirements:
+  accepts:
+    - id: github-rest-read
+      identity_specs:
+        - github_oauth
+        - github_pat
+      audience:
+        host: github.com
+```
+
+`accepts` is a non-empty list. Each accepted identity requires:
+
+- `id`: stable source-local identifier for this accepted identity entry
+- `identity_specs`: non-empty list of global identity spec names
+- `audience`: optional provider-specific object that narrows the target API,
+  tenant, host, organization, or account
+
+Accepted identity entries have OR semantics: any one accepted entry may satisfy
+the surface. Within an accepted entry, the resolved identity must have one of
+the listed identity spec ids and its audience must include every key/value
+declared by the source. For surfaces that use `identity_requirements`, request
+credential injection is delegated to the resolved identity and its identity spec
+type.
+
+OpenAPI surfaces that declare `identity_requirements` cannot use secret inputs;
+use [identity specs](/reference/identity-spec-reference) for credentials. A
+source bundle passed to `coral source add --file` can contain one source spec
+document and one or more `kind: identity` documents separated by `---`; Coral
+installs those identity specs before importing the source.
+
+### Generated artifacts
+
+Coral publishes deterministic SQL tables and table functions for supported
+read-only OpenAPI `GET` operations. Mutating operations, request-body
+operations, no-body responses, unsupported parameter serialization, and
+unknown-cardinality responses are imported as diagnostics or hidden projections.
+MCP surfaces expose the runtime operations provided by their MCP server.
+
+Generated DSL v4 artifacts are stored under:
+
+```text
+workspaces/<workspace>/sources/<source>/materialized/v4/
+```
+
+The directory contains `fingerprint.yaml`, `diagnostics.yaml`,
+`projections.yaml`, per-surface `semantic-ir.yaml`, the exact
+`source-document.raw`, and a normalized `source-document.yaml`. If these
+artifacts are missing or stale, catalog and query operations fail with a message
+that points to re-adding or reinstalling the source.
 
 ## Test queries
 

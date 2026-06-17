@@ -1,0 +1,213 @@
+---
+title: Identity Spec Reference
+description: YAML format for declaring Coral identity types and setup behavior.
+---
+
+Identity specs describe reusable app-owned identity types. The identity `type`
+determines both how Coral can instantiate the identity and how the resolved
+credential material is applied to outbound HTTP requests.
+
+Identity specs do not install sources or bind a source surface to an identity.
+They are the declarative contract that identity setup and runtime providers can
+consume. Use `coral identity add <NAME> --identity-spec <SPEC>` to instantiate a
+stored user-owned identity from an installed OAuth or fixed-token identity spec.
+
+A user-owned identity represents a Coral user principal to a source provider. It
+is not the Coral user principal itself. OSS Coral has one local principal,
+`local`, so `coral identity add` stores provider-facing identity material under
+that principal.
+
+Identity ownership is independent of identity type. An `oauth` or `fixed_token`
+identity can be user-owned or workspace-owned. OSS Coral currently implements
+local storage and CLI instantiation for user-owned OAuth and fixed-token
+identities; products built on Coral can provide workspace-owned storage and
+additional type-specific instantiation flows through the app identity seams.
+
+Identity specs are installed globally for the local Coral app, not per
+workspace. Every workspace can use the same installed spec.
+
+Identity specs, and the user-owned identities created from them, are part of
+DSL v4 and are gated behind the same `dsl_v4` runtime feature as v4 sources.
+Enable it with `coral features enable dsl_v4` before managing identity specs or
+creating identities.
+
+Install or inspect specs with:
+
+```shellscript
+coral identity-spec add --file ./github-oauth.identity.yaml
+coral identity-spec list
+coral identity-spec info github_oauth
+coral identity-spec remove github_oauth --force
+coral identity add github_local --identity-spec github_oauth
+printf '%s\n' "$GITHUB_TOKEN" | coral identity add github_pat --identity-spec github_pat --token-stdin
+```
+
+`coral source add --file` also accepts YAML streams containing exactly one
+source spec document and one or more `kind: identity` documents separated by
+`---`. Coral installs those identity specs globally before importing the source
+document. Declared identity-spec inputs in those bundled specs are collected at
+that install step and stored with the installed identity spec. When that source
+is DSL v4 and declares `identity_requirements`, the CLI uses those installed
+specs to prompt for an existing compatible user-owned identity or to create and
+bind a new user-owned identity for the source surface.
+
+Stored identities are separate from identity specs. Removing an identity spec
+does not delete stored identities that were created from it, but those identities
+become orphaned. They can be used again only if the same identity spec manifest
+is installed again; installing a different manifest under the same spec name
+does not reattach the stored identity.
+Because identity specs define where and how stored identity material may be
+injected, Coral refuses to replace an installed spec with a different manifest
+while stored identities reference that spec. Re-adding the same manifest is
+allowed; changing an in-use spec requires creating new stored identities from
+the new spec.
+
+## Example
+
+```yaml
+kind: identity
+spec_version: 1
+name: google_oauth
+version: 0.1.0
+description: Google OAuth access token for Google APIs.
+issuer: google
+type: oauth
+audience:
+  host: googleapis.com
+inputs:
+  GOOGLE_OAUTH_CLIENT_SECRET:
+    kind: secret
+    hint: Client secret from your Google OAuth desktop app.
+oauth:
+  method:
+    label: Connect with Google
+    flow:
+      type: authorization_code
+      pkce: required
+    redirect_uri: http://127.0.0.1:53682/oauth/callback
+    endpoints:
+      authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+      token_url: https://oauth2.googleapis.com/token
+    client:
+      id:
+        default: your-public-client-id.apps.googleusercontent.com
+      secret:
+        input: GOOGLE_OAUTH_CLIENT_SECRET
+        transport: request_body
+    scopes:
+      scope:
+        delimiter: space
+        values:
+          - https://www.googleapis.com/auth/calendar.readonly
+```
+
+## Top-Level Fields
+
+| Field | Description |
+| --- | --- |
+| `kind` | Must be `identity`. |
+| `spec_version` | Identity spec format version. The current version is `1`. |
+| `name` | Stable identity spec name. Use an identifier such as `github_oauth` or `github_pat`. |
+| `version` | Version of this identity spec. |
+| `description` | Optional human-readable description. |
+| `issuer` | Provider or issuer name, such as `github` or `google`. |
+| `type` | Identity type. Supported values are `oauth` and `fixed_token`. |
+| `audience` | Optional provider-specific object that scopes the identity target, such as a host, tenant, organization, or account. Built-in HTTP request injection requires a string `audience.host`. |
+| `inputs` | Optional setup inputs for OAuth identity creation. Inputs can be `kind: variable` or `kind: secret`. |
+| `oauth` | Required only for `type: oauth`; declares exactly one OAuth setup method. |
+
+Identity specs do not declare source-style `auth` or `injection_method`. The
+identity `type` determines request injection. OAuth identity specs may declare
+setup `inputs`; fixed-token identity specs currently must not.
+
+## Identity Types
+
+Use separate identity specs when the instantiation behavior or semantics differ.
+For example, `github_oauth`, `github_oauth_app`, and `github_pat` are distinct
+specs even though all ultimately authenticate GitHub HTTP requests.
+
+The built-in HTTP identity runtimes require `audience.host` before injecting an
+`Authorization` header. At request time, Coral compares that host to the actual
+outbound request host and only injects credentials for the exact host or one of
+its subdomains. For example, an identity with `audience.host: github.com` may
+authenticate requests to `github.com` and `api.github.com`, but not
+`github.com.example.test`.
+
+`type: oauth` uses the `oauth.method` block to describe the provider flow,
+endpoints, client, and scopes. At request time, OAuth identities refresh stored
+token material when needed and inject `Authorization: Bearer <access-token>`
+from the identity's `ACCESS_TOKEN` material.
+
+`type: fixed_token` represents a user-supplied bearer token. At request time,
+fixed-token identities inject `Authorization: Bearer <token>` from the
+identity's `TOKEN` material.
+
+Request injection is owned by the identity provider for that type, not by the
+source spec. A source can require acceptable identity spec ids and audience, but
+it does not author how that identity mutates outbound HTTP requests.
+
+## OAuth Setup
+
+OAuth identity specs declare one setup method directly under `oauth.method`.
+The method can declare display metadata plus the OAuth `flow`, `endpoints`,
+`client`, and `scopes` blocks. If a provider supports multiple OAuth setup
+paths, author multiple identity specs and let sources list the acceptable spec
+ids.
+
+`oauth.client.id` may declare `default`, `input`, or both. A default client ID
+lets Coral run the OAuth flow without prompting the user for that value; when
+both are present, an entered input value overrides the default. If
+`oauth.client.id.input` references a declared identity input, that input must be
+`kind: variable`.
+
+Confidential OAuth clients declare `oauth.client.secret.input` plus
+`oauth.client.secret.transport`. When the secret input is declared under
+`inputs`, it must be `kind: secret`. Coral stores declared identity input
+material with the installed identity spec, not with identities instantiated
+from it, so identity materialization and token refresh can retrieve the
+spec-owned values.
+
+OAuth endpoint templates may reference declared identity inputs with
+`{{input.KEY}}`, but only `kind: variable` inputs can be used in URLs. Use this
+for non-secret endpoint components such as a tenant, host, or realm. Endpoint
+templates do not use source inputs; identity setup is global rather than
+source-scoped.
+
+## Source Identity Requirements
+
+DSL v4 source surfaces can declare `identity_requirements`. An identity spec's
+`name` is the spec id that source requirements list under `identity_specs`.
+Matching uses that spec id plus the source-declared `audience`; issuer and
+identity type do not participate in source matching.
+
+Workspace source config stores the owner slot for each identity-required
+surface. For user-owned identities, the source config does not store the
+concrete identity name or accepted branch because those can differ per Coral
+user principal:
+
+```toml
+identity_bindings = { rest = { owner = "user" } }
+```
+
+Coral stores the concrete user-owned source-surface selection separately for
+each user. In OSS Coral there is only the local `local` user, so
+`coral source add --file` creates or selects a compatible user-owned identity
+and records that local user's selection while importing the source.
+Re-running `coral source add --file` with the same DSL v4 source manifest
+replaces that local user's selected identity for the source surface.
+
+Workspace-owned identities can store the concrete identity reference in the
+workspace source config because the selection is shared by the workspace:
+
+```toml
+identity_bindings = { rest = { owner = "workspace", identity = "github_workspace", accepted_identity = "github-rest-read" } }
+```
+
+Removing an identity spec removes the global spec document and any spec-owned
+input material. Stored identity records and source bindings are not deleted.
+Identities of any owner or type that depend on the removed spec become orphaned
+and cannot satisfy source identity requirements until the same identity spec
+manifest is reinstalled, the identity is recreated from a new spec, or the
+binding is changed. When stored identities depend on the spec,
+`coral identity-spec remove` requires `--force` and reports how many stored
+identities became orphaned.
