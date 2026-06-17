@@ -135,7 +135,7 @@ $ coral sql "SELECT file, symbol, score FROM lynx.search(q => 'clamp a value bet
 ```
 
 `LIMIT` sets how many candidates Lynx returns (its `top_k`); any `WHERE` then
-filters that fetched set. With no `WHERE`, `LIMIT n` returns exactly `n` rows,
+filters that fetched set. With no `WHERE`, `LIMIT n` returns up to `n` rows,
 capped at 50:
 
 | Query | Rows returned |
