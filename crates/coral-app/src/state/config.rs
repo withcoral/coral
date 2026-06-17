@@ -85,7 +85,7 @@ struct PersistedEngineConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct PersistedMemoryConfig {
     #[serde(default)]
-    limit: Option<String>,
+    limit: Option<toml::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -541,7 +541,18 @@ fn render_engine_config(doc: &mut DocumentMut, engine: &PersistedEngineConfig) {
     memory_item
         .as_table_mut()
         .expect("engine memory config entry should be a table after initialization")["limit"] =
-        value(limit.clone());
+        render_memory_limit_value(limit);
+}
+
+fn render_memory_limit_value(limit: &toml::Value) -> Item {
+    match limit {
+        toml::Value::String(raw) => value(raw.clone()),
+        toml::Value::Integer(raw) => value(*raw),
+        toml::Value::Float(raw) => value(*raw),
+        toml::Value::Boolean(raw) => value(*raw),
+        toml::Value::Datetime(raw) => value(raw.to_string()),
+        toml::Value::Array(_) | toml::Value::Table(_) => value(limit.to_string()),
+    }
 }
 
 fn remove_engine_memory_limit(doc: &mut DocumentMut) {
@@ -613,11 +624,31 @@ impl PersistedMemoryConfig {
     fn try_into_runtime_config(self) -> Result<QueryMemoryConfig, AppError> {
         let limit = self
             .limit
-            .as_deref()
-            .map(str::parse::<MemorySize>)
-            .transpose()
-            .map_err(|error| AppError::InvalidInput(format!("engine.memory.limit: {error}")))?;
+            .as_ref()
+            .map(parse_memory_limit_value)
+            .transpose()?;
         Ok(QueryMemoryConfig::with_limit(limit))
+    }
+}
+
+fn parse_memory_limit_value(value: &toml::Value) -> Result<MemorySize, AppError> {
+    match value {
+        toml::Value::String(raw) => raw
+            .parse::<MemorySize>()
+            .map_err(|error| AppError::InvalidInput(format!("engine.memory.limit: {error}"))),
+        toml::Value::Integer(bytes) if *bytes > 0 => {
+            let bytes = usize::try_from(*bytes).map_err(|_error| {
+                AppError::InvalidInput("engine.memory.limit: memory limit is too large".to_string())
+            })?;
+            MemorySize::from_bytes(bytes)
+                .map_err(|error| AppError::InvalidInput(format!("engine.memory.limit: {error}")))
+        }
+        toml::Value::Integer(_) => Err(AppError::InvalidInput(
+            "engine.memory.limit: memory limit must be greater than 0".to_string(),
+        )),
+        _ => Err(AppError::InvalidInput(
+            "engine.memory.limit: memory limit must be a string with binary unit Ki, Mi, Gi, or Ti, or a positive integer byte count".to_string(),
+        )),
     }
 }
 
@@ -990,12 +1021,34 @@ limit = "2Gi"
     }
 
     #[test]
+    fn loads_engine_memory_config_from_integer_bytes() {
+        let raw = r"
+version = 1
+
+[engine.memory]
+limit = 2147483648
+";
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("memory config should parse")
+            .engine
+            .memory
+            .try_into_runtime_config()
+            .expect("memory config should be valid");
+
+        assert_eq!(
+            config.limit.expect("memory limit should be set").as_bytes(),
+            2 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
     fn renders_engine_memory_config() {
         let config = AppConfig {
             version: 1,
             engine: PersistedEngineConfig {
                 memory: PersistedMemoryConfig {
-                    limit: Some("2Gi".to_string()),
+                    limit: Some(toml::Value::String("2Gi".to_string())),
                 },
                 ..PersistedEngineConfig::default()
             },
@@ -1020,7 +1073,7 @@ flag = true
             version: 1,
             engine: PersistedEngineConfig {
                 memory: PersistedMemoryConfig {
-                    limit: Some("2Gi".to_string()),
+                    limit: Some(toml::Value::String("2Gi".to_string())),
                 },
                 ..PersistedEngineConfig::default()
             },
@@ -1080,6 +1133,29 @@ limit = "2GiB"
             error
                 .to_string()
                 .contains("engine.memory.limit: memory limit must use binary unit")
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_engine_memory_value_without_toml_decode_failure() {
+        let raw = r"
+version = 1
+
+[engine.memory]
+limit = true
+";
+
+        let error = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("memory config should parse")
+            .engine
+            .memory
+            .try_into_runtime_config()
+            .expect_err("unsupported memory limit should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("engine.memory.limit: memory limit must be a string")
         );
     }
 

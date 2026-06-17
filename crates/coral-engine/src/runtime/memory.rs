@@ -69,9 +69,26 @@ impl RetainedMemory {
         self.try_reserve_bytes(batch.get_array_memory_size())
     }
 
-    /// Reserves the deterministic JSON payload estimate retained by rows.
+    /// Reserves the deterministic retained-memory estimate for JSON rows.
     pub(crate) fn try_reserve_json_rows(&self, rows: &[Value]) -> Result<()> {
-        self.try_reserve_bytes(json_rows_payload_size(rows))
+        self.try_reserve_bytes(json_rows_retained_size(rows))
+    }
+
+    /// Releases bytes that are no longer retained.
+    pub(crate) fn try_shrink_bytes(&self, bytes: usize) -> Result<()> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        self.reservation.try_shrink(bytes).map(|_| ())
+    }
+
+    /// Adjusts a prior reservation to the actual retained byte count.
+    pub(crate) fn reconcile_reserved_bytes(&self, reserved: usize, actual: usize) -> Result<()> {
+        match actual.cmp(&reserved) {
+            std::cmp::Ordering::Greater => self.try_reserve_bytes(actual - reserved),
+            std::cmp::Ordering::Less => self.try_shrink_bytes(reserved - actual),
+            std::cmp::Ordering::Equal => Ok(()),
+        }
     }
 
     /// Creates a separate empty reservation under the same `DataFusion` consumer.
@@ -86,8 +103,10 @@ impl RetainedMemory {
     }
 }
 
-pub(crate) fn json_rows_payload_size(rows: &[Value]) -> usize {
-    rows.iter().map(json_value_payload_size).sum()
+pub(crate) fn json_rows_retained_size(rows: &[Value]) -> usize {
+    std::mem::size_of::<Vec<Value>>()
+        .saturating_add(rows.len().saturating_mul(std::mem::size_of::<Value>()))
+        .saturating_add(rows.iter().map(json_value_heap_size).sum())
 }
 
 /// Retained Arrow batches paired with the reservation that accounts for them.
@@ -106,11 +125,14 @@ impl RetainedRecordBatches {
         }
     }
 
-    /// Reserves and retains one Arrow batch.
-    pub(crate) fn push(&mut self, batch: RecordBatch) -> Result<()> {
-        self.memory.try_reserve_record_batch(&batch)?;
+    /// Retains one Arrow batch whose memory has already been reserved.
+    pub(crate) fn push_reserved(&mut self, batch: RecordBatch) {
         self.batches.push(batch);
-        Ok(())
+    }
+
+    /// Returns the reservation backing this retained collection.
+    pub(crate) fn memory(&self) -> &RetainedMemory {
+        &self.memory
     }
 
     /// Converts retained batches into a stream that owns the reservation.
@@ -147,17 +169,26 @@ impl RecordBatchStream for RetainedRecordBatchStream {
     }
 }
 
-fn json_value_payload_size(value: &Value) -> usize {
+fn json_value_heap_size(value: &Value) -> usize {
     match value {
-        Value::Null => 0,
-        Value::Bool(_) => 1,
-        Value::Number(_) => std::mem::size_of::<serde_json::Number>(),
-        Value::String(value) => value.len(),
-        Value::Array(values) => values.iter().map(json_value_payload_size).sum(),
-        Value::Object(values) => values
-            .iter()
-            .map(|(key, value)| key.len() + json_value_payload_size(value))
-            .sum(),
+        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
+        Value::String(value) => value.capacity(),
+        Value::Array(values) => values
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Value>())
+            .saturating_add(values.iter().map(json_value_heap_size).sum()),
+        Value::Object(values) => std::mem::size_of::<serde_json::Map<String, Value>>()
+            .saturating_add(
+                values
+                    .len()
+                    .saturating_mul(std::mem::size_of::<(String, Value)>()),
+            )
+            .saturating_add(
+                values
+                    .iter()
+                    .map(|(key, value)| key.capacity().saturating_add(json_value_heap_size(value)))
+                    .sum::<usize>(),
+            ),
     }
 }
 
@@ -168,25 +199,28 @@ mod tests {
     use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryConsumer, MemoryPool};
     use serde_json::json;
 
-    use super::{RetainedMemory, json_rows_payload_size};
+    use super::{RetainedMemory, json_rows_retained_size};
 
     #[test]
-    fn json_payload_size_is_deterministic() {
-        let rows = vec![json!({
-            "id": "abc",
-            "active": true,
-            "nested": [null, 12, "xy"]
-        })];
+    fn json_retained_size_accounts_for_rows_and_containers() {
+        let rows = vec![
+            json!({
+                "id": "abc",
+                "active": true,
+                "nested": [null, 12, "xy"]
+            }),
+            json!({}),
+            json!([]),
+            json!(null),
+        ];
 
-        let expected = "id".len()
-            + "abc".len()
-            + "active".len()
-            + 1
-            + "nested".len()
-            + std::mem::size_of::<serde_json::Number>()
-            + "xy".len();
+        let minimum = std::mem::size_of::<Vec<serde_json::Value>>()
+            + rows.len() * std::mem::size_of::<serde_json::Value>();
 
-        assert_eq!(json_rows_payload_size(&rows), expected);
+        assert!(json_rows_retained_size(&rows) >= minimum);
+        assert!(json_rows_retained_size(&[json!({})]) > 0);
+        assert!(json_rows_retained_size(&[json!([])]) > 0);
+        assert!(json_rows_retained_size(&[json!(null)]) > 0);
     }
 
     #[test]
