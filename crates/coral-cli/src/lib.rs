@@ -28,8 +28,8 @@ use clap::{
 };
 use clap_complete::{Shell, generate};
 use coral_api::v1::{
-    AddRecipeRequest, ExecuteSqlRequest, ListRecipesRequest, Recipe, RemoveRecipeRequest,
-    recipe_publish,
+    AddRecipeRequest, ExecuteSqlRequest, ListRecipesRequest, Recipe,
+    RecipeOrigin as ProtoRecipeOrigin, RemoveRecipeRequest, recipe_publish,
 };
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
@@ -737,11 +737,13 @@ async fn run_recipe(app: &AppClient, args: RecipeArgs) -> Result<(), CliError> {
                 let rows = recipes.into_iter().map(|recipe| {
                     [
                         recipe.name.clone(),
+                        recipe_origin_summary(&recipe).to_string(),
+                        recipe_status_summary(&recipe).to_string(),
                         recipe_publish_summary(&recipe),
                         recipe_columns_summary(&recipe),
                     ]
                 });
-                print_text_table(["Recipe", "Publish", "Columns"], rows);
+                print_text_table(["Recipe", "Origin", "Status", "Publish", "Columns"], rows);
             }
         }
         RecipeCommand::Add { file } => {
@@ -771,6 +773,22 @@ async fn run_recipe(app: &AppClient, args: RecipeArgs) -> Result<(), CliError> {
         }
     }
     Ok(())
+}
+
+fn recipe_origin_summary(recipe: &Recipe) -> &'static str {
+    match ProtoRecipeOrigin::try_from(recipe.origin) {
+        Ok(ProtoRecipeOrigin::Bundled) => "bundled",
+        Ok(ProtoRecipeOrigin::User) => "user",
+        Ok(ProtoRecipeOrigin::Unspecified) | Err(_) => "unknown",
+    }
+}
+
+fn recipe_status_summary(recipe: &Recipe) -> &'static str {
+    if recipe.enabled {
+        "enabled"
+    } else {
+        "disabled"
+    }
 }
 
 fn recipe_publish_summary(recipe: &Recipe) -> String {

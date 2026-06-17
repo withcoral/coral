@@ -1,10 +1,5 @@
 //! Owns user-installed recipe files and workspace inventory.
 
-#![allow(
-    dead_code,
-    reason = "recipe manager is exposed through API/CLI surfaces in later stack branches"
-)]
-
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::io::ErrorKind;
@@ -27,6 +22,8 @@ use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
 
+const RECIPE_RUNTIME_METADATA_VERSION: u32 = 1;
+
 #[derive(Clone)]
 pub(crate) struct RecipeManager {
     config_store: ConfigStore,
@@ -36,7 +33,18 @@ pub(crate) struct RecipeManager {
 struct RecipeArtifact {
     name: RecipeName,
     origin: RecipeOrigin,
+    enabled: bool,
     raw_yaml: String,
+}
+
+/// One recipe as listed by the app inventory surface.
+pub(crate) struct RecipeListing {
+    /// Runtime definition for the recipe.
+    pub(crate) definition: RecipeRuntimeDefinition,
+    /// Where this installed recipe came from.
+    pub(crate) origin: RecipeOrigin,
+    /// Whether this recipe participates in runtime publication.
+    pub(crate) enabled: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -220,8 +228,8 @@ impl RecipeManager {
     pub(crate) fn list_recipes(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Vec<RecipeRuntimeDefinition>, AppError> {
-        let artifacts = self.load_recipe_artifacts(workspace_name)?;
+    ) -> Result<Vec<RecipeListing>, AppError> {
+        let artifacts = self.load_recipe_artifacts(workspace_name, RecipeArtifactFilter::All)?;
         let mut seen_names = HashSet::new();
         let mut recipes = Vec::new();
         for artifact in artifacts {
@@ -244,7 +252,11 @@ impl RecipeManager {
                 recipe.result_columns =
                     self.cached_recipe_result_columns(workspace_name, &artifact.name);
             }
-            recipes.push(recipe);
+            recipes.push(RecipeListing {
+                definition: recipe,
+                origin: artifact.origin,
+                enabled: artifact.enabled,
+            });
         }
         Ok(recipes)
     }
@@ -255,7 +267,8 @@ impl RecipeManager {
         selected_sources: &[QuerySource],
         mut runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
     ) -> Result<Vec<RecipeRuntimeDefinition>, AppError> {
-        let artifacts = self.load_recipe_artifacts(workspace_name)?;
+        let artifacts =
+            self.load_recipe_artifacts(workspace_name, RecipeArtifactFilter::EnabledOnly)?;
         if artifacts.is_empty() {
             return Ok(Vec::new());
         }
@@ -300,18 +313,6 @@ impl RecipeManager {
         Ok(runtime_recipes)
     }
 
-    pub(crate) fn list_user_recipes(
-        &self,
-        workspace_name: &WorkspaceName,
-    ) -> Result<Vec<InstalledRecipe>, AppError> {
-        Ok(self
-            .config_store
-            .list_workspace_recipes(workspace_name)?
-            .into_iter()
-            .filter(|recipe| recipe.origin == RecipeOrigin::User)
-            .collect())
-    }
-
     pub(crate) fn remove_user_recipe(
         &self,
         workspace_name: &WorkspaceName,
@@ -354,10 +355,11 @@ impl RecipeManager {
     fn load_recipe_artifacts(
         &self,
         workspace_name: &WorkspaceName,
+        filter: RecipeArtifactFilter,
     ) -> Result<Vec<RecipeArtifact>, AppError> {
         let mut artifacts = Vec::new();
         for installed in self.config_store.list_workspace_recipes(workspace_name)? {
-            if !installed.enabled {
+            if filter == RecipeArtifactFilter::EnabledOnly && !installed.enabled {
                 continue;
             }
             let recipe_file = self.layout.recipe_file(workspace_name, &installed.name);
@@ -376,6 +378,7 @@ impl RecipeManager {
             artifacts.push(RecipeArtifact {
                 name: installed.name,
                 origin: installed.origin,
+                enabled: installed.enabled,
                 raw_yaml,
             });
         }
@@ -394,7 +397,7 @@ impl RecipeManager {
         publish_targets: &mut HashSet<PublishTarget>,
     ) -> Result<(), AppError> {
         let mut seen_names = HashSet::new();
-        for artifact in self.load_recipe_artifacts(workspace_name)? {
+        for artifact in self.load_recipe_artifacts(workspace_name, RecipeArtifactFilter::All)? {
             if artifact.name == *replacing_recipe {
                 continue;
             }
@@ -436,11 +439,21 @@ impl RecipeManager {
             }
         };
         match serde_json::from_str::<RecipeRuntimeMetadata>(&raw) {
-            Ok(metadata) => metadata
+            Ok(metadata) if metadata.version == RECIPE_RUNTIME_METADATA_VERSION => metadata
                 .result_columns
                 .into_iter()
                 .map(RecipeRuntimeResultColumn::from)
                 .collect(),
+            Ok(metadata) => {
+                tracing::warn!(
+                    recipe = %recipe_name,
+                    path = %metadata_file.display(),
+                    version = metadata.version,
+                    supported_version = RECIPE_RUNTIME_METADATA_VERSION,
+                    "ignoring recipe runtime metadata because its version is unsupported"
+                );
+                Vec::new()
+            }
             Err(error) => {
                 tracing::warn!(
                     recipe = %recipe_name,
@@ -452,6 +465,12 @@ impl RecipeManager {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecipeArtifactFilter {
+    All,
+    EnabledOnly,
 }
 
 fn skip_recipe(artifact: &RecipeArtifact, detail: fmt::Arguments<'_>) {
@@ -645,7 +664,7 @@ fn write_recipe_runtime_metadata(
 ) -> Result<(), AppError> {
     if let Some(runtime_recipe) = runtime_recipe {
         let metadata = RecipeRuntimeMetadata {
-            version: 1,
+            version: RECIPE_RUNTIME_METADATA_VERSION,
             validation_args: validation_arguments
                 .iter()
                 .map(|(name, value)| (name.clone(), CachedRecipeArgumentValue::from(value)))
@@ -807,9 +826,12 @@ publish:
         assert!(raw.contains("name: review_queue"));
         assert_eq!(
             manager
-                .list_user_recipes(&workspace)
+                .config_store
+                .list_workspace_recipes(&workspace)
                 .expect("list recipes")
-                .len(),
+                .into_iter()
+                .filter(|recipe| recipe.origin == RecipeOrigin::User)
+                .count(),
             1
         );
     }
@@ -842,12 +864,45 @@ publish:
         let listed = manager.list_recipes(&workspace).expect("list recipes");
         assert_eq!(listed.len(), 1);
         let listed_recipe = listed.first().expect("listed recipe");
-        assert_eq!(listed_recipe.result_columns.len(), 1);
+        assert_eq!(listed_recipe.origin, RecipeOrigin::User);
+        assert!(listed_recipe.enabled);
+        assert_eq!(listed_recipe.definition.result_columns.len(), 1);
         let column = listed_recipe
+            .definition
             .result_columns
             .first()
             .expect("id result column");
         assert_eq!(column.name, "id");
+    }
+
+    #[test]
+    fn list_recipes_ignores_unsupported_runtime_metadata_version() {
+        let (_temp, layout, manager) = fixture();
+        let workspace = workspace();
+        let raw_yaml = recipe_yaml("review_queue");
+        install_fixture_recipe(&manager, &workspace, &raw_yaml);
+        let recipe_name = RecipeName::parse("review_queue").expect("recipe name");
+        std::fs::write(
+            layout.recipe_runtime_file(&workspace, &recipe_name),
+            r#"
+{
+  "version": 999,
+  "result_columns": [
+    {"name": "id", "data_type": "Int64", "nullable": false}
+  ]
+}
+"#,
+        )
+        .expect("write unsupported runtime metadata");
+
+        let listed = manager.list_recipes(&workspace).expect("list recipes");
+
+        assert_eq!(listed.len(), 1);
+        let listed_recipe = listed.first().expect("listed recipe");
+        assert!(
+            listed_recipe.definition.result_columns.is_empty(),
+            "unsupported cached runtime metadata should not drive list output"
+        );
     }
 
     #[test]
@@ -863,12 +918,14 @@ publish:
             .expect("remove recipe");
 
         assert!(!layout.recipe_dir(&workspace, &recipe_name).exists());
-        assert!(
-            manager
-                .list_user_recipes(&workspace)
-                .expect("list recipes")
-                .is_empty()
-        );
+        let user_recipe_count = manager
+            .config_store
+            .list_workspace_recipes(&workspace)
+            .expect("list recipes")
+            .into_iter()
+            .filter(|recipe| recipe.origin == RecipeOrigin::User)
+            .count();
+        assert_eq!(user_recipe_count, 0);
     }
 
     #[tokio::test]
