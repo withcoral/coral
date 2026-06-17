@@ -69,6 +69,10 @@ message Recipe {
   repeated RecipePublish publish = 4;
   // Inferred result columns.
   repeated RecipeResultColumn result_columns = 5;
+  // Where the installed recipe came from.
+  RecipeOrigin origin = 6;
+  // Whether this recipe participates in runtime publication.
+  bool enabled = 7;
 }
 
 // Installs or replaces one user recipe.

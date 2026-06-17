@@ -22,7 +22,7 @@ use crate::query::QueryAttribution;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
-use crate::recipes::manager::RecipeManager;
+use crate::recipes::manager::{RecipeListing, RecipeManager};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{
@@ -416,7 +416,7 @@ impl QueryManager {
     pub(crate) fn list_recipes(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Vec<RecipeRuntimeDefinition>, QueryManagerError> {
+    ) -> Result<Vec<RecipeListing>, QueryManagerError> {
         self.recipe_manager
             .list_recipes(workspace_name)
             .map_err(QueryManagerError::App)
@@ -689,6 +689,7 @@ mod tests {
 
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
+    use crate::recipes::model::RecipeOrigin;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
 
@@ -1217,7 +1218,13 @@ publish:
             .expect("recipes");
         assert_eq!(recipes.len(), 1);
         let recipe = recipes.first().expect("recipe");
-        let column = recipe.result_columns.first().expect("text result column");
+        assert_eq!(recipe.origin, RecipeOrigin::User);
+        assert!(recipe.enabled);
+        let column = recipe
+            .definition
+            .result_columns
+            .first()
+            .expect("text result column");
         assert_eq!(column.name, "text");
 
         let execution = fixture
