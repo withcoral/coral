@@ -32,6 +32,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::codegen::http::header::CONTENT_TYPE;
 use tonic::codegen::http::{HeaderValue, Method, Request, Response, StatusCode};
+use tonic::server::NamedService;
 use tonic::service::Routes;
 use tonic::transport::Server;
 use tonic_web::GrpcWebLayer;
@@ -87,6 +88,30 @@ pub trait StaticAssetsProvider: Send + Sync + 'static {
     fn get(&self, path: &str) -> Option<StaticAsset>;
 }
 
+type GrpcRouteExtender = Arc<dyn Fn(&ServerExtensionContext, Routes) -> Routes + Send + Sync>;
+type SourceIdentityProviderFactory =
+    Arc<dyn Fn(&ServerExtensionContext) -> Arc<dyn SourceIdentityProvider> + Send + Sync>;
+
+/// Runtime context supplied to server extensions.
+#[derive(Clone)]
+pub struct ServerExtensionContext {
+    identity_management: IdentityManagementHandle,
+}
+
+impl ServerExtensionContext {
+    fn new(identity_management: IdentityManagementHandle) -> Self {
+        Self {
+            identity_management,
+        }
+    }
+
+    /// Returns the shared identity management handle for this server.
+    #[must_use]
+    pub fn identity_management(&self) -> &IdentityManagementHandle {
+        &self.identity_management
+    }
+}
+
 /// Server-side bootstrap configuration for the Coral server.
 #[derive(Clone)]
 pub(crate) struct ServerConfig {
@@ -98,9 +123,11 @@ pub(crate) struct ServerConfig {
     feature_overrides: FeatureOverrides,
     identity_store: Option<Arc<dyn IdentityStore>>,
     source_identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
+    source_identity_provider_factories: Vec<SourceIdentityProviderFactory>,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
+    grpc_route_extenders: Vec<GrpcRouteExtender>,
     enable_stderr_logs: bool,
 }
 
@@ -121,9 +148,11 @@ impl ServerConfig {
             feature_overrides: FeatureOverrides::default(),
             identity_store: None,
             source_identity_providers: Vec::new(),
+            source_identity_provider_factories: Vec::new(),
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             management_authorizer: Arc::new(AllowAllManagementAuthorizer),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
+            grpc_route_extenders: Vec::new(),
             enable_stderr_logs: false,
         }
     }
@@ -195,6 +224,20 @@ impl ServerConfig {
     ) -> Self {
         self.source_identity_providers
             .push(source_identity_provider);
+        self
+    }
+
+    pub(crate) fn add_source_identity_provider_factory(
+        mut self,
+        source_identity_provider_factory: SourceIdentityProviderFactory,
+    ) -> Self {
+        self.source_identity_provider_factories
+            .push(source_identity_provider_factory);
+        self
+    }
+
+    pub(crate) fn add_grpc_route_extender(mut self, extender: GrpcRouteExtender) -> Self {
+        self.grpc_route_extenders.push(extender);
         self
     }
 
@@ -389,6 +432,26 @@ impl ServerBuilder {
     }
 
     #[must_use]
+    /// Adds a provider factory that receives server runtime extension context.
+    ///
+    /// Use this when a provider needs access to shared managers created during
+    /// server startup, such as identity management.
+    pub fn add_source_identity_provider_factory(
+        mut self,
+        source_identity_provider_factory: impl Fn(
+            &ServerExtensionContext,
+        ) -> Arc<dyn SourceIdentityProvider>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.config = self
+            .config
+            .add_source_identity_provider_factory(Arc::new(source_identity_provider_factory));
+        self
+    }
+
+    #[must_use]
     /// Enables or disables local stderr log rendering for this server.
     ///
     /// `MCP` stdio adapters can enable this for diagnostics while keeping
@@ -396,6 +459,53 @@ impl ServerBuilder {
     /// leave it disabled and rely on OTEL export for logs.
     pub fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
         self.config = self.config.with_stderr_logs(enable_stderr_logs);
+        self
+    }
+
+    #[must_use]
+    /// Adds an already constructed gRPC service to the Coral listener.
+    pub fn add_grpc_service<S>(mut self, service: S) -> Self
+    where
+        S: Service<Request<tonic::body::Body>, Error = Infallible>
+            + NamedService
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        S::Response: axum::response::IntoResponse,
+        S::Future: Send + 'static,
+    {
+        let service = Arc::new(service);
+        self.config = self
+            .config
+            .add_grpc_route_extender(Arc::new(move |_context, routes| {
+                routes.add_service((*service).clone())
+            }));
+        self
+    }
+
+    #[must_use]
+    /// Adds a gRPC service factory to the Coral listener.
+    ///
+    /// The factory runs after core server managers are initialized and receives
+    /// [`ServerExtensionContext`], allowing services to reuse shared managers.
+    pub fn add_grpc_service_factory<F, S>(mut self, factory: F) -> Self
+    where
+        F: Fn(&ServerExtensionContext) -> S + Send + Sync + 'static,
+        S: Service<Request<tonic::body::Body>, Error = Infallible>
+            + NamedService
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        S::Response: axum::response::IntoResponse,
+        S::Future: Send + 'static,
+    {
+        self.config = self
+            .config
+            .add_grpc_route_extender(Arc::new(move |context, routes| {
+                routes.add_service(factory(context))
+            }));
         self
     }
 
@@ -465,14 +575,18 @@ impl ServerBuilder {
             identity_spec_manager.clone(),
             identity_store,
         );
+        let extension_context = ServerExtensionContext::new(identity_manager.handle());
+        let mut source_identity_providers = self.config.source_identity_providers;
+        for source_identity_provider_factory in self.config.source_identity_provider_factories {
+            source_identity_providers.push(source_identity_provider_factory(&extension_context));
+        }
+        source_identity_providers.push(Arc::new(identity_manager.clone()));
         let source_manager = SourceManager::new_with_features(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
             features.clone(),
         );
-        let mut source_identity_providers = self.config.source_identity_providers;
-        source_identity_providers.push(Arc::new(identity_manager.clone()));
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let episode_store = EpisodeStore::new(layout.clone());
@@ -510,6 +624,8 @@ impl ServerBuilder {
                 management_authorizer: self.config.management_authorizer,
                 identity_spec_manager,
                 identity_manager,
+                grpc_route_extenders: self.config.grpc_route_extenders,
+                extension_context,
             },
             self.config.mode,
         )
@@ -549,6 +665,8 @@ struct ServerServices {
     management_authorizer: Arc<dyn ManagementAuthorizer>,
     identity_spec_manager: IdentitySpecManager,
     identity_manager: IdentityManager,
+    grpc_route_extenders: Vec<GrpcRouteExtender>,
+    extension_context: ServerExtensionContext,
 }
 
 /// Running Coral server.
@@ -642,6 +760,8 @@ async fn start_server(
         management_authorizer,
         identity_spec_manager,
         identity_manager,
+        grpc_route_extenders,
+        extension_context,
     } = services;
     let source_service = SourceService::new(
         source_manager,
@@ -684,6 +804,9 @@ async fn start_server(
             TraceServiceServer::new(trace_service)
                 .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
         );
+    }
+    for extend_routes in grpc_route_extenders {
+        routes = extend_routes(&extension_context, routes);
     }
 
     let listener = TcpListener::bind(mode.bind_addr()).await?;
@@ -915,7 +1038,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::net::{Ipv4Addr, TcpListener};
     use std::path::Path;
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use coral_api::v1::episode_service_client::EpisodeServiceClient;
@@ -923,21 +1047,29 @@ mod tests {
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
+    use coral_api::v1::trace_service_server::{
+        TraceService as TraceServiceApi, TraceServiceServer,
+    };
     use coral_api::v1::{
         AddIdentitySpecRequest, CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
-        DeleteIdentitySpecRequest, DeleteSourceRequest, ExecuteSqlRequest, IdentitySpecInputValue,
-        ImportSourceRequest, ImportSourceResponse, ListSourcesRequest, ListTracesRequest,
-        OpenEpisodeRequest, Workspace, import_source_response,
+        DeleteIdentitySpecRequest, DeleteSourceRequest, ExecuteSqlRequest, GetTraceRequest,
+        GetTraceResponse, IdentitySpecInputValue, ImportSourceRequest, ImportSourceResponse,
+        ListSourcesRequest, ListTracesRequest, ListTracesResponse, OpenEpisodeRequest, Workspace,
+        import_source_response,
     };
-    use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
+    use coral_api::{
+        HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
+        TRACE_RESPONSE_MAX_MESSAGE_SIZE,
+    };
     use coral_engine::QueryRuntimeContext;
     use tempfile::TempDir;
     use tonic::transport::Endpoint;
-    use tonic::{Code, Request};
+    use tonic::{Code, Request, Response, Status};
 
     use super::{
-        RunningServer, ServerBuilder, ServerMode, ServerServices, StaticAsset,
-        StaticAssetsProvider, is_grpc_web_content_type, is_native_grpc_content_type, start_server,
+        RunningServer, ServerBuilder, ServerExtensionContext, ServerMode, ServerServices,
+        StaticAsset, StaticAssetsProvider, is_grpc_web_content_type, is_native_grpc_content_type,
+        start_server,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::episode::store::EpisodeStore;
@@ -957,7 +1089,9 @@ mod tests {
     use crate::{
         AllowAllManagementAuthorizer, AppError, AuthorizationError, AwsEngineExtensionsProvider,
         ManagementAuthorizer, ManagementMutation, NoopEngineExtensionsProvider,
-        ResourceMutationKind, SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider,
+        ResourceMutationKind, RuntimeSourceIdentity, SingleUserPrincipalProvider,
+        SourceIdentityProvider, SourceIdentityResolutionRequest, UserPrincipal,
+        UserPrincipalProvider,
     };
 
     fn default_workspace() -> Workspace {
@@ -1139,6 +1273,47 @@ enabled = false
                 )),
                 _ => Ok(()),
             }
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoopSourceIdentityProvider;
+
+    #[tonic::async_trait]
+    impl SourceIdentityProvider for NoopSourceIdentityProvider {
+        async fn resolve_source_identity(
+            &self,
+            _request: &SourceIdentityResolutionRequest,
+        ) -> Result<Option<Arc<dyn RuntimeSourceIdentity>>, AppError> {
+            Ok(None)
+        }
+    }
+
+    #[derive(Clone)]
+    struct MethodRecordingTraceService {
+        observed_method: Arc<Mutex<Option<(String, String)>>>,
+    }
+
+    #[tonic::async_trait]
+    impl TraceServiceApi for MethodRecordingTraceService {
+        async fn list_traces(
+            &self,
+            request: Request<ListTracesRequest>,
+        ) -> Result<Response<ListTracesResponse>, Status> {
+            let metadata = crate::transport::grpc_method(&request);
+            *self.observed_method.lock().expect("recorded method lock") =
+                Some((metadata.service, metadata.method));
+            Ok(Response::new(ListTracesResponse {
+                traces: Vec::new(),
+                next_page_token: String::new(),
+            }))
+        }
+
+        async fn get_trace(
+            &self,
+            _request: Request<GetTraceRequest>,
+        ) -> Result<Response<GetTraceResponse>, Status> {
+            Err(Status::unimplemented("unused in test"))
         }
     }
 
@@ -1417,6 +1592,109 @@ type: fixed_token
     }
 
     #[tokio::test]
+    async fn server_builder_extension_factories_receive_context() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let source_factory_called = Arc::new(AtomicBool::new(false));
+        let grpc_factory_called = Arc::new(AtomicBool::new(false));
+        let trace_store = temp.path().join("factory-trace-store");
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir)
+            .add_source_identity_provider_factory({
+                let source_factory_called = Arc::clone(&source_factory_called);
+                move |context| {
+                    let _identity_management = context.identity_management().clone();
+                    source_factory_called.store(true, Ordering::SeqCst);
+                    Arc::new(NoopSourceIdentityProvider)
+                }
+            })
+            .add_grpc_service_factory({
+                let grpc_factory_called = Arc::clone(&grpc_factory_called);
+                move |context| {
+                    let _identity_management = context.identity_management().clone();
+                    grpc_factory_called.store(true, Ordering::SeqCst);
+                    TraceServiceServer::new(TraceService::new(
+                        trace_store.clone(),
+                        Duration::from_mins(1),
+                    ))
+                    .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE)
+                }
+            })
+            .start()
+            .await
+            .expect("start server");
+
+        assert!(source_factory_called.load(Ordering::SeqCst));
+        assert!(grpc_factory_called.load(Ordering::SeqCst));
+
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut trace_client = TraceServiceClient::new(channel);
+        let response = trace_client
+            .list_traces(Request::new(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+            }))
+            .await
+            .expect("factory-mounted trace service should be registered")
+            .into_inner();
+
+        assert!(response.traces.is_empty());
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn extension_grpc_services_receive_method_metadata() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let observed_method = Arc::new(Mutex::new(None));
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir)
+            .add_grpc_service_factory({
+                let observed_method = Arc::clone(&observed_method);
+                move |_context| {
+                    TraceServiceServer::new(MethodRecordingTraceService {
+                        observed_method: Arc::clone(&observed_method),
+                    })
+                }
+            })
+            .start()
+            .await
+            .expect("start server");
+
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut trace_client = TraceServiceClient::new(channel);
+        trace_client
+            .list_traces(Request::new(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+            }))
+            .await
+            .expect("extension-mounted trace service should be registered");
+
+        assert_eq!(
+            observed_method
+                .lock()
+                .expect("recorded method lock")
+                .as_ref(),
+            Some(&(
+                "coral.v1.TraceService".to_string(),
+                "ListTraces".to_string()
+            ))
+        );
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
     async fn server_builder_applies_process_feature_overrides() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
@@ -1587,7 +1865,9 @@ type: fixed_token
                 user_principal_provider,
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
                 identity_spec_manager,
-                identity_manager,
+                identity_manager: identity_manager.clone(),
+                grpc_route_extenders: Vec::new(),
+                extension_context: ServerExtensionContext::new(identity_manager.handle()),
             },
             ServerMode::NativeGrpc,
         )
@@ -1635,6 +1915,16 @@ type: fixed_token
         let _builder = ServerBuilder::new()
             .add_engine_extensions_provider(Arc::new(AwsEngineExtensionsProvider))
             .add_engine_extensions_provider(Arc::new(NoopEngineExtensionsProvider));
+    }
+
+    #[test]
+    fn server_builder_accepts_static_grpc_services() {
+        let temp = TempDir::new().expect("temp dir");
+        let service = TraceServiceServer::new(TraceService::new(
+            temp.path().join("trace-store"),
+            Duration::from_mins(1),
+        ));
+        let _builder = ServerBuilder::new().add_grpc_service(service);
     }
 
     #[test]
@@ -2016,7 +2306,9 @@ tables:
                 user_principal_provider: Arc::new(SingleUserPrincipalProvider),
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
                 identity_spec_manager,
-                identity_manager,
+                identity_manager: identity_manager.clone(),
+                grpc_route_extenders: Vec::new(),
+                extension_context: ServerExtensionContext::new(identity_manager.handle()),
             },
             ServerMode::NativeGrpc,
         )
@@ -2129,7 +2421,9 @@ tables:
                 user_principal_provider: Arc::new(SingleUserPrincipalProvider),
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
                 identity_spec_manager,
-                identity_manager,
+                identity_manager: identity_manager.clone(),
+                grpc_route_extenders: Vec::new(),
+                extension_context: ServerExtensionContext::new(identity_manager.handle()),
             },
             ServerMode::NativeGrpc,
         )
@@ -2238,7 +2532,9 @@ tables:
                 user_principal_provider: Arc::new(SingleUserPrincipalProvider),
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
                 identity_spec_manager,
-                identity_manager,
+                identity_manager: identity_manager.clone(),
+                grpc_route_extenders: Vec::new(),
+                extension_context: ServerExtensionContext::new(identity_manager.handle()),
             },
             ServerMode::NativeGrpc,
         )

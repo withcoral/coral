@@ -218,9 +218,9 @@ impl GrpcServerMethod {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct GrpcMethodMetadata {
-    service: String,
-    method: String,
+pub(crate) struct GrpcMethodMetadata {
+    pub(crate) service: String,
+    pub(crate) method: String,
 }
 
 impl GrpcMethodMetadata {
@@ -232,7 +232,7 @@ impl GrpcMethodMetadata {
     }
 }
 
-fn grpc_method<T>(request: &Request<T>) -> GrpcMethodMetadata {
+pub(crate) fn grpc_method<T>(request: &Request<T>) -> GrpcMethodMetadata {
     if let Some(method) = request.extensions().get::<tonic::GrpcMethod<'static>>() {
         return GrpcMethodMetadata::new(method.service(), method.method());
     }

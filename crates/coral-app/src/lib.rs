@@ -66,7 +66,8 @@ pub use authorization::{
     ResourceMutationKind, WorkspaceSourceMutationKind,
 };
 pub use bootstrap::{
-    AppError, RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
+    AppError, RunningServer, ServerBuilder, ServerExtensionContext, ServerMode, StaticAsset,
+    StaticAssetsProvider,
 };
 pub use coral_engine::{
     EngineExtensions, QuerySource, RequestIdentityHttpAuthenticator,

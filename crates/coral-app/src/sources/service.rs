@@ -44,7 +44,7 @@ use crate::bootstrap::{AppError, app_status};
 use crate::credentials::CredentialStorageKind;
 use crate::identities::IdentityManager;
 use crate::identity::{
-    IdentityOwnerKind as AppSourceIdentityOwner, SourceIdentityBinding as AppSourceIdentityBinding,
+    IdentityOwnerKind, SourceIdentityBinding as AppSourceIdentityBinding,
     SourceIdentitySelection as AppSourceIdentitySelection, UserPrincipal,
 };
 use crate::identity_specs::{IdentitySpecInputValue, IdentitySpecManager, IdentitySpecSnapshot};
@@ -74,7 +74,7 @@ pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
     identity_specs: IdentitySpecManager,
-    identity_instances: IdentityManager,
+    identities: IdentityManager,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
 }
 
@@ -83,14 +83,14 @@ impl SourceService {
         source_manager: SourceManager,
         query_manager: QueryManager,
         identity_spec_manager: IdentitySpecManager,
-        identity_instance_manager: IdentityManager,
+        identity_manager: IdentityManager,
         management_authorizer: Arc<dyn ManagementAuthorizer>,
     ) -> Self {
         Self {
             sources: source_manager,
             queries: query_manager,
             identity_specs: identity_spec_manager,
-            identity_instances: identity_instance_manager,
+            identities: identity_manager,
             management_authorizer,
         }
     }
@@ -283,7 +283,7 @@ impl SourceServiceApi for SourceService {
         let sources = self.sources.clone();
         let management_authorizer = Arc::clone(&self.management_authorizer);
         let identity_specs = self.identity_specs.clone();
-        let identity_instances = self.identity_instances.clone();
+        let identities = self.identities.clone();
         instrument_grpc(span, async move {
             let principal = RequestContext::from_request(&request)?.principal().clone();
             let request = request.into_inner();
@@ -309,14 +309,7 @@ impl SourceServiceApi for SourceService {
                     .await
                     .map_err(authorization_status)?;
             }
-            handle_import_source(
-                sources,
-                identity_specs,
-                identity_instances,
-                principal,
-                request,
-            )
-            .await
+            handle_import_source(sources, identity_specs, identities, principal, request).await
         })
         .await
     }
@@ -382,7 +375,7 @@ impl SourceServiceApi for SourceService {
 async fn handle_import_source(
     sources: SourceManager,
     identity_specs: IdentitySpecManager,
-    identity_instances: IdentityManager,
+    identities: IdentityManager,
     principal: UserPrincipal,
     request: ImportSourceRequest,
 ) -> Result<Response<ImportSourceResponseStreamBox>, Status> {
@@ -395,7 +388,7 @@ async fn handle_import_source(
         .map_err(app_status)?;
     let identity_context = ImportSourceIdentityContext {
         identity_specs,
-        identity_instances,
+        identities,
         identity_spec_manifest_yamls: request.identity_spec_manifest_yamls,
         identity_spec_inputs: identity_spec_import_inputs_from_proto(request.identity_spec_inputs)
             .map_err(app_status)?,
@@ -443,7 +436,7 @@ async fn handle_import_source(
 
 struct ImportSourceIdentityContext {
     identity_specs: IdentitySpecManager,
-    identity_instances: IdentityManager,
+    identities: IdentityManager,
     identity_spec_manifest_yamls: Vec<String>,
     identity_spec_inputs: Vec<IdentitySpecImportInputValues>,
     user_principal: Option<UserPrincipal>,
@@ -462,7 +455,7 @@ async fn handle_import_source_without_credentials(
     let prepared_user_bindings =
         prepare_user_source_identity_bindings_for_import(ValidateUserSourceIdentityImport {
             sources: &sources,
-            identities: &identity_context.identity_instances,
+            identities: &identity_context.identities,
             principal: identity_context.user_principal.as_ref(),
             workspace_name: &workspace_name,
             manifest_yaml: &command.manifest_yaml,
@@ -472,7 +465,7 @@ async fn handle_import_source_without_credentials(
         })
         .await?;
     let user_binding_guard = persist_user_source_identity_bindings_for_import(
-        &identity_context.identity_instances,
+        &identity_context.identities,
         identity_context.user_principal.as_ref(),
         &workspace_name,
         &source_name,
@@ -527,7 +520,7 @@ async fn handle_import_source_with_credentials(
     let prepared_user_bindings =
         prepare_user_source_identity_bindings_for_import(ValidateUserSourceIdentityImport {
             sources: &sources,
-            identities: &identity_context.identity_instances,
+            identities: &identity_context.identities,
             principal: identity_context.user_principal.as_ref(),
             workspace_name: &workspace_name,
             manifest_yaml: &command.manifest_yaml,
@@ -540,7 +533,7 @@ async fn handle_import_source_with_credentials(
         instrument_grpc(span, async move {
             let identity_spec_guard = identity_spec_guard;
             let user_binding_guard = persist_user_source_identity_bindings_for_import(
-                &identity_context.identity_instances,
+                &identity_context.identities,
                 identity_context.user_principal.as_ref(),
                 &workspace_name,
                 &source_name,
@@ -776,8 +769,8 @@ fn import_source_identity_bindings_from_proto(
     let mut user_selections = BTreeMap::new();
     for binding in bindings {
         let owner = match ProtoIdentityOwner::try_from(binding.owner) {
-            Ok(ProtoIdentityOwner::User) => AppSourceIdentityOwner::User,
-            Ok(ProtoIdentityOwner::Workspace) => AppSourceIdentityOwner::Workspace,
+            Ok(ProtoIdentityOwner::User) => IdentityOwnerKind::User,
+            Ok(ProtoIdentityOwner::Workspace) => IdentityOwnerKind::Workspace,
             Ok(ProtoIdentityOwner::Unspecified) | Err(_) => {
                 return Err(AppError::InvalidInput(format!(
                     "source identity binding for surface '{}' has invalid owner",
@@ -792,7 +785,7 @@ fn import_source_identity_bindings_from_proto(
             )));
         }
         let binding = match owner {
-            AppSourceIdentityOwner::User => {
+            IdentityOwnerKind::User => {
                 if binding.identity.is_empty() {
                     return Err(AppError::InvalidInput(format!(
                         "user-owned source identity binding for surface '{surface_id}' requires identity"
@@ -804,7 +797,7 @@ fn import_source_identity_bindings_from_proto(
                 );
                 AppSourceIdentityBinding::user_owned()
             }
-            AppSourceIdentityOwner::Workspace => {
+            IdentityOwnerKind::Workspace => {
                 AppSourceIdentityBinding::workspace_owned(binding.identity)?
             }
         };
@@ -1046,7 +1039,7 @@ fn validate_user_source_identity_bindings_for_slots(
     selections: &BTreeMap<String, AppSourceIdentitySelection>,
 ) -> Result<(), AppError> {
     for (surface_id, slot) in required_slots {
-        if slot.owner == AppSourceIdentityOwner::User && !selections.contains_key(surface_id) {
+        if slot.owner == IdentityOwnerKind::User && !selections.contains_key(surface_id) {
             return Err(AppError::InvalidInput(format!(
                 "user-owned source identity binding for surface '{surface_id}' requires an identity selection"
             )));
@@ -1066,7 +1059,7 @@ fn require_user_owned_slot(
     surface_id: &str,
 ) -> Result<(), AppError> {
     match slots.get(surface_id) {
-        Some(slot) if slot.owner == AppSourceIdentityOwner::User => Ok(()),
+        Some(slot) if slot.owner == IdentityOwnerKind::User => Ok(()),
         Some(_) => Err(AppError::InvalidInput(format!(
             "identity selection for surface '{surface_id}' targets a workspace-owned source identity binding"
         ))),
@@ -1496,8 +1489,8 @@ fn source_identity_binding_to_proto(
     binding: AppSourceIdentityBinding,
 ) -> ProtoSourceIdentityBinding {
     let owner = match binding.owner {
-        AppSourceIdentityOwner::User => ProtoIdentityOwner::User,
-        AppSourceIdentityOwner::Workspace => ProtoIdentityOwner::Workspace,
+        IdentityOwnerKind::User => ProtoIdentityOwner::User,
+        IdentityOwnerKind::Workspace => ProtoIdentityOwner::Workspace,
     };
     ProtoSourceIdentityBinding {
         surface_id,
