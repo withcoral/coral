@@ -21,16 +21,21 @@ byte leaving your machine.
 
    ```bash
    pipx install lynx-mcp                     # or: uv tool install lynx-mcp
-   lynx manager init                         # downloads the embedding model (writes an EMPTY config)
+   lynx manager init                         # downloads the embedding model + writes a default config (NO sources yet)
    lynx manager ui --port 8765 --no-browser  # serves the local API on 127.0.0.1:8765
    ```
 
-   `lynx manager init` creates an **empty** config — it does not index
-   anything on its own. Open <http://127.0.0.1:8765> and use
-   **+ Add your first source** to add a codebase, docs site, or PDF folder;
-   the UI indexes it for you. Leave this process running — it's the API
-   Coral talks to. (Prefer config-based setup? Edit `config.json` to add a
-   source, then `lynx build`.)
+   `lynx manager init` writes a default config with **no sources yet** — it
+   does not index anything on its own. Open <http://127.0.0.1:8765> and use
+   **+ Add your first source** to add a codebase, docs site, or PDF folder.
+   Adding a source only writes its config; it starts at **0 chunks**. On the
+   source detail page that opens, click **Rebuild index** and wait for it to
+   finish — that step is what actually indexes the source. A source with 0
+   chunks returns empty Coral results, so do this before validating. Leave the
+   `lynx manager ui` process running afterwards; it's the API Coral talks to.
+   (Prefer a config-based setup? Add the source to `config.json`, run
+   `lynx build --source <name>`, then start `lynx manager ui`. Don't run a CLI
+   build against a source while another process is writing to it.)
 
 2. Register this source. The only input is `LYNX_PORT` (default `8765`):
 
