@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -15,6 +16,12 @@ use coral_engine::{
 use coral_spec::v4::IdentityRequirements;
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::{KeyValue, trace::Status as OtelStatus};
+use sqlparser::ast::{
+    Expr, Ident, ObjectName, ObjectNamePart, Query, SelectItem, SelectItemQualifiedWildcardKind,
+    SetExpr, VisitMut, VisitorMut,
+};
+use sqlparser::dialect::GenericDialect;
+use sqlparser::parser::Parser;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
@@ -460,7 +467,11 @@ impl QueryManager {
                     authored_version: source_spec.source_version().map(ToString::to_string),
                     description: source_spec.description().to_string(),
                     declared_inputs: source_spec.declared_inputs().to_vec(),
-                    test_queries: source_spec.test_queries().to_vec(),
+                    test_queries: runtime_test_queries_for_source(
+                        source_spec.schema_name(),
+                        source.name.as_str(),
+                        source_spec.test_queries(),
+                    ),
                     components,
                 },
                 source.variables.clone(),
@@ -696,6 +707,142 @@ fn identity_requirements_for_source(
             RuntimeSourceComponent::Http(component) => component.identity_requirements.clone(),
             RuntimeSourceComponent::File(_) | RuntimeSourceComponent::Mcp(_) => None,
         })
+}
+
+fn runtime_test_queries_for_source(
+    authored_source_name: &str,
+    runtime_source_name: &str,
+    test_queries: &[String],
+) -> Vec<String> {
+    if authored_source_name == runtime_source_name {
+        return test_queries.to_vec();
+    }
+
+    test_queries
+        .iter()
+        .map(|sql| {
+            rewrite_test_query_source_name(sql, authored_source_name, runtime_source_name)
+                .unwrap_or_else(|| sql.clone())
+        })
+        .collect()
+}
+
+fn rewrite_test_query_source_name(
+    sql: &str,
+    authored_source_name: &str,
+    runtime_source_name: &str,
+) -> Option<String> {
+    let dialect = GenericDialect {};
+    let mut statements = Parser::parse_sql(&dialect, sql).ok()?;
+    let mut rewriter = SourceNameTestQueryRewriter {
+        authored_source_name,
+        runtime_source_name,
+        rewritten: false,
+    };
+    if statements.visit(&mut rewriter).is_break() {
+        return None;
+    }
+    if rewriter.rewritten {
+        Some(
+            statements
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    } else {
+        None
+    }
+}
+
+struct SourceNameTestQueryRewriter<'a> {
+    authored_source_name: &'a str,
+    runtime_source_name: &'a str,
+    rewritten: bool,
+}
+
+impl SourceNameTestQueryRewriter<'_> {
+    fn runtime_source_ident(&self) -> Ident {
+        Ident::with_quote('"', self.runtime_source_name)
+    }
+
+    fn rewrite_ident(&mut self, ident: &mut Ident) {
+        if ident.value == self.authored_source_name {
+            *ident = self.runtime_source_ident();
+            self.rewritten = true;
+        }
+    }
+
+    fn rewrite_object_name_source_prefix(
+        &mut self,
+        object_name: &mut ObjectName,
+        minimum_parts: usize,
+    ) {
+        if object_name.0.len() < minimum_parts {
+            return;
+        }
+        let Some(ObjectNamePart::Identifier(source)) = object_name.0.first_mut() else {
+            return;
+        };
+        self.rewrite_ident(source);
+    }
+
+    fn rewrite_select_item_qualified_wildcards(&mut self, set_expr: &mut SetExpr) {
+        match set_expr {
+            SetExpr::Select(select) => {
+                for item in &mut select.projection {
+                    let SelectItem::QualifiedWildcard(
+                        SelectItemQualifiedWildcardKind::ObjectName(object_name),
+                        _,
+                    ) = item
+                    else {
+                        continue;
+                    };
+                    self.rewrite_object_name_source_prefix(object_name, 2);
+                }
+            }
+            SetExpr::Query(query) => self.rewrite_select_item_qualified_wildcards(&mut query.body),
+            SetExpr::SetOperation { left, right, .. } => {
+                self.rewrite_select_item_qualified_wildcards(left);
+                self.rewrite_select_item_qualified_wildcards(right);
+            }
+            SetExpr::Values(_)
+            | SetExpr::Insert(_)
+            | SetExpr::Update(_)
+            | SetExpr::Delete(_)
+            | SetExpr::Merge(_)
+            | SetExpr::Table(_) => {}
+        }
+    }
+}
+
+impl VisitorMut for SourceNameTestQueryRewriter<'_> {
+    type Break = ();
+
+    fn pre_visit_query(&mut self, query: &mut Query) -> ControlFlow<Self::Break> {
+        self.rewrite_select_item_qualified_wildcards(&mut query.body);
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_relation(&mut self, relation: &mut ObjectName) -> ControlFlow<Self::Break> {
+        self.rewrite_object_name_source_prefix(relation, 2);
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<Self::Break> {
+        match expr {
+            Expr::CompoundIdentifier(idents) if idents.len() >= 3 => {
+                if let Some(source) = idents.first_mut() {
+                    self.rewrite_ident(source);
+                }
+            }
+            Expr::QualifiedWildcard(object_name, _) => {
+                self.rewrite_object_name_source_prefix(object_name, 2);
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(())
+    }
 }
 
 fn identity_binding_for_surface(
@@ -1244,6 +1391,12 @@ paths:
             host: github.com
 ";
 
+    struct ImportV4SourceOptions<'a> {
+        identity_accepts_yaml: Option<&'a str>,
+        identity_bindings: BTreeMap<String, SourceIdentityBinding>,
+        test_queries_yaml: Option<&'a str>,
+    }
+
     /// Imports a DSL v4 source whose `rest` surface targets the mock server,
     /// optionally declaring identity requirements, then removes the authored
     /// descriptor so queries must run from materialized artifacts.
@@ -1275,14 +1428,38 @@ paths:
         identity_accepts_yaml: Option<&str>,
         identity_bindings: BTreeMap<String, SourceIdentityBinding>,
     ) {
+        import_v4_source_with_options(
+            source_manager,
+            workspace_name,
+            source_spec_id,
+            source_name,
+            server,
+            ImportV4SourceOptions {
+                identity_accepts_yaml,
+                identity_bindings,
+                test_queries_yaml: None,
+            },
+        );
+    }
+
+    fn import_v4_source_with_options(
+        source_manager: &SourceManager,
+        workspace_name: &WorkspaceName,
+        source_spec_id: &str,
+        source_name: &str,
+        server: &MockServer,
+        options: ImportV4SourceOptions<'_>,
+    ) {
         let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         let openapi_yaml = issues_openapi_yaml(server);
         let openapi_sha256 = sha256_hex(openapi_yaml.as_bytes());
         std::fs::write(&openapi_file, openapi_yaml).expect("write OpenAPI fixture");
-        let identity_requirements_yaml = identity_accepts_yaml
+        let identity_requirements_yaml = options
+            .identity_accepts_yaml
             .map(|accepts| format!("    identity_requirements:\n      accepts:\n{accepts}"))
             .unwrap_or_default();
+        let test_queries_yaml = options.test_queries_yaml.unwrap_or_default();
         source_manager
             .import_source(
                 workspace_name,
@@ -1294,7 +1471,7 @@ paths:
                         r"
 name: {source_spec_id}
 dsl_version: 4
-surfaces:
+{test_queries_yaml}surfaces:
   - id: rest
     type: openapi
     file: {}
@@ -1304,7 +1481,7 @@ surfaces:
                         openapi_sha256
                     ),
                     bindings: SourceBindings::default(),
-                    identity_bindings,
+                    identity_bindings: options.identity_bindings,
                     replace_identity_bindings: false,
                 },
             )
@@ -1626,6 +1803,82 @@ tables:
             execution_to_rows(&execution),
             vec![json!({"id": 7, "title": "Aliased runtime package"})]
         );
+    }
+
+    #[tokio::test]
+    async fn aliased_v4_source_validates_authored_test_queries_through_installed_source_name() {
+        let server = MockServer::start().await;
+        mount_issues_endpoint(
+            &server,
+            false,
+            json!([{"id": 8, "title": "Aliased validation"}]),
+        )
+        .await;
+
+        let fixture = query_manager_with_features(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            dsl_v4_features(),
+        );
+        import_v4_source_with_options(
+            &v4_source_manager(&fixture),
+            &WorkspaceName::default(),
+            "github_v4_query",
+            "github-alias",
+            &server,
+            ImportV4SourceOptions {
+                identity_accepts_yaml: None,
+                identity_bindings: BTreeMap::new(),
+                test_queries_yaml: Some(
+                    r"test_queries:
+  - SELECT github_v4_query.issues.id, github_v4_query.issues.title FROM github_v4_query.issues
+  - SELECT github_v4_query.issues.* FROM github_v4_query.issues
+",
+                ),
+            },
+        );
+
+        let source_name = SourceName::parse("github-alias").expect("source alias");
+        let validation = fixture
+            .manager
+            .validate_source(
+                &WorkspaceName::default(),
+                &local_request_principal(),
+                &source_name,
+            )
+            .await
+            .expect("aliased source should validate authored test query");
+
+        assert_eq!(validation.report.query_tests.len(), 2);
+        let qualified_column_query_test = validation
+            .report
+            .query_tests
+            .first()
+            .expect("query test should be present");
+        assert!(
+            qualified_column_query_test.passed(),
+            "query test failed: {qualified_column_query_test:?}"
+        );
+        assert_eq!(
+            qualified_column_query_test.sql(),
+            r#"SELECT "github-alias".issues.id, "github-alias".issues.title FROM "github-alias".issues"#
+        );
+        assert_eq!(qualified_column_query_test.row_count(), Some(1));
+
+        let qualified_wildcard_query_test = validation
+            .report
+            .query_tests
+            .get(1)
+            .expect("qualified wildcard query test should be present");
+        assert!(
+            qualified_wildcard_query_test.passed(),
+            "query test failed: {qualified_wildcard_query_test:?}"
+        );
+        assert_eq!(
+            qualified_wildcard_query_test.sql(),
+            r#"SELECT "github-alias".issues.* FROM "github-alias".issues"#
+        );
+        assert_eq!(qualified_wildcard_query_test.row_count(), Some(1));
     }
 
     #[tokio::test]

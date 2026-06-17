@@ -89,7 +89,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 schemars = "1.2.1"
 sha2 = "0.10"
-sqlparser = "0.59.0"
+sqlparser = "0.61.0"
 strsim = "0.11"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }

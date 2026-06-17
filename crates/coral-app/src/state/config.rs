@@ -178,9 +178,18 @@ struct PersistedInstalledSource {
 impl PersistedInstalledSource {
     fn into_installed_source(self, source_name: SourceName) -> Result<InstalledSource, AppError> {
         validate_identity_bindings(source_name.as_str(), &self.identity_bindings)?;
+        let source_spec_id = self
+            .source_spec_id
+            .map(|id| {
+                SourceName::parse(&id).map(|parsed| {
+                    (parsed.as_str() != source_name.as_str()).then(|| parsed.as_str().to_string())
+                })
+            })
+            .transpose()?
+            .flatten();
         Ok(InstalledSource {
             name: source_name,
-            source_spec_id: self.source_spec_id,
+            source_spec_id,
             version: self.version,
             variables: self.variables,
             secrets: self.secrets,
@@ -1287,6 +1296,15 @@ origin = "bundled"
 origin = "bundled"
 "#;
         let error = load_config_body(invalid_source).expect_err("invalid source key should fail");
+        assert!(error.to_string().contains("source name"));
+
+        let invalid_source_spec_id = r#"
+[workspaces.default.sources.github_alias]
+source_spec_id = "bad\\source"
+origin = "imported"
+"#;
+        let error = load_config_body(invalid_source_spec_id)
+            .expect_err("invalid source spec id should fail");
         assert!(error.to_string().contains("source name"));
     }
 
