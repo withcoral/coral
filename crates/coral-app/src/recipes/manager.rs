@@ -8,6 +8,7 @@ use coral_engine::{
     CoralQuery, QueryRuntimeConfig, QuerySource, RecipeRuntimeArgument, RecipeRuntimeArgumentType,
     RecipeRuntimeArgumentValue, RecipeRuntimeDefinition, RecipeRuntimeImplementation,
     RecipeRuntimePublish, RecipeRuntimeResultColumn, RecipeRuntimeTableFunctionPublish,
+    RuntimeSourceComponent,
 };
 use coral_spec::{
     RecipeArgumentType, RecipeImplementationSpec, RecipePublishSpec, RecipeSpec,
@@ -55,7 +56,7 @@ struct RecipeRuntimeMetadata {
     result_columns: Vec<CachedRecipeResultColumn>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 enum CachedRecipeArgumentValue {
     String(String),
@@ -212,8 +213,7 @@ impl RecipeManager {
             AppError::InvalidInput(format!("recipe validation failed: {error}"))
         })?;
         let recipe_name = RecipeName::parse(spec.name())?;
-        let mut publish_targets =
-            source_publish_targets(selected_sources, runtime_config()?).await?;
+        let mut publish_targets = source_publish_targets(selected_sources);
         self.record_installed_recipe_publish_targets(
             workspace_name,
             &recipe_name,
@@ -249,8 +249,11 @@ impl RecipeManager {
             };
             let mut recipe = runtime_recipe_without_columns(&spec);
             if artifact.origin == RecipeOrigin::User {
-                recipe.result_columns =
-                    self.cached_recipe_result_columns(workspace_name, &artifact.name);
+                recipe.result_columns = self.cached_recipe_result_columns(
+                    workspace_name,
+                    &artifact.name,
+                    &runtime_validation_arguments(&spec),
+                );
             }
             recipes.push(RecipeListing {
                 definition: recipe,
@@ -261,11 +264,10 @@ impl RecipeManager {
         Ok(recipes)
     }
 
-    pub(crate) async fn load_runtime_recipes(
+    pub(crate) fn load_runtime_recipes(
         &self,
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
-        mut runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
     ) -> Result<Vec<RecipeRuntimeDefinition>, AppError> {
         let artifacts =
             self.load_recipe_artifacts(workspace_name, RecipeArtifactFilter::EnabledOnly)?;
@@ -274,8 +276,7 @@ impl RecipeManager {
         }
 
         let mut seen_names = HashSet::new();
-        let mut publish_targets =
-            source_publish_targets(selected_sources, runtime_config()?).await?;
+        let mut publish_targets = source_publish_targets(selected_sources);
         let mut runtime_recipes = Vec::new();
         for artifact in artifacts {
             if !seen_names.insert(artifact.name.clone()) {
@@ -294,8 +295,11 @@ impl RecipeManager {
             };
             let mut runtime_recipe = runtime_recipe_without_columns(&spec);
             if artifact.origin == RecipeOrigin::User {
-                runtime_recipe.result_columns =
-                    self.cached_recipe_result_columns(workspace_name, &artifact.name);
+                runtime_recipe.result_columns = self.cached_recipe_result_columns(
+                    workspace_name,
+                    &artifact.name,
+                    &runtime_validation_arguments(&spec),
+                );
             }
             if runtime_recipe.result_columns.is_empty() {
                 skip_recipe(
@@ -407,6 +411,9 @@ impl RecipeManager {
                     artifact.name
                 )));
             }
+            if !artifact.enabled {
+                continue;
+            }
             let spec = parse_recipe_yaml(&artifact.raw_yaml).map_err(|error| {
                 AppError::FailedPrecondition(format!(
                     "installed recipe '{}' is invalid: {error}",
@@ -423,6 +430,7 @@ impl RecipeManager {
         &self,
         workspace_name: &WorkspaceName,
         recipe_name: &RecipeName,
+        validation_arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
     ) -> Vec<RecipeRuntimeResultColumn> {
         let metadata_file = self.layout.recipe_runtime_file(workspace_name, recipe_name);
         let raw = match std::fs::read_to_string(&metadata_file) {
@@ -439,11 +447,22 @@ impl RecipeManager {
             }
         };
         match serde_json::from_str::<RecipeRuntimeMetadata>(&raw) {
-            Ok(metadata) if metadata.version == RECIPE_RUNTIME_METADATA_VERSION => metadata
-                .result_columns
-                .into_iter()
-                .map(RecipeRuntimeResultColumn::from)
-                .collect(),
+            Ok(metadata) if metadata.version == RECIPE_RUNTIME_METADATA_VERSION => {
+                let expected_args = cached_validation_arguments(validation_arguments);
+                if metadata.validation_args != expected_args {
+                    tracing::warn!(
+                        recipe = %recipe_name,
+                        path = %metadata_file.display(),
+                        "ignoring recipe runtime metadata because validation arguments changed"
+                    );
+                    return Vec::new();
+                }
+                metadata
+                    .result_columns
+                    .into_iter()
+                    .map(RecipeRuntimeResultColumn::from)
+                    .collect()
+            }
             Ok(metadata) => {
                 tracing::warn!(
                     recipe = %recipe_name,
@@ -482,28 +501,58 @@ fn skip_recipe(artifact: &RecipeArtifact, detail: fmt::Arguments<'_>) {
     );
 }
 
-async fn source_publish_targets(
-    selected_sources: &[QuerySource],
-    runtime_config: QueryRuntimeConfig,
-) -> Result<HashSet<PublishTarget>, AppError> {
-    let catalog = CoralQuery::list_catalog(selected_sources, runtime_config, None)
-        .await
-        .map_err(|error| {
-            AppError::FailedPrecondition(format!(
-                "failed to inspect installed source catalog for recipe publish collisions: {error}"
-            ))
-        })?;
+fn source_publish_targets(selected_sources: &[QuerySource]) -> HashSet<PublishTarget> {
     let mut targets = HashSet::new();
-    targets.extend(
-        catalog
-            .tables
-            .into_iter()
-            .map(|table| PublishTarget::sql_relation(&table.schema_name, &table.table_name)),
-    );
-    targets.extend(catalog.table_functions.into_iter().map(|function| {
-        PublishTarget::sql_relation(&function.schema_name, &function.function_name)
-    }));
-    Ok(targets)
+    for source in selected_sources {
+        for component in source.components() {
+            record_source_component_targets(component, &mut targets);
+        }
+    }
+    targets
+}
+
+fn record_source_component_targets(
+    component: &RuntimeSourceComponent,
+    targets: &mut HashSet<PublishTarget>,
+) {
+    match component {
+        RuntimeSourceComponent::Http(manifest) => {
+            for table in &manifest.tables {
+                targets.insert(PublishTarget::sql_relation(
+                    &manifest.common.name,
+                    table.name(),
+                ));
+            }
+            for function in &manifest.functions {
+                targets.insert(PublishTarget::sql_relation(
+                    &manifest.common.name,
+                    &function.name,
+                ));
+            }
+        }
+        RuntimeSourceComponent::File(manifest) => {
+            for table in &manifest.tables {
+                targets.insert(PublishTarget::sql_relation(
+                    &manifest.common.name,
+                    table.name(),
+                ));
+            }
+        }
+        RuntimeSourceComponent::Mcp(manifest) => {
+            for table in &manifest.tables {
+                targets.insert(PublishTarget::sql_relation(
+                    &manifest.common.name,
+                    &table.common.name,
+                ));
+            }
+            for function in &manifest.functions {
+                targets.insert(PublishTarget::sql_relation(
+                    &manifest.common.name,
+                    &function.common.name,
+                ));
+            }
+        }
+    }
 }
 
 fn runtime_recipe_without_columns(spec: &RecipeSpec) -> RecipeRuntimeDefinition {
@@ -665,10 +714,7 @@ fn write_recipe_runtime_metadata(
     if let Some(runtime_recipe) = runtime_recipe {
         let metadata = RecipeRuntimeMetadata {
             version: RECIPE_RUNTIME_METADATA_VERSION,
-            validation_args: validation_arguments
-                .iter()
-                .map(|(name, value)| (name.clone(), CachedRecipeArgumentValue::from(value)))
-                .collect(),
+            validation_args: cached_validation_arguments(validation_arguments),
             result_columns: runtime_recipe
                 .result_columns
                 .iter()
@@ -681,6 +727,15 @@ fn write_recipe_runtime_metadata(
         std::fs::remove_file(recipe_runtime_file)?;
     }
     Ok(())
+}
+
+fn cached_validation_arguments(
+    validation_arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
+) -> BTreeMap<String, CachedRecipeArgumentValue> {
+    validation_arguments
+        .iter()
+        .map(|(name, value)| (name.clone(), CachedRecipeArgumentValue::from(value)))
+        .collect()
 }
 
 fn rollback_recipe_install(
@@ -709,6 +764,15 @@ fn rollback_recipe_install(
         }
     } else if previous_runtime.is_some() {
         rollback_recipe_runtime_file(recipe_runtime_file, previous_runtime);
+        if recipe_file.exists()
+            && let Err(error) = std::fs::remove_file(recipe_file)
+        {
+            tracing::warn!(
+                path = %recipe_file.display(),
+                detail = %error,
+                "failed to remove new recipe file after config update failure"
+            );
+        }
     } else if let Err(error) = std::fs::remove_dir_all(recipe_dir) {
         tracing::warn!(
             path = %recipe_dir.display(),
@@ -763,6 +827,29 @@ mod tests {
 
     fn recipe_yaml(name: &str) -> String {
         recipe_yaml_with_publish(name, &format!("recipes.{name}"))
+    }
+
+    fn recipe_yaml_with_validation_owner(name: &str, owner: &str) -> String {
+        format!(
+            r"
+kind: recipe
+name: {name}
+inputs:
+  owner:
+    type: string
+    required: true
+implementation:
+  kind: coral_sql
+  query: select $owner as owner
+validation:
+  args:
+    owner: {owner}
+publish:
+  table_function:
+    schema: recipes
+    name: {name}
+"
+        )
     }
 
     fn recipe_yaml_with_publish(name: &str, publish_target: &str) -> String {
@@ -876,6 +963,29 @@ publish:
     }
 
     #[test]
+    fn list_recipes_ignores_cached_columns_when_validation_args_change() {
+        let (_temp, layout, manager) = fixture();
+        let workspace = workspace();
+        let raw_yaml = recipe_yaml_with_validation_owner("review_queue", "withcoral");
+        install_fixture_recipe(&manager, &workspace, &raw_yaml);
+        let recipe_name = RecipeName::parse("review_queue").expect("recipe name");
+        std::fs::write(
+            layout.recipe_file(&workspace, &recipe_name),
+            recipe_yaml_with_validation_owner("review_queue", "other_org"),
+        )
+        .expect("rewrite recipe yaml");
+
+        let listed = manager.list_recipes(&workspace).expect("list recipes");
+
+        assert_eq!(listed.len(), 1);
+        let listed_recipe = listed.first().expect("listed recipe");
+        assert!(
+            listed_recipe.definition.result_columns.is_empty(),
+            "cached result columns should not survive validation argument drift"
+        );
+    }
+
+    #[test]
     fn list_recipes_ignores_unsupported_runtime_metadata_version() {
         let (_temp, layout, manager) = fixture();
         let workspace = workspace();
@@ -976,5 +1086,67 @@ publish:
             error,
             AppError::FailedPrecondition(message) if message.contains("recipes.shared_queue")
         ));
+    }
+
+    #[tokio::test]
+    async fn validate_user_recipe_yaml_ignores_disabled_publish_collision() {
+        let (_temp, layout, manager) = fixture();
+        let workspace = workspace();
+        let recipe_name = RecipeName::parse("existing_queue").expect("recipe name");
+        let existing_yaml = recipe_yaml_with_publish("existing_queue", "recipes.shared_queue");
+        let recipe_dir = layout.recipe_dir(&workspace, &recipe_name);
+        fs::ensure_private_dir(&recipe_dir).expect("recipe dir");
+        std::fs::write(layout.recipe_file(&workspace, &recipe_name), existing_yaml)
+            .expect("recipe yaml");
+        manager
+            .config_store
+            .upsert_recipe(
+                &workspace,
+                InstalledRecipe {
+                    name: recipe_name,
+                    origin: RecipeOrigin::User,
+                    enabled: false,
+                },
+            )
+            .expect("disabled installed recipe");
+
+        manager
+            .validate_user_recipe_yaml(
+                &workspace,
+                &[],
+                || Ok(QueryRuntimeConfig::default()),
+                &recipe_yaml_with_publish("new_queue", "recipes.shared_queue"),
+            )
+            .await
+            .expect("disabled recipe should not reserve publish target");
+    }
+
+    #[test]
+    fn rollback_removes_new_yaml_when_only_runtime_metadata_existed() {
+        let (_temp, layout, _manager) = fixture();
+        let workspace = workspace();
+        let recipe_name = RecipeName::parse("review_queue").expect("recipe name");
+        let recipe_dir = layout.recipe_dir(&workspace, &recipe_name);
+        let recipe_file = layout.recipe_file(&workspace, &recipe_name);
+        let recipe_runtime_file = layout.recipe_runtime_file(&workspace, &recipe_name);
+        fs::ensure_private_dir(&recipe_dir).expect("recipe dir");
+        std::fs::write(&recipe_file, b"new yaml").expect("new recipe file");
+
+        rollback_recipe_install(
+            &recipe_dir,
+            &recipe_file,
+            None,
+            &recipe_runtime_file,
+            Some(b"previous runtime"),
+        );
+
+        assert!(
+            !recipe_file.exists(),
+            "rollback should remove newly written recipe yaml"
+        );
+        assert_eq!(
+            std::fs::read(&recipe_runtime_file).expect("restored runtime metadata"),
+            b"previous runtime"
+        );
     }
 }

@@ -162,7 +162,7 @@ coral source remove github
 
 ## `coral recipe`
 
-Manage user-installed recipes. A recipe is a YAML artifact that defines a reusable, typed query and can publish it as SQL under `recipes.*`.
+Manage user-installed recipes. A recipe is a YAML artifact that defines a reusable, typed query and publishes it as a SQL table function, commonly under `recipes.*`.
 
 ### `coral recipe add --file <PATH>`
 
@@ -230,7 +230,7 @@ Remove a user-installed recipe.
 coral recipe remove my_review_queue
 ```
 
-Bundled recipes shipped with sources cannot be removed through workspace recipe config.
+Only user-installed recipes are managed by this command.
 
 ## `coral onboard`
 

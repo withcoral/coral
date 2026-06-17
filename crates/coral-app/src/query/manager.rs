@@ -94,9 +94,7 @@ impl QueryManager {
                 let sources = self
                     .load_query_sources(workspace_name, &config)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .runtime_config_with_recipes(workspace_name, &sources, &config)
-                    .await?;
+                let runtime = self.runtime_config_with_recipes(workspace_name, &sources, &config)?;
                 CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -126,9 +124,7 @@ impl QueryManager {
                 let sources = self
                     .load_query_sources(workspace_name, &config)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .runtime_config_with_recipes(workspace_name, &sources, &config)
-                    .await?;
+                let runtime = self.runtime_config_with_recipes(workspace_name, &sources, &config)?;
                 CoralQuery::list_catalog(&sources, runtime, schema_filter)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -169,9 +165,7 @@ impl QueryManager {
                 let sources = self
                     .load_query_sources(workspace_name, &config)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .runtime_config_with_recipes(workspace_name, &sources, &config)
-                    .await?;
+                let runtime = self.runtime_config_with_recipes(workspace_name, &sources, &config)?;
                 CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -200,9 +194,8 @@ impl QueryManager {
                 let sources = self
                     .load_query_sources(workspace_name, &config)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .runtime_config_with_recipes(workspace_name, &sources, &config)
-                    .await?;
+                let runtime =
+                    self.runtime_config_with_recipes(workspace_name, &sources, &config)?;
                 CoralQuery::execute_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -231,9 +224,8 @@ impl QueryManager {
                 let sources = self
                     .load_query_sources(workspace_name, &config)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .runtime_config_with_recipes(workspace_name, &sources, &config)
-                    .await?;
+                let runtime =
+                    self.runtime_config_with_recipes(workspace_name, &sources, &config)?;
                 CoralQuery::explain_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -449,22 +441,20 @@ impl QueryManager {
             .map_err(QueryManagerError::App)
     }
 
-    async fn runtime_config_with_recipes(
+    fn runtime_config_with_recipes(
         &self,
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
         config: &AppConfig,
     ) -> Result<QueryRuntimeConfig, QueryManagerError> {
+        let runtime = self
+            .runtime_config(workspace_name, selected_sources, config)
+            .map_err(QueryManagerError::App)?;
         let recipes = self
             .recipe_manager
-            .load_runtime_recipes(workspace_name, selected_sources, || {
-                self.runtime_config(workspace_name, selected_sources, config)
-            })
-            .await
+            .load_runtime_recipes(workspace_name, selected_sources)
             .map_err(QueryManagerError::App)?;
-        self.runtime_config(workspace_name, selected_sources, config)
-            .map(|runtime| runtime.with_recipes(recipes))
-            .map_err(QueryManagerError::App)
+        Ok(runtime.with_recipes(recipes))
     }
 }
 
