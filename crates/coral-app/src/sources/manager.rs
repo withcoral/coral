@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use coral_spec::v4::SurfaceDescriptor;
 use serde_yaml::Value as YamlValue;
@@ -17,6 +18,9 @@ use crate::credentials::{
 };
 use crate::features::Features;
 use crate::identity::SourceIdentityBinding;
+use crate::source_registry::{
+    SourceRegistry, installed_source_from_record, record_from_installed_source,
+};
 use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
@@ -27,7 +31,9 @@ use crate::sources::materialization::{
     new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
-use crate::state::{AppStateLayout, ConfigStore};
+use crate::state::AppStateLayout;
+#[cfg(test)]
+use crate::state::ConfigStore;
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
 use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec};
@@ -38,7 +44,7 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) struct SourceManager {
-    config_store: ConfigStore,
+    source_registry: Arc<dyn SourceRegistry>,
     credential_manager: CredentialManager,
     oauth_credential_service: OAuthCredentialService,
     layout: AppStateLayout,
@@ -188,22 +194,51 @@ impl SourceManager {
         credential_manager: CredentialManager,
         layout: AppStateLayout,
     ) -> Self {
-        Self::new_with_features(
-            config_store,
+        Self::new_with_source_registry_and_features(
+            Arc::new(config_store),
             credential_manager,
             layout,
             Features::default(),
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_features(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
         layout: AppStateLayout,
         features: Features,
     ) -> Self {
+        Self::new_with_source_registry_and_features(
+            Arc::new(config_store),
+            credential_manager,
+            layout,
+            features,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_source_registry(
+        source_registry: Arc<dyn SourceRegistry>,
+        credential_manager: CredentialManager,
+        layout: AppStateLayout,
+    ) -> Self {
+        Self::new_with_source_registry_and_features(
+            source_registry,
+            credential_manager,
+            layout,
+            Features::default(),
+        )
+    }
+
+    pub(crate) fn new_with_source_registry_and_features(
+        source_registry: Arc<dyn SourceRegistry>,
+        credential_manager: CredentialManager,
+        layout: AppStateLayout,
+        features: Features,
+    ) -> Self {
         Self {
-            config_store,
+            source_registry,
             credential_manager,
             oauth_credential_service: OAuthCredentialService::new(),
             layout,
@@ -211,13 +246,54 @@ impl SourceManager {
         }
     }
 
+    fn list_registry_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledSource>, AppError> {
+        self.source_registry
+            .list_workspace_sources(workspace_name.as_str())?
+            .into_iter()
+            .map(|record| installed_source_from_record(workspace_name, record))
+            .collect()
+    }
+
+    fn get_registry_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<Option<InstalledSource>, AppError> {
+        self.source_registry
+            .get_source(workspace_name.as_str(), source_name.as_str())?
+            .map(|record| installed_source_from_record(workspace_name, record))
+            .transpose()
+    }
+
+    fn require_registry_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<InstalledSource, AppError> {
+        self.get_registry_source(workspace_name, source_name)?
+            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
+    }
+
+    fn upsert_registry_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: InstalledSource,
+        manifest_yaml: Option<&str>,
+    ) -> Result<(), AppError> {
+        let mut record = record_from_installed_source(workspace_name, source);
+        record.manifest_yaml = manifest_yaml.map(ToString::to_string);
+        self.source_registry.upsert_source(record)
+    }
+
     pub(crate) fn list_workspace_sources(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledSource>, AppError> {
         Ok(self
-            .config_store
-            .list_workspace_sources(workspace_name)?
+            .list_registry_sources(workspace_name)?
             .into_iter()
             .map(|source| self.populate_source_version_or_keep(workspace_name, source))
             .collect())
@@ -230,7 +306,7 @@ impl SourceManager {
     ) -> Result<InstalledSource, AppError> {
         Ok(self.populate_source_version_or_keep(
             workspace_name,
-            self.config_store.get_source(workspace_name, source_name)?,
+            self.require_registry_source(workspace_name, source_name)?,
         ))
     }
 
@@ -239,14 +315,10 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<CandidateSource, AppError> {
-        match self.config_store.get_source(workspace_name, source_name) {
-            Ok(source) => {
-                return Ok(
-                    resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate,
-                );
-            }
-            Err(AppError::SourceNotFound(_)) => {}
-            Err(error) => return Err(error),
+        if let Some(source) = self.get_registry_source(workspace_name, source_name)? {
+            return Ok(
+                resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate,
+            );
         }
 
         match load_bundled_source(source_name) {
@@ -262,7 +334,7 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<CandidateSource>, AppError> {
-        let installed_sources = self.config_store.list_workspace_sources(workspace_name)?;
+        let installed_sources = self.list_registry_sources(workspace_name)?;
         let installed = installed_sources
             .iter()
             .map(|source| source.name.clone())
@@ -532,7 +604,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
-        let stored = self.config_store.get_source(workspace_name, source_name)?;
+        let stored = self.require_registry_source(workspace_name, source_name)?;
         let removed = self.populate_source_version_or_keep(workspace_name, stored.clone());
         let source_dir = self.layout.source_dir(workspace_name, source_name);
         let credential_set_id = CredentialSetId::for_source(source_name);
@@ -583,7 +655,10 @@ impl SourceManager {
                 return Err(error.into());
             }
         }
-        if let Err(error) = self.config_store.remove_source(workspace_name, source_name) {
+        if let Err(error) = self
+            .source_registry
+            .remove_source(workspace_name.as_str(), source_name.as_str())
+        {
             if had_source_dir
                 && source_dir_backup.exists()
                 && let Err(restore_error) = std::fs::rename(&source_dir_backup, &source_dir)
@@ -643,18 +718,14 @@ impl SourceManager {
         let credential_guard = self
             .credential_manager
             .material_guard(workspace_name, &credential_set_id)?;
-        let current_source = match self.config_store.get_source(workspace_name, &source_name) {
-            Ok(source) => Some(source),
-            Err(AppError::SourceNotFound(_)) => None,
-            Err(error) => return Err(error),
-        };
+        let current_source = self.get_registry_source(workspace_name, &source_name)?;
         let new_material_storage = current_source
             .as_ref()
             .and_then(InstalledSource::credential_storage_for_material);
         let remove_result = if previous.is_none() {
             match self
-                .config_store
-                .remove_source(workspace_name, &source_name)
+                .source_registry
+                .remove_source(workspace_name.as_str(), source_name.as_str())
             {
                 Ok(()) | Err(AppError::SourceNotFound(_)) => Ok(()),
                 Err(error) => Err(error),
@@ -801,9 +872,8 @@ impl SourceManager {
             identity_bindings: request.identity_bindings,
             origin: request.origin,
         };
-        if let Err(error) = self
-            .config_store
-            .upsert_source(workspace_name, stored.clone())
+        if let Err(error) =
+            self.upsert_registry_source(workspace_name, stored.clone(), request.manifest_yaml)
         {
             let restore_result = restore_materialization_backup(
                 &self.layout,
@@ -896,7 +966,7 @@ impl SourceManager {
         let candidate_manifest = parse_source_manifest_yaml(manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let candidate_schema_names = runtime_schema_names(&candidate_manifest);
-        for installed in self.config_store.list_workspace_sources(workspace_name)? {
+        for installed in self.list_registry_sources(workspace_name)? {
             if installed.name == *candidate_name {
                 continue;
             }
@@ -921,10 +991,8 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<bool, AppError> {
-        Ok(self
-            .config_store
-            .load_catalog()?
-            .contains(workspace_name, source_name))
+        self.get_registry_source(workspace_name, source_name)
+            .map(|source| source.is_some())
     }
 
     pub(crate) fn effective_source_identity_bindings_for_import(
@@ -955,11 +1023,8 @@ impl SourceManager {
         if replace_identity_bindings || !requested.is_empty() {
             return Ok(requested.clone());
         }
-        match self.config_store.get_source(workspace_name, source_name) {
-            Ok(source) => Ok(source.identity_bindings),
-            Err(AppError::SourceNotFound(_)) => Ok(BTreeMap::new()),
-            Err(error) => Err(error),
-        }
+        self.get_registry_source(workspace_name, source_name)
+            .map(|source| source.map_or_else(BTreeMap::new, |source| source.identity_bindings))
     }
 
     fn read_source_material(
@@ -991,25 +1056,21 @@ impl SourceManager {
         bindings: &SourceBindings,
         filled_secret_keys: &BTreeSet<String>,
     ) -> Result<BTreeMap<String, String>, AppError> {
-        let (credential_storage, persisted_secret_keys) = match self
-            .config_store
-            .get_source(workspace_name, &candidate.name)
-        {
-            Ok(source) => (
-                source.credential_storage_for_material(),
-                Some(source.secrets.iter().cloned().collect::<BTreeSet<_>>()),
-            ),
-            Err(AppError::SourceNotFound(_))
-                if self
+        let (credential_storage, persisted_secret_keys) =
+            match self.get_registry_source(workspace_name, &candidate.name)? {
+                Some(source) => (
+                    source.credential_storage_for_material(),
+                    Some(source.secrets.iter().cloned().collect::<BTreeSet<_>>()),
+                ),
+                None if self
                     .layout
                     .secret_file(workspace_name, &candidate.name)
                     .exists() =>
-            {
-                (Some(CredentialStorageKind::File), None)
-            }
-            Err(AppError::SourceNotFound(_)) => (None, Some(BTreeSet::new())),
-            Err(error) => return Err(error),
-        };
+                {
+                    (Some(CredentialStorageKind::File), None)
+                }
+                None => (None, Some(BTreeSet::new())),
+            };
 
         if !source_needs_stored_material_for_validation(
             candidate,
@@ -1035,19 +1096,12 @@ impl SourceManager {
         bindings: &ValidatedBindings,
         has_stored_material: bool,
     ) -> Result<Option<CredentialStorageKind>, AppError> {
-        match self.config_store.get_source(workspace_name, source_name) {
-            Ok(source) if !source.secrets.is_empty() => {
+        match self.get_registry_source(workspace_name, source_name)? {
+            Some(source) if !source.secrets.is_empty() => {
                 Ok(Some(source.effective_credential_storage()))
             }
-            Ok(_) | Err(AppError::SourceNotFound(_))
-                if bindings.secrets.is_empty() && !has_stored_material =>
-            {
-                Ok(None)
-            }
-            Ok(_) | Err(AppError::SourceNotFound(_)) => {
-                self.credential_manager.default_write_storage().map(Some)
-            }
-            Err(error) => Err(error),
+            Some(_) | None if bindings.secrets.is_empty() && !has_stored_material => Ok(None),
+            Some(_) | None => self.credential_manager.default_write_storage().map(Some),
         }
     }
 
@@ -1199,10 +1253,8 @@ impl SourceManager {
         source_name: &SourceName,
         credential_material: &CredentialMaterialGuard<'_>,
     ) -> Result<Option<SourceRollbackState>, AppError> {
-        let source = match self.config_store.get_source(workspace_name, source_name) {
-            Ok(source) => source,
-            Err(AppError::SourceNotFound(_)) => return Ok(None),
-            Err(error) => return Err(error),
+        let Some(source) = self.get_registry_source(workspace_name, source_name)? else {
+            return Ok(None);
         };
         let credential_material = source
             .credential_storage_for_material()
@@ -1229,6 +1281,7 @@ impl SourceManager {
         credential_material: &CredentialMaterialGuard<'_>,
     ) {
         if let Some(previous) = previous {
+            let previous_manifest_yaml = previous.manifest_yaml.clone();
             let manifest_path = self.layout.manifest_file(workspace_name, source_name);
             match previous.manifest_yaml {
                 Some(manifest_yaml) => {
@@ -1262,10 +1315,11 @@ impl SourceManager {
                     }
                 }
             }
-            if let Err(e) = self
-                .config_store
-                .upsert_source(workspace_name, previous.source)
-            {
+            if let Err(e) = self.upsert_registry_source(
+                workspace_name,
+                previous.source,
+                previous_manifest_yaml.as_deref(),
+            ) {
                 warn!("rollback: failed to restore source config: {e}");
             }
         } else {
@@ -1692,7 +1746,7 @@ mod tests {
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener as StdTcpListener;
     use std::path::Path;
-    use std::sync::mpsc as std_mpsc;
+    use std::sync::{Arc, Mutex, mpsc as std_mpsc};
     use std::thread;
     use std::time::Duration;
 
@@ -1715,6 +1769,7 @@ mod tests {
     };
     use crate::features::dsl_v4_features;
     use crate::identity::{IdentityOwnerKind, SourceIdentityBinding};
+    use crate::source_registry::{SourceRegistry, SourceRegistryRecord};
     use crate::sources::SourceName;
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
     use crate::state::{AppStateLayout, ConfigStore};
@@ -1975,6 +2030,70 @@ tables:
         type: Utf8
 "#
         .to_string()
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingSourceRegistry {
+        current: Mutex<BTreeMap<(String, String), SourceRegistryRecord>>,
+        upserts: Mutex<Vec<SourceRegistryRecord>>,
+    }
+
+    fn test_registry_lock_error() -> AppError {
+        AppError::FailedPrecondition("test source registry lock poisoned".to_string())
+    }
+
+    impl SourceRegistry for RecordingSourceRegistry {
+        fn list_workspace_sources(
+            &self,
+            workspace_id: &str,
+        ) -> Result<Vec<SourceRegistryRecord>, AppError> {
+            let current = self
+                .current
+                .lock()
+                .map_err(|_poisoned| test_registry_lock_error())?;
+            Ok(current
+                .values()
+                .filter(|record| record.workspace_id == workspace_id)
+                .cloned()
+                .collect())
+        }
+
+        fn get_source(
+            &self,
+            workspace_id: &str,
+            source_name: &str,
+        ) -> Result<Option<SourceRegistryRecord>, AppError> {
+            let current = self
+                .current
+                .lock()
+                .map_err(|_poisoned| test_registry_lock_error())?;
+            Ok(current
+                .get(&(workspace_id.to_string(), source_name.to_string()))
+                .cloned())
+        }
+
+        fn upsert_source(&self, record: SourceRegistryRecord) -> Result<(), AppError> {
+            self.current
+                .lock()
+                .map_err(|_poisoned| test_registry_lock_error())?
+                .insert(
+                    (record.workspace_id.clone(), record.source_name.clone()),
+                    record.clone(),
+                );
+            self.upserts
+                .lock()
+                .map_err(|_poisoned| test_registry_lock_error())?
+                .push(record);
+            Ok(())
+        }
+
+        fn remove_source(&self, workspace_id: &str, source_name: &str) -> Result<(), AppError> {
+            self.current
+                .lock()
+                .map_err(|_poisoned| test_registry_lock_error())?
+                .remove(&(workspace_id.to_string(), source_name.to_string()));
+            Ok(())
+        }
     }
 
     fn manifest_with_oauth_secret(token_url: &str, redirect_port: u16) -> String {
@@ -2266,6 +2385,41 @@ tables:
         assert!(
             event_rx.try_recv().is_err(),
             "feature gate should fail before OAuth retrieval emits events"
+        );
+    }
+
+    #[test]
+    fn imported_source_upsert_includes_manifest_yaml_for_registry() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let registry = Arc::new(RecordingSourceRegistry::default());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager =
+            SourceManager::new_with_source_registry(registry.clone(), credential_manager, layout);
+        let manifest_yaml = manifest_without_secrets();
+
+        manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_yaml.clone(),
+                    bindings: SourceBindings::default(),
+                    identity_bindings: BTreeMap::new(),
+                    replace_identity_bindings: false,
+                },
+            )
+            .expect("import source");
+
+        let upserts = registry.upserts.lock().expect("registry lock");
+        let record = upserts.last().expect("source upsert");
+        assert_eq!(record.workspace_id, default_workspace().as_str());
+        assert_eq!(record.source_name, "public_messages");
+        assert_eq!(
+            record.manifest_yaml.as_deref(),
+            Some(manifest_yaml.as_str())
         );
     }
 

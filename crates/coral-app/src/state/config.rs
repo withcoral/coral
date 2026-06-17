@@ -11,6 +11,10 @@ use tracing::{info_span, warn};
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialStorageKind;
 use crate::identity::SourceIdentityBinding;
+use crate::source_registry::{
+    SourceRegistry, SourceRegistryRecord, installed_source_from_record,
+    record_from_installed_source,
+};
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
@@ -256,16 +260,6 @@ impl SourceCatalog {
             .cloned()
     }
 
-    pub(crate) fn contains(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> bool {
-        self.0
-            .get(workspace_name)
-            .is_some_and(|sources| sources.contains_key(source_name))
-    }
-
     pub(crate) fn upsert_source(
         &mut self,
         workspace_name: &WorkspaceName,
@@ -487,6 +481,47 @@ impl ConfigStore {
         self.update_catalog(|catalog| {
             catalog.remove_source(workspace_name, source_name);
         })
+    }
+}
+
+impl SourceRegistry for ConfigStore {
+    fn list_workspace_sources(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SourceRegistryRecord>, AppError> {
+        let workspace_name = WorkspaceName::parse(workspace_id)?;
+        ConfigStore::list_workspace_sources(self, &workspace_name).map(|sources| {
+            sources
+                .into_iter()
+                .map(|source| record_from_installed_source(&workspace_name, source))
+                .collect()
+        })
+    }
+
+    fn get_source(
+        &self,
+        workspace_id: &str,
+        source_name: &str,
+    ) -> Result<Option<SourceRegistryRecord>, AppError> {
+        let workspace_name = WorkspaceName::parse(workspace_id)?;
+        let source_name = SourceName::parse(source_name)?;
+        match ConfigStore::get_source(self, &workspace_name, &source_name) {
+            Ok(source) => Ok(Some(record_from_installed_source(&workspace_name, source))),
+            Err(AppError::SourceNotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn upsert_source(&self, record: SourceRegistryRecord) -> Result<(), AppError> {
+        let workspace_name = WorkspaceName::parse(&record.workspace_id)?;
+        let source = installed_source_from_record(&workspace_name, record)?;
+        ConfigStore::upsert_source(self, &workspace_name, source)
+    }
+
+    fn remove_source(&self, workspace_id: &str, source_name: &str) -> Result<(), AppError> {
+        let workspace_name = WorkspaceName::parse(workspace_id)?;
+        let source_name = SourceName::parse(source_name)?;
+        ConfigStore::remove_source(self, &workspace_name, &source_name)
     }
 }
 

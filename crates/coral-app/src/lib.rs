@@ -54,6 +54,7 @@ mod identity;
 mod identity_specs;
 mod query;
 mod request_context;
+mod source_registry;
 mod sources;
 mod state;
 mod storage;
@@ -94,6 +95,13 @@ pub use identity_specs::{
 };
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
+};
+pub use source_registry::{
+    BundleIdentityInputDiscoveryError, BundleIdentityInputKind, BundleIdentityInputSpec,
+    SourceRegistry, SourceRegistryCredentialStorage, SourceRegistryOrigin, SourceRegistryRecord,
+    SourceSpecManifestMetadata, SpecBundleIdentitySpec, SpecBundleManifest, SpecBundleSourceSpec,
+    bundle_identity_inputs_from_yaml, parse_spec_bundle_manifest_yaml,
+    source_spec_manifest_metadata,
 };
 pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
 pub use transport::oauth_operation_response_stream;

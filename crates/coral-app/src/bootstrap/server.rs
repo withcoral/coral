@@ -62,6 +62,7 @@ use crate::identity_specs::{
 };
 use crate::query::manager::{QueryManager, QueryManagerOptions};
 use crate::query::service::QueryService;
+use crate::source_registry::SourceRegistry;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::{AppStateLayout, ConfigStore};
@@ -118,6 +119,7 @@ pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerMode,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    source_registry: Option<Arc<dyn SourceRegistry>>,
     identity_spec_registry: Option<Arc<dyn IdentitySpecRegistry>>,
     identity_spec_usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
     feature_overrides: FeatureOverrides,
@@ -142,6 +144,7 @@ impl ServerConfig {
             config_dir: None,
             mode: ServerMode::NativeGrpc,
             engine_extensions_providers: Vec::new(),
+            source_registry: None,
             identity_spec_registry: None,
             identity_spec_usage_providers: Vec::new(),
             feature_overrides: FeatureOverrides::default(),
@@ -195,6 +198,11 @@ impl ServerConfig {
         identity_spec_registry: Arc<dyn IdentitySpecRegistry>,
     ) -> Self {
         self.identity_spec_registry = Some(identity_spec_registry);
+        self
+    }
+
+    pub(crate) fn with_source_registry(mut self, source_registry: Arc<dyn SourceRegistry>) -> Self {
+        self.source_registry = Some(source_registry);
         self
     }
 
@@ -380,6 +388,17 @@ impl ServerBuilder {
         self.config = self
             .config
             .with_identity_spec_registry(identity_spec_registry);
+        self
+    }
+
+    #[must_use]
+    /// Sets the durable registry used for workspace-installed sources.
+    ///
+    /// The default registry persists source records in local `config.toml`.
+    /// Product-specific siblings can install a registry backed by their own
+    /// durable control-plane store.
+    pub fn with_source_registry(mut self, source_registry: Arc<dyn SourceRegistry>) -> Self {
+        self.config = self.config.with_source_registry(source_registry);
         self
     }
 
@@ -573,8 +592,12 @@ impl ServerBuilder {
             &extension_context,
             &identity_manager,
         );
-        let source_manager = SourceManager::new_with_features(
-            config_store.clone(),
+        let source_registry = self
+            .config
+            .source_registry
+            .unwrap_or_else(|| Arc::new(config_store.clone()));
+        let source_manager = SourceManager::new_with_source_registry_and_features(
+            source_registry,
             credential_manager.clone(),
             layout.clone(),
             features.clone(),
