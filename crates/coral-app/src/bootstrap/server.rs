@@ -925,9 +925,9 @@ mod tests {
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
         AddIdentitySpecRequest, CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
-        DeleteIdentitySpecRequest, DeleteSourceRequest, ExecuteSqlRequest, ImportSourceRequest,
-        ImportSourceResponse, ListSourcesRequest, ListTracesRequest, OpenEpisodeRequest, Workspace,
-        import_source_response,
+        DeleteIdentitySpecRequest, DeleteSourceRequest, ExecuteSqlRequest, IdentitySpecInputValue,
+        ImportSourceRequest, ImportSourceResponse, ListSourcesRequest, ListTracesRequest,
+        OpenEpisodeRequest, Workspace, import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -962,6 +962,44 @@ mod tests {
 
     fn default_workspace() -> Workspace {
         workspace_to_proto(&WorkspaceName::default())
+    }
+
+    fn test_identity_spec_yaml() -> String {
+        r"kind: identity
+spec_version: 1
+name: demo_oauth
+version: 0.1.0
+description: Demo OAuth identity
+issuer: demo
+type: oauth
+audience:
+  host: api.example.test
+inputs:
+  DEMO_TENANT:
+    kind: variable
+    required: false
+    default: tenant-a
+  DEMO_OAUTH_CLIENT_SECRET:
+    kind: secret
+    required: true
+oauth:
+  method:
+    label: Demo OAuth
+    flow:
+      type: authorization_code
+      pkce: required
+    redirect_uri: http://127.0.0.1:53682/callback
+    endpoints:
+      authorization_url: https://auth.example.test/{{input.DEMO_TENANT}}/authorize
+      token_url: https://auth.example.test/{{input.DEMO_TENANT}}/token
+    client:
+      id:
+        default: demo-client
+      secret:
+        input: DEMO_OAUTH_CLIENT_SECRET
+        transport: request_body
+"
+        .to_string()
     }
 
     fn test_identity_spec_manager(layout: &AppStateLayout) -> IdentitySpecManager {
@@ -1375,6 +1413,45 @@ type: fixed_token
             .expect_err("trace service should be disabled");
 
         assert_eq!(status.code(), Code::Unimplemented);
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn server_builder_applies_process_feature_overrides() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let mut feature_overrides = FeatureOverrides::default();
+        feature_overrides.set(Feature::DslV4, true);
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir)
+            .with_feature_overrides(feature_overrides)
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut identity_specs = IdentitySpecServiceClient::new(channel);
+
+        let added = identity_specs
+            .add_identity_spec(Request::new(AddIdentitySpecRequest {
+                manifest_yaml: test_identity_spec_yaml(),
+                input_values: vec![IdentitySpecInputValue {
+                    key: "DEMO_OAUTH_CLIENT_SECRET".to_string(),
+                    value: "secret-value".to_string(),
+                }],
+            }))
+            .await
+            .expect("process feature overrides should enable DSL v4 identity specs")
+            .into_inner();
+
+        assert_eq!(
+            added.identity_spec.expect("added identity spec").name,
+            "demo_oauth"
+        );
         server.shutdown().await.expect("shutdown");
     }
 
