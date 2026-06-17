@@ -1557,6 +1557,27 @@ enabled = false
     }
 
     #[derive(Debug)]
+    struct RejectingSourceMutationAuthorizer;
+
+    #[tonic::async_trait]
+    impl ManagementAuthorizer for RejectingSourceMutationAuthorizer {
+        async fn authorize_management_mutation(
+            &self,
+            _principal: &UserPrincipal,
+            mutation: ManagementMutation<'_>,
+        ) -> Result<(), AuthorizationError> {
+            match mutation {
+                ManagementMutation::WorkspaceSource { workspace_id, kind } => {
+                    Err(AuthorizationError::forbidden(format!(
+                        "source mutation {kind:?} rejected for {workspace_id}"
+                    )))
+                }
+                _ => Ok(()),
+            }
+        }
+    }
+
+    #[derive(Debug)]
     struct NoopSourceIdentityProvider;
 
     #[tonic::async_trait]
@@ -1644,6 +1665,11 @@ enabled = false
     fn assert_workspace_read_denied(status: &tonic::Status) {
         assert_eq!(status.code(), Code::PermissionDenied);
         assert!(status.message().contains("workspace read rejected"));
+    }
+
+    fn assert_source_mutation_denied(status: &tonic::Status) {
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert!(status.message().contains("source mutation"));
     }
 
     #[tokio::test]
@@ -2029,6 +2055,67 @@ type: fixed_token
             .await
             .expect_err("source validation should be denied");
         assert_workspace_read_denied(&status);
+
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn source_mutation_services_enforce_management_authorizer() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_management_authorizer(Arc::new(RejectingSourceMutationAuthorizer))
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut source_client = SourceServiceClient::new(channel);
+
+        let status = source_client
+            .create_bundled_source(Request::new(CreateBundledSourceRequest {
+                workspace: Some(default_workspace()),
+                name: "missing".to_string(),
+                variables: Vec::new(),
+                secrets: Vec::new(),
+            }))
+            .await
+            .expect_err("bundled source creation should be denied");
+        assert_source_mutation_denied(&status);
+
+        let status = source_client
+            .create_bundled_source_with_o_auth(Request::new(CreateBundledSourceWithOAuthRequest {
+                workspace: Some(default_workspace()),
+                name: "missing".to_string(),
+                variables: Vec::new(),
+                secrets: Vec::new(),
+                oauth_credential_retrievals: Vec::new(),
+            }))
+            .await
+            .expect_err("OAuth bundled source creation should be denied");
+        assert_source_mutation_denied(&status);
+
+        let status = source_client
+            .import_source(Request::new(ImportSourceRequest {
+                workspace: Some(default_workspace()),
+                manifest_yaml: String::new(),
+                ..ImportSourceRequest::default()
+            }))
+            .await
+            .expect_err("source import should be denied");
+        assert_source_mutation_denied(&status);
+
+        let status = source_client
+            .delete_source(Request::new(DeleteSourceRequest {
+                workspace: Some(default_workspace()),
+                name: "missing".to_string(),
+            }))
+            .await
+            .expect_err("source deletion should be denied");
+        assert_source_mutation_denied(&status);
 
         server.shutdown().await.expect("shutdown");
     }
