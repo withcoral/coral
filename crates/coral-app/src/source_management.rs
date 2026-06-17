@@ -13,6 +13,14 @@ use crate::workspaces::WorkspaceName;
 
 /// Source import command accepted by [`SourceManagementHandle`].
 pub struct ImportManagedSourceCommand {
+    /// Optional workspace-local source name to install under.
+    ///
+    /// When set, [`SourceManagementHandle::import_source`] requires
+    /// [`Self::source_spec_id`] and preserves that authored source-spec id
+    /// while installing the source under this workspace-local name.
+    pub source_name: Option<String>,
+    /// Optional authored source-spec id declared by the manifest.
+    pub source_spec_id: Option<String>,
     /// Source manifest YAML to install into the workspace.
     pub manifest_yaml: String,
     /// Non-secret source variables.
@@ -24,6 +32,7 @@ pub struct ImportManagedSourceCommand {
 }
 
 /// Source installed or removed through [`SourceManagementHandle`].
+#[derive(Debug)]
 pub struct ManagedSource {
     /// Installed source name.
     pub name: String,
@@ -53,6 +62,19 @@ impl SourceManagementHandle {
         workspace_id: &str,
         command: ImportManagedSourceCommand,
     ) -> Result<ManagedSource, AppError> {
+        let source_name = command.source_name.clone();
+        let source_spec_id = command.source_spec_id.clone();
+        match (source_name, source_spec_id) {
+            (Some(source_name), Some(source_spec_id)) => {
+                return self.import_source_as(workspace_id, &source_name, &source_spec_id, command);
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(AppError::InvalidInput(
+                    "source_name and source_spec_id must be provided together".to_string(),
+                ));
+            }
+            (None, None) => {}
+        }
         let workspace_name = WorkspaceName::parse(workspace_id)?;
         let installed = self
             .sources
@@ -75,6 +97,20 @@ impl SourceManagementHandle {
         source_spec_id: &str,
         command: ImportManagedSourceCommand,
     ) -> Result<ManagedSource, AppError> {
+        if let Some(command_source_name) = &command.source_name
+            && command_source_name != source_name
+        {
+            return Err(AppError::InvalidInput(format!(
+                "command source_name '{command_source_name}' does not match requested source name '{source_name}'"
+            )));
+        }
+        if let Some(command_source_spec_id) = &command.source_spec_id
+            && command_source_spec_id != source_spec_id
+        {
+            return Err(AppError::InvalidInput(format!(
+                "command source_spec_id '{command_source_spec_id}' does not match requested source spec id '{source_spec_id}'"
+            )));
+        }
         let workspace_name = WorkspaceName::parse(workspace_id)?;
         let source_name = SourceName::parse(source_name)?;
         let source_spec_id = SourceName::parse(source_spec_id)?;
@@ -175,20 +211,23 @@ tables:
         .to_string()
     }
 
+    fn import_command() -> ImportManagedSourceCommand {
+        ImportManagedSourceCommand {
+            source_name: None,
+            source_spec_id: None,
+            manifest_yaml: manifest_without_secrets(),
+            variables: BTreeMap::new(),
+            identity_bindings: BTreeMap::new(),
+            replace_identity_bindings: false,
+        }
+    }
+
     #[test]
     fn import_source_uses_shared_source_lifecycle() {
         let (_temp, handle, config_store) = handle();
 
         let installed = handle
-            .import_source(
-                "default",
-                ImportManagedSourceCommand {
-                    manifest_yaml: manifest_without_secrets(),
-                    variables: BTreeMap::new(),
-                    identity_bindings: BTreeMap::new(),
-                    replace_identity_bindings: false,
-                },
-            )
+            .import_source("default", import_command())
             .expect("import source");
 
         assert_eq!(installed.name, "public_messages");
@@ -203,18 +242,47 @@ tables:
     }
 
     #[test]
+    fn import_source_accepts_optional_source_metadata() {
+        let (_temp, handle, config_store) = handle();
+        let mut command = import_command();
+        command.source_name = Some("public_messages".to_string());
+        command.source_spec_id = Some("public_messages".to_string());
+
+        let installed = handle
+            .import_source("default", command)
+            .expect("import source with metadata");
+
+        assert_eq!(installed.name, "public_messages");
+        let sources = SourceRegistry::list_workspace_sources(&config_store, "default")
+            .expect("workspace sources");
+        let [source] = sources.as_slice() else {
+            panic!("expected one source, got {sources:#?}");
+        };
+        assert_eq!(source.source_name, "public_messages");
+        assert_eq!(source.source_spec_id, None);
+    }
+
+    #[test]
+    fn import_source_rejects_partial_alias_metadata() {
+        let (_temp, handle, _config_store) = handle();
+        let mut command = import_command();
+        command.source_name = Some("team_messages".to_string());
+
+        let error = handle
+            .import_source("default", command)
+            .expect_err("partial alias metadata should fail");
+
+        assert!(
+            matches!(&error, AppError::InvalidInput(message) if message.contains("source_name and source_spec_id")),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
     fn delete_source_uses_shared_source_lifecycle() {
         let (_temp, handle, config_store) = handle();
         handle
-            .import_source(
-                "default",
-                ImportManagedSourceCommand {
-                    manifest_yaml: manifest_without_secrets(),
-                    variables: BTreeMap::new(),
-                    identity_bindings: BTreeMap::new(),
-                    replace_identity_bindings: false,
-                },
-            )
+            .import_source("default", import_command())
             .expect("import source");
 
         let removed = handle

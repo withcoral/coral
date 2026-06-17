@@ -534,14 +534,18 @@ fn expected_importer_version(surface_type: SurfaceType) -> &'static str {
     }
 }
 
+pub(crate) const INCOMPATIBLE_MATERIALIZATION_MESSAGE_FRAGMENT: &str =
+    "missing or incompatible DSL v4 materialized artifacts";
+
 pub(crate) fn incompatible_materialization_error(
     source_name: &SourceName,
     detail: impl AsRef<str>,
 ) -> AppError {
-    AppError::MissingOrIncompatibleV4Materialization {
-        source_name: source_name.to_string(),
-        detail: detail.as_ref().to_string(),
-    }
+    AppError::FailedPrecondition(format!(
+        "source '{}' has {INCOMPATIBLE_MATERIALIZATION_MESSAGE_FRAGMENT}: {}. Re-add the source to regenerate them.",
+        source_name,
+        detail.as_ref()
+    ))
 }
 
 fn write_materialization(

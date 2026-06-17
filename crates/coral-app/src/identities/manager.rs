@@ -1855,6 +1855,7 @@ audience:
     fn resolution_request(identity_name: &str) -> SourceIdentityResolutionRequest {
         SourceIdentityResolutionRequest {
             workspace_name: "default".to_string(),
+            request_principal: UserPrincipal::local(),
             user_id: Some("local".to_string()),
             source_name: "github".to_string(),
             surface_id: "rest".to_string(),

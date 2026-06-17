@@ -44,7 +44,9 @@ use crate::source_artifacts::SourceArtifactStore;
 use crate::source_registry::{SourceRegistry, installed_source_from_record};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
-use crate::sources::materialization::incompatible_materialization_error;
+use crate::sources::materialization::{
+    INCOMPATIBLE_MATERIALIZATION_MESSAGE_FRAGMENT, incompatible_materialization_error,
+};
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::{
     runtime_components_for_v4_source, runtime_relation_namespace,
@@ -397,11 +399,7 @@ impl QueryManager {
         for source in self.list_registry_sources(workspace_name)? {
             match self.load_query_source(workspace_name, &source) {
                 Ok(query_source) => query_sources.push(query_source),
-                Err(
-                    error @ (AppError::Credentials(CredentialsError::Unavailable(_))
-                    | AppError::MissingOrIncompatibleV4Materialization { .. }
-                    | AppError::SourceUnservable(_)),
-                ) => {
+                Err(error) if source_load_error_requires_fail_closed(&error) => {
                     return Err(error);
                 }
                 Err(error) => {
@@ -776,6 +774,7 @@ impl LazyRuntimeIdentitySelector {
             .identity_manager
             .resolve_source_identity(SourceIdentityResolutionRequest {
                 workspace_name: self.workspace_name.as_str().to_string(),
+                request_principal: self.request_principal.clone(),
                 user_id,
                 source_name: identity.source_name().to_string(),
                 surface_id: identity.surface_id().to_string(),
@@ -1051,9 +1050,6 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::IdentityNotFound(_) => "IDENTITY_NOT_FOUND",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
-        AppError::MissingOrIncompatibleV4Materialization { .. } => {
-            "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
-        }
         AppError::SourceUnservable(_) => "SOURCE_UNSERVABLE",
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Unavailable(_) => "UNAVAILABLE",
@@ -1066,6 +1062,18 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::TaskJoin(_) => "TASK_JOIN",
         AppError::Credentials(_) => "CREDENTIALS",
         AppError::MissingConfigDir => "MISSING_CONFIG_DIR",
+    }
+}
+
+fn source_load_error_requires_fail_closed(error: &AppError) -> bool {
+    match error {
+        AppError::Credentials(CredentialsError::Unavailable(_)) | AppError::SourceUnservable(_) => {
+            true
+        }
+        AppError::FailedPrecondition(message) => {
+            message.contains(INCOMPATIBLE_MATERIALIZATION_MESSAGE_FRAGMENT)
+        }
+        _ => false,
     }
 }
 
@@ -2189,10 +2197,7 @@ surfaces:
             .expect_err("missing materialization should fail closed");
 
         assert!(
-            matches!(
-                error,
-                AppError::MissingOrIncompatibleV4Materialization { .. }
-            ),
+            matches!(&error, AppError::FailedPrecondition(message) if message.contains(INCOMPATIBLE_MATERIALIZATION_MESSAGE_FRAGMENT)),
             "unexpected error: {error:#}"
         );
     }

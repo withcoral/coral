@@ -278,6 +278,13 @@ pub struct SourceIdentitySelectionRequest {
 pub struct SourceIdentityResolutionRequest {
     /// Workspace selected by the request.
     pub workspace_name: String,
+    /// User principal associated with the request that triggered identity
+    /// resolution.
+    ///
+    /// Providers should use [`Self::user_id`] to select user-owned identity
+    /// material. The request principal remains available for providers that
+    /// need to authorize access to workspace-owned material.
+    pub request_principal: UserPrincipal,
     /// Request user id selected by Coral for user-owned bindings.
     ///
     /// Workspace-owned bindings intentionally carry no request user id, so

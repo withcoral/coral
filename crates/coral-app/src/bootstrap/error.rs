@@ -31,16 +31,6 @@ pub enum AppError {
     /// The request requires additional setup before it can succeed.
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
-    /// A DSL v4 source has missing or stale generated runtime artifacts.
-    #[error(
-        "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source to regenerate them."
-    )]
-    MissingOrIncompatibleV4Materialization {
-        /// Source name whose installed artifacts failed validation.
-        source_name: String,
-        /// Specific materialization mismatch or missing-artifact detail.
-        detail: String,
-    },
     /// A known, installed source or related setup cannot be served until the
     /// user takes an explicit action.
     #[error("failed precondition: {0}")]
@@ -213,7 +203,6 @@ fn app_code(error: &AppError) -> Code {
         | AppError::IdentityNotFound(_) => Code::NotFound,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
-        | AppError::MissingOrIncompatibleV4Materialization { .. }
         | AppError::SourceUnservable(_)
         | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
