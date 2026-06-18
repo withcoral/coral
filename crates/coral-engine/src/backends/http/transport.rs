@@ -14,7 +14,7 @@ use tracing::field;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::backends::http::ProviderQueryError;
-use crate::backends::http::auth::resolve_auth_headers;
+use crate::backends::http::auth::{auth_attaches_headers, resolve_auth_headers};
 use crate::backends::http::error::{pagination_error, provider_error};
 use crate::backends::http::pagination::extract_next_link_url;
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
@@ -25,6 +25,7 @@ use crate::backends::http::trace::{
     record_trace_http_endpoint, request_body_size, sanitize_trace_url, trace_http_endpoint,
     trace_reqwest_error, trace_reqwest_error_type,
 };
+use crate::backends::http::url::ensure_credentials_allowed_for_url;
 use crate::backends::shared::template::{RenderContext, resolve_value_source, value_to_string};
 use crate::{
     RequestAuthenticator, RequestIdentityResolutionContext, RequestIdentityResolver,
@@ -198,6 +199,12 @@ pub(super) async fn execute_request(
         body_capture.record_request(&request_span, request_id, body);
         if let (Some(identity_context), None) = (identity_context, request_identity_resolver) {
             let error = missing_identity_resolver_error(identity_context);
+            record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+            return Err(error);
+        }
+        if (auth_attaches_headers(auth) || identity_context.is_some())
+            && let Err(error) = ensure_credentials_allowed_for_url(url)
+        {
             record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
             return Err(error);
         }
@@ -527,7 +534,7 @@ mod tests {
     use crate::backends::http::trace::HttpBodyCapture;
     use crate::backends::shared::template::RenderContext;
     use coral_spec::backends::http::RateLimitSpec;
-    use coral_spec::{AuthSpec, HttpMethod, ResponseBodyFormat};
+    use coral_spec::{AuthSpec, BasicAuthSpec, HttpMethod, ParsedTemplate, ResponseBodyFormat};
 
     async fn spawn_hanging_http_server() -> (String, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -541,6 +548,60 @@ mod tests {
         });
 
         (format!("http://{addr}"), task)
+    }
+
+    #[tokio::test]
+    async fn execute_request_rejects_remote_http_when_auth_attaches_headers() {
+        let request_timeout = Duration::from_millis(100);
+        let http = reqwest::Client::builder()
+            .timeout(request_timeout)
+            .build()
+            .expect("build test client");
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+        let auth = AuthSpec::BasicAuth(BasicAuthSpec {
+            username: ParsedTemplate::parse("user").expect("username template"),
+            password: ParsedTemplate::parse("password").expect("password template"),
+        });
+
+        let error = execute_request(
+            &http,
+            request_timeout,
+            TestOutgoingHttpRequest {
+                auth: &auth,
+                request_headers: &[],
+                request_authenticators: &HashMap::new(),
+                identity_context: None,
+                request_identity_resolver: None,
+                trace_context: None,
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::GET,
+                base_url: "http://api.example.com",
+                url: "http://api.example.com/items",
+                query_pairs: &[],
+                body: None,
+                response_format: ResponseBodyFormat::default(),
+                source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
+                render_context,
+                allow_404_empty: false,
+                link_header_require_results: false,
+            },
+        )
+        .await
+        .expect_err("remote HTTP auth should fail before request execution");
+
+        assert!(
+            error
+                .to_string()
+                .contains("authenticated HTTP source requests require HTTPS"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

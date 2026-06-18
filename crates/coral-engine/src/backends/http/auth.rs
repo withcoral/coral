@@ -105,6 +105,13 @@ pub(crate) fn validate_auth_inputs(
     }
 }
 
+pub(crate) fn auth_attaches_headers(auth: &AuthSpec) -> bool {
+    match auth {
+        AuthSpec::BasicAuth(_) | AuthSpec::CustomAuth(_) => true,
+        AuthSpec::HeaderAuth(spec) => !spec.headers.is_empty(),
+    }
+}
+
 pub(crate) fn resolve_auth_headers(
     auth: &AuthSpec,
     request: reqwest::RequestBuilder,

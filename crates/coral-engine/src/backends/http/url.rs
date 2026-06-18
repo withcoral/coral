@@ -2,6 +2,23 @@
 
 use datafusion::error::{DataFusionError, Result};
 
+pub(super) fn ensure_credentials_allowed_for_url(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url).map_err(|error| {
+        DataFusionError::Execution(format!("invalid HTTP request URL for credentials: {error}"))
+    })?;
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" if is_loopback_host(&parsed) => Ok(()),
+        "http" => Err(DataFusionError::Execution(format!(
+            "authenticated HTTP source requests require HTTPS or loopback HTTP; got http://{}",
+            parsed.host_str().unwrap_or("<missing-host>")
+        ))),
+        scheme => Err(DataFusionError::Execution(format!(
+            "authenticated HTTP source requests require HTTPS or loopback HTTP; got scheme '{scheme}'"
+        ))),
+    }
+}
+
 pub(super) fn join_url(base: &str, path: &str) -> Result<String> {
     let trimmed = path.trim();
     if reqwest::Url::parse(trimmed).is_ok() || trimmed.starts_with("//") {
@@ -40,9 +57,44 @@ fn starts_with_http_scheme(value: &str) -> bool {
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
 }
 
+fn is_loopback_host(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".localhost") {
+        return true;
+    }
+    let ip_host = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    ip_host
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{join_url, normalize_base_url};
+    use super::{ensure_credentials_allowed_for_url, join_url, normalize_base_url};
+
+    #[test]
+    fn credentials_are_allowed_for_https_and_loopback_http() {
+        ensure_credentials_allowed_for_url("https://api.example.com/v1").unwrap();
+        ensure_credentials_allowed_for_url("http://localhost:8080/v1").unwrap();
+        ensure_credentials_allowed_for_url("http://127.0.0.1:8080/v1").unwrap();
+        ensure_credentials_allowed_for_url("http://[::1]:8080/v1").unwrap();
+        ensure_credentials_allowed_for_url("http://dev.localhost:8080/v1").unwrap();
+    }
+
+    #[test]
+    fn credentials_are_rejected_for_remote_http() {
+        let error = ensure_credentials_allowed_for_url("http://api.example.com/v1").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("authenticated HTTP source requests require HTTPS")
+        );
+    }
 
     #[test]
     fn normalize_base_url_adds_https_scheme_for_host_only_values() {
