@@ -1588,13 +1588,17 @@ fn oauth_client_secret_required_after_client_id_prompt(
     prompted_client_id: Option<&str>,
 ) -> bool {
     oauth.client.secret.is_some()
-        && (prompted_client_id.is_some()
+        && (prompted_client_id.is_some_and(oauth_client_id_value_present)
             || oauth
                 .client
                 .id
                 .default
                 .as_deref()
-                .is_some_and(|value| !value.is_empty()))
+                .is_some_and(oauth_client_id_value_present))
+}
+
+fn oauth_client_id_value_present(value: &str) -> bool {
+    !value.trim().is_empty()
 }
 
 fn prompt_oauth_client_id(
@@ -1603,7 +1607,7 @@ fn prompt_oauth_client_id(
     allow_dynamic_registration: bool,
 ) -> Result<Option<String>, anyhow::Error> {
     let theme = ColorfulTheme::default();
-    let prompt = if default.is_some_and(|value| !value.is_empty()) {
+    let prompt = if default.is_some_and(oauth_client_id_value_present) {
         format!("{input_key} [source default]")
     } else {
         input_key.to_string()
@@ -1612,10 +1616,20 @@ fn prompt_oauth_client_id(
         .with_prompt(prompt)
         .allow_empty(true)
         .interact_text()?;
+    resolve_oauth_client_id_prompt_value(input_key, &value, default, allow_dynamic_registration)
+}
+
+fn resolve_oauth_client_id_prompt_value(
+    input_key: &str,
+    value: &str,
+    default: Option<&str>,
+    allow_dynamic_registration: bool,
+) -> Result<Option<String>, anyhow::Error> {
+    let value = value.trim().to_string();
     if !value.is_empty() {
         return Ok(Some(value));
     }
-    if default.is_some_and(|value| !value.is_empty()) {
+    if default.is_some_and(oauth_client_id_value_present) {
         return Ok(None);
     }
     if allow_dynamic_registration {
@@ -1712,8 +1726,9 @@ mod tests {
         apply_redirect_prompt_key, collect_inputs_with_hint, expected_oauth_redirect,
         finalize_input_value, oauth_client_id_allows_empty,
         oauth_client_secret_required_after_client_id_prompt, render_redirect_prompt_key_echo,
-        resolve_prompt_hint, shell_quote_arg, source_name_arg, submit_oauth_redirect_url,
-        validate_oauth_redirect_url, validation_follow_up,
+        resolve_oauth_client_id_prompt_value, resolve_prompt_hint, shell_quote_arg,
+        source_name_arg, submit_oauth_redirect_url, validate_oauth_redirect_url,
+        validation_follow_up,
     };
 
     fn test_oauth_spec(client: ManifestOAuthClientSpec) -> ManifestOAuthCredentialSpec {
@@ -1945,6 +1960,51 @@ mod tests {
         assert!(!oauth_client_secret_required_after_client_id_prompt(
             &oauth, None
         ));
+    }
+
+    #[test]
+    fn dynamic_registration_treats_blank_client_id_prompt_as_absent() {
+        assert_eq!(
+            resolve_oauth_client_id_prompt_value("OAUTH_CLIENT_ID", "   ", None, true)
+                .expect("dynamic registration should allow blank client id"),
+            None
+        );
+
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: Some(ManifestOAuthClientSecretSpec {
+                input: "OAUTH_CLIENT_SECRET".to_string(),
+                transport: ManifestOAuthClientSecretTransport::BasicAuth,
+            }),
+            dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
+                registration_url: "https://provider.example.com/oauth/register".to_string(),
+                client_name: None,
+                token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                request_refresh_token_grant: false,
+            }),
+        });
+
+        assert!(!oauth_client_secret_required_after_client_id_prompt(
+            &oauth,
+            Some("   ")
+        ));
+    }
+
+    #[test]
+    fn client_id_prompt_value_is_trimmed_before_static_path() {
+        assert_eq!(
+            resolve_oauth_client_id_prompt_value(
+                "OAUTH_CLIENT_ID",
+                "  static-client  ",
+                None,
+                true,
+            )
+            .expect("non-empty client id should be accepted"),
+            Some("static-client".to_string())
+        );
     }
 
     #[test]
