@@ -6,8 +6,8 @@ use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
-use crate::identity::UserPrincipal;
 use crate::query::manager::{QueryManager, QueryManagerError};
+use crate::request_context::RequestContext;
 use crate::workspaces::WorkspaceName;
 
 const DEFAULT_SEARCH_LIMIT: u32 = 20;
@@ -175,14 +175,14 @@ impl CatalogDiscovery {
     pub(crate) async fn list_catalog_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
         pagination: Pagination,
     ) -> Result<CatalogPage, QueryManagerError> {
         let catalog = self
             .queries
-            .list_catalog_with_context(workspace_name, request_principal, schema_name)
+            .list_catalog_with_context(workspace_name, request_context, schema_name)
             .await?;
         let counts = catalog_counts(&catalog);
         let items = catalog_items(catalog, kind);
@@ -195,13 +195,13 @@ impl CatalogDiscovery {
     async fn catalog_items_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
     ) -> Result<Vec<CatalogItem>, QueryManagerError> {
         let catalog = self
             .queries
-            .list_catalog_with_context(workspace_name, request_principal, schema_name)
+            .list_catalog_with_context(workspace_name, request_context, schema_name)
             .await?;
         Ok(catalog_items(catalog, kind))
     }
@@ -209,14 +209,14 @@ impl CatalogDiscovery {
     pub(crate) async fn describe_table_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         table_ref: CatalogTableRef<'_>,
     ) -> Result<DescribeTableResult, QueryManagerError> {
         let table_lookup = self
             .queries
             .describe_table_with_context(
                 workspace_name,
-                request_principal,
+                request_context,
                 table_ref.schema_name,
                 table_ref.table_name,
             )
@@ -278,7 +278,7 @@ impl CatalogDiscovery {
     pub(crate) async fn search_catalog_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         query: SearchCatalogQuery<'_>,
     ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
         let regex = compile_metadata_regex(query.pattern, query.ignore_case)
@@ -286,7 +286,7 @@ impl CatalogDiscovery {
         let matches = self
             .catalog_items_with_context(
                 workspace_name,
-                request_principal,
+                request_context,
                 query.schema_name,
                 query.kind,
             )
@@ -306,14 +306,14 @@ impl CatalogDiscovery {
     pub(crate) async fn list_columns_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         query: ListColumnsQuery<'_>,
     ) -> Result<Option<Page<ColumnSearchResult>>, QueryManagerError> {
         let table = self
             .queries
             .list_tables_with_context(
                 workspace_name,
-                request_principal,
+                request_context,
                 Some(query.table_ref.schema_name),
                 Some(query.table_ref.table_name),
             )

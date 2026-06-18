@@ -22,14 +22,15 @@ use tonic_types::{ErrorDetail, StatusExt as _};
 use tracing::{Instrument as _, field};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-use crate::bootstrap::{AppError, app_status, core_status};
+use crate::bootstrap::{AppError, app_status, core_status, status_with_truncated_detail};
 use crate::catalog::discovery::{
     CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
     ColumnSearchResult, DescribeTableResult,
 };
 use crate::episode::EpisodeId;
-use crate::identity::{UserPrincipal, UserPrincipalError, UserPrincipalProvider};
+use crate::identity::{UserPrincipalError, UserPrincipalProvider};
 use crate::query::manager::QueryManagerError;
+use crate::request_context::RequestContext;
 use crate::workspaces::WorkspaceName;
 
 struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
@@ -179,9 +180,12 @@ where
     result
 }
 
-/// Creates the request span, authenticates the caller through the provider,
-/// and runs `handler` with the authenticated principal and decoded message,
-/// recording the gRPC status on the span.
+/// Creates the request span, requires an authenticated caller, and runs
+/// `handler` with the decoded message, recording the gRPC status on the span.
+///
+/// Use this for services whose state is not yet principal-scoped but whose RPCs
+/// still expose local app data and must not become anonymous when a runtime
+/// installs a real principal provider.
 ///
 /// Handlers that need the request span can read it with
 /// `tracing::Span::current()`.
@@ -191,7 +195,28 @@ pub(crate) async fn instrument_authenticated_grpc<Req, Res, F, Fut>(
     handler: F,
 ) -> Result<Response<Res>, Status>
 where
-    F: FnOnce(UserPrincipal, Req) -> Fut,
+    F: FnOnce(Req) -> Fut,
+    Fut: Future<Output = Result<Response<Res>, Status>>,
+{
+    instrument_request_context_grpc(user_principal_provider, request, |_context, request| {
+        handler(request)
+    })
+    .await
+}
+
+/// Creates the request span, authenticates the caller through the provider,
+/// and runs `handler` with the authenticated request context and decoded message,
+/// recording the gRPC status on the span.
+///
+/// Handlers that need the request span can read it with
+/// `tracing::Span::current()`.
+pub(crate) async fn instrument_request_context_grpc<Req, Res, F, Fut>(
+    user_principal_provider: &Arc<dyn UserPrincipalProvider>,
+    request: Request<Req>,
+    handler: F,
+) -> Result<Response<Res>, Status>
+where
+    F: FnOnce(RequestContext, Req) -> Fut,
     Fut: Future<Output = Result<Response<Res>, Status>>,
 {
     let span = grpc_span(&request);
@@ -201,18 +226,23 @@ where
             .principal_for_metadata(request.metadata())
             .await
             .map_err(user_principal_status)?;
-        handler(principal, request.into_inner()).await
+        handler(RequestContext::new(principal), request.into_inner()).await
     })
     .await
 }
 
 fn user_principal_status(error: UserPrincipalError) -> Status {
     match error {
-        UserPrincipalError::Unauthenticated(message) => Status::unauthenticated(message),
-        UserPrincipalError::InvalidInput(message) => {
-            Status::invalid_argument(format!("invalid user principal metadata: {message}"))
+        UserPrincipalError::Unauthenticated(message) => {
+            status_with_truncated_detail(Code::Unauthenticated, message)
         }
-        UserPrincipalError::Internal(message) => Status::internal(message),
+        UserPrincipalError::InvalidInput(message) => status_with_truncated_detail(
+            Code::InvalidArgument,
+            format!("invalid user principal metadata: {message}"),
+        ),
+        UserPrincipalError::Internal(message) => {
+            status_with_truncated_detail(Code::Internal, message)
+        }
     }
 }
 
@@ -522,10 +552,11 @@ mod tests {
 
     use super::{
         GrpcMethodMetadata, GrpcServerMethod, episode_id_from_metadata, grpc_method, query_status,
-        query_test_result_to_proto, table_summary_to_proto, table_to_proto,
+        query_test_result_to_proto, table_summary_to_proto, table_to_proto, user_principal_status,
         workspace_name_from_proto, workspace_to_proto,
     };
-    use crate::bootstrap::AppError;
+    use crate::bootstrap::{AppError, MAX_STATUS_DETAIL_BYTES};
+    use crate::identity::UserPrincipalError;
     use crate::query::manager::QueryManagerError;
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
@@ -550,6 +581,16 @@ mod tests {
 
         assert_eq!(status.code(), Code::Unavailable);
         assert_eq!(status.message(), "unavailable: backend down");
+    }
+
+    #[test]
+    fn user_principal_status_truncates_provider_messages() {
+        let status =
+            user_principal_status(UserPrincipalError::unauthenticated("x".repeat(20 * 1024)));
+
+        assert_eq!(status.code(), Code::Unauthenticated);
+        assert!(status.message().len() <= MAX_STATUS_DETAIL_BYTES);
+        assert!(status.message().ends_with("… (truncated)"));
     }
 
     #[test]

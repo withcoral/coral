@@ -18,11 +18,11 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::episode::EpisodeId;
-use crate::identity::UserPrincipal;
 use crate::query::QueryAttribution;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
+use crate::request_context::RequestContext;
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{
@@ -94,10 +94,11 @@ impl QueryManager {
     pub(crate) async fn list_tables_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        _request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
+        let _request_principal = request_context.principal();
         self.list_tables(workspace_name, schema_filter, table_filter)
             .await
     }
@@ -125,9 +126,10 @@ impl QueryManager {
     pub(crate) async fn list_catalog_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        _request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, QueryManagerError> {
+        let _request_principal = request_context.principal();
         self.list_catalog(workspace_name, schema_filter).await
     }
 
@@ -155,10 +157,11 @@ impl QueryManager {
     pub(crate) async fn describe_table_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        _request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         schema_name: &str,
         table_name: &str,
     ) -> Result<DescribeTableInfo, QueryManagerError> {
+        let _request_principal = request_context.principal();
         self.describe_table(workspace_name, schema_name, table_name)
             .await
     }
@@ -197,10 +200,11 @@ impl QueryManager {
     pub(crate) async fn execute_sql_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        _request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         sql: &str,
         attribution: &QueryAttribution,
     ) -> Result<QueryExecution, QueryManagerError> {
+        let _request_principal = request_context.principal();
         self.execute_sql(workspace_name, sql, attribution).await
     }
 
@@ -238,10 +242,11 @@ impl QueryManager {
     pub(crate) async fn explain_sql_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        _request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         sql: &str,
         attribution: &QueryAttribution,
     ) -> Result<QueryPlan, QueryManagerError> {
+        let _request_principal = request_context.principal();
         self.explain_sql(workspace_name, sql, attribution).await
     }
 

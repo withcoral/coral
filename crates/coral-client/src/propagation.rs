@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use coral_api::CORAL_EPISODE_ID_METADATA_KEY;
 use opentelemetry::propagation::Injector;
 use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
 
@@ -40,6 +41,12 @@ impl StaticClientMetadata {
                         key.as_ref()
                     ))
                 })?;
+                if is_reserved_static_metadata_key(&key) {
+                    return Err(ClientError::InvalidMetadata(format!(
+                        "metadata key '{}' is reserved for Coral transport",
+                        key.as_str()
+                    )));
+                }
                 let value = MetadataValue::try_from(value.as_ref()).map_err(|error| {
                     ClientError::InvalidMetadata(format!(
                         "metadata value for '{}' is invalid: {error}",
@@ -53,6 +60,14 @@ impl StaticClientMetadata {
             entries: Arc::new(entries),
         })
     }
+}
+
+fn is_reserved_static_metadata_key(key: &MetadataKey<Ascii>) -> bool {
+    let key = key.as_str();
+    matches!(
+        key,
+        "traceparent" | "tracestate" | "baggage" | CORAL_EPISODE_ID_METADATA_KEY
+    ) || key.starts_with("grpc-")
 }
 
 /// tonic client interceptor that injects the current W3C `traceparent` and
@@ -75,7 +90,7 @@ impl tonic::service::Interceptor for ClientMetadataInterceptor {
     ) -> Result<tonic::Request<()>, tonic::Status> {
         coral_telemetry::inject_current_context(&mut MetadataInjector(request.metadata_mut()));
         for (key, value) in self.static_metadata.entries.iter() {
-            request.metadata_mut().insert(key.clone(), value.clone());
+            request.metadata_mut().append(key.clone(), value.clone());
         }
         Ok(request)
     }
@@ -96,6 +111,27 @@ mod tests {
     }
 
     #[test]
+    fn static_client_metadata_rejects_reserved_keys() {
+        for key in [
+            "traceparent",
+            "tracestate",
+            "baggage",
+            "grpc-timeout",
+            CORAL_EPISODE_ID_METADATA_KEY,
+        ] {
+            let error = StaticClientMetadata::try_from_pairs([(key, "value")])
+                .expect_err("reserved key should fail");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("metadata key '{key}' is reserved")),
+                "unexpected error for {key}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn interceptor_injects_static_metadata() {
         let metadata =
             StaticClientMetadata::try_from_pairs([("x-coral-user-id", "saul")]).expect("metadata");
@@ -112,5 +148,27 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("saul")
         );
+    }
+
+    #[test]
+    fn interceptor_appends_repeated_static_metadata() {
+        let metadata = StaticClientMetadata::try_from_pairs([
+            ("x-coral-route", "primary"),
+            ("x-coral-route", "secondary"),
+        ])
+        .expect("metadata");
+        let mut interceptor = ClientMetadataInterceptor::new(metadata);
+
+        let request = interceptor
+            .call(tonic::Request::new(()))
+            .expect("interceptor");
+        let values = request
+            .metadata()
+            .get_all("x-coral-route")
+            .iter()
+            .map(|value| value.to_str().expect("ascii value"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(values, vec!["primary", "secondary"]);
     }
 }

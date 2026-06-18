@@ -41,7 +41,7 @@ impl FeedbackServiceApi for FeedbackService {
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let submission = feedback
                     .submit_feedback(

@@ -20,7 +20,7 @@ use crate::identity::UserPrincipalProvider;
 use crate::query::manager::QueryManager;
 use crate::transport::{
     catalog_item_to_proto, catalog_search_result_to_proto, column_search_result_to_proto,
-    describe_table_response_to_proto, instrument_authenticated_grpc, pagination_to_proto,
+    describe_table_response_to_proto, instrument_request_context_grpc, pagination_to_proto,
     query_status, workspace_name_from_proto,
 };
 
@@ -49,10 +49,10 @@ impl CatalogServiceApi for CatalogService {
         request: Request<ListCatalogRequest>,
     ) -> Result<Response<ListCatalogResponse>, Status> {
         let catalog = self.catalog.clone();
-        instrument_authenticated_grpc(
+        instrument_request_context_grpc(
             &self.user_principal_provider,
             request,
-            |principal, request| async move {
+            |request_context, request| async move {
                 let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let schema_name = optional_trimmed(&request.schema_name);
@@ -60,7 +60,7 @@ impl CatalogServiceApi for CatalogService {
                 let catalog_page = catalog
                     .list_catalog_with_context(
                         &workspace_name,
-                        &principal,
+                        &request_context,
                         schema_name,
                         kind,
                         pagination,
@@ -97,10 +97,10 @@ impl CatalogServiceApi for CatalogService {
         request: Request<SearchCatalogRequest>,
     ) -> Result<Response<SearchCatalogResponse>, Status> {
         let catalog = self.catalog.clone();
-        instrument_authenticated_grpc(
+        instrument_request_context_grpc(
             &self.user_principal_provider,
             request,
-            |principal, request| async move {
+            |request_context, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let schema_name = optional_trimmed(&request.schema_name);
                 let kind = catalog_item_kind_from_proto(request.kind)?;
@@ -109,7 +109,7 @@ impl CatalogServiceApi for CatalogService {
                 let page = catalog
                     .search_catalog_with_context(
                         &workspace_name,
-                        &principal,
+                        &request_context,
                         SearchCatalogQuery {
                             pattern: &request.pattern,
                             schema_name,
@@ -145,17 +145,17 @@ impl CatalogServiceApi for CatalogService {
         request: Request<DescribeTableRequest>,
     ) -> Result<Response<DescribeTableResponse>, Status> {
         let catalog = self.catalog.clone();
-        instrument_authenticated_grpc(
+        instrument_request_context_grpc(
             &self.user_principal_provider,
             request,
-            |principal, request| async move {
+            |request_context, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
                 let table_name = required_trimmed(&request.table_name, "table_name")?;
                 let result = catalog
                     .describe_table_with_context(
                         &workspace_name,
-                        &principal,
+                        &request_context,
                         CatalogTableRef::new(&schema_name, &table_name),
                     )
                     .await
@@ -174,10 +174,10 @@ impl CatalogServiceApi for CatalogService {
         request: Request<ListColumnsRequest>,
     ) -> Result<Response<ListColumnsResponse>, Status> {
         let catalog = self.catalog.clone();
-        instrument_authenticated_grpc(
+        instrument_request_context_grpc(
             &self.user_principal_provider,
             request,
-            |principal, request| async move {
+            |request_context, request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
                 let table_name = required_trimmed(&request.table_name, "table_name")?;
@@ -186,7 +186,7 @@ impl CatalogServiceApi for CatalogService {
                 let page = catalog
                     .list_columns_with_context(
                         &workspace_name,
-                        &principal,
+                        &request_context,
                         ListColumnsQuery {
                             table_ref: CatalogTableRef::new(&schema_name, &table_name),
                             pattern: request.pattern.as_deref(),

@@ -50,6 +50,7 @@ pub mod features;
 mod feedback;
 mod identity;
 mod query;
+mod request_context;
 mod sources;
 mod state;
 mod storage;

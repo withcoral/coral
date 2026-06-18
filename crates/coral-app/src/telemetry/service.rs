@@ -11,7 +11,7 @@ use coral_api::v1::{
 };
 use tonic::{Code, Request, Response, Status};
 
-use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
+use crate::identity::UserPrincipalProvider;
 use crate::telemetry::local_store::{
     StoredTraceStatus, TraceDetailRecord, TraceSpanRecord, TraceStore, TraceStoreError,
     TraceSummaryRecord,
@@ -28,19 +28,15 @@ pub(crate) struct TraceService {
 }
 
 impl TraceService {
-    pub(crate) fn new(trace_store_file: PathBuf, retention: Duration) -> Self {
-        Self {
-            traces: TraceStore::with_retention(trace_store_file, retention),
-            user_principal_provider: Arc::new(SingleUserPrincipalProvider),
-        }
-    }
-
-    pub(crate) fn with_user_principal_provider(
-        mut self,
+    pub(crate) fn new(
+        trace_store_file: PathBuf,
+        retention: Duration,
         user_principal_provider: Arc<dyn UserPrincipalProvider>,
     ) -> Self {
-        self.user_principal_provider = user_principal_provider;
-        self
+        Self {
+            traces: TraceStore::with_retention(trace_store_file, retention),
+            user_principal_provider,
+        }
     }
 }
 
@@ -54,7 +50,7 @@ impl TraceServiceApi for TraceService {
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |request| async move {
                 let page_size = normalize_page_size(request.page_size);
                 let offset = parse_page_token(&request.page_token)?;
                 let mut summaries = traces
@@ -84,7 +80,7 @@ impl TraceServiceApi for TraceService {
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |request| async move {
                 if request.trace_id.trim().is_empty() {
                     return Err(Status::new(
                         Code::InvalidArgument,
