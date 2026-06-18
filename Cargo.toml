@@ -120,6 +120,7 @@ coral-client = { path = "crates/coral-client" }
 coral-engine = { path = "crates/coral-engine" }
 coral-mcp = { path = "crates/coral-mcp" }
 coral-spec = { path = "crates/coral-spec" }
+coral-telemetry = { path = "crates/coral-telemetry" }
 
 [profile.dev]
 debug = 2

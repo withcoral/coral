@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use opentelemetry::Value as OtelValue;
 use opentelemetry::metrics::MeterProvider as _;
-use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
 use opentelemetry_otlp::{
     LogExporter, MetricExporter, SpanExporter as OtlpSpanExporter, WithExportConfig, WithHttpConfig,
@@ -300,22 +299,7 @@ pub fn build_root_span(traceparent: Option<&str>) -> tracing::Span {
         process.pid = i64::from(std::process::id()),
         status = tracing::field::Empty
     );
-    if let Some(tp) = traceparent {
-        struct StringMapExtractor<'a>(&'a HashMap<String, String>);
-        impl Extractor for StringMapExtractor<'_> {
-            fn get(&self, key: &str) -> Option<&str> {
-                self.0.get(key).map(String::as_str)
-            }
-            fn keys(&self) -> Vec<&str> {
-                self.0.keys().map(String::as_str).collect()
-            }
-        }
-        let carrier = HashMap::from([("traceparent".to_string(), tp.to_string())]);
-        let parent_cx = opentelemetry::global::get_text_map_propagator(|p| {
-            p.extract(&StringMapExtractor(&carrier))
-        });
-        drop(span.set_parent(parent_cx));
-    }
+    coral_telemetry::set_parent_from_trace_headers(&span, traceparent, None);
     span
 }
 

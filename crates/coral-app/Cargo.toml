@@ -46,6 +46,7 @@ coral-api.workspace = true
 coral-auth-aws = { path = "../auth/aws" }
 coral-engine.workspace = true
 coral-spec.workspace = true
+coral-telemetry.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store.workspace = true

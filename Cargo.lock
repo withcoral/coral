@@ -1230,6 +1230,7 @@ dependencies = [
  "coral-client",
  "coral-engine",
  "coral-spec",
+ "coral-telemetry",
  "etcetera",
  "fs2",
  "keyring-core",
@@ -1317,6 +1318,7 @@ dependencies = [
  "coral-api",
  "coral-app",
  "coral-spec",
+ "coral-telemetry",
  "http-body 1.0.1",
  "opentelemetry",
  "opentelemetry_sdk",
@@ -1339,6 +1341,7 @@ dependencies = [
  "bytes",
  "chrono",
  "coral-spec",
+ "coral-telemetry",
  "datafusion",
  "datafusion-datasource",
  "datafusion-datasource-json",
@@ -1374,6 +1377,7 @@ dependencies = [
  "coral-api",
  "coral-app",
  "coral-client",
+ "coral-telemetry",
  "jsonschema",
  "opentelemetry",
  "regex",
@@ -1401,6 +1405,17 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "coral-telemetry"
+version = "0.4.3"
+dependencies = [
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
 ]
 
 [[package]]
