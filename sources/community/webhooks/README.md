@@ -11,7 +11,7 @@ reads that file and makes it queryable immediately.
 
 This enables federated SQL queries over local event data (GitHub pushes,
 Sentry alerts, Stripe payment failures, PagerDuty incidents) without polling
-any external API — and without any data leaving the machine.
+any external API — Coral's file backend reads the data locally and does not transmit it.
 
 **Authentication:** None for reads (Coral reads a local file). If you run a
 receiver that validates HMAC signatures, keep those secrets in the receiver,
@@ -141,6 +141,6 @@ LIMIT 20
 
 ## Security
 
-- The JSONL files are local only — they never leave the machine.
+- Coral reads these JSONL files locally — it does not transmit them to any external service.
 - HMAC secrets belong in your receiver/ingestion pipeline, not in this source spec.
 - Treat the JSONL files as sensitive if payloads contain private data.
