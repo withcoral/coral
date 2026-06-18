@@ -19,6 +19,8 @@ use serde_json::Value;
 
 use crate::{ManifestError, ParsedTemplate, Result};
 
+const RESERVED_SOURCE_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "public"];
+
 /// Common top-level source metadata shared by every backend source spec.
 #[derive(Debug, Clone)]
 pub struct SourceManifestCommon {
@@ -45,6 +47,19 @@ impl SourceManifestCommon {
             test_queries,
         }
     }
+}
+
+pub(crate) fn validate_source_name(name: &str) -> Result<()> {
+    validate_reserved_source_schema_name(name, "source name")
+}
+
+pub(crate) fn validate_reserved_source_schema_name(name: &str, label: &str) -> Result<()> {
+    if RESERVED_SOURCE_SCHEMA_NAMES.contains(&name) {
+        return Err(ManifestError::validation(format!(
+            "{label} '{name}' is reserved and cannot be used by manifests"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_test_queries(source_name: &str, test_queries: &[String]) -> Result<()> {

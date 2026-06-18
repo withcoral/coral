@@ -1206,7 +1206,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "coral-api"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -1218,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "coral-app"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "apple-native-keyring-store",
  "arrow",
@@ -1230,12 +1230,14 @@ dependencies = [
  "coral-client",
  "coral-engine",
  "coral-spec",
+ "coral-telemetry",
  "etcetera",
  "fs2",
  "keyring-core",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
+ "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost",
  "regex",
@@ -1266,7 +1268,7 @@ dependencies = [
 
 [[package]]
 name = "coral-auth-aws"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
@@ -1279,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "coral-cli"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1310,12 +1312,13 @@ dependencies = [
 
 [[package]]
 name = "coral-client"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "arrow",
  "coral-api",
  "coral-app",
  "coral-spec",
+ "coral-telemetry",
  "http-body 1.0.1",
  "opentelemetry",
  "opentelemetry_sdk",
@@ -1330,7 +1333,7 @@ dependencies = [
 
 [[package]]
 name = "coral-engine"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1338,6 +1341,7 @@ dependencies = [
  "bytes",
  "chrono",
  "coral-spec",
+ "coral-telemetry",
  "datafusion",
  "datafusion-datasource",
  "datafusion-datasource-json",
@@ -1368,11 +1372,12 @@ dependencies = [
 
 [[package]]
 name = "coral-mcp"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "coral-api",
  "coral-app",
  "coral-client",
+ "coral-telemetry",
  "jsonschema",
  "opentelemetry",
  "regex",
@@ -1390,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "coral-spec"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "jsonschema",
  "schemars",
@@ -1400,6 +1405,17 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "coral-telemetry"
+version = "0.4.3"
+dependencies = [
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -6692,9 +6708,10 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "coral-spec",
  "insta",
@@ -6702,6 +6719,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "uuid",
  "walkdir",
 ]
 
