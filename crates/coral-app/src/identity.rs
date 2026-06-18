@@ -49,40 +49,6 @@ impl UserPrincipal {
     }
 }
 
-/// Errors raised while authenticating or selecting a request user principal.
-#[derive(Debug, thiserror::Error)]
-pub enum UserPrincipalError {
-    /// The request did not present valid authentication.
-    #[error("unauthenticated: {0}")]
-    Unauthenticated(String),
-    /// The request presented malformed identity metadata.
-    #[error("invalid user principal metadata: {0}")]
-    InvalidInput(String),
-    /// The principal provider failed unexpectedly.
-    #[error("user principal provider failed: {0}")]
-    Internal(String),
-}
-
-impl UserPrincipalError {
-    /// Builds an unauthenticated principal error.
-    #[must_use]
-    pub fn unauthenticated(message: impl Into<String>) -> Self {
-        Self::Unauthenticated(message.into())
-    }
-
-    /// Builds an invalid-input principal error.
-    #[must_use]
-    pub fn invalid_input(message: impl Into<String>) -> Self {
-        Self::InvalidInput(message.into())
-    }
-
-    /// Builds an internal principal provider error.
-    #[must_use]
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self::Internal(message.into())
-    }
-}
-
 /// Server-side provider for request user principals.
 ///
 /// The OSS provider always returns [`UserPrincipal::local`]. Product runtimes
@@ -94,12 +60,12 @@ pub trait UserPrincipalProvider: Send + Sync + std::fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`UserPrincipalError`] when transport metadata is malformed or
-    /// the provider cannot authenticate the request.
+    /// Returns [`AppError`] when transport metadata is malformed, the provider
+    /// cannot authenticate the request, or principal selection fails.
     async fn principal_for_metadata(
         &self,
         metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<UserPrincipal, UserPrincipalError>;
+    ) -> Result<UserPrincipal, AppError>;
 }
 
 /// Default OSS principal provider for single-user local mode.
@@ -111,7 +77,7 @@ impl UserPrincipalProvider for SingleUserPrincipalProvider {
     async fn principal_for_metadata(
         &self,
         _metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<UserPrincipal, UserPrincipalError> {
+    ) -> Result<UserPrincipal, AppError> {
         Ok(UserPrincipal::local())
     }
 }

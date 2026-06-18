@@ -13,6 +13,9 @@ use crate::credentials::CredentialsError;
 /// Errors surfaced by the local application layer.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
+    /// The request did not present valid authentication.
+    #[error("unauthenticated: {0}")]
+    Unauthenticated(String),
     /// A requested source was not found in config.
     #[error("source '{0}' not found")]
     SourceNotFound(String),
@@ -100,10 +103,6 @@ fn truncate_status_detail(detail: String) -> String {
         .get(..cut)
         .expect("cut is adjusted to a UTF-8 character boundary");
     format!("{truncated}{MARKER}")
-}
-
-pub(crate) fn status_with_truncated_detail(code: Code, detail: impl Into<String>) -> Status {
-    Status::new(code, truncate_status_detail(detail.into()))
 }
 
 #[expect(
@@ -198,6 +197,7 @@ fn grpc_code(status: StatusCode) -> Code {
 
 fn app_code(error: &AppError) -> Code {
     match error {
+        AppError::Unauthenticated(_) => Code::Unauthenticated,
         AppError::SourceNotFound(_) => Code::NotFound,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
@@ -240,8 +240,8 @@ mod tests {
     }
 
     #[test]
-    fn status_with_truncated_detail_caps_long_messages() {
-        let status = status_with_truncated_detail(Code::Unauthenticated, "x".repeat(20 * 1024));
+    fn app_status_maps_unauthenticated_and_truncates_detail() {
+        let status = app_status(AppError::Unauthenticated("x".repeat(20 * 1024)));
 
         assert_eq!(status.code(), Code::Unauthenticated);
         assert!(status.message().len() <= MAX_STATUS_DETAIL_BYTES);

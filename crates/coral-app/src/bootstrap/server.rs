@@ -710,8 +710,8 @@ mod tests {
     use crate::transport::workspace_to_proto;
     use crate::workspaces::WorkspaceName;
     use crate::{
-        AwsEngineExtensionsProvider, NoopEngineExtensionsProvider, SingleUserPrincipalProvider,
-        UserPrincipal, UserPrincipalError, UserPrincipalProvider,
+        AppError, AwsEngineExtensionsProvider, NoopEngineExtensionsProvider,
+        SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider,
     };
 
     fn default_workspace() -> Workspace {
@@ -740,9 +740,9 @@ enabled = false
         async fn principal_for_metadata(
             &self,
             _metadata: &tonic::metadata::MetadataMap,
-        ) -> Result<UserPrincipal, UserPrincipalError> {
-            Err(UserPrincipalError::unauthenticated(
-                "rejected user principal",
+        ) -> Result<UserPrincipal, AppError> {
+            Err(AppError::Unauthenticated(
+                "rejected user principal".to_string(),
             ))
         }
     }
