@@ -11,8 +11,15 @@ use super::values::queryable_table_summary_values;
 static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral, a read-only SQL database. Treat exposed data as database schemas, tables, and table functions. Use `list_catalog` and `search_catalog` as catalog helpers, use `describe_table` and `list_columns` for table-specific metadata, use `sql` against `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` for deeper discovery, then answer with set-based SQL through `sql`. Prefer one SQL statement with joins, CROSS JOIN, CTEs, subqueries, and aggregates over row-by-row tool calls.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
-pub(crate) fn initial_instructions() -> &'static str {
-    INITIAL_INSTRUCTIONS
+pub(crate) fn initial_instructions(source_names: &[String]) -> String {
+    if source_names.is_empty() {
+        return INITIAL_INSTRUCTIONS.to_string();
+    }
+    format!(
+        "{}\n\nConnected Coral sources: {}.",
+        INITIAL_INSTRUCTIONS,
+        source_names.join(", ")
+    )
 }
 
 pub(crate) fn guide_resource(
@@ -165,11 +172,19 @@ mod tests {
 
     #[test]
     fn initial_instructions_frame_coral_as_sql_database() {
-        let instructions = initial_instructions();
+        let instructions = initial_instructions(&[]);
         assert!(instructions.contains("read-only SQL database"));
         assert!(instructions.contains("catalog helpers"));
         assert!(instructions.contains("CROSS JOIN"));
         assert!(instructions.contains("row-by-row tool calls"));
+    }
+
+    #[test]
+    fn initial_instructions_include_connected_source_names_when_known() {
+        let instructions = initial_instructions(&["github".to_string(), "linear".to_string()]);
+
+        assert!(instructions.contains("read-only SQL database"));
+        assert!(instructions.contains("Connected Coral sources: github, linear."));
     }
 
     #[test]
