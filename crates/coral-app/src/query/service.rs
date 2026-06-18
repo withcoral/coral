@@ -15,7 +15,7 @@ use crate::bootstrap::core_status;
 use crate::identity::UserPrincipalProvider;
 use crate::query::QueryAttribution;
 use crate::query::manager::QueryManager;
-use crate::transport::{instrument_authenticated_grpc, query_status, workspace_name_from_proto};
+use crate::transport::{instrument_request_context_grpc, query_status, workspace_name_from_proto};
 
 #[derive(Clone)]
 pub(crate) struct QueryService {
@@ -43,13 +43,18 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
         let queries = self.queries.clone();
         let attribution = QueryAttribution::from_extensions(request.extensions());
-        Box::pin(instrument_authenticated_grpc(
+        Box::pin(instrument_request_context_grpc(
             &self.user_principal_provider,
             request,
-            |principal, inner| async move {
+            |request_context, inner| async move {
                 let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
                 let execution = queries
-                    .execute_sql_with_context(&workspace_name, &principal, &inner.sql, &attribution)
+                    .execute_sql_with_context(
+                        &workspace_name,
+                        &request_context,
+                        &inner.sql,
+                        &attribution,
+                    )
                     .await
                     .map_err(query_status)?;
                 let response = ExecuteSqlResponse {
@@ -73,13 +78,18 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ExplainSqlResponse>, Status> {
         let queries = self.queries.clone();
         let attribution = QueryAttribution::from_extensions(request.extensions());
-        Box::pin(instrument_authenticated_grpc(
+        Box::pin(instrument_request_context_grpc(
             &self.user_principal_provider,
             request,
-            |principal, inner| async move {
+            |request_context, inner| async move {
                 let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
                 let plan = queries
-                    .explain_sql_with_context(&workspace_name, &principal, &inner.sql, &attribution)
+                    .explain_sql_with_context(
+                        &workspace_name,
+                        &request_context,
+                        &inner.sql,
+                        &attribution,
+                    )
                     .await
                     .map_err(query_status)?;
                 Ok(Response::new(ExplainSqlResponse {

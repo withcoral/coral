@@ -88,7 +88,7 @@ impl SourceServiceApi for SourceService {
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let sources = sources
                     .discover_sources(&workspace_name)
@@ -110,7 +110,7 @@ impl SourceServiceApi for SourceService {
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let sources: Vec<_> = sources
                     .list_workspace_sources(&workspace_name)
@@ -132,7 +132,7 @@ impl SourceServiceApi for SourceService {
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let source_name = SourceName::parse(&request.name).map_err(app_status)?;
                 let source = sources
@@ -154,7 +154,7 @@ impl SourceServiceApi for SourceService {
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let source_name = SourceName::parse(&request.name).map_err(app_status)?;
                 let source = sources
@@ -176,7 +176,7 @@ impl SourceServiceApi for SourceService {
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
                 let command = CreateBundledSourceCommand {
@@ -207,7 +207,7 @@ impl SourceServiceApi for SourceService {
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |request| async move {
                 let span = tracing::Span::current();
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let response_workspace_name = workspace_name.clone();
@@ -251,7 +251,7 @@ impl SourceServiceApi for SourceService {
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |request| async move {
                 let span = tracing::Span::current();
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let response_workspace_name = workspace_name.clone();
@@ -310,7 +310,7 @@ impl SourceServiceApi for SourceService {
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let source_name = SourceName::parse(&request.name).map_err(app_status)?;
                 run_blocking_source_operation(move || {
@@ -331,7 +331,7 @@ impl SourceServiceApi for SourceService {
         instrument_authenticated_grpc(
             &self.user_principal_provider,
             request,
-            |_principal, request| async move {
+            |request| async move {
                 let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
                 let source_name = SourceName::parse(&request.name).map_err(app_status)?;
                 let result = queries

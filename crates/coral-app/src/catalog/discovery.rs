@@ -6,9 +6,9 @@ use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
-use crate::identity::UserPrincipal;
 use crate::query::QueryAttribution;
 use crate::query::manager::{QueryManager, QueryManagerError};
+use crate::request_context::RequestContext;
 use crate::workspaces::WorkspaceName;
 
 const DEFAULT_SEARCH_LIMIT: u32 = 20;
@@ -176,7 +176,7 @@ impl CatalogDiscovery {
     pub(crate) async fn list_catalog_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
         pagination: Pagination,
@@ -184,7 +184,7 @@ impl CatalogDiscovery {
     ) -> Result<CatalogPage, QueryManagerError> {
         let catalog = self
             .queries
-            .list_catalog_with_context(workspace_name, request_principal, schema_name, attribution)
+            .list_catalog_with_context(workspace_name, request_context, schema_name, attribution)
             .await?;
         let counts = catalog_counts(&catalog);
         let items = catalog_items(catalog, kind);
@@ -197,14 +197,14 @@ impl CatalogDiscovery {
     async fn catalog_items_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
         attribution: &QueryAttribution,
     ) -> Result<Vec<CatalogItem>, QueryManagerError> {
         let catalog = self
             .queries
-            .list_catalog_with_context(workspace_name, request_principal, schema_name, attribution)
+            .list_catalog_with_context(workspace_name, request_context, schema_name, attribution)
             .await?;
         Ok(catalog_items(catalog, kind))
     }
@@ -212,7 +212,7 @@ impl CatalogDiscovery {
     pub(crate) async fn describe_table_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         table_ref: CatalogTableRef<'_>,
         attribution: &QueryAttribution,
     ) -> Result<DescribeTableResult, QueryManagerError> {
@@ -220,7 +220,7 @@ impl CatalogDiscovery {
             .queries
             .describe_table_with_context(
                 workspace_name,
-                request_principal,
+                request_context,
                 table_ref.schema_name,
                 table_ref.table_name,
                 attribution,
@@ -283,7 +283,7 @@ impl CatalogDiscovery {
     pub(crate) async fn search_catalog_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         query: SearchCatalogQuery<'_>,
         attribution: &QueryAttribution,
     ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
@@ -292,7 +292,7 @@ impl CatalogDiscovery {
         let matches = self
             .catalog_items_with_context(
                 workspace_name,
-                request_principal,
+                request_context,
                 query.schema_name,
                 query.kind,
                 attribution,
@@ -313,7 +313,7 @@ impl CatalogDiscovery {
     pub(crate) async fn list_columns_with_context(
         &self,
         workspace_name: &WorkspaceName,
-        request_principal: &UserPrincipal,
+        request_context: &RequestContext,
         query: ListColumnsQuery<'_>,
         attribution: &QueryAttribution,
     ) -> Result<Option<Page<ColumnSearchResult>>, QueryManagerError> {
@@ -321,7 +321,7 @@ impl CatalogDiscovery {
             .queries
             .list_tables_with_context(
                 workspace_name,
-                request_principal,
+                request_context,
                 Some(query.table_ref.schema_name),
                 Some(query.table_ref.table_name),
                 attribution,

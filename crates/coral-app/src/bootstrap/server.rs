@@ -315,8 +315,18 @@ impl ServerBuilder {
             layout,
             self.config.engine_extensions_providers,
         );
+        let user_principal_provider = self.config.user_principal_provider;
         let trace_service = if telemetry_config.trace_history.enabled {
-            installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
+            // Trace records can expose SQL text, span attributes, and optional
+            // captured payload previews. They are process-local rather than
+            // principal-scoped, so the provider is used as the request auth gate.
+            installed_trace_store.map(|store| {
+                TraceService::new(
+                    store.dir,
+                    store.retention,
+                    Arc::clone(&user_principal_provider),
+                )
+            })
         } else {
             None
         };
@@ -326,7 +336,7 @@ impl ServerBuilder {
             feedback_manager,
             episode_store,
             trace_service,
-            self.config.user_principal_provider,
+            user_principal_provider,
             self.config.mode,
         )
         .await
@@ -449,8 +459,6 @@ async fn start_server(
                 .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
         ));
     if let Some(trace_service) = trace_service {
-        let trace_service =
-            trace_service.with_user_principal_provider(Arc::clone(&user_principal_provider));
         routes = routes.add_service(GrpcMethodAnnotatedService::new(
             TraceServiceServer::new(trace_service)
                 .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
@@ -689,8 +697,8 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider, is_grpc_web_content_type,
-        is_native_grpc_content_type, start_server,
+        RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
+        is_grpc_web_content_type, is_native_grpc_content_type, start_server,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::episode::store::EpisodeStore;
@@ -855,6 +863,55 @@ enabled = false
     #[tokio::test]
     async fn trace_service_lists_empty_store() {
         let temp = TempDir::new().expect("temp dir");
+        let server = start_trace_test_server(&temp, Arc::new(SingleUserPrincipalProvider)).await;
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut trace_client = TraceServiceClient::new(channel);
+
+        let response = trace_client
+            .list_traces(Request::new(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+            }))
+            .await
+            .expect("list traces")
+            .into_inner();
+
+        assert!(response.traces.is_empty());
+        assert!(response.next_page_token.is_empty());
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn trace_service_rejects_unauthenticated_requests() {
+        let temp = TempDir::new().expect("temp dir");
+        let server = start_trace_test_server(&temp, Arc::new(RejectingUserPrincipalProvider)).await;
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut trace_client = TraceServiceClient::new(channel);
+
+        let status = trace_client
+            .list_traces(Request::new(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+            }))
+            .await
+            .expect_err("trace listing should require a request principal");
+
+        assert_eq!(status.code(), Code::Unauthenticated);
+        server.shutdown().await.expect("shutdown");
+    }
+
+    async fn start_trace_test_server(
+        temp: &TempDir,
+        user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    ) -> RunningServer {
         let config_dir = temp.path().join("coral-config");
         let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
         layout.ensure().expect("layout dirs");
@@ -875,38 +932,22 @@ enabled = false
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let trace_service =
-            TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
-        let server = start_server(
+        let trace_service = TraceService::new(
+            temp.path().join("trace-store"),
+            Duration::from_mins(1),
+            Arc::clone(&user_principal_provider),
+        );
+        start_server(
             source_manager,
             query_manager,
             feedback_manager,
             episode_store,
             Some(trace_service),
-            Arc::new(SingleUserPrincipalProvider),
+            user_principal_provider,
             ServerMode::NativeGrpc,
         )
         .await
-        .expect("start server");
-        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
-            .expect("endpoint")
-            .connect()
-            .await
-            .expect("connect");
-        let mut trace_client = TraceServiceClient::new(channel);
-
-        let response = trace_client
-            .list_traces(Request::new(ListTracesRequest {
-                page_size: 10,
-                page_token: String::new(),
-            }))
-            .await
-            .expect("list traces")
-            .into_inner();
-
-        assert!(response.traces.is_empty());
-        assert!(response.next_page_token.is_empty());
-        server.shutdown().await.expect("shutdown");
+        .expect("start server")
     }
 
     fn grpc_web_body(message: &impl prost::Message) -> Vec<u8> {

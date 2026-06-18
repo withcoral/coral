@@ -24,9 +24,15 @@ impl UserPrincipal {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] if the user id is empty, contains path separators,
-    /// or aliases the reserved local single-user sentinel.
+    /// Returns [`AppError`] if the user id is empty, contains leading or
+    /// trailing whitespace, contains path separators, or aliases the reserved
+    /// local single-user sentinel.
     pub fn for_user(user_id: &str) -> Result<Self, AppError> {
+        if user_id != user_id.trim() {
+            return Err(AppError::InvalidInput(
+                "user id must not contain leading or trailing whitespace".to_string(),
+            ));
+        }
         let user_id = parse_path_segment("user", user_id)?;
         if user_id == LOCAL_MEMBER_ID {
             return Err(AppError::InvalidInput(format!(
@@ -40,12 +46,6 @@ impl UserPrincipal {
     #[must_use]
     pub fn user_id(&self) -> &str {
         &self.user_id
-    }
-}
-
-impl Default for UserPrincipal {
-    fn default() -> Self {
-        Self::local()
     }
 }
 
@@ -136,7 +136,7 @@ pub(crate) fn parse_path_segment(kind: &str, value: &str) -> Result<String, AppE
 
 #[cfg(test)]
 mod tests {
-    use super::parse_path_segment;
+    use super::{UserPrincipal, parse_path_segment};
 
     #[test]
     fn rejects_empty_names() {
@@ -162,5 +162,23 @@ mod tests {
                 .to_string()
                 .contains("source name must not be '.' or '..'")
         );
+    }
+
+    #[test]
+    fn user_principal_rejects_surrounding_whitespace() {
+        let error = UserPrincipal::for_user(" saul").expect_err("leading whitespace should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("user id must not contain leading or trailing whitespace")
+        );
+    }
+
+    #[test]
+    fn user_principal_preserves_valid_id() {
+        let principal = UserPrincipal::for_user("saul").expect("valid user");
+
+        assert_eq!(principal.user_id(), "saul");
     }
 }

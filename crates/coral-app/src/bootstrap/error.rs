@@ -102,6 +102,10 @@ fn truncate_status_detail(detail: String) -> String {
     format!("{truncated}{MARKER}")
 }
 
+pub(crate) fn status_with_truncated_detail(code: Code, detail: impl Into<String>) -> Status {
+    Status::new(code, truncate_status_detail(detail.into()))
+}
+
 #[expect(
     clippy::needless_pass_by_value,
     reason = "used directly as a map_err adapter across tonic service handlers"
@@ -233,6 +237,15 @@ mod tests {
         let out = truncate_status_detail(detail);
         assert!(out.len() <= MAX_STATUS_DETAIL_BYTES);
         assert!(out.ends_with("… (truncated)"), "missing marker: {out:?}");
+    }
+
+    #[test]
+    fn status_with_truncated_detail_caps_long_messages() {
+        let status = status_with_truncated_detail(Code::Unauthenticated, "x".repeat(20 * 1024));
+
+        assert_eq!(status.code(), Code::Unauthenticated);
+        assert!(status.message().len() <= MAX_STATUS_DETAIL_BYTES);
+        assert!(status.message().ends_with("… (truncated)"));
     }
 
     #[test]
