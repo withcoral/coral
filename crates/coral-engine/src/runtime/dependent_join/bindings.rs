@@ -71,6 +71,14 @@ impl BindingValue {
             Self::Boolean(value) => value.to_string(),
         }
     }
+
+    /// Join-equality between a resolver binding value and a dependent row's
+    /// key value. Same-typed values compare directly; mixed types fall back
+    /// to the wire-string form, which is what the binding was rendered as in
+    /// the request templates.
+    pub(crate) fn join_matches(&self, other: &Self) -> bool {
+        self == other || self.to_wire_string() == other.to_wire_string()
+    }
 }
 
 pub(crate) struct BindingProjector {
@@ -103,7 +111,7 @@ impl BindingProjector {
     }
 }
 
-fn extract_binding_value(array: &dyn Array, row: usize) -> Result<BindingValue> {
+pub(crate) fn extract_binding_value(array: &dyn Array, row: usize) -> Result<BindingValue> {
     match array.data_type() {
         DataType::Utf8 => {
             let array = array

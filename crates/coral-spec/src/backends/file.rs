@@ -23,7 +23,8 @@ use crate::inputs::{
 use crate::{
     ColumnSpec, DeclaredRelation, FilterSpec, ManifestDataType, ManifestError, ManifestInputSpec,
     ParsedTemplate, Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace,
-    TemplatePart, validate_columns, validate_declared_relation_namespace, validate_test_queries,
+    TemplatePart, validate_columns, validate_declared_relation_namespace, validate_source_name,
+    validate_test_queries,
 };
 
 /// Validated top-level manifest for a native file-backed source.
@@ -705,6 +706,7 @@ impl FileSourceManifest {
             inputs: _inputs,
             tables,
         } = raw;
+        validate_source_name(&name)?;
         validate_test_queries(&name, &test_queries)?;
         validate_declared_relation_namespace(
             &name,

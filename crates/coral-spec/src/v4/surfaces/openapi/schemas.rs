@@ -3,8 +3,9 @@ use std::collections::BTreeSet;
 use serde_json::{Map, Value};
 
 use crate::v4::diagnostics::Diagnostic;
-use crate::v4::ir::{IrField, IrScalarType, IrType, IrTypeShape};
+use crate::v4::ir::{IrField, IrType, IrTypeShape};
 use crate::v4::naming::normalize_identifier;
+use crate::v4::surfaces::json_schema::json_schema_scalar_type;
 
 use super::import::OpenApiImporter;
 
@@ -80,6 +81,8 @@ impl OpenApiImporter<'_> {
             IrTypeShape::Enum {
                 values: values.iter().map(enum_value).collect(),
             }
+        } else if let Some(scalar) = json_schema_scalar_type(&resolved) {
+            IrTypeShape::Scalar(scalar)
         } else {
             match resolved
                 .get("type")
@@ -124,18 +127,6 @@ impl OpenApiImporter<'_> {
                         .unwrap_or_else(|| "json".to_string());
                     IrTypeShape::List { item_type_ref }
                 }
-                "string" => {
-                    let scalar =
-                        if resolved.get("format").and_then(Value::as_str) == Some("date-time") {
-                            IrScalarType::Timestamp
-                        } else {
-                            IrScalarType::String
-                        };
-                    IrTypeShape::Scalar(scalar)
-                }
-                "integer" => IrTypeShape::Scalar(IrScalarType::Integer),
-                "number" => IrTypeShape::Scalar(IrScalarType::Number),
-                "boolean" => IrTypeShape::Scalar(IrScalarType::Boolean),
                 _ => IrTypeShape::Json,
             }
         };

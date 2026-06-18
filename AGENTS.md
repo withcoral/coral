@@ -75,9 +75,10 @@
 - Keep `xtask` organized by workflow: docs generation lives under
   `xtask/src/docs/`, shared source-manifest discovery lives in
   `xtask/src/sources.rs`, performance checks live in `xtask/src/perf.rs`, and
-  skill export lives in `xtask/src/skills.rs`. `@withcoral/repo-ops` owns the
-  whole tree; add narrower owners only for the workflow-specific paths they
-  actually maintain.
+  skill export lives in `xtask/src/skills.rs`. Release signing and
+  notarization automation lives in `xtask/src/release.rs`.
+  `@withcoral/repo-ops` owns the whole tree; add narrower owners only for the
+  workflow-specific paths they actually maintain.
 - `make docs-check` intentionally skips the aggregate community source catalog.
   Any PR may leave that generated page stale so unrelated changes do not fail
   on aggregate community catalog drift; keep docs freshness strict for bundled

@@ -158,7 +158,8 @@ async fn build_registered_runtime(
             .flat_map(|source| source.table_functions.iter()),
     );
     if !source_functions.is_empty() {
-        ctx.register_relation_planner(Arc::new(source_functions))
+        source_functions
+            .install(&ctx)
             .map_err(|err| datafusion_to_core(&err, &tables))?;
     }
     for failure in &registration.failures {
@@ -285,6 +286,31 @@ impl QueryRuntimeAdapter {
         CatalogInfo {
             tables: self.list_tables(source_filter, None),
             table_functions: self.list_table_functions(source_filter, None),
+        }
+    }
+
+    pub(crate) fn catalog_info_for_schemas(&self, schema_filters: &[&str]) -> CatalogInfo {
+        CatalogInfo {
+            tables: self
+                .tables
+                .iter()
+                .filter(|table| {
+                    schema_filters
+                        .iter()
+                        .any(|schema| table.schema_name == *schema)
+                })
+                .cloned()
+                .collect(),
+            table_functions: self
+                .table_functions
+                .iter()
+                .filter(|function| {
+                    schema_filters
+                        .iter()
+                        .any(|schema| function.schema_name == *schema)
+                })
+                .cloned()
+                .collect(),
         }
     }
 
