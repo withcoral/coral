@@ -19,5 +19,34 @@ surfaces:
         - name: Authorization
           from: template
           template: Bearer {{input.STRIPE_API_KEY}}
+    pagination:
+      profiles:
+        - name: stripe_rest_cursor_lists
+          match:
+            methods: [get]
+            query_params: [limit, starting_after]
+            response_cursor_path: [has_more]
+          pagination:
+            mode: cursor_query
+            cursor_param: starting_after
+            cursor_from_last_row_path: [id]
+            has_more_path: [has_more]
+            page_size:
+              default: 100
+              max: 100
+              query_param: limit
+        - name: stripe_rest_search_lists
+          match:
+            methods: [get]
+            query_params: [query, limit, page]
+            response_cursor_path: [next_page]
+          pagination:
+            mode: cursor_query
+            cursor_param: page
+            response_cursor_path: [next_page]
+            page_size:
+              default: 100
+              max: 100
+              query_param: limit
 test_queries:
   - SELECT * FROM stripe_v4.account LIMIT 1
