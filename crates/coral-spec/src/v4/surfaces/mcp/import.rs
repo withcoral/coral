@@ -526,6 +526,56 @@ surfaces:
     }
 
     #[test]
+    fn imports_all_of_properties_with_nested_equivalent_type_union_ordering() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "allOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "filter": {
+                                    "type": "object",
+                                    "properties": {
+                                        "value": {"type": ["string", "null"]}
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "filter": {
+                                    "type": "object",
+                                    "properties": {
+                                        "value": {"type": ["null", "string"]}
+                                    }
+                                }
+                            },
+                            "required": ["filter"]
+                        }
+                    ]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "search_items");
+        assert!(operation.diagnostics.is_empty());
+
+        let filter = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "filter")
+            .expect("filter input");
+        assert_eq!(filter.data_type, IrScalarType::Json);
+        assert!(filter.required);
+    }
+
+    #[test]
     fn all_of_conflicts_on_nested_property_named_like_annotation() {
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(

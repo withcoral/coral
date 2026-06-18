@@ -310,7 +310,7 @@ fn property_schemas_match_without_top_level_annotations(
             return Some(false);
         };
         let matches = if key == "type" {
-            type_values_match(existing_value, candidate_value)?
+            type_values_match(existing_value, candidate_value, 1)?
         } else {
             values_match_with_depth(existing_value, candidate_value, 1)?
         };
@@ -321,23 +321,23 @@ fn property_schemas_match_without_top_level_annotations(
     Some(true)
 }
 
-fn type_values_match(existing: &Value, candidate: &Value) -> Option<bool> {
+fn type_values_match(existing: &Value, candidate: &Value, depth: usize) -> Option<bool> {
     let (Some(existing), Some(candidate)) = (existing.as_array(), candidate.as_array()) else {
-        return values_match_with_depth(existing, candidate, 0);
+        return values_match_with_depth(existing, candidate, depth);
     };
     let Some(mut existing_types) = existing
         .iter()
         .map(Value::as_str)
         .collect::<Option<Vec<_>>>()
     else {
-        return arrays_match_with_depth(existing, candidate, 0);
+        return arrays_match_with_depth(existing, candidate, depth);
     };
     let Some(mut candidate_types) = candidate
         .iter()
         .map(Value::as_str)
         .collect::<Option<Vec<_>>>()
     else {
-        return arrays_match_with_depth(existing, candidate, 0);
+        return arrays_match_with_depth(existing, candidate, depth);
     };
     existing_types.sort_unstable();
     candidate_types.sort_unstable();
@@ -357,7 +357,12 @@ fn values_match_with_depth(existing: &Value, candidate: &Value, depth: usize) ->
                 let Some(candidate_value) = candidate.get(key) else {
                     return Some(false);
                 };
-                if !values_match_with_depth(existing_value, candidate_value, depth + 1)? {
+                let matches = if key == "type" {
+                    type_values_match(existing_value, candidate_value, depth + 1)?
+                } else {
+                    values_match_with_depth(existing_value, candidate_value, depth + 1)?
+                };
+                if !matches {
                     return Some(false);
                 }
             }
