@@ -63,6 +63,24 @@ impl QueryManager {
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
         let recipe_manager = RecipeManager::new(config_store.clone(), layout.clone());
+        Self::with_recipe_manager(
+            config_store,
+            credential_manager,
+            recipe_manager,
+            runtime_context,
+            layout,
+            engine_extensions_providers,
+        )
+    }
+
+    pub(crate) fn with_recipe_manager(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        recipe_manager: RecipeManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    ) -> Self {
         Self {
             config_store,
             credential_manager,
