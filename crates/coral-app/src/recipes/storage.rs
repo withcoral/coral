@@ -152,8 +152,7 @@ impl FsRecipeArtifactStore {
         fs::write_atomic(&recipe_file, raw_yaml.as_bytes())?;
         match runtime_metadata {
             Some(runtime_metadata) => fs::write_atomic(&runtime_file, runtime_metadata)?,
-            None if runtime_file.exists() => std::fs::remove_file(&runtime_file)?,
-            None => {}
+            None => remove_file_if_present(&runtime_file)?,
         }
         Ok(())
     }
@@ -250,13 +249,11 @@ impl RecipeArtifactStore for FsRecipeArtifactStore {
         fs::ensure_private_dir(&recipe_dir)?;
         match &snapshot.recipe_yaml {
             Some(raw_yaml) => fs::write_atomic(&recipe_file, raw_yaml)?,
-            None if recipe_file.exists() => std::fs::remove_file(&recipe_file)?,
-            None => {}
+            None => remove_file_if_present(&recipe_file)?,
         }
         match &snapshot.runtime_metadata {
             Some(raw_metadata) => fs::write_atomic(&runtime_file, raw_metadata)?,
-            None if runtime_file.exists() => std::fs::remove_file(&runtime_file)?,
-            None => {}
+            None => remove_file_if_present(&runtime_file)?,
         }
         Ok(())
     }
@@ -272,6 +269,14 @@ fn read_optional_bytes(path: &std::path::Path) -> Result<Option<Vec<u8>>, AppErr
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn remove_file_if_present(path: &std::path::Path) -> Result<(), AppError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
 }
