@@ -1,0 +1,2 @@
+{"source":"github","receiver_url":"https://webhooks.example.com/github","secret_alias":"github_webhook_secret","events":"push,pull_request,issues","active":true,"registered_at":"2024-06-18T10:00:00Z"}
+{"source":"sentry","receiver_url":"https://webhooks.example.com/sentry","secret_alias":"sentry_webhook_secret","events":"issue,error","active":true,"registered_at":"2024-06-18T10:05:00Z"}
