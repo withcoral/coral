@@ -110,6 +110,33 @@ impl McpToolCaller for FakePaginatedMcpTableCaller {
     }
 }
 
+/// Repeats the same next cursor forever unless the fetch plan stops it.
+#[derive(Debug)]
+struct FakeRepeatedCursorMcpTableCaller {
+    calls: Mutex<Vec<(String, JsonObject)>>,
+}
+
+#[async_trait]
+impl McpToolCaller for FakeRepeatedCursorMcpTableCaller {
+    async fn call_tool(
+        &self,
+        _relation: &str,
+        tool_name: &str,
+        arguments: JsonObject,
+    ) -> Result<Value> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push((tool_name.to_string(), arguments));
+        Ok(json!({
+            "issues": [
+                { "id": "1", "title": "Bug A", "state": "open" }
+            ],
+            "meta": { "nextCursor": "same-cursor" }
+        }))
+    }
+}
+
 #[derive(Debug)]
 struct RotatingInputResolver {
     calls: Arc<AtomicUsize>,
@@ -340,7 +367,8 @@ fn register_test_sources(ctx: &SessionContext, sources: Vec<CompiledQuerySource>
             .iter()
             .flat_map(|source| source.table_functions.iter()),
     );
-    ctx.register_relation_planner(Arc::new(source_functions))
+    source_functions
+        .install(ctx)
         .expect("source function planner should register");
 }
 
@@ -353,7 +381,8 @@ fn register_test_sources_with_catalog(ctx: &SessionContext, sources: Vec<Compile
             .iter()
             .flat_map(|source| source.table_functions.iter()),
     );
-    ctx.register_relation_planner(Arc::new(source_functions))
+    source_functions
+        .install(ctx)
         .expect("source function planner should register");
 }
 
@@ -1251,6 +1280,38 @@ async fn cursor_pagination_stops_when_sql_limit_is_satisfied() {
 
     let calls = caller.calls.lock().expect("calls lock");
     assert_eq!(calls.len(), 1);
+}
+
+#[tokio::test]
+async fn cursor_pagination_fails_on_repeated_response_cursor() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeRepeatedCursorMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_table_with_cursor_pagination_manifest(), caller.clone()),
+    );
+
+    let error = ctx
+        .sql("SELECT id FROM test_mcp.issues")
+        .await
+        .expect("pagination query should plan")
+        .collect()
+        .await
+        .expect_err("repeated cursor should fail");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("returned repeated cursor 'same-cursor'"),
+        "unexpected error: {message}"
+    );
+    let calls = caller.calls.lock().expect("calls lock");
+    assert_eq!(
+        calls.len(),
+        2,
+        "repeated cursor should fail before exhausting max_pages"
+    );
 }
 
 fn mcp_table_with_pagination_and_limit_binding_manifest() -> coral_spec::ValidatedSourceManifest {

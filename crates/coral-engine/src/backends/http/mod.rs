@@ -10,10 +10,10 @@ use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
-    RegisteredSource, RegisteredTable, SourceTableFunctions, build_registered_inputs,
-    build_registered_table, build_registered_table_function, internal_table_function_name,
-    registered_columns_from_specs, required_filter_names,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
+    BackendSchemaRegistration, CompiledBackendSource, RegisteredSource, RegisteredTable,
+    SourceFunctionProviderFactory, build_registered_inputs, build_registered_table,
+    build_registered_table_function, registered_columns_from_specs, required_filter_names,
     validate_lookup_key_filter_backend_support,
 };
 use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
@@ -138,23 +138,18 @@ impl CompiledBackendSource for HttpCompiledSource {
             tables.insert(table.name().to_string(), provider);
             table_infos.push(registered_table(table));
         }
-        let mut table_functions =
-            SourceTableFunctions::with_capacity(self.manifest.functions.len());
         let mut table_function_infos = Vec::with_capacity(self.manifest.functions.len());
         for function in &self.manifest.functions {
-            let internal_name =
-                internal_table_function_name(&self.manifest.common.name, &function.name);
-            let function_impl: Arc<dyn datafusion::catalog::TableFunctionImpl> =
+            let factory: Arc<dyn SourceFunctionProviderFactory> =
                 Arc::new(function::HttpSourceTableFunction::new(
                     backend.clone(),
                     self.manifest.common.name.clone(),
                     function.clone(),
                 )?);
-            table_functions.insert(internal_name.clone(), function_impl);
             table_function_infos.push(build_registered_table_function(
                 &self.manifest.common.name,
                 function,
-                internal_name,
+                factory,
             ));
         }
 
@@ -170,15 +165,17 @@ impl CompiledBackendSource for HttpCompiledSource {
             &secret_keys,
         );
 
+        let schema_name = self.manifest.common.name.clone();
         Ok(BackendRegistration {
-            tables,
-            table_functions,
-            source: RegisteredSource {
-                schema_name: self.manifest.common.name.clone(),
-                tables: table_infos,
-                table_functions: table_function_infos,
-                inputs,
-            },
+            schemas: vec![BackendSchemaRegistration {
+                tables,
+                source: RegisteredSource {
+                    schema_name,
+                    tables: table_infos,
+                    table_functions: table_function_infos,
+                    inputs,
+                },
+            }],
         })
     }
 }

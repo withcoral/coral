@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use coral_spec::ResponseSpec;
 use coral_spec::backends::mcp::{McpPaginationSpec, McpTableFunctionSpec};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
@@ -17,6 +16,7 @@ use serde_json::Value;
 use super::client::McpSourceClient;
 use super::error::McpProviderQueryError;
 use super::fetch::McpFetchPlan;
+use crate::backends::SourceFunctionProviderFactory;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::json_exec::JsonExec;
 use crate::backends::shared::mapping::convert_items;
@@ -89,8 +89,12 @@ impl McpSourceTableFunction {
     }
 }
 
-impl TableFunctionImpl for McpSourceTableFunction {
-    fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
+impl SourceFunctionProviderFactory for McpSourceTableFunction {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.state.schema)
+    }
+
+    fn provider_for_args(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         let arg_values = bind_function_args(&self.state.source_schema, &self.spec, args)?;
         Ok(Arc::new(McpFunctionCallTableProvider {
             state: Arc::clone(&self.state),

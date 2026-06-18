@@ -1,0 +1,419 @@
+name: dynatrace
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Dynatrace problems, entities, and releases via the Dynatrace
+  Environment API v2. Join with GitHub deploys and Sentry errors for
+  cross-source SRE and observability intelligence.
+base_url: "{{input.DYNATRACE_BASE_URL}}"
+
+inputs:
+  DYNATRACE_BASE_URL:
+    kind: variable
+    hint: |
+      Your Dynatrace environment base URL, without a trailing slash.
+      SaaS example:  https://abc12345.live.dynatrace.com
+      Managed example: https://your-host/e/your-environment-id
+  DYNATRACE_API_TOKEN:
+    kind: secret
+    hint: |
+      A Dynatrace API token with the following read scopes enabled:
+        - problems.read
+        - entities.read
+        - releases.read
+
+      Generate one in Dynatrace under Access Tokens → Generate new token.
+      See https://docs.dynatrace.com/docs/dynatrace-api/basics/dynatrace-api-authentication
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Api-Token {{input.DYNATRACE_API_TOKEN}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+rate_limit:
+  extra_statuses:
+    - 429
+  retry_after_header: Retry-After
+
+test_queries:
+  - SELECT problem_id, title, status, severity_level FROM dynatrace.problems LIMIT 1
+  - SELECT entity_id, display_name, type FROM dynatrace.entities WHERE entity_selector = 'type(SERVICE)' LIMIT 1
+
+tables:
+  - name: problems
+    description: >-
+      Lists Dynatrace problems (detected incidents) from the last two weeks
+      (explicit from=now-2w; Dynatrace API default is now-2h). Returns problem
+      ID, display ID, title, status, severity level, impact level, affected
+      entities array, and start and end times.
+    guide: |
+      Problems are Dynatrace's automatically detected incidents. Use
+      problem_selector = 'status("open")' to narrow the provider response to
+      active problems. endTime = -1 (not null) for open problems; use
+      NULLIF(end_time_ms, -1) when computing durations.
+      Join start_time_ms with GitHub deploy timestamps to correlate deploys
+      with newly opened problems.
+      Severity levels: AVAILABILITY, ERROR, PERFORMANCE, RESOURCE_CONTENTION,
+      CUSTOM_ALERT, INFO, MONITORING_UNAVAILABLE. Impact levels: APPLICATION,
+      ENVIRONMENT, SERVICES, INFRASTRUCTURE.
+      Multi-page cursor pagination is not enabled because Dynatrace requires
+      follow-up nextPageKey requests to omit all other query params; this
+      source returns the first page only (up to 50 problems).
+    fetch_limit_default: 50
+    filters:
+      - name: problem_selector
+        required: false
+    request:
+      method: GET
+      path: /api/v2/problems
+      query:
+        - name: from
+          from: literal
+          value: now-2w
+        - name: pageSize
+          from: literal
+          value: "50"
+        - name: problemSelector
+          from: filter
+          key: problem_selector
+    response:
+      rows_path:
+        - problems
+    pagination:
+      mode: none
+    columns:
+      - name: problem_id
+        type: Utf8
+        nullable: false
+        description: Unique problem identifier.
+        expr:
+          kind: path
+          path:
+            - problemId
+      - name: display_id
+        type: Utf8
+        nullable: true
+        description: Human-readable problem display ID, for example P-123.
+        expr:
+          kind: path
+          path:
+            - displayId
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Problem title describing what went wrong.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Problem status (OPEN or CLOSED).
+        expr:
+          kind: path
+          path:
+            - status
+      - name: severity_level
+        type: Utf8
+        nullable: true
+        description: >-
+          Severity level (AVAILABILITY, ERROR, PERFORMANCE,
+          RESOURCE_CONTENTION, CUSTOM_ALERT, INFO, or
+          MONITORING_UNAVAILABLE).
+        expr:
+          kind: path
+          path:
+            - severityLevel
+      - name: impact_level
+        type: Utf8
+        nullable: true
+        description: >-
+          Highest impact level (APPLICATION, ENVIRONMENT, SERVICES, or
+          INFRASTRUCTURE).
+        expr:
+          kind: path
+          path:
+            - impactLevel
+      - name: affected_entities
+        type: Json
+        nullable: true
+        description: Array of affected entity stubs (each with entityId.id, entityId.type, and name).
+        expr:
+          kind: path
+          path:
+            - affectedEntities
+      - name: start_time_ms
+        type: Int64
+        nullable: true
+        description: Problem start time as a Unix epoch millisecond timestamp.
+        expr:
+          kind: path
+          path:
+            - startTime
+      - name: end_time_ms
+        type: Int64
+        nullable: true
+        description: >-
+          Problem end time as Unix epoch milliseconds. -1 for open problems
+          (not null); use NULLIF(end_time_ms, -1) when computing durations.
+        expr:
+          kind: path
+          path:
+            - endTime
+      - name: root_cause_entity_id
+        type: Utf8
+        nullable: true
+        description: >-
+          Entity ID string of the root cause entity; join to
+          dynatrace.entities on entity_id for details.
+        expr:
+          kind: path
+          path:
+            - rootCauseEntity
+            - entityId
+            - id
+      - name: root_cause_entity_name
+        type: Utf8
+        nullable: true
+        description: Display name of the root cause entity.
+        expr:
+          kind: path
+          path:
+            - rootCauseEntity
+            - name
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw problem object.
+        expr:
+          kind: current_row
+
+  - name: entities
+    description: >-
+      Lists monitored entities (services, hosts, applications, processes) from
+      Dynatrace. Requires an entity_selector filter using Dynatrace selector
+      syntax. Returns entity ID, display name, type, first and last seen
+      timestamps, and tags.
+    guide: |
+      Requires entity_selector. Dynatrace requires entitySelector on the
+      first page; omitting it returns an API error.
+      Common selectors: type(SERVICE), type(HOST), type(APPLICATION),
+      type(PROCESS_GROUP). Join entity_id with root_cause_entity_id on
+      dynatrace.problems to resolve problem sources.
+      Multi-page cursor pagination is not enabled because Dynatrace requires
+      follow-up nextPageKey requests to omit all other query params; this
+      source returns the first page only (up to 200 entities per query).
+    fetch_limit_default: 200
+    filters:
+      - name: entity_selector
+        required: true
+    request:
+      method: GET
+      path: /api/v2/entities
+      query:
+        - name: entitySelector
+          from: filter
+          key: entity_selector
+        - name: fields
+          from: literal
+          value: +firstSeenTms,+lastSeenTms,+tags,+managementZones
+        - name: pageSize
+          from: literal
+          value: "200"
+    response:
+      rows_path:
+        - entities
+    pagination:
+      mode: none
+    columns:
+      - name: entity_id
+        type: Utf8
+        nullable: false
+        description: Unique Dynatrace entity identifier, for example SERVICE-1125C375A187D27A.
+        expr:
+          kind: path
+          path:
+            - entityId
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Entity display name as shown in the Dynatrace UI.
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Entity type, for example SERVICE, HOST, APPLICATION, or PROCESS_GROUP.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: first_seen_ms
+        type: Int64
+        nullable: true
+        description: Unix epoch milliseconds when the entity was first detected.
+        expr:
+          kind: path
+          path:
+            - firstSeenTms
+      - name: last_seen_ms
+        type: Int64
+        nullable: true
+        description: Unix epoch milliseconds when the entity was last seen active.
+        expr:
+          kind: path
+          path:
+            - lastSeenTms
+      - name: tags
+        type: Json
+        nullable: true
+        description: Array of tag objects applied to this entity.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw entity object including tags and management zones.
+        expr:
+          kind: current_row
+
+  - name: releases
+    description: >-
+      Lists software releases tracked by Dynatrace from the last two weeks.
+      Returns release name, version, product, stage, running status, problem
+      count, and security vulnerability count.
+    guide: |
+      Join version and product with GitHub release tags or deploy environment
+      names to correlate Dynatrace-tracked releases with code changes.
+      Use releases_selector to narrow the provider response before applying
+      SQL filters to the first page.
+      Multi-page cursor pagination is not enabled because Dynatrace requires
+      follow-up nextPageKey requests to omit all other query params; this
+      source returns the first page only (up to 200 releases).
+    fetch_limit_default: 200
+    filters:
+      - name: releases_selector
+        required: false
+    request:
+      method: GET
+      path: /api/v2/releases
+      query:
+        - name: pageSize
+          from: literal
+          value: "200"
+        - name: releasesSelector
+          from: filter
+          key: releases_selector
+    response:
+      rows_path:
+        - releases
+    pagination:
+      mode: none
+    columns:
+      - name: release_entity_id
+        type: Utf8
+        nullable: true
+        description: Dynatrace entity ID for this release.
+        expr:
+          kind: path
+          path:
+            - releaseEntityId
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Release name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Release version string; join with GitHub release tags.
+        expr:
+          kind: path
+          path:
+            - version
+      - name: product
+        type: Utf8
+        nullable: true
+        description: Product name for this release.
+        expr:
+          kind: path
+          path:
+            - product
+      - name: stage
+        type: Utf8
+        nullable: true
+        description: Deployment stage, for example production or staging.
+        expr:
+          kind: path
+          path:
+            - stage
+      - name: running
+        type: Boolean
+        nullable: true
+        description: True when this release version is currently running.
+        expr:
+          kind: path
+          path:
+            - running
+      - name: affected_by_problems
+        type: Boolean
+        nullable: true
+        description: True when this release has one or more Dynatrace problems.
+        expr:
+          kind: path
+          path:
+            - affectedByProblems
+      - name: problem_count
+        type: Int64
+        nullable: true
+        description: Number of problems affecting this release.
+        expr:
+          kind: path
+          path:
+            - problemCount
+      - name: affected_by_vulnerabilities
+        type: Boolean
+        nullable: true
+        description: True when this release has security vulnerabilities.
+        expr:
+          kind: path
+          path:
+            - affectedBySecurityVulnerabilities
+      - name: vulnerability_count
+        type: Int64
+        nullable: true
+        description: Number of security vulnerabilities for this release.
+        expr:
+          kind: path
+          path:
+            - securityVulnerabilitiesCount
+      - name: throughput
+        type: Float64
+        nullable: true
+        description: Throughput for this release in bytes per second.
+        expr:
+          kind: path
+          path:
+            - throughput
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw release object.
+        expr:
+          kind: current_row
