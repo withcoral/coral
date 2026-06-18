@@ -10,6 +10,8 @@ use crate::backends::http::request::{RequestBody, set_path_value};
 use crate::backends::http::target::HttpFetchTarget;
 use coral_spec::{BodySpec, PageSizeSpec, ValidatedPagination, ValidatedPaginationMode};
 
+use crate::backends::shared::json_path::get_path_value;
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct PageState {
     pub(super) cursor: Option<String>,
@@ -35,7 +37,8 @@ pub(super) fn apply_pagination_query_pairs(
         ValidatedPaginationMode::None
         | ValidatedPaginationMode::Auto
         | ValidatedPaginationMode::CursorBody
-        | ValidatedPaginationMode::LinkHeader => {}
+        | ValidatedPaginationMode::LinkHeader
+        | ValidatedPaginationMode::ResponseNextUrl => {}
         ValidatedPaginationMode::CursorQuery => {
             if let Some(cursor) = &state.cursor {
                 let name = target.pagination().cursor_param.clone().ok_or_else(|| {
@@ -168,21 +171,55 @@ pub(super) fn extract_next_link_url(
             let next_raw = item.get(start + 1..end).ok_or_else(|| {
                 DataFusionError::Execution(format!("invalid pagination Link header item '{item}'"))
             })?;
-            let next_url = base.join(next_raw).map_err(|e| {
-                DataFusionError::Execution(format!(
-                    "invalid pagination next link '{next_raw}': {e}"
-                ))
-            })?;
-            if next_url.origin() != base.origin() {
-                return Err(DataFusionError::Execution(format!(
-                    "pagination next link must stay on origin {}: {next_raw}",
-                    base.origin().ascii_serialization()
-                )));
-            }
-            return Ok(Some(next_url.to_string()));
+            return Ok(Some(resolve_same_origin_next_url(
+                &base,
+                next_raw,
+                "pagination next link",
+            )?));
         }
     }
     Ok(None)
+}
+
+pub(super) fn extract_response_next_url(
+    payload: &Value,
+    path: &[String],
+    base_url: &str,
+) -> Result<Option<String>> {
+    let Some(next_raw) = get_path_value(payload, path)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let base = reqwest::Url::parse(base_url).map_err(|e| {
+        DataFusionError::Execution(format!(
+            "invalid base URL for pagination links '{base_url}': {e}"
+        ))
+    })?;
+    Ok(Some(resolve_same_origin_next_url(
+        &base,
+        next_raw,
+        "pagination response next URL",
+    )?))
+}
+
+fn resolve_same_origin_next_url(
+    base: &reqwest::Url,
+    next_raw: &str,
+    context: &str,
+) -> Result<String> {
+    let next_url = base
+        .join(next_raw)
+        .map_err(|e| DataFusionError::Execution(format!("invalid {context} '{next_raw}': {e}")))?;
+    if next_url.origin() != base.origin() {
+        return Err(DataFusionError::Execution(format!(
+            "{context} must stay on origin {}: {next_raw}",
+            base.origin().ascii_serialization()
+        )));
+    }
+    Ok(next_url.to_string())
 }
 
 fn link_param_matches(item: &str, name: &str, expected: &str) -> bool {
@@ -205,7 +242,7 @@ mod tests {
 
     use super::{
         PageState, apply_pagination_body_fields, apply_pagination_query_pairs,
-        extract_next_link_url, page_is_exhausted,
+        extract_next_link_url, extract_response_next_url, page_is_exhausted,
     };
     use crate::backends::http::test_support::{test_http_request_target, test_http_table_spec};
     use coral_spec::{
@@ -294,6 +331,49 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("invalid pagination Link header item")
+        );
+    }
+
+    #[test]
+    fn extract_response_next_url_resolves_relative_links_on_same_origin() {
+        let payload = json!({
+            "paging": {
+                "next": "/v1/resources?page=2"
+            }
+        });
+
+        let next = extract_response_next_url(
+            &payload,
+            &["paging".to_string(), "next".to_string()],
+            "https://api.example.com",
+        )
+        .unwrap();
+
+        assert_eq!(
+            next,
+            Some("https://api.example.com/v1/resources?page=2".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_response_next_url_rejects_cross_origin_absolute_links() {
+        let payload = json!({
+            "paging": {
+                "next": "https://attacker.example/steal"
+            }
+        });
+
+        let err = extract_response_next_url(
+            &payload,
+            &["paging".to_string(), "next".to_string()],
+            "https://api.example.com",
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains(
+                "pagination response next URL must stay on origin https://api.example.com"
+            )
         );
     }
 

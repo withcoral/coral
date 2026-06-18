@@ -1296,6 +1296,16 @@ surfaces:
     server:
       transport: streamable_http
       url: "{}"
+    pagination:
+      profiles:
+        - name: cursor_tools
+          match:
+            tool_args: [cursor]
+            response_cursor_path: [meta, nextCursor]
+          pagination:
+            type: cursor
+            cursor_arg: cursor
+            response_cursor_path: [meta, nextCursor]
 "#,
             server.uri()
         );

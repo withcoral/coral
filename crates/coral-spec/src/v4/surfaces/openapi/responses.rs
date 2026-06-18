@@ -97,7 +97,7 @@ impl OpenApiImporter<'_> {
             entity,
         )
     }
-    fn select_json_response(
+    pub(super) fn select_json_response(
         &self,
         responses: Option<&Map<String, Value>>,
         operation_id: &str,

@@ -24,6 +24,19 @@ surfaces:
       - name: User-Agent
         from: literal
         value: coral-dsl-v4
+    pagination:
+      profiles:
+        - name: github_rest_link_header
+          match:
+            methods: [get]
+            query_params: [per_page]
+          pagination:
+            mode: link_header
+            page_size:
+              default: 30
+              max: 100
+              query_param: per_page
+            link_header_require_results: false
   - id: mcp
     namespace_suffix: mcp
     type: mcp

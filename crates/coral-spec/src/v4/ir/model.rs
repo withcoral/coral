@@ -147,7 +147,10 @@ mod tests {
     use crate::v4::ir::mcp::McpExecutionAttachment;
     use crate::v4::ir::rest::{RestExecutionAttachment, RestResponseAttachment};
     use crate::v4::manifest::SurfaceType;
-    use crate::v4::{MCP_IMPORTER_VERSION, OPENAPI_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
+    use crate::v4::{
+        MCP_IMPORTER_VERSION, OPENAPI_IMPORTER_VERSION, PaginationProvenance,
+        V4_ARTIFACT_SCHEMA_VERSION,
+    };
 
     #[test]
     fn semantic_ir_yaml_uses_editor_friendly_enum_shapes() {
@@ -181,6 +184,7 @@ mod tests {
                         response: crate::ResponseSpec::default(),
                     },
                     pagination: PaginationSpec::default(),
+                    pagination_provenance: PaginationProvenance::None,
                 })),
                 diagnostics: Vec::new(),
             }],
@@ -219,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_execution_attachment_uses_v2_artifact_schema() {
+    fn mcp_execution_attachment_uses_v3_artifact_schema() {
         let ir = SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: "demo".to_string(),
@@ -250,6 +254,7 @@ mod tests {
                     tool_name: "list_items".to_string(),
                     pagination: None,
                     offset_pagination: None,
+                    pagination_provenance: PaginationProvenance::None,
                 }),
                 diagnostics: Vec::new(),
             }],
@@ -264,8 +269,8 @@ mod tests {
 
         let yaml = serde_yaml::to_string(&ir).expect("serialize MCP semantic IR");
         assert!(
-            yaml.contains("artifact_schema_version: 2"),
-            "MCP execution variants require the v2 artifact schema: {yaml}"
+            yaml.contains("artifact_schema_version: 3"),
+            "MCP execution variants require the v3 artifact schema: {yaml}"
         );
         assert!(
             yaml.contains("surface_type: mcp"),

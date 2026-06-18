@@ -31,3 +31,8 @@ discovery, and normalized source-definition models.
   table/function collision checks.
 - Prefer normalized source-spec values over raw YAML plumbing in public
   helpers.
+- DSL v4 pagination is an authored surface overlay, not importer-owned
+  behavior inference. OpenAPI overlays must target raw source identifiers
+  (`operation_id` or exclusive `method` + `path`), MCP overlays must target raw
+  tool names, profiles must be explicit match rules, and heuristic-looking
+  pagination signals may only produce diagnostics.

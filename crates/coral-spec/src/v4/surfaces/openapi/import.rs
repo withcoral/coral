@@ -36,6 +36,7 @@ pub(super) struct OpenApiImporter<'a> {
     pub(super) document: &'a Value,
     pub(super) types: BTreeMap<String, IrType>,
     pub(super) diagnostics: Vec<Diagnostic>,
+    pub(super) matched_pagination_overlays: Vec<bool>,
 }
 
 impl<'a> OpenApiImporter<'a> {
@@ -46,6 +47,7 @@ impl<'a> OpenApiImporter<'a> {
             document,
             types: BTreeMap::new(),
             diagnostics: Vec::new(),
+            matched_pagination_overlays: vec![false; surface.pagination.operations.len()],
         }
     }
 
@@ -78,6 +80,7 @@ impl<'a> OpenApiImporter<'a> {
                 operations.push(operation);
             }
         }
+        self.validate_pagination_operation_targets()?;
         Ok(SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: self.manifest.common.name.clone(),
@@ -88,6 +91,25 @@ impl<'a> OpenApiImporter<'a> {
             types: self.types.values().cloned().collect(),
             diagnostics: self.diagnostics.clone(),
         })
+    }
+
+    fn validate_pagination_operation_targets(&self) -> Result<()> {
+        for (overlay, matched) in self
+            .surface
+            .pagination
+            .operations
+            .iter()
+            .zip(&self.matched_pagination_overlays)
+        {
+            if !matched {
+                return Err(crate::v4::pagination::unmatched_operation_overlay_error(
+                    &self.manifest.common.name,
+                    &self.surface.id,
+                    &format!("{:?}", overlay.target),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn resolve_ref(

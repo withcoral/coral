@@ -75,6 +75,10 @@ fn generate_projection(
         SqlInputExposure::FunctionArg
     };
     let pagination = rest.map_or_else(PaginationSpec::default, |rest| rest.pagination.clone());
+    let pagination_provenance = match &operation.execution {
+        IrExecutionAttachment::Rest(rest) => rest.pagination_provenance,
+        IrExecutionAttachment::Mcp(mcp) => mcp.pagination_provenance,
+    };
     let pagination_query_params = pagination_query_param_names(&pagination);
     let mut used_input_names = HashSet::new();
     let use_sql_input_normalization = matches!(operation.execution, IrExecutionAttachment::Mcp(_));
@@ -134,6 +138,7 @@ fn generate_projection(
         inputs,
         columns,
         pagination,
+        pagination_provenance,
         search_limits: is_search.then_some(SearchLimitsSpec {
             default_top_k: 30,
             max_top_k: 100,

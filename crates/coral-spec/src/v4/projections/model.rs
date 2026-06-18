@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::IrInputLocation;
+use crate::v4::pagination::PaginationProvenance;
 use crate::{
     DetailHintSpec, ManifestDataType, PaginationSpec, SearchLimitsSpec, SourceTableFunctionKind,
 };
@@ -29,6 +30,8 @@ pub struct Projection {
     pub inputs: Vec<ProjectionInput>,
     pub columns: Vec<ProjectionColumn>,
     pub pagination: PaginationSpec,
+    #[serde(default)]
+    pub pagination_provenance: PaginationProvenance,
     pub search_limits: Option<SearchLimitsSpec>,
     pub detail_hints: Vec<DetailHintSpec>,
     pub diagnostics: Vec<Diagnostic>,
@@ -84,7 +87,9 @@ mod tests {
     use super::{
         Projection, ProjectionCatalog, ProjectionKind, ProjectionVisibility, SqlInputExposure,
     };
-    use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
+    use crate::v4::{
+        PROJECTION_GENERATOR_VERSION, PaginationProvenance, V4_ARTIFACT_SCHEMA_VERSION,
+    };
     use crate::{ManifestDataType, PaginationSpec, SearchLimitsSpec, SourceTableFunctionKind};
 
     #[test]
@@ -107,6 +112,7 @@ mod tests {
                 inputs: Vec::new(),
                 columns: Vec::new(),
                 pagination: PaginationSpec::default(),
+                pagination_provenance: PaginationProvenance::None,
                 search_limits: Some(SearchLimitsSpec {
                     default_top_k: 30,
                     max_top_k: 100,

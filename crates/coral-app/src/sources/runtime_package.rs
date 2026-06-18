@@ -401,10 +401,11 @@ mod tests {
     use coral_spec::v4::{
         Fingerprint, IrExecutionAttachment, IrOperation, IrOperationOutput, MCP_IMPORTER_VERSION,
         MaterializedSurface, McpExecutionAttachment, McpRuntimeConfig, OPENAPI_IMPORTER_VERSION,
-        OpenApiRuntimeConfig, PROJECTION_GENERATOR_VERSION, Projection, ProjectionCatalog,
-        ProjectionKind, ProjectionVisibility, SURFACE_IMPORTER_VERSION, SemanticIr,
-        SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
-        V4MaterializedSource, V4SourceCommon, V4SourceManifest, V4Surface,
+        OpenApiRuntimeConfig, PROJECTION_GENERATOR_VERSION, PaginationProvenance, Projection,
+        ProjectionCatalog, ProjectionKind, ProjectionVisibility, SURFACE_IMPORTER_VERSION,
+        SemanticIr, SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType,
+        V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceCommon, V4SourceManifest,
+        V4Surface, V4SurfacePagination,
     };
 
     use super::{runtime_components_for_v4_source, surface_base_url};
@@ -424,6 +425,7 @@ mod tests {
                 request_headers: Vec::new(),
                 rate_limit: RateLimitSpec::default(),
             }),
+            pagination: V4SurfacePagination::default(),
         }
     }
 
@@ -475,6 +477,7 @@ mod tests {
                     env: Vec::new(),
                 },
             }),
+            pagination: V4SurfacePagination::default(),
         }
     }
 
@@ -526,6 +529,7 @@ mod tests {
                         tool_name: operation_id.to_string(),
                         pagination,
                         offset_pagination,
+                        pagination_provenance: PaginationProvenance::None,
                     }),
                     diagnostics: Vec::new(),
                 }],
@@ -551,6 +555,7 @@ mod tests {
             inputs: Vec::new(),
             columns: Vec::new(),
             pagination: coral_spec::PaginationSpec::default(),
+            pagination_provenance: PaginationProvenance::None,
             search_limits: None,
             detail_hints: Vec::new(),
             diagnostics: Vec::new(),

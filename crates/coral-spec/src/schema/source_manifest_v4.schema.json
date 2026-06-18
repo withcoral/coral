@@ -96,6 +96,16 @@
                 "reset_header": null
               }
             },
+            "pagination": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/V4OpenApiSurfacePaginationSchema"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "type": "string",
               "const": "openapi"
@@ -143,6 +153,16 @@
             },
             "server": {
               "$ref": "#/$defs/McpServerSpec"
+            },
+            "pagination": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/V4McpSurfacePaginationSchema"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",
@@ -1054,6 +1074,350 @@
       },
       "additionalProperties": false
     },
+    "V4OpenApiSurfacePaginationSchema": {
+      "type": "object",
+      "properties": {
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/V4OpenApiPaginationProfileSchema"
+          }
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/V4OpenApiOperationPaginationOverlaySchema"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "V4OpenApiPaginationProfileSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4OpenApiPaginatedProfileSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OpenApiUnsupportedProfileSchema"
+        }
+      ]
+    },
+    "V4OpenApiPaginatedProfileSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "match": {
+          "$ref": "#/$defs/V4OpenApiPaginationMatcherSchema"
+        },
+        "pagination": {
+          "$ref": "#/$defs/V4HttpPaginationSpecSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "match",
+        "pagination"
+      ]
+    },
+    "V4OpenApiPaginationMatcherSchema": {
+      "type": "object",
+      "properties": {
+        "methods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/V4HttpMethodSchema"
+          }
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "query_params": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "response_cursor_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "V4HttpMethodSchema": {
+      "type": "string",
+      "enum": [
+        "get",
+        "head",
+        "options",
+        "post",
+        "put",
+        "patch",
+        "delete",
+        "trace"
+      ]
+    },
+    "V4HttpPaginationSpecSchema": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/V4HttpPaginationModeSchema",
+          "default": "none"
+        },
+        "page_size": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/V4HttpPageSizeSpecSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cursor_param": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cursor_body_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "response_cursor_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cursor_from_last_row_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "has_more_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "response_next_url_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "page_param": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "page_start": {
+          "type": "integer",
+          "format": "int64",
+          "default": 0
+        },
+        "page_step": {
+          "type": "integer",
+          "format": "int64",
+          "default": 1
+        },
+        "offset_param": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "offset_start": {
+          "type": "integer",
+          "format": "int64",
+          "default": 0
+        },
+        "offset_step": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "link_header_require_results": {
+          "type": "boolean",
+          "default": false
+        },
+        "max_pages": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "V4HttpPaginationModeSchema": {
+      "type": "string",
+      "enum": [
+        "none",
+        "auto",
+        "cursor_query",
+        "cursor_body",
+        "page",
+        "offset",
+        "link_header",
+        "response_next_url"
+      ]
+    },
+    "V4HttpPageSizeSpecSchema": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "max": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "query_param": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "default",
+        "max"
+      ]
+    },
+    "V4OpenApiUnsupportedProfileSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "match": {
+          "$ref": "#/$defs/V4OpenApiPaginationMatcherSchema"
+        },
+        "unsupported": {
+          "$ref": "#/$defs/V4UnsupportedPaginationSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "match",
+        "unsupported"
+      ]
+    },
+    "V4UnsupportedPaginationSchema": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "reason"
+      ]
+    },
+    "V4OpenApiOperationPaginationOverlaySchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/V4OpenApiOperationTargetSchema"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "unevaluatedProperties": false,
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "pagination": {
+              "$ref": "#/$defs/V4HttpPaginationSpecSchema"
+            }
+          },
+          "required": [
+            "pagination"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "unsupported": {
+              "$ref": "#/$defs/V4UnsupportedPaginationSchema"
+            }
+          },
+          "required": [
+            "unsupported"
+          ]
+        }
+      ]
+    },
+    "V4OpenApiOperationTargetSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4OpenApiOperationIdTargetSchema"
+        },
+        {
+          "$ref": "#/$defs/V4OpenApiMethodPathTargetSchema"
+        }
+      ]
+    },
+    "V4OpenApiOperationIdTargetSchema": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operation_id"
+      ]
+    },
+    "V4OpenApiMethodPathTargetSchema": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "$ref": "#/$defs/V4HttpMethodSchema"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "path"
+      ]
+    },
     "McpServerSpec": {
       "description": "MCP server connection settings.",
       "oneOf": [
@@ -1162,6 +1526,233 @@
       "type": "string",
       "enum": [
         "bearer"
+      ]
+    },
+    "V4McpSurfacePaginationSchema": {
+      "type": "object",
+      "properties": {
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/V4McpPaginationProfileSchema"
+          }
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/V4McpOperationPaginationOverlaySchema"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "V4McpPaginationProfileSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/V4McpPaginatedProfileSchema"
+        },
+        {
+          "$ref": "#/$defs/V4McpUnsupportedProfileSchema"
+        }
+      ]
+    },
+    "V4McpPaginatedProfileSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "match": {
+          "$ref": "#/$defs/V4McpPaginationMatcherSchema"
+        },
+        "pagination": {
+          "$ref": "#/$defs/V4McpPaginationOverlaySchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "match",
+        "pagination"
+      ]
+    },
+    "V4McpPaginationMatcherSchema": {
+      "type": "object",
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tool_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "response_cursor_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "offset_args": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "V4McpPaginationOverlaySchema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "cursor_arg": {
+              "type": "string"
+            },
+            "response_cursor_path": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "max_pages": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "cursor"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "cursor_arg",
+            "response_cursor_path"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "limit_arg": {
+              "type": "string"
+            },
+            "default_limit": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "max_limit": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "offset_arg": {
+              "type": "string"
+            },
+            "offset_start": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0,
+              "default": 0
+            },
+            "max_pages": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "offset"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "limit_arg",
+            "default_limit",
+            "max_limit",
+            "offset_arg"
+          ]
+        }
+      ]
+    },
+    "V4McpUnsupportedProfileSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "match": {
+          "$ref": "#/$defs/V4McpPaginationMatcherSchema"
+        },
+        "unsupported": {
+          "$ref": "#/$defs/V4UnsupportedPaginationSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "match",
+        "unsupported"
+      ]
+    },
+    "V4McpOperationPaginationOverlaySchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/V4McpOperationTargetSchema"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "unevaluatedProperties": false,
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "pagination": {
+              "$ref": "#/$defs/V4McpPaginationOverlaySchema"
+            }
+          },
+          "required": [
+            "pagination"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "unsupported": {
+              "$ref": "#/$defs/V4UnsupportedPaginationSchema"
+            }
+          },
+          "required": [
+            "unsupported"
+          ]
+        }
+      ]
+    },
+    "V4McpOperationTargetSchema": {
+      "type": "object",
+      "properties": {
+        "tool": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "tool"
       ]
     }
   },

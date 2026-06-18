@@ -43,6 +43,10 @@ surfaces:
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The manifest fixture is kept inline so the pagination-input regression is readable."
+)]
 fn projection_generation_keeps_pagination_inputs_internal() {
     let manifest = parse_source_manifest_yaml(
         r"
@@ -53,6 +57,21 @@ surfaces:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.github.com
+    pagination:
+      profiles:
+        - name: github_page_params
+          match:
+            methods: [get]
+            query_params: [page, per_page]
+          pagination:
+            mode: page
+            page_param: page
+            page_start: 1
+            page_step: 1
+            page_size:
+              default: 30
+              max: 100
+              query_param: per_page
 ",
     )
     .expect("manifest");
@@ -548,6 +567,16 @@ surfaces:
   - id: mcp
     namespace_suffix: mcp
     type: mcp
+    pagination:
+      profiles:
+        - name: cursor_tools
+          match:
+            tool_args: [cursor]
+            response_cursor_path: [meta, nextCursor]
+          pagination:
+            type: cursor
+            cursor_arg: cursor
+            response_cursor_path: [meta, nextCursor]
     server:
       transport: stdio
       command: demo-mcp-server

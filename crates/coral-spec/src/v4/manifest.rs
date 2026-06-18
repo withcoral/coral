@@ -15,6 +15,8 @@ use crate::{
     validate_reserved_source_schema_name, validate_test_queries,
 };
 
+use super::pagination::{RawSurfacePagination, V4SurfacePagination, validate_no_duplicate_targets};
+
 #[derive(Debug, Clone)]
 pub struct V4SourceManifest {
     pub common: V4SourceCommon,
@@ -39,6 +41,7 @@ pub struct V4Surface {
     pub descriptor: SurfaceDescriptor,
     pub inputs: Vec<ManifestInputSpec>,
     pub runtime: SurfaceRuntimeConfig,
+    pub pagination: V4SurfacePagination,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -144,6 +147,8 @@ struct RawV4Surface {
     rate_limit: RateLimitSpec,
     #[serde(default)]
     server: Option<McpServerSpec>,
+    #[serde(default)]
+    pagination: Option<RawSurfacePagination>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -306,6 +311,11 @@ fn parse_openapi_surface(
         )?;
     }
     let descriptor = parse_openapi_descriptor(source_name, &raw_surface)?;
+    let pagination = raw_surface.pagination.map_or_else(
+        || Ok(V4SurfacePagination::default()),
+        |pagination| pagination.parse_openapi(source_name, &raw_surface.id),
+    )?;
+    validate_no_duplicate_targets(source_name, &raw_surface.id, &pagination)?;
     Ok(V4Surface {
         id: raw_surface.id,
         relation_namespace,
@@ -320,6 +330,7 @@ fn parse_openapi_surface(
             request_headers: raw_surface.request_headers,
             rate_limit: raw_surface.rate_limit,
         }),
+        pagination,
     })
 }
 
@@ -351,6 +362,11 @@ fn parse_mcp_surface(
         ))
     })?;
     validate_mcp_server(source_name, &server, &inputs)?;
+    let pagination = raw_surface.pagination.map_or_else(
+        || Ok(V4SurfacePagination::default()),
+        |pagination| pagination.parse_mcp(source_name, &raw_surface.id),
+    )?;
+    validate_no_duplicate_targets(source_name, &raw_surface.id, &pagination)?;
     Ok(V4Surface {
         id: raw_surface.id,
         relation_namespace,
@@ -360,6 +376,7 @@ fn parse_mcp_surface(
         },
         inputs,
         runtime: SurfaceRuntimeConfig::Mcp(McpRuntimeConfig { server }),
+        pagination,
     })
 }
 

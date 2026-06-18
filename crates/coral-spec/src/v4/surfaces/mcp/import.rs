@@ -39,6 +39,7 @@ pub(super) struct McpImporter<'a> {
     pub(super) surface: &'a V4Surface,
     pub(super) types: BTreeMap<String, IrType>,
     pub(super) diagnostics: Vec<Diagnostic>,
+    pub(super) matched_pagination_overlays: Vec<bool>,
 }
 
 impl<'a> McpImporter<'a> {
@@ -48,6 +49,7 @@ impl<'a> McpImporter<'a> {
             surface,
             types: BTreeMap::new(),
             diagnostics: Vec::new(),
+            matched_pagination_overlays: vec![false; surface.pagination.operations.len()],
         }
     }
 
@@ -69,10 +71,11 @@ impl<'a> McpImporter<'a> {
                 )));
             }
             operation_ids.insert(operation_id.clone(), tool.name.as_str());
-            if let Some(operation) = self.import_tool(tool, &operation_id) {
+            if let Some(operation) = self.import_tool(tool, &operation_id)? {
                 operations.push(operation);
             }
         }
+        self.validate_pagination_operation_targets()?;
         Ok(SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: self.manifest.common.name.clone(),
@@ -83,6 +86,25 @@ impl<'a> McpImporter<'a> {
             types: self.types.values().cloned().collect(),
             diagnostics: self.diagnostics.clone(),
         })
+    }
+
+    fn validate_pagination_operation_targets(&self) -> Result<()> {
+        for (overlay, matched) in self
+            .surface
+            .pagination
+            .operations
+            .iter()
+            .zip(&self.matched_pagination_overlays)
+        {
+            if !matched {
+                return Err(crate::v4::pagination::unmatched_operation_overlay_error(
+                    &self.manifest.common.name,
+                    &self.surface.id,
+                    &format!("{:?}", overlay.target),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn ensure_type_for_scalar(&mut self, scalar: IrScalarType) -> String {
@@ -131,6 +153,29 @@ surfaces:
       command: demo-mcp-server
 ",
         )
+        .expect("manifest")
+    }
+
+    fn manifest_with_pagination(raw_pagination: &str) -> ValidatedSourceManifest {
+        parse_source_manifest_yaml(&format!(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    pagination:
+{}
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+            raw_pagination
+                .lines()
+                .map(|line| format!("      {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ))
         .expect("manifest")
     }
 
@@ -632,7 +677,7 @@ surfaces:
     }
 
     #[test]
-    fn infers_cursor_pagination_for_wrapped_list_envelopes() {
+    fn applies_cursor_pagination_profile_for_wrapped_list_envelopes() {
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(
                 "list-items",
@@ -667,7 +712,22 @@ surfaces:
             )],
         };
 
-        let ir = import_catalog(&catalog);
+        let manifest = manifest_with_pagination(
+            r"
+profiles:
+  - name: cursor_tools
+    match:
+      tool_args: [cursor]
+      response_cursor_path: [meta, nextCursor]
+    pagination:
+      type: cursor
+      cursor_arg: cursor
+      response_cursor_path: [meta, nextCursor]
+",
+        );
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("surface");
+        let ir = import_mcp_surface(v4, surface, &catalog).expect("import");
         let operation = operation(&ir, "list_items");
         assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
         assert_eq!(operation.output.row_path, vec!["items".to_string()]);
@@ -681,7 +741,7 @@ surfaces:
     }
 
     #[test]
-    fn infers_offset_pagination_for_mcp_discovery_contract() {
+    fn applies_offset_pagination_profile_for_mcp_discovery_contract() {
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(
                 "list-catalog",
@@ -724,7 +784,21 @@ surfaces:
             )],
         };
 
-        let manifest = manifest();
+        let manifest = manifest_with_pagination(
+            r"
+profiles:
+  - name: offset_tools
+    match:
+      tool_args: [limit, offset]
+      offset_args: true
+    pagination:
+      type: offset
+      limit_arg: limit
+      default_limit: 50
+      max_limit: 200
+      offset_arg: offset
+",
+        );
         let v4 = manifest.as_v4().expect("v4");
         let surface = v4.surfaces.first().expect("surface");
         let ir = import_mcp_surface(v4, surface, &catalog).expect("import");

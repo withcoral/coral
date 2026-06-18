@@ -569,6 +569,12 @@ pub struct PaginationSpec {
     #[serde(default)]
     pub response_cursor_path: Vec<String>,
     #[serde(default)]
+    pub cursor_from_last_row_path: Vec<String>,
+    #[serde(default)]
+    pub has_more_path: Vec<String>,
+    #[serde(default)]
+    pub response_next_url_path: Vec<String>,
+    #[serde(default)]
     pub page_param: Option<String>,
     #[serde(default)]
     pub page_start: i64,
@@ -594,6 +600,9 @@ impl Default for PaginationSpec {
             cursor_param: None,
             cursor_body_path: Vec::new(),
             response_cursor_path: Vec::new(),
+            cursor_from_last_row_path: Vec::new(),
+            has_more_path: Vec::new(),
+            response_next_url_path: Vec::new(),
             page_param: None,
             page_start: 0,
             page_step: default_page_step(),
@@ -624,6 +633,7 @@ pub enum ValidatedPaginationMode {
     Page,
     Offset(OffsetPagination),
     LinkHeader,
+    ResponseNextUrl,
 }
 
 /// Validated typed offset-pagination settings.
@@ -671,9 +681,10 @@ impl PaginationSpec {
                         "{schema}.{table} pagination.mode=cursor_query requires cursor_param"
                     )));
                 }
-                if self.response_cursor_path.is_empty() {
+                if self.response_cursor_path.is_empty() && self.cursor_from_last_row_path.is_empty()
+                {
                     return Err(ManifestError::validation(format!(
-                        "{schema}.{table} pagination.mode=cursor_query requires response_cursor_path"
+                        "{schema}.{table} pagination.mode=cursor_query requires response_cursor_path or cursor_from_last_row_path"
                     )));
                 }
                 Ok(ValidatedPaginationMode::CursorQuery)
@@ -684,9 +695,10 @@ impl PaginationSpec {
                         "{schema}.{table} pagination.mode=cursor_body requires cursor_body_path"
                     )));
                 }
-                if self.response_cursor_path.is_empty() {
+                if self.response_cursor_path.is_empty() && self.cursor_from_last_row_path.is_empty()
+                {
                     return Err(ManifestError::validation(format!(
-                        "{schema}.{table} pagination.mode=cursor_body requires response_cursor_path"
+                        "{schema}.{table} pagination.mode=cursor_body requires response_cursor_path or cursor_from_last_row_path"
                     )));
                 }
                 Ok(ValidatedPaginationMode::CursorBody)
@@ -731,6 +743,14 @@ impl PaginationSpec {
                 }))
             }
             PaginationMode::LinkHeader => Ok(ValidatedPaginationMode::LinkHeader),
+            PaginationMode::ResponseNextUrl => {
+                if self.response_next_url_path.is_empty() {
+                    return Err(ManifestError::validation(format!(
+                        "{schema}.{table} pagination.mode=response_next_url requires response_next_url_path"
+                    )));
+                }
+                Ok(ValidatedPaginationMode::ResponseNextUrl)
+            }
         }
     }
 
@@ -793,6 +813,7 @@ pub enum PaginationMode {
     Page,
     Offset,
     LinkHeader,
+    ResponseNextUrl,
 }
 
 /// Page-size settings shared by several pagination modes.
@@ -1298,5 +1319,34 @@ mod tests {
             err.to_string()
                 .contains("demo.items pagination.mode=offset requires offset_step or page_size")
         );
+    }
+
+    #[test]
+    fn pagination_response_next_url_requires_response_next_url_path() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::ResponseNextUrl,
+            ..PaginationSpec::default()
+        };
+
+        let err = pagination.validated("demo", "items").unwrap_err();
+        assert!(err.to_string().contains(
+            "demo.items pagination.mode=response_next_url requires response_next_url_path"
+        ));
+    }
+
+    #[test]
+    fn pagination_cursor_query_accepts_cursor_from_last_row_path() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::CursorQuery,
+            cursor_param: Some("after".to_string()),
+            cursor_from_last_row_path: vec!["id".to_string()],
+            ..PaginationSpec::default()
+        };
+
+        let validated = pagination.validated("demo", "items").unwrap();
+        assert!(matches!(
+            validated.mode,
+            ValidatedPaginationMode::CursorQuery
+        ));
     }
 }

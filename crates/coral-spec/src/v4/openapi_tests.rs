@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::parse_source_manifest_yaml;
+use crate::{PaginationMode, parse_source_manifest_yaml};
 
 #[test]
 fn extracts_openapi_document_metadata() {
@@ -813,4 +813,194 @@ paths:
         "{codes:?}"
     );
     assert_eq!(operation.output.cardinality, OutputCardinality::Unknown);
+}
+
+#[test]
+fn openapi_pagination_operation_overlay_matches_raw_method_path() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+    pagination:
+      operations:
+        - target:
+            method: get
+            path: /items
+          pagination:
+            mode: page
+            page_param: page
+            page_start: 1
+            page_size:
+              default: 50
+              max: 100
+              query_param: per_page
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: page, in: query, schema: {type: integer}}
+        - {name: per_page, in: query, schema: {type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let operation = ir.operations.first().expect("operation");
+    let IrExecutionAttachment::Rest(rest) = &operation.execution else {
+        panic!("expected REST execution");
+    };
+    assert_eq!(rest.pagination.mode, PaginationMode::Page);
+    assert_eq!(rest.pagination.page_param.as_deref(), Some("page"));
+    assert_eq!(rest.pagination_provenance, PaginationProvenance::Authored);
+    assert!(
+        operation
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "PAGINATION_OVERLAY_MISSING")
+    );
+}
+
+#[test]
+fn openapi_unmatched_pagination_operation_overlay_is_rejected() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+    pagination:
+      operations:
+        - target:
+            method: get
+            path: /missing
+          pagination:
+            mode: link_header
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let error = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect_err("unmatched authored overlay should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("did not match any imported operation"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn openapi_unsupported_pagination_overlay_suppresses_missing_overlay_warning() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+    pagination:
+      operations:
+        - target:
+            operation_id: items/list
+          unsupported:
+            reason: The provider exposes a cursor-looking filter that is not a pagination cursor.
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let operation = ir.operations.first().expect("operation");
+    let IrExecutionAttachment::Rest(rest) = &operation.execution else {
+        panic!("expected REST execution");
+    };
+    assert_eq!(rest.pagination.mode, PaginationMode::None);
+    assert_eq!(
+        rest.pagination_provenance,
+        PaginationProvenance::Unsupported
+    );
+    assert!(
+        operation
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "PAGINATION_OVERLAY_MISSING"),
+        "unsupported pagination should be explicit metadata, not a heuristic warning"
+    );
 }

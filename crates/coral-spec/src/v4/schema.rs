@@ -49,6 +49,8 @@ struct V4OpenApiSurfaceSchema {
     request_headers: Vec<HeaderSpec>,
     #[serde(default)]
     rate_limit: RateLimitSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pagination: Option<V4OpenApiSurfacePaginationSchema>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -60,6 +62,8 @@ struct V4McpSurfaceSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     server: McpServerSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pagination: Option<V4McpSurfacePaginationSchema>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -81,6 +85,270 @@ enum V4InputSpecSchema {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credential: Option<Value>,
     },
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OpenApiSurfacePaginationSchema {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    profiles: Vec<V4OpenApiPaginationProfileSchema>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    operations: Vec<V4OpenApiOperationPaginationOverlaySchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4OpenApiPaginationProfileSchema {
+    Paginated(Box<V4OpenApiPaginatedProfileSchema>),
+    Unsupported(Box<V4OpenApiUnsupportedProfileSchema>),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OpenApiPaginatedProfileSchema {
+    name: String,
+    #[serde(rename = "match")]
+    matcher: V4OpenApiPaginationMatcherSchema,
+    pagination: V4HttpPaginationSpecSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OpenApiUnsupportedProfileSchema {
+    name: String,
+    #[serde(rename = "match")]
+    matcher: V4OpenApiPaginationMatcherSchema,
+    unsupported: V4UnsupportedPaginationSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OpenApiOperationPaginationOverlaySchema {
+    target: V4OpenApiOperationTargetSchema,
+    #[serde(flatten)]
+    outcome: V4OpenApiPaginationOutcomeSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4OpenApiPaginationOutcomeSchema {
+    Paginated {
+        pagination: Box<V4HttpPaginationSpecSchema>,
+    },
+    Unsupported {
+        unsupported: V4UnsupportedPaginationSchema,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4OpenApiOperationTargetSchema {
+    OperationId(V4OpenApiOperationIdTargetSchema),
+    MethodPath(V4OpenApiMethodPathTargetSchema),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OpenApiOperationIdTargetSchema {
+    operation_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OpenApiMethodPathTargetSchema {
+    method: V4HttpMethodSchema,
+    path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OpenApiPaginationMatcherSchema {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    methods: Vec<V4HttpMethodSchema>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    query_params: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    response_cursor_path: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4McpSurfacePaginationSchema {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    profiles: Vec<V4McpPaginationProfileSchema>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    operations: Vec<V4McpOperationPaginationOverlaySchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4McpPaginationProfileSchema {
+    Paginated(V4McpPaginatedProfileSchema),
+    Unsupported(V4McpUnsupportedProfileSchema),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4McpPaginatedProfileSchema {
+    name: String,
+    #[serde(rename = "match")]
+    matcher: V4McpPaginationMatcherSchema,
+    pagination: V4McpPaginationOverlaySchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4McpUnsupportedProfileSchema {
+    name: String,
+    #[serde(rename = "match")]
+    matcher: V4McpPaginationMatcherSchema,
+    unsupported: V4UnsupportedPaginationSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4McpOperationPaginationOverlaySchema {
+    target: V4McpOperationTargetSchema,
+    #[serde(flatten)]
+    outcome: V4McpPaginationOutcomeSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4McpPaginationOutcomeSchema {
+    Paginated {
+        pagination: V4McpPaginationOverlaySchema,
+    },
+    Unsupported {
+        unsupported: V4UnsupportedPaginationSchema,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4McpOperationTargetSchema {
+    tool: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4McpPaginationMatcherSchema {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tool_args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    response_cursor_path: Vec<String>,
+    #[serde(default)]
+    offset_args: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum V4McpPaginationOverlaySchema {
+    Cursor {
+        cursor_arg: String,
+        response_cursor_path: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_pages: Option<usize>,
+    },
+    Offset {
+        limit_arg: String,
+        default_limit: usize,
+        max_limit: usize,
+        offset_arg: String,
+        #[serde(default)]
+        offset_start: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_pages: Option<usize>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4UnsupportedPaginationSchema {
+    reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4HttpPaginationSpecSchema {
+    #[serde(default)]
+    mode: V4HttpPaginationModeSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    page_size: Option<V4HttpPageSizeSpecSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cursor_param: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cursor_body_path: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    response_cursor_path: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cursor_from_last_row_path: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    has_more_path: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    response_next_url_path: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    page_param: Option<String>,
+    #[serde(default)]
+    page_start: i64,
+    #[serde(default = "default_v4_http_page_step")]
+    page_step: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    offset_param: Option<String>,
+    #[serde(default)]
+    offset_start: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    offset_step: Option<i64>,
+    #[serde(default)]
+    link_header_require_results: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_pages: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4HttpPageSizeSpecSchema {
+    default: usize,
+    max: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    query_param: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    body_path: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+enum V4HttpPaginationModeSchema {
+    #[default]
+    None,
+    Auto,
+    CursorQuery,
+    CursorBody,
+    Page,
+    Offset,
+    LinkHeader,
+    ResponseNextUrl,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum V4HttpMethodSchema {
+    Get,
+    Head,
+    Options,
+    Post,
+    Put,
+    Patch,
+    Delete,
+    Trace,
+}
+
+fn default_v4_http_page_step() -> i64 {
+    1
 }
 
 /// Generate the JSON Schema for authored DSL v4 source manifests.

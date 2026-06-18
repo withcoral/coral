@@ -9,8 +9,8 @@ use crate::backends::http::ProviderQueryError;
 use crate::backends::http::client::HttpSourceClient;
 use crate::backends::http::error::{pagination_error, provider_error};
 use crate::backends::http::pagination::{
-    PageState, apply_pagination_body_fields, apply_pagination_query_pairs, page_is_exhausted,
-    pagination_state_values, resolve_page_size,
+    PageState, apply_pagination_body_fields, apply_pagination_query_pairs,
+    extract_response_next_url, page_is_exhausted, pagination_state_values, resolve_page_size,
 };
 use crate::backends::http::request::{build_query_pairs, build_request_body};
 use crate::backends::http::target::HttpFetchTarget;
@@ -101,14 +101,18 @@ pub(super) async fn fetch_rows(
         );
         let base_url = render_template(&client.base_url, &render_context)?;
         let base_url = normalize_base_url(&base_url);
-        let following_link_header = matches!(
+        let following_pagination_url = matches!(
             pagination.mode,
-            ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto
+            ValidatedPaginationMode::LinkHeader
+                | ValidatedPaginationMode::Auto
+                | ValidatedPaginationMode::ResponseNextUrl
         ) && state.next_url.is_some();
 
         let url = if matches!(
             pagination.mode,
-            ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto
+            ValidatedPaginationMode::LinkHeader
+                | ValidatedPaginationMode::Auto
+                | ValidatedPaginationMode::ResponseNextUrl
         ) && let Some(next) = state.next_url.clone()
         {
             next
@@ -117,7 +121,7 @@ pub(super) async fn fetch_rows(
             join_url(&base_url, &rendered_path)?
         };
 
-        let (query_pairs, body) = if following_link_header {
+        let (query_pairs, body) = if following_pagination_url {
             (Vec::new(), None)
         } else {
             let mut query_pairs = build_query_pairs(active_request, &render_context)?;
@@ -231,12 +235,22 @@ pub(super) async fn fetch_rows(
         match &pagination.mode {
             ValidatedPaginationMode::None => break,
             ValidatedPaginationMode::CursorQuery | ValidatedPaginationMode::CursorBody => {
-                let next_cursor =
+                let next_cursor = if target.pagination().response_cursor_path.is_empty() {
+                    next_cursor_from_last_row(
+                        &payload,
+                        &all_rows,
+                        rows_on_page,
+                        page_size,
+                        target,
+                        &client.source_schema,
+                    )?
+                } else {
                     get_path_value(&payload, &target.pagination().response_cursor_path)
                         .and_then(Value::as_str)
                         .map(str::trim)
                         .filter(|s| !s.is_empty())
-                        .map(ToOwned::to_owned);
+                        .map(ToOwned::to_owned)
+                };
                 match next_cursor {
                     Some(cursor) => state.cursor = Some(cursor),
                     None => break,
@@ -269,10 +283,87 @@ pub(super) async fn fetch_rows(
                 Some(next) => state.next_url = Some(next),
                 None => break,
             },
+            ValidatedPaginationMode::ResponseNextUrl => {
+                match extract_response_next_url(
+                    &payload,
+                    &target.pagination().response_next_url_path,
+                    &base_url,
+                )
+                .map_err(|error| {
+                    pagination_error(
+                        &client.source_schema,
+                        target.name(),
+                        None,
+                        Some(&url),
+                        &error,
+                    )
+                })? {
+                    Some(next) => state.next_url = Some(next),
+                    None => break,
+                }
+            }
         }
     }
 
     Ok(all_rows)
+}
+
+fn next_cursor_from_last_row(
+    payload: &Value,
+    all_rows: &[Value],
+    rows_on_page: usize,
+    page_size: Option<usize>,
+    target: &HttpFetchTarget,
+    source_schema: &str,
+) -> Result<Option<String>> {
+    if rows_on_page == 0 {
+        return Ok(None);
+    }
+    if !target.pagination().has_more_path.is_empty() {
+        let has_more = get_path_value(payload, &target.pagination().has_more_path)
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !has_more {
+            return Ok(None);
+        }
+    } else if page_is_exhausted(rows_on_page, page_size) {
+        return Ok(None);
+    }
+
+    let Some(last_row) = all_rows.last() else {
+        return Ok(None);
+    };
+    let Some(cursor_value) =
+        get_path_value(last_row, &target.pagination().cursor_from_last_row_path)
+    else {
+        return Err(provider_error(ProviderQueryError::Pagination {
+            source_schema: source_schema.to_string(),
+            table: target.name().to_string(),
+            method: None,
+            url: None,
+            detail: "cursor_from_last_row_path did not resolve on the last response row"
+                .to_string(),
+        }));
+    };
+    let Some(cursor) = json_cursor_value(cursor_value) else {
+        return Err(provider_error(ProviderQueryError::Pagination {
+            source_schema: source_schema.to_string(),
+            table: target.name().to_string(),
+            method: None,
+            url: None,
+            detail: "cursor_from_last_row_path resolved to a non-scalar value".to_string(),
+        }));
+    };
+    Ok(Some(cursor))
+}
+
+fn json_cursor_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        Value::Null | Value::Array(_) | Value::Object(_) => None,
+    }
 }
 
 fn resolve_fetch_limits(
