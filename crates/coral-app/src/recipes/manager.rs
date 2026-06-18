@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
-use std::io::ErrorKind;
+use std::sync::Arc;
 
 use coral_engine::{
     CoralQuery, QueryRuntimeConfig, QuerySource, RecipeRuntimeArgument, RecipeRuntimeArgumentType,
@@ -15,20 +15,22 @@ use coral_spec::{
     RecipeValidationValue, parse_recipe_yaml,
 };
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use sha2::{Digest as _, Sha256};
 
 use crate::bootstrap::AppError;
 use crate::recipes::model::{InstalledRecipe, RecipeName, RecipeOrigin};
+use crate::recipes::storage::{
+    ConfigRecipeRegistry, FsRecipeArtifactStore, RecipeArtifactStore, RecipeRegistry,
+};
 use crate::state::{AppStateLayout, ConfigStore};
-use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
 
-const RECIPE_RUNTIME_METADATA_VERSION: u32 = 1;
+const RECIPE_RUNTIME_METADATA_VERSION: u32 = 2;
 
 #[derive(Clone)]
 pub(crate) struct RecipeManager {
-    config_store: ConfigStore,
-    layout: AppStateLayout,
+    registry: Arc<dyn RecipeRegistry>,
+    artifacts: Arc<dyn RecipeArtifactStore>,
 }
 
 struct RecipeArtifact {
@@ -51,6 +53,8 @@ pub(crate) struct RecipeListing {
 #[derive(Debug, Serialize, Deserialize)]
 struct RecipeRuntimeMetadata {
     version: u32,
+    #[serde(default)]
+    recipe_yaml_sha256: String,
     #[serde(default)]
     validation_args: BTreeMap<String, CachedRecipeArgumentValue>,
     result_columns: Vec<CachedRecipeResultColumn>,
@@ -109,9 +113,19 @@ impl From<CachedRecipeResultColumn> for RecipeRuntimeResultColumn {
 
 impl RecipeManager {
     pub(crate) fn new(config_store: ConfigStore, layout: AppStateLayout) -> Self {
+        Self::with_stores(
+            Arc::new(ConfigRecipeRegistry::new(config_store)),
+            Arc::new(FsRecipeArtifactStore::new(layout)),
+        )
+    }
+
+    pub(crate) fn with_stores(
+        registry: Arc<dyn RecipeRegistry>,
+        artifacts: Arc<dyn RecipeArtifactStore>,
+    ) -> Self {
         Self {
-            config_store,
-            layout,
+            registry,
+            artifacts,
         }
     }
 
@@ -155,47 +169,29 @@ impl RecipeManager {
             enabled: true,
         };
 
-        let recipe_dir = self.layout.recipe_dir(workspace_name, recipe_name);
-        let recipe_file = self.layout.recipe_file(workspace_name, recipe_name);
-        let recipe_runtime_file = self.layout.recipe_runtime_file(workspace_name, recipe_name);
-        let previous_yaml = match std::fs::read(&recipe_file) {
-            Ok(bytes) => Some(bytes),
-            Err(error) if error.kind() == ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
-        };
-        let previous_runtime = match std::fs::read(&recipe_runtime_file) {
-            Ok(bytes) => Some(bytes),
-            Err(error) if error.kind() == ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
-        };
-
-        fs::ensure_private_dir(&recipe_dir)?;
-        fs::write_atomic(&recipe_file, raw_yaml.as_bytes())?;
-        if let Err(error) = write_recipe_runtime_metadata(
-            &recipe_runtime_file,
-            runtime_recipe,
-            validation_arguments,
-        ) {
-            rollback_recipe_install(
-                &recipe_dir,
-                &recipe_file,
-                previous_yaml.as_deref(),
-                &recipe_runtime_file,
-                previous_runtime.as_deref(),
-            );
-            return Err(error);
-        }
+        let runtime_metadata =
+            encode_recipe_runtime_metadata(runtime_recipe, raw_yaml, validation_arguments)?;
+        let previous_artifact = self.artifacts.write_user_recipe_artifact(
+            workspace_name,
+            recipe_name,
+            raw_yaml,
+            runtime_metadata.as_deref(),
+        )?;
         if let Err(error) = self
-            .config_store
+            .registry
             .upsert_recipe(workspace_name, installed.clone())
         {
-            rollback_recipe_install(
-                &recipe_dir,
-                &recipe_file,
-                previous_yaml.as_deref(),
-                &recipe_runtime_file,
-                previous_runtime.as_deref(),
-            );
+            if let Err(restore_error) = self.artifacts.restore_user_recipe_artifact(
+                workspace_name,
+                recipe_name,
+                &previous_artifact,
+            ) {
+                tracing::warn!(
+                    recipe = %recipe_name,
+                    detail = %restore_error,
+                    "failed to restore previous recipe artifact after inventory update failure"
+                );
+            }
             return Err(error);
         }
 
@@ -252,6 +248,7 @@ impl RecipeManager {
                 recipe.result_columns = self.cached_recipe_result_columns(
                     workspace_name,
                     &artifact.name,
+                    &artifact.raw_yaml,
                     &runtime_validation_arguments(&spec),
                 );
             }
@@ -298,6 +295,7 @@ impl RecipeManager {
                 runtime_recipe.result_columns = self.cached_recipe_result_columns(
                     workspace_name,
                     &artifact.name,
+                    &artifact.raw_yaml,
                     &runtime_validation_arguments(&spec),
                 );
             }
@@ -322,36 +320,26 @@ impl RecipeManager {
         workspace_name: &WorkspaceName,
         recipe_name: &RecipeName,
     ) -> Result<(), AppError> {
-        let installed = self.config_store.get_recipe(workspace_name, recipe_name)?;
+        let installed = self.registry.get_recipe(workspace_name, recipe_name)?;
         if installed.origin != RecipeOrigin::User {
             return Err(AppError::InvalidInput(format!(
                 "recipe '{recipe_name}' is bundled and cannot be removed from workspace config"
             )));
         }
-        let recipe_dir = self.layout.recipe_dir(workspace_name, recipe_name);
-        let recipe_dir_backup =
-            recipe_dir.with_file_name(format!("{recipe_name}.delete.rollback.{}", Uuid::new_v4()));
-        let had_recipe_dir = recipe_dir.exists();
-        if had_recipe_dir {
-            if recipe_dir_backup.exists() {
-                std::fs::remove_dir_all(&recipe_dir_backup)?;
-            }
-            std::fs::rename(&recipe_dir, &recipe_dir_backup)?;
-        }
-        if let Err(error) = self.config_store.remove_recipe(workspace_name, recipe_name) {
-            if had_recipe_dir
-                && recipe_dir_backup.exists()
-                && let Err(restore_error) = std::fs::rename(&recipe_dir_backup, &recipe_dir)
-            {
+        let removed_artifact = self
+            .artifacts
+            .remove_user_recipe_artifact(workspace_name, recipe_name)?;
+        if let Err(error) = self.registry.remove_recipe(workspace_name, recipe_name) {
+            if let Err(restore_error) = self.artifacts.restore_user_recipe_artifact(
+                workspace_name,
+                recipe_name,
+                &removed_artifact,
+            ) {
                 return Err(AppError::FailedPrecondition(format!(
-                    "failed to remove recipe '{recipe_name}': {error}; failed to restore recipe directory from '{}': {restore_error}",
-                    recipe_dir_backup.display()
+                    "failed to remove recipe '{recipe_name}': {error}; failed to restore recipe artifact: {restore_error}"
                 )));
             }
             return Err(error);
-        }
-        if recipe_dir_backup.exists() {
-            std::fs::remove_dir_all(&recipe_dir_backup)?;
         }
         Ok(())
     }
@@ -362,17 +350,25 @@ impl RecipeManager {
         filter: RecipeArtifactFilter,
     ) -> Result<Vec<RecipeArtifact>, AppError> {
         let mut artifacts = Vec::new();
-        for installed in self.config_store.list_workspace_recipes(workspace_name)? {
+        for installed in self.registry.list_workspace_recipes(workspace_name)? {
             if filter == RecipeArtifactFilter::EnabledOnly && !installed.enabled {
                 continue;
             }
-            let recipe_file = self.layout.recipe_file(workspace_name, &installed.name);
-            let raw_yaml = match std::fs::read_to_string(&recipe_file) {
-                Ok(raw_yaml) => raw_yaml,
+            let raw_yaml = match self
+                .artifacts
+                .read_recipe_yaml(workspace_name, &installed.name)
+            {
+                Ok(Some(raw_yaml)) => raw_yaml,
+                Ok(None) => {
+                    tracing::warn!(
+                        recipe = %installed.name,
+                        "skipping installed recipe because its recipe file is missing"
+                    );
+                    continue;
+                }
                 Err(error) => {
                     tracing::warn!(
                         recipe = %installed.name,
-                        path = %recipe_file.display(),
                         detail = %error,
                         "skipping installed recipe because its recipe file could not be read"
                     );
@@ -430,16 +426,18 @@ impl RecipeManager {
         &self,
         workspace_name: &WorkspaceName,
         recipe_name: &RecipeName,
+        raw_yaml: &str,
         validation_arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
     ) -> Vec<RecipeRuntimeResultColumn> {
-        let metadata_file = self.layout.recipe_runtime_file(workspace_name, recipe_name);
-        let raw = match std::fs::read_to_string(&metadata_file) {
-            Ok(raw) => raw,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Vec::new(),
+        let raw = match self
+            .artifacts
+            .read_runtime_metadata(workspace_name, recipe_name)
+        {
+            Ok(Some(raw)) => raw,
+            Ok(None) => return Vec::new(),
             Err(error) => {
                 tracing::warn!(
                     recipe = %recipe_name,
-                    path = %metadata_file.display(),
                     detail = %error,
                     "ignoring recipe runtime metadata because it could not be read"
                 );
@@ -448,11 +446,18 @@ impl RecipeManager {
         };
         match serde_json::from_str::<RecipeRuntimeMetadata>(&raw) {
             Ok(metadata) if metadata.version == RECIPE_RUNTIME_METADATA_VERSION => {
+                let expected_recipe_yaml_sha256 = sha256_hex(raw_yaml.as_bytes());
+                if metadata.recipe_yaml_sha256 != expected_recipe_yaml_sha256 {
+                    tracing::warn!(
+                        recipe = %recipe_name,
+                        "ignoring recipe runtime metadata because recipe YAML changed"
+                    );
+                    return Vec::new();
+                }
                 let expected_args = cached_validation_arguments(validation_arguments);
                 if metadata.validation_args != expected_args {
                     tracing::warn!(
                         recipe = %recipe_name,
-                        path = %metadata_file.display(),
                         "ignoring recipe runtime metadata because validation arguments changed"
                     );
                     return Vec::new();
@@ -466,7 +471,6 @@ impl RecipeManager {
             Ok(metadata) => {
                 tracing::warn!(
                     recipe = %recipe_name,
-                    path = %metadata_file.display(),
                     version = metadata.version,
                     supported_version = RECIPE_RUNTIME_METADATA_VERSION,
                     "ignoring recipe runtime metadata because its version is unsupported"
@@ -476,7 +480,6 @@ impl RecipeManager {
             Err(error) => {
                 tracing::warn!(
                     recipe = %recipe_name,
-                    path = %metadata_file.display(),
                     detail = %error,
                     "ignoring recipe runtime metadata because it is invalid"
                 );
@@ -706,14 +709,15 @@ fn origin_sort_key(origin: RecipeOrigin) -> u8 {
     }
 }
 
-fn write_recipe_runtime_metadata(
-    recipe_runtime_file: &std::path::Path,
+fn encode_recipe_runtime_metadata(
     runtime_recipe: Option<&RecipeRuntimeDefinition>,
+    raw_yaml: &str,
     validation_arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
-) -> Result<(), AppError> {
+) -> Result<Option<Vec<u8>>, AppError> {
     if let Some(runtime_recipe) = runtime_recipe {
         let metadata = RecipeRuntimeMetadata {
             version: RECIPE_RUNTIME_METADATA_VERSION,
+            recipe_yaml_sha256: sha256_hex(raw_yaml.as_bytes()),
             validation_args: cached_validation_arguments(validation_arguments),
             result_columns: runtime_recipe
                 .result_columns
@@ -722,11 +726,10 @@ fn write_recipe_runtime_metadata(
                 .collect(),
         };
         let raw = serde_json::to_vec_pretty(&metadata)?;
-        fs::write_atomic(recipe_runtime_file, &raw)?;
-    } else if recipe_runtime_file.exists() {
-        std::fs::remove_file(recipe_runtime_file)?;
+        Ok(Some(raw))
+    } else {
+        Ok(None)
     }
-    Ok(())
 }
 
 fn cached_validation_arguments(
@@ -738,71 +741,10 @@ fn cached_validation_arguments(
         .collect()
 }
 
-fn rollback_recipe_install(
-    recipe_dir: &std::path::Path,
-    recipe_file: &std::path::Path,
-    previous_yaml: Option<&[u8]>,
-    recipe_runtime_file: &std::path::Path,
-    previous_runtime: Option<&[u8]>,
-) {
-    if let Some(previous_yaml) = previous_yaml {
-        if let Err(error) = fs::ensure_private_dir(recipe_dir) {
-            tracing::warn!(
-                path = %recipe_dir.display(),
-                detail = %error,
-                "failed to restore previous recipe directory after config update failure"
-            );
-            return;
-        }
-        rollback_recipe_runtime_file(recipe_runtime_file, previous_runtime);
-        if let Err(error) = fs::write_atomic(recipe_file, previous_yaml) {
-            tracing::warn!(
-                path = %recipe_file.display(),
-                detail = %error,
-                "failed to restore previous recipe file after config update failure"
-            );
-        }
-    } else if previous_runtime.is_some() {
-        rollback_recipe_runtime_file(recipe_runtime_file, previous_runtime);
-        if recipe_file.exists()
-            && let Err(error) = std::fs::remove_file(recipe_file)
-        {
-            tracing::warn!(
-                path = %recipe_file.display(),
-                detail = %error,
-                "failed to remove new recipe file after config update failure"
-            );
-        }
-    } else if let Err(error) = std::fs::remove_dir_all(recipe_dir) {
-        tracing::warn!(
-            path = %recipe_dir.display(),
-            detail = %error,
-            "failed to remove new recipe directory after config update failure"
-        );
-    }
-}
-
-fn rollback_recipe_runtime_file(
-    recipe_runtime_file: &std::path::Path,
-    previous_runtime: Option<&[u8]>,
-) {
-    if let Some(previous_runtime) = previous_runtime {
-        if let Err(error) = fs::write_atomic(recipe_runtime_file, previous_runtime) {
-            tracing::warn!(
-                path = %recipe_runtime_file.display(),
-                detail = %error,
-                "failed to restore previous recipe runtime metadata after config update failure"
-            );
-        }
-    } else if recipe_runtime_file.exists()
-        && let Err(error) = std::fs::remove_file(recipe_runtime_file)
-    {
-        tracing::warn!(
-            path = %recipe_runtime_file.display(),
-            detail = %error,
-            "failed to remove recipe runtime metadata after config update failure"
-        );
-    }
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(test)]
@@ -811,14 +753,15 @@ mod tests {
 
     use super::*;
     use crate::state::AppStateLayout;
+    use crate::storage::fs;
 
-    fn fixture() -> (TempDir, AppStateLayout, RecipeManager) {
+    fn fixture() -> (TempDir, AppStateLayout, ConfigStore, RecipeManager) {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let config_store = ConfigStore::new(layout.clone());
-        let manager = RecipeManager::new(config_store, layout.clone());
-        (temp, layout, manager)
+        let manager = RecipeManager::new(config_store.clone(), layout.clone());
+        (temp, layout, config_store, manager)
     }
 
     fn workspace() -> WorkspaceName {
@@ -897,7 +840,7 @@ publish:
 
     #[test]
     fn install_validated_user_recipe_persists_yaml_and_config() {
-        let (_temp, layout, manager) = fixture();
+        let (_temp, layout, config_store, manager) = fixture();
         let workspace = workspace();
         let raw_yaml = recipe_yaml("review_queue");
 
@@ -912,8 +855,7 @@ publish:
             .expect("recipe file");
         assert!(raw.contains("name: review_queue"));
         assert_eq!(
-            manager
-                .config_store
+            config_store
                 .list_workspace_recipes(&workspace)
                 .expect("list recipes")
                 .into_iter()
@@ -925,7 +867,7 @@ publish:
 
     #[tokio::test]
     async fn install_validated_user_recipe_caches_result_columns_for_list() {
-        let (_temp, layout, manager) = fixture();
+        let (_temp, layout, _config_store, manager) = fixture();
         let workspace = workspace();
         let raw_yaml = recipe_yaml("review_queue");
         let runtime_recipe = manager
@@ -964,7 +906,7 @@ publish:
 
     #[test]
     fn list_recipes_ignores_cached_columns_when_validation_args_change() {
-        let (_temp, layout, manager) = fixture();
+        let (_temp, layout, _config_store, manager) = fixture();
         let workspace = workspace();
         let raw_yaml = recipe_yaml_with_validation_owner("review_queue", "withcoral");
         install_fixture_recipe(&manager, &workspace, &raw_yaml);
@@ -986,8 +928,32 @@ publish:
     }
 
     #[test]
+    fn list_recipes_ignores_cached_columns_when_recipe_yaml_changes() {
+        let (_temp, layout, _config_store, manager) = fixture();
+        let workspace = workspace();
+        let raw_yaml = recipe_yaml_with_validation_owner("review_queue", "withcoral");
+        install_fixture_recipe(&manager, &workspace, &raw_yaml);
+        let recipe_name = RecipeName::parse("review_queue").expect("recipe name");
+        let changed_yaml = raw_yaml.replace(
+            "query: select $owner as owner",
+            "query: select $owner as reviewer",
+        );
+        std::fs::write(layout.recipe_file(&workspace, &recipe_name), changed_yaml)
+            .expect("rewrite recipe yaml");
+
+        let listed = manager.list_recipes(&workspace).expect("list recipes");
+
+        assert_eq!(listed.len(), 1);
+        let listed_recipe = listed.first().expect("listed recipe");
+        assert!(
+            listed_recipe.definition.result_columns.is_empty(),
+            "cached result columns should not survive authored recipe drift"
+        );
+    }
+
+    #[test]
     fn list_recipes_ignores_unsupported_runtime_metadata_version() {
-        let (_temp, layout, manager) = fixture();
+        let (_temp, layout, _config_store, manager) = fixture();
         let workspace = workspace();
         let raw_yaml = recipe_yaml("review_queue");
         install_fixture_recipe(&manager, &workspace, &raw_yaml);
@@ -1017,7 +983,7 @@ publish:
 
     #[test]
     fn remove_user_recipe_removes_yaml_and_config() {
-        let (_temp, layout, manager) = fixture();
+        let (_temp, layout, config_store, manager) = fixture();
         let workspace = workspace();
         let raw_yaml = recipe_yaml("review_queue");
         install_fixture_recipe(&manager, &workspace, &raw_yaml);
@@ -1028,8 +994,7 @@ publish:
             .expect("remove recipe");
 
         assert!(!layout.recipe_dir(&workspace, &recipe_name).exists());
-        let user_recipe_count = manager
-            .config_store
+        let user_recipe_count = config_store
             .list_workspace_recipes(&workspace)
             .expect("list recipes")
             .into_iter()
@@ -1040,7 +1005,7 @@ publish:
 
     #[tokio::test]
     async fn validate_user_recipe_yaml_infers_result_columns() {
-        let (_temp, _layout, manager) = fixture();
+        let (_temp, _layout, _config_store, manager) = fixture();
         let workspace = workspace();
 
         let recipe = manager
@@ -1061,7 +1026,7 @@ publish:
 
     #[tokio::test]
     async fn validate_user_recipe_yaml_rejects_installed_publish_collision() {
-        let (_temp, _layout, manager) = fixture();
+        let (_temp, _layout, _config_store, manager) = fixture();
         let workspace = workspace();
         let existing_yaml = recipe_yaml_with_publish("existing_queue", "recipes.shared_queue");
         manager
@@ -1090,7 +1055,7 @@ publish:
 
     #[tokio::test]
     async fn validate_user_recipe_yaml_ignores_disabled_publish_collision() {
-        let (_temp, layout, manager) = fixture();
+        let (_temp, layout, config_store, manager) = fixture();
         let workspace = workspace();
         let recipe_name = RecipeName::parse("existing_queue").expect("recipe name");
         let existing_yaml = recipe_yaml_with_publish("existing_queue", "recipes.shared_queue");
@@ -1098,8 +1063,7 @@ publish:
         fs::ensure_private_dir(&recipe_dir).expect("recipe dir");
         std::fs::write(layout.recipe_file(&workspace, &recipe_name), existing_yaml)
             .expect("recipe yaml");
-        manager
-            .config_store
+        config_store
             .upsert_recipe(
                 &workspace,
                 InstalledRecipe {
@@ -1122,27 +1086,27 @@ publish:
     }
 
     #[test]
-    fn rollback_removes_new_yaml_when_only_runtime_metadata_existed() {
-        let (_temp, layout, _manager) = fixture();
+    fn artifact_restore_removes_new_yaml_when_only_runtime_metadata_existed() {
+        let (_temp, layout, _config_store, _manager) = fixture();
         let workspace = workspace();
         let recipe_name = RecipeName::parse("review_queue").expect("recipe name");
         let recipe_dir = layout.recipe_dir(&workspace, &recipe_name);
         let recipe_file = layout.recipe_file(&workspace, &recipe_name);
         let recipe_runtime_file = layout.recipe_runtime_file(&workspace, &recipe_name);
         fs::ensure_private_dir(&recipe_dir).expect("recipe dir");
-        std::fs::write(&recipe_file, b"new yaml").expect("new recipe file");
+        std::fs::write(&recipe_runtime_file, b"previous runtime").expect("previous runtime");
+        let store = FsRecipeArtifactStore::new(layout.clone());
+        let previous = store
+            .write_user_recipe_artifact(&workspace, &recipe_name, "new yaml", None)
+            .expect("write new artifact");
 
-        rollback_recipe_install(
-            &recipe_dir,
-            &recipe_file,
-            None,
-            &recipe_runtime_file,
-            Some(b"previous runtime"),
-        );
+        store
+            .restore_user_recipe_artifact(&workspace, &recipe_name, &previous)
+            .expect("restore artifact");
 
         assert!(
             !recipe_file.exists(),
-            "rollback should remove newly written recipe yaml"
+            "restore should remove newly written recipe yaml"
         );
         assert_eq!(
             std::fs::read(&recipe_runtime_file).expect("restored runtime metadata"),
