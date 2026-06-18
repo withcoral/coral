@@ -64,10 +64,10 @@ impl ToolDescriptionContext {
         }
         match self.native_search_function_names.as_ref() {
             Some(functions) if functions.names.is_empty() && !functions.has_more => {
-                "No provider-native search functions are currently configured for automatic Universal Search execution.".to_string()
+                "No provider-native search functions are currently eligible for automatic Universal Search execution.".to_string()
             }
             Some(functions) if functions.names.is_empty() => {
-                "No provider-native search functions were found in the first catalog page; more table functions may exist, so search may still execute source-native searches authorized by configured source manifests.".to_string()
+                "No eligible provider-native search functions were found in the first catalog page; more table functions may exist, so search may still execute eligible source-native searches authorized by configured source manifests.".to_string()
             }
             Some(functions) => {
                 let names = connected_source_names_text(&functions.names)
@@ -78,11 +78,11 @@ impl ToolDescriptionContext {
                     ""
                 };
                 format!(
-                    "For each search call, Coral will attempt these provider-native search functions with the same query through configured source credentials: {names}.{suffix}"
+                    "For each search call, Coral will attempt these eligible `kind: search` provider-native table functions with the same query through configured source credentials: {names}.{suffix}"
                 )
             }
             None => {
-                "Provider-native search function names are currently unavailable; search may still execute source-native searches authorized by configured source manifests.".to_string()
+                "Provider-native search function names are currently unavailable; search may still execute eligible `kind: search` source-native searches authorized by configured source manifests.".to_string()
             }
         }
     }
@@ -848,7 +848,7 @@ mod tests {
             Some(NativeSearchFunctionNames::new(
                 vec![
                     "github.search_issues".to_string(),
-                    "notion.search_objects".to_string(),
+                    "notion.search".to_string(),
                 ],
                 false,
             )),
@@ -876,9 +876,9 @@ mod tests {
             .expect("search description");
         assert!(search_description.contains("Connected sources/schemas include: github, linear"));
         assert!(search_description.contains(
-            "Coral will attempt these provider-native search functions with the same query"
+            "Coral will attempt these eligible `kind: search` provider-native table functions with the same query"
         ));
-        assert!(search_description.contains("github.search_issues, notion.search_objects"));
+        assert!(search_description.contains("github.search_issues, notion.search"));
         assert!(search_description.contains("42 table(s) and 3 table function(s)"));
     }
 

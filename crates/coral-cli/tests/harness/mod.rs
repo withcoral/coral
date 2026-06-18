@@ -617,13 +617,28 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
         .filter(|table| request.schema_name.is_empty() || table.schema_name == request.schema_name)
         .collect::<Vec<_>>();
     let table_count = u32::try_from(tables.len()).unwrap_or(u32::MAX);
-    let items = tables
+    let functions = vec![mock_search_function()]
+        .into_iter()
+        .filter(|function| {
+            request.schema_name.is_empty() || function.schema_name == request.schema_name
+        })
+        .collect::<Vec<_>>();
+    let table_function_count = u32::try_from(functions.len()).unwrap_or(u32::MAX);
+    let mut items = tables
         .into_iter()
         .filter(|_| request.kind == 0 || request.kind == 1)
         .map(|table| CatalogItem {
             item: Some(catalog_item::Item::Table(table_summary(&table))),
         })
         .collect::<Vec<_>>();
+    items.extend(
+        functions
+            .into_iter()
+            .filter(|_| request.kind == 0 || request.kind == 2)
+            .map(|function| CatalogItem {
+                item: Some(catalog_item::Item::TableFunction(function)),
+            }),
+    );
     let (items, pagination) = paginate(
         items,
         request.pagination.unwrap_or(PaginationRequest {
@@ -636,7 +651,7 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
         pagination: Some(pagination),
         counts: Some(CatalogCounts {
             table_count,
-            table_function_count: 0,
+            table_function_count,
         }),
     }
 }

@@ -503,11 +503,7 @@ impl UniversalSearch {
         query: &str,
         terms: &QueryTerms,
     ) -> ProviderResults {
-        let mut eligible_functions = catalog
-            .table_functions
-            .iter()
-            .filter_map(executable_native_search_function)
-            .collect::<VecDeque<_>>();
+        let mut eligible_functions = executable_native_search_functions(catalog);
         if eligible_functions.is_empty() {
             return ProviderResults::new(
                 SearchProvider::SourceNative,
@@ -1611,14 +1607,113 @@ fn executable_native_search_function(
     if function.kind != "search" {
         return None;
     }
-    let universal_search_json = function.universal_search_json.as_deref()?;
-    let universal_search =
-        serde_json::from_str::<UniversalSearchDocument>(universal_search_json).ok()?;
+    let universal_search = universal_search_execution(function)?;
     if !universal_search.execute {
         return None;
     }
 
     let query_arg = universal_search.query_arg?;
+    executable_native_search_function_with_query_arg(function, query_arg)
+}
+
+fn executable_native_search_functions(
+    catalog: &CatalogInfo,
+) -> VecDeque<ExecutableNativeSearchFunction> {
+    let mut functions_by_source = BTreeMap::<String, Vec<&TableFunctionInfo>>::new();
+    for function in catalog
+        .table_functions
+        .iter()
+        .filter(|function| function.kind == "search")
+    {
+        functions_by_source
+            .entry(function.schema_name.clone())
+            .or_default()
+            .push(function);
+    }
+
+    let mut executable = VecDeque::new();
+    for functions in functions_by_source.into_values() {
+        let explicit = functions
+            .iter()
+            .filter_map(|function| executable_native_search_function(function))
+            .collect::<Vec<_>>();
+        if !explicit.is_empty() {
+            executable.extend(explicit);
+            continue;
+        }
+
+        // Universal Search fan-out executes only `kind: search` table
+        // functions; legacy `mode: search` table/filter syntax is not
+        // represented here and is never auto-executed. Source-author opt-in
+        // wins. Without opt-in, inference is intentionally narrow: prefer a
+        // canonical function literally named `search`, otherwise fall back only
+        // when the source exposes exactly one search function total. Both paths
+        // still require valid search limits, exactly one query argument, and
+        // defaults for every other argument.
+        if let Some(function) = inferred_native_search_function(&functions) {
+            executable.push_back(function);
+        }
+    }
+
+    executable
+}
+
+fn inferred_native_search_function(
+    functions: &[&TableFunctionInfo],
+) -> Option<ExecutableNativeSearchFunction> {
+    let candidates = functions
+        .iter()
+        .copied()
+        .filter(|function| !universal_search_execution_is_disabled(function))
+        .collect::<Vec<_>>();
+    let named_search = candidates
+        .iter()
+        .copied()
+        .filter(|function| function.function_name == "search")
+        .collect::<Vec<_>>();
+    match named_search.len() {
+        1 => executable_inferred_native_search_function(named_search[0]),
+        0 if functions.len() == 1 && candidates.len() == 1 => {
+            executable_inferred_native_search_function(candidates[0])
+        }
+        _ => None,
+    }
+}
+
+fn executable_inferred_native_search_function(
+    function: &TableFunctionInfo,
+) -> Option<ExecutableNativeSearchFunction> {
+    let query_arg = inferred_query_argument(function)?;
+    executable_native_search_function_with_query_arg(function, query_arg)
+}
+
+fn inferred_query_argument(function: &TableFunctionInfo) -> Option<String> {
+    let mut arguments_without_defaults = function
+        .arguments
+        .iter()
+        .filter(|argument| argument.default_json.is_none());
+    let query_arg = arguments_without_defaults.next()?.name.clone();
+    arguments_without_defaults
+        .next()
+        .is_none()
+        .then_some(query_arg)
+}
+
+fn universal_search_execution(function: &TableFunctionInfo) -> Option<UniversalSearchDocument> {
+    function
+        .universal_search_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<UniversalSearchDocument>(json).ok())
+}
+
+fn universal_search_execution_is_disabled(function: &TableFunctionInfo) -> bool {
+    universal_search_execution(function).is_some_and(|metadata| !metadata.execute)
+}
+
+fn executable_native_search_function_with_query_arg(
+    function: &TableFunctionInfo,
+    query_arg: String,
+) -> Option<ExecutableNativeSearchFunction> {
     if function
         .arguments
         .iter()
@@ -2270,8 +2365,8 @@ mod tests {
         Candidate, FIELD_PATH_EXACT_BOOST, ProviderResults, ProviderRunStatus,
         SOURCE_EXACT_MATCH_BOOST, SURFACE_NAME_EXACT_BOOST, SearchIndexRefresher,
         VALUE_EXACT_MATCH_BOOST, VALUE_TOKEN_MATCH_BOOST, assemble_search_response,
-        catalog_fingerprint, observed_value_match_boost, observed_value_score, query_terms,
-        sql_call_example,
+        catalog_fingerprint, executable_native_search_functions, observed_value_match_boost,
+        observed_value_score, query_terms, sql_call_example,
     };
     use crate::search::index::{ObservedValueSearchHit, ObservedValueSurfaceKind};
     use crate::state::AppStateLayout;
@@ -2316,6 +2411,115 @@ mod tests {
             sql_call_example(&function),
             "SELECT * FROM \"Search\".\"Search_Issues\"(\"Q\" => '<Q>') LIMIT 10"
         );
+    }
+
+    #[test]
+    fn native_search_execution_infers_canonical_search_function() {
+        let catalog = catalog_with_search_functions(vec![
+            search_function("search", vec![arg_without_default("query")], None),
+            search_function(
+                "search_templates",
+                vec![
+                    arg_without_default("name"),
+                    arg_without_default("data_source_id"),
+                ],
+                None,
+            ),
+        ]);
+
+        let executable = executable_native_search_functions(&catalog)
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        assert_eq!(executable.len(), 1);
+        assert_eq!(executable[0].function.function_name, "search");
+        assert_eq!(executable[0].query_arg, "query");
+    }
+
+    #[test]
+    fn native_search_execution_infers_single_search_function_fallback() {
+        let catalog = catalog_with_search_functions(vec![search_function(
+            "search_issues",
+            vec![
+                arg_without_default("q"),
+                arg_with_default("mode", "\"lexical\""),
+            ],
+            None,
+        )]);
+
+        let executable = executable_native_search_functions(&catalog)
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        assert_eq!(executable.len(), 1);
+        assert_eq!(executable[0].function.function_name, "search_issues");
+        assert_eq!(executable[0].query_arg, "q");
+        assert_eq!(executable[0].limit, 7);
+    }
+
+    #[test]
+    fn native_search_execution_does_not_guess_between_multiple_noncanonical_functions() {
+        let catalog = catalog_with_search_functions(vec![
+            search_function("search_issues", vec![arg_without_default("q")], None),
+            search_function("search_code", vec![arg_without_default("q")], None),
+        ]);
+
+        assert!(executable_native_search_functions(&catalog).is_empty());
+    }
+
+    #[test]
+    fn native_search_execution_uses_explicit_authorization_when_ambiguous() {
+        let catalog = catalog_with_search_functions(vec![
+            search_function(
+                "search_issues",
+                vec![arg_without_default("q")],
+                Some(r#"{"execute":true,"query_arg":"q"}"#),
+            ),
+            search_function("search_code", vec![arg_without_default("q")], None),
+        ]);
+
+        let executable = executable_native_search_functions(&catalog)
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        assert_eq!(executable.len(), 1);
+        assert_eq!(executable[0].function.function_name, "search_issues");
+    }
+
+    #[test]
+    fn native_search_execution_requires_one_inferred_query_argument() {
+        let catalog = catalog_with_search_functions(vec![search_function(
+            "search",
+            vec![arg_without_default("q"), arg_without_default("scope")],
+            None,
+        )]);
+
+        assert!(executable_native_search_functions(&catalog).is_empty());
+    }
+
+    #[test]
+    fn native_search_execution_honors_explicit_opt_out() {
+        let catalog = catalog_with_search_functions(vec![search_function(
+            "search",
+            vec![arg_without_default("q")],
+            Some(r#"{"execute":false}"#),
+        )]);
+
+        assert!(executable_native_search_functions(&catalog).is_empty());
+    }
+
+    #[test]
+    fn native_search_execution_fallback_requires_one_search_function_total() {
+        let catalog = catalog_with_search_functions(vec![
+            search_function("search_issues", vec![arg_without_default("q")], None),
+            search_function(
+                "search_code",
+                vec![arg_without_default("q")],
+                Some(r#"{"execute":false}"#),
+            ),
+        ]);
+
+        assert!(executable_native_search_functions(&catalog).is_empty());
     }
 
     #[test]
@@ -2521,6 +2725,50 @@ mod tests {
                 required_filters: Vec::new(),
             }],
             table_functions: Vec::new(),
+        }
+    }
+
+    fn catalog_with_search_functions(functions: Vec<TableFunctionInfo>) -> CatalogInfo {
+        CatalogInfo {
+            tables: Vec::new(),
+            table_functions: functions,
+        }
+    }
+
+    fn search_function(
+        function_name: &str,
+        arguments: Vec<TableFunctionArgumentInfo>,
+        universal_search_json: Option<&str>,
+    ) -> TableFunctionInfo {
+        TableFunctionInfo {
+            schema_name: "searchy".to_string(),
+            function_name: function_name.to_string(),
+            description: String::new(),
+            arguments,
+            result_columns: Vec::new(),
+            kind: "search".to_string(),
+            search_limits_json: Some(
+                r#"{"default_top_k":7,"max_top_k":10,"max_calls_per_query":1}"#.to_string(),
+            ),
+            universal_search_json: universal_search_json.map(ToString::to_string),
+        }
+    }
+
+    fn arg_without_default(name: &str) -> TableFunctionArgumentInfo {
+        TableFunctionArgumentInfo {
+            name: name.to_string(),
+            required: true,
+            values: Vec::new(),
+            default_json: None,
+        }
+    }
+
+    fn arg_with_default(name: &str, default_json: &str) -> TableFunctionArgumentInfo {
+        TableFunctionArgumentInfo {
+            name: name.to_string(),
+            required: false,
+            values: Vec::new(),
+            default_json: Some(default_json.to_string()),
         }
     }
 

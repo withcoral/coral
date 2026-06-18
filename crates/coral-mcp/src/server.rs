@@ -4,7 +4,8 @@ use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
     ListSourcesRequest, PaginationRequest, SearchRequest, Source, SubmitFeedbackRequest,
-    TableFunctionKind as ProtoTableFunctionKind, TableSummary as ProtoTableSummary, catalog_item,
+    TableFunction as ProtoTableFunction, TableFunctionKind as ProtoTableFunctionKind,
+    TableSummary as ProtoTableSummary, catalog_item,
 };
 use coral_client::{
     AppClient, CatalogClient, FeedbackClient, QueryClient, SearchClient, SourceClient,
@@ -647,25 +648,119 @@ fn native_search_function_names_from_response(
         .pagination
         .as_ref()
         .is_some_and(|pagination| pagination.has_more);
-    let mut names = response
+    let functions = response
         .items
         .into_iter()
         .filter_map(|item| {
             let Some(catalog_item::Item::TableFunction(function)) = item.item else {
                 return None;
             };
-            if function.kind != ProtoTableFunctionKind::Search as i32
-                || !function
-                    .universal_search
-                    .as_ref()
-                    .is_some_and(|config| config.execute)
-            {
-                return None;
-            }
-            Some(format!("{}.{}", function.schema_name, function.name))
+            (function.kind == ProtoTableFunctionKind::Search as i32).then_some(function)
         })
         .collect::<Vec<_>>();
+    let mut names = eligible_native_search_function_names(&functions).collect::<Vec<_>>();
     names.sort();
     names.dedup();
     NativeSearchFunctionNames::new(names, has_more)
+}
+
+fn eligible_native_search_function_names<'a>(
+    functions: &'a [ProtoTableFunction],
+) -> impl Iterator<Item = String> + 'a {
+    let mut functions_by_source =
+        std::collections::BTreeMap::<&str, Vec<&ProtoTableFunction>>::new();
+    for function in functions {
+        functions_by_source
+            .entry(function.schema_name.as_str())
+            .or_default()
+            .push(function);
+    }
+
+    let mut names = Vec::new();
+    for functions in functions_by_source.into_values() {
+        let explicit = functions
+            .iter()
+            .copied()
+            .filter(|function| explicit_native_search_execution(function))
+            .collect::<Vec<_>>();
+        if !explicit.is_empty() {
+            names.extend(explicit.into_iter().map(qualified_function_name));
+            continue;
+        }
+
+        // Mirror app execution eligibility for the MCP description: only
+        // `kind: search` table functions qualify; explicit opt-in wins; without
+        // opt-in, infer only a canonical `search` function or a source with one
+        // search function total. Both inferred paths still require search
+        // limits, one query argument, and defaults for all other arguments.
+        if let Some(function) = inferred_native_search_function_name(&functions) {
+            names.push(qualified_function_name(function));
+        }
+    }
+    names.into_iter()
+}
+
+fn explicit_native_search_execution(function: &ProtoTableFunction) -> bool {
+    function
+        .universal_search
+        .as_ref()
+        .is_some_and(|config| config.execute && eligible_query_arg(function, &config.query_arg))
+}
+
+fn inferred_native_search_function_name<'a>(
+    functions: &[&'a ProtoTableFunction],
+) -> Option<&'a ProtoTableFunction> {
+    let candidates = functions
+        .iter()
+        .copied()
+        .filter(|function| {
+            !function
+                .universal_search
+                .as_ref()
+                .is_some_and(|config| !config.execute)
+        })
+        .collect::<Vec<_>>();
+    let named_search = candidates
+        .iter()
+        .copied()
+        .filter(|function| function.name == "search")
+        .collect::<Vec<_>>();
+    match named_search.len() {
+        1 if eligible_inferred_native_search_function(named_search[0]) => Some(named_search[0]),
+        0 if functions.len() == 1 && candidates.len() == 1 => {
+            let function = candidates[0];
+            eligible_inferred_native_search_function(function).then_some(function)
+        }
+        _ => None,
+    }
+}
+
+fn eligible_inferred_native_search_function(function: &ProtoTableFunction) -> bool {
+    function.search_limits.is_some()
+        && function
+            .arguments
+            .iter()
+            .filter(|argument| argument.default_json.is_empty())
+            .count()
+            == 1
+}
+
+fn eligible_query_arg(function: &ProtoTableFunction, query_arg: &str) -> bool {
+    !query_arg.is_empty()
+        && function.search_limits.is_some()
+        && function
+            .arguments
+            .iter()
+            .filter(|argument| argument.name == query_arg)
+            .count()
+            == 1
+        && function
+            .arguments
+            .iter()
+            .filter(|argument| argument.name != query_arg)
+            .all(|argument| !argument.default_json.is_empty())
+}
+
+fn qualified_function_name(function: &ProtoTableFunction) -> String {
+    format!("{}.{}", function.schema_name, function.name)
 }

@@ -366,7 +366,7 @@ async fn mcp_stdio_search_provider_fanout_flag_loads_native_search_descriptions(
             .description
             .as_deref()
             .expect("search description")
-            .contains("No provider-native search functions are currently configured")
+            .contains("github.search_issues")
     );
     assert_eq!(
         search_tool

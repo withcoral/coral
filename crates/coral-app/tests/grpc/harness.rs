@@ -348,6 +348,88 @@ impl SearchHttpFixture {
             }],
         }))
     }
+
+    pub(crate) fn canonical_search_manifest_yaml(&self) -> String {
+        manifest_yaml(&json!({
+            "name": "searchy",
+            "version": "0.1.0",
+            "dsl_version": 3,
+            "backend": "http",
+            "base_url": self.base_url,
+            "functions": [
+                {
+                    "name": "search",
+                    "kind": "search",
+                    "description": "Canonical provider-native search",
+                    "search_limits": {
+                        "default_top_k": 2,
+                        "max_top_k": 10,
+                        "max_calls_per_query": 1,
+                    },
+                    "args": [
+                        {
+                            "name": "query",
+                            "required": true,
+                            "bind": { "arg": "query" },
+                        },
+                    ],
+                    "request": {
+                        "method": "GET",
+                        "path": "/search",
+                        "query": [
+                            { "name": "query", "from": "arg", "key": "query" },
+                        ],
+                    },
+                    "response": {
+                        "rows_path": ["items"],
+                    },
+                    "columns": [
+                        { "name": "id", "type": "Utf8" },
+                        { "name": "title", "type": "Utf8", "description": "Result title" },
+                        { "name": "url", "type": "Utf8" },
+                        { "name": "score", "type": "Float64" },
+                    ],
+                },
+                {
+                    "name": "search_templates",
+                    "kind": "search",
+                    "description": "Narrow follow-up template search",
+                    "search_limits": {
+                        "default_top_k": 2,
+                        "max_top_k": 10,
+                        "max_calls_per_query": 1,
+                    },
+                    "args": [
+                        {
+                            "name": "name",
+                            "required": true,
+                            "bind": { "arg": "name" },
+                        },
+                        {
+                            "name": "data_source_id",
+                            "required": true,
+                            "bind": { "arg": "data_source_id" },
+                        },
+                    ],
+                    "request": {
+                        "method": "GET",
+                        "path": "/templates",
+                        "query": [
+                            { "name": "name", "from": "arg", "key": "name" },
+                            { "name": "data_source_id", "from": "arg", "key": "data_source_id" },
+                        ],
+                    },
+                    "response": {
+                        "rows_path": ["items"],
+                    },
+                    "columns": [
+                        { "name": "id", "type": "Utf8" },
+                        { "name": "title", "type": "Utf8" },
+                    ],
+                },
+            ],
+        }))
+    }
 }
 
 impl Drop for SearchHttpFixture {

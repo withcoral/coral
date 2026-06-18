@@ -188,6 +188,56 @@ async fn search_executes_opted_in_provider_native_search_function() {
 }
 
 #[tokio::test]
+async fn search_infers_canonical_provider_native_search_function() {
+    let _guard = search_test_lock().lock().await;
+    let harness = GrpcHarness::with_search_provider_fanout().await;
+    let fixture = SearchHttpFixture::new().await;
+    harness
+        .import_source(
+            fixture.canonical_search_manifest_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "auth".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search")
+        .into_inner();
+
+    assert_provider_state(
+        &response,
+        SearchProvider::SourceNative,
+        SearchProviderState::ResultsFound,
+    );
+    let provider_result = response
+        .results
+        .iter()
+        .find_map(|result| match result.payload.as_ref() {
+            Some(Payload::ProviderSearchResult(result)) => Some(result),
+            _ => None,
+        })
+        .expect("provider-native search result");
+    assert!(provider_result.sql_call.contains("\"searchy\".\"search\""));
+    assert!(provider_result.sql_call.contains("\"query\" => 'auth'"));
+    assert!(!provider_result.sql_call.contains("search_templates"));
+    assert!(
+        provider_result
+            .table_function
+            .as_ref()
+            .is_some_and(|function| {
+                function.name == "search" && function.universal_search.is_none()
+            })
+    );
+}
+
+#[tokio::test]
 async fn search_catalog_metadata_includes_compact_table_column_preview() {
     let _guard = search_test_lock().lock().await;
     let harness = GrpcHarness::new().await;
