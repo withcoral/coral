@@ -22,13 +22,13 @@ use tonic_types::{ErrorDetail, StatusExt as _};
 use tracing::{Instrument as _, field};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-use crate::bootstrap::{AppError, app_status, core_status, status_with_truncated_detail};
+use crate::bootstrap::{AppError, app_status, core_status};
 use crate::catalog::discovery::{
     CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
     ColumnSearchResult, DescribeTableResult,
 };
 use crate::episode::EpisodeId;
-use crate::identity::{UserPrincipalError, UserPrincipalProvider};
+use crate::identity::UserPrincipalProvider;
 use crate::query::manager::QueryManagerError;
 use crate::request_context::RequestContext;
 use crate::workspaces::WorkspaceName;
@@ -248,25 +248,10 @@ where
         let principal = user_principal_provider
             .principal_for_metadata(request.metadata())
             .await
-            .map_err(user_principal_status)?;
+            .map_err(app_status)?;
         handler(RequestContext::new(principal), request.into_inner()).await
     })
     .await
-}
-
-fn user_principal_status(error: UserPrincipalError) -> Status {
-    match error {
-        UserPrincipalError::Unauthenticated(message) => {
-            status_with_truncated_detail(Code::Unauthenticated, message)
-        }
-        UserPrincipalError::InvalidInput(message) => status_with_truncated_detail(
-            Code::InvalidArgument,
-            format!("invalid user principal metadata: {message}"),
-        ),
-        UserPrincipalError::Internal(message) => {
-            status_with_truncated_detail(Code::Internal, message)
-        }
-    }
 }
 
 fn record_grpc_status(span: &tracing::Span, code: Code, status: Option<&Status>) {
@@ -557,12 +542,11 @@ mod tests {
 
     use super::{
         GrpcMethodMetadata, GrpcServerMethod, annotate_request_context, grpc_method, query_status,
-        query_test_result_to_proto, table_summary_to_proto, table_to_proto, user_principal_status,
+        query_test_result_to_proto, table_summary_to_proto, table_to_proto,
         workspace_name_from_proto, workspace_to_proto,
     };
-    use crate::bootstrap::{AppError, MAX_STATUS_DETAIL_BYTES};
+    use crate::bootstrap::AppError;
     use crate::episode::EpisodeId;
-    use crate::identity::UserPrincipalError;
     use crate::query::manager::QueryManagerError;
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
@@ -587,16 +571,6 @@ mod tests {
 
         assert_eq!(status.code(), Code::Unavailable);
         assert_eq!(status.message(), "unavailable: backend down");
-    }
-
-    #[test]
-    fn user_principal_status_truncates_provider_messages() {
-        let status =
-            user_principal_status(UserPrincipalError::unauthenticated("x".repeat(20 * 1024)));
-
-        assert_eq!(status.code(), Code::Unauthenticated);
-        assert!(status.message().len() <= MAX_STATUS_DETAIL_BYTES);
-        assert!(status.message().ends_with("… (truncated)"));
     }
 
     #[test]
