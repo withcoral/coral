@@ -11,8 +11,8 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::catalog::discovery::{
-    CatalogDiscovery, CatalogItemKind, CatalogTableRef, ListColumnsQuery, Pagination,
-    SearchCatalogQuery, column_pagination, search_pagination,
+    CatalogDiscovery, CatalogFilter, CatalogItemKind, CatalogTableRef, ListColumnsQuery,
+    Pagination, column_pagination, search_pagination,
 };
 use crate::query::manager::QueryManager;
 use crate::transport::{
@@ -49,14 +49,9 @@ impl CatalogServiceApi for CatalogService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
+            let filter = CatalogFilter { schema_name, kind };
             let catalog_page = catalog
-                .list_catalog_with_context(
-                    &workspace_name,
-                    &request_context,
-                    schema_name,
-                    kind,
-                    pagination,
-                )
+                .list_catalog(&workspace_name, &request_context, filter, pagination)
                 .await
                 .map_err(query_status)?;
             let page = catalog_page.items;
@@ -95,19 +90,17 @@ impl CatalogServiceApi for CatalogService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
+            let filter = CatalogFilter { schema_name, kind };
             let pagination = search_pagination(request.pagination.map(pagination_from_proto))
                 .map_err(app_status)?;
             let page = catalog
-                .search_catalog_with_context(
+                .search_catalog(
                     &workspace_name,
                     &request_context,
-                    SearchCatalogQuery {
-                        pattern: &request.pattern,
-                        schema_name,
-                        kind,
-                        ignore_case: request.ignore_case,
-                        pagination,
-                    },
+                    &request.pattern,
+                    filter,
+                    request.ignore_case,
+                    pagination,
                 )
                 .await
                 .map_err(query_status)?;
@@ -143,7 +136,7 @@ impl CatalogServiceApi for CatalogService {
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
             let table_name = required_trimmed(&request.table_name, "table_name")?;
             let result = catalog
-                .describe_table_with_context(
+                .describe_table(
                     &workspace_name,
                     &request_context,
                     CatalogTableRef::new(&schema_name, &table_name),
@@ -173,7 +166,7 @@ impl CatalogServiceApi for CatalogService {
             let pagination = column_pagination(request.pagination.map(pagination_from_proto))
                 .map_err(app_status)?;
             let page = catalog
-                .list_columns_with_context(
+                .list_columns(
                     &workspace_name,
                     &request_context,
                     ListColumnsQuery {

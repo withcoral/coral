@@ -73,9 +73,11 @@ impl QueryManager {
     pub(crate) async fn list_tables(
         &self,
         workspace_name: &WorkspaceName,
+        request_context: &RequestContext,
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
+        let _ = request_context.principal();
         let config = self
             .config_store
             .load_config()
@@ -91,23 +93,13 @@ impl QueryManager {
             .map_err(QueryManagerError::Core)
     }
 
-    pub(crate) async fn list_tables_with_context(
+    pub(crate) async fn list_catalog(
         &self,
         workspace_name: &WorkspaceName,
         request_context: &RequestContext,
         schema_filter: Option<&str>,
-        table_filter: Option<&str>,
-    ) -> Result<Vec<TableInfo>, QueryManagerError> {
-        let _request_principal = request_context.principal();
-        self.list_tables(workspace_name, schema_filter, table_filter)
-            .await
-    }
-
-    pub(crate) async fn list_catalog(
-        &self,
-        workspace_name: &WorkspaceName,
-        schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, QueryManagerError> {
+        let _ = request_context.principal();
         let config = self
             .config_store
             .load_config()
@@ -123,22 +115,14 @@ impl QueryManager {
             .map_err(QueryManagerError::Core)
     }
 
-    pub(crate) async fn list_catalog_with_context(
-        &self,
-        workspace_name: &WorkspaceName,
-        request_context: &RequestContext,
-        schema_filter: Option<&str>,
-    ) -> Result<CatalogInfo, QueryManagerError> {
-        let _request_principal = request_context.principal();
-        self.list_catalog(workspace_name, schema_filter).await
-    }
-
     pub(crate) async fn describe_table(
         &self,
         workspace_name: &WorkspaceName,
+        request_context: &RequestContext,
         schema_name: &str,
         table_name: &str,
     ) -> Result<DescribeTableInfo, QueryManagerError> {
+        let _ = request_context.principal();
         let config = self
             .config_store
             .load_config()
@@ -154,24 +138,14 @@ impl QueryManager {
             .map_err(QueryManagerError::Core)
     }
 
-    pub(crate) async fn describe_table_with_context(
-        &self,
-        workspace_name: &WorkspaceName,
-        request_context: &RequestContext,
-        schema_name: &str,
-        table_name: &str,
-    ) -> Result<DescribeTableInfo, QueryManagerError> {
-        let _request_principal = request_context.principal();
-        self.describe_table(workspace_name, schema_name, table_name)
-            .await
-    }
-
     pub(crate) async fn execute_sql(
         &self,
         workspace_name: &WorkspaceName,
+        request_context: &RequestContext,
         sql: &str,
         attribution: &QueryAttribution,
     ) -> Result<QueryExecution, QueryManagerError> {
+        let _ = request_context.principal();
         run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
@@ -197,23 +171,14 @@ impl QueryManager {
         .await
     }
 
-    pub(crate) async fn execute_sql_with_context(
+    pub(crate) async fn explain_sql(
         &self,
         workspace_name: &WorkspaceName,
         request_context: &RequestContext,
         sql: &str,
         attribution: &QueryAttribution,
-    ) -> Result<QueryExecution, QueryManagerError> {
-        let _request_principal = request_context.principal();
-        self.execute_sql(workspace_name, sql, attribution).await
-    }
-
-    pub(crate) async fn explain_sql(
-        &self,
-        workspace_name: &WorkspaceName,
-        sql: &str,
-        attribution: &QueryAttribution,
     ) -> Result<QueryPlan, QueryManagerError> {
+        let _ = request_context.principal();
         run_query_operation(
             QueryOperation::ExplainSql,
             workspace_name,
@@ -237,17 +202,6 @@ impl QueryManager {
             |_| None,
         )
         .await
-    }
-
-    pub(crate) async fn explain_sql_with_context(
-        &self,
-        workspace_name: &WorkspaceName,
-        request_context: &RequestContext,
-        sql: &str,
-        attribution: &QueryAttribution,
-    ) -> Result<QueryPlan, QueryManagerError> {
-        let _request_principal = request_context.principal();
-        self.explain_sql(workspace_name, sql, attribution).await
     }
 
     pub(crate) async fn validate_source(
@@ -831,6 +785,7 @@ tables:
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
         fixture.manager.layout.ensure().expect("ensure layout");
+        let request_context = RequestContext::new(UserPrincipal::local());
         let source_manager = SourceManager::new(
             fixture.manager.config_store.clone(),
             fixture.manager.credential_manager.clone(),
@@ -893,6 +848,7 @@ surfaces:
             .manager
             .execute_sql(
                 &workspace_name,
+                &request_context,
                 "SELECT id, title FROM github_v4_query.issues",
                 &QueryAttribution::default(),
             )

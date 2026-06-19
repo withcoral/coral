@@ -56,7 +56,7 @@ use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
-use crate::transport::GrpcRequestContextService;
+use crate::transport::GrpcRequestContextLayer;
 
 /// A static asset (e.g., a built SPA file) served on the same port as
 /// gRPC-Web.
@@ -315,12 +315,7 @@ impl ServerBuilder {
             layout,
             self.config.engine_extensions_providers,
         );
-        let user_principal_provider = self.config.user_principal_provider;
         let trace_service = if telemetry_config.trace_history.enabled {
-            // Trace records can expose SQL text, span attributes, and optional
-            // captured payload previews. They are process-local rather than
-            // principal-scoped, so the transport-level provider is used as the
-            // request auth gate.
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
         } else {
             None
@@ -331,7 +326,7 @@ impl ServerBuilder {
             feedback_manager,
             episode_store,
             trace_service,
-            user_principal_provider,
+            self.config.user_principal_provider,
             self.config.mode,
         )
         .await
@@ -423,19 +418,12 @@ async fn start_server(
     let feedback_service = FeedbackService::new(feedback_manager);
     let episode_service = EpisodeService::new(episode_store);
     let mut routes = Routes::default()
-        .add_service(GrpcRequestContextService::new(
-            SourceServiceServer::new(source_service),
-            Arc::clone(&user_principal_provider),
-        ))
-        .add_service(GrpcRequestContextService::new(
+        .add_service(SourceServiceServer::new(source_service))
+        .add_service(
             CatalogServiceServer::new(catalog_service)
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
-            Arc::clone(&user_principal_provider),
-        ))
-        .add_service(GrpcRequestContextService::new(
-            FeedbackServiceServer::new(feedback_service),
-            Arc::clone(&user_principal_provider),
-        ))
+        )
+        .add_service(FeedbackServiceServer::new(feedback_service))
         // Registered unconditionally, like `FeedbackService` above: the local
         // transport is feature-agnostic by design (effective features are resolved
         // in `coral-cli`, which gates the *consumers*, not the routes). The
@@ -443,21 +431,16 @@ async fn start_server(
         // so on a default/disabled install this endpoint is reachable but inert:
         // nothing opens an episode, so no intent is ever written. See the
         // `EpisodeService` module docs and `open_episode_*` server tests below.
-        .add_service(GrpcRequestContextService::new(
-            EpisodeServiceServer::new(episode_service),
-            Arc::clone(&user_principal_provider),
-        ))
-        .add_service(GrpcRequestContextService::new(
+        .add_service(EpisodeServiceServer::new(episode_service))
+        .add_service(
             QueryServiceServer::new(query_service)
                 .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
-            Arc::clone(&user_principal_provider),
-        ));
+        );
     if let Some(trace_service) = trace_service {
-        routes = routes.add_service(GrpcRequestContextService::new(
+        routes = routes.add_service(
             TraceServiceServer::new(trace_service)
                 .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
-            Arc::clone(&user_principal_provider),
-        ));
+        );
     }
 
     let listener = TcpListener::bind(mode.bind_addr()).await?;
@@ -465,10 +448,19 @@ async fn start_server(
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     let task = match mode {
-        ServerMode::NativeGrpc => start_grpc_server(listener, shutdown_rx, routes),
-        ServerMode::EmbeddedUi { assets, .. } => {
-            start_grpc_web_server(listener, shutdown_rx, routes, assets)
-        }
+        ServerMode::NativeGrpc => start_grpc_server(
+            listener,
+            shutdown_rx,
+            routes,
+            GrpcRequestContextLayer::new(user_principal_provider),
+        ),
+        ServerMode::EmbeddedUi { assets, .. } => start_grpc_web_server(
+            listener,
+            shutdown_rx,
+            routes,
+            assets,
+            GrpcRequestContextLayer::new(user_principal_provider),
+        ),
     };
 
     Ok(RunningServer {
@@ -482,10 +474,12 @@ fn start_grpc_server(
     listener: TcpListener,
     shutdown_rx: oneshot::Receiver<()>,
     routes: Routes,
+    request_context_layer: GrpcRequestContextLayer,
 ) -> JoinHandle<Result<(), tonic::transport::Error>> {
     tokio::spawn(async move {
         Server::builder()
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
+            .layer(request_context_layer)
             .add_routes(routes)
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 drop(shutdown_rx.await);
@@ -499,9 +493,11 @@ fn start_grpc_web_server(
     shutdown_rx: oneshot::Receiver<()>,
     routes: Routes,
     static_assets: Arc<dyn StaticAssetsProvider>,
+    request_context_layer: GrpcRequestContextLayer,
 ) -> JoinHandle<Result<(), tonic::transport::Error>> {
     let grpc = routes
         .into_axum_router()
+        .layer(request_context_layer)
         .layer(GrpcWebLayer::new())
         .layer(GrpcWebOnlyLayer);
 
@@ -1257,6 +1253,61 @@ tables:
         );
         let unknown_body = unknown_grpc.text().await.expect("unknown body");
         assert_eq!(unknown_body, "Not Found");
+
+        running.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn embedded_ui_static_assets_bypass_request_principal_gate() {
+        let temp = TempDir::new().expect("temp dir");
+        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_user_principal_provider(Arc::new(RejectingUserPrincipalProvider))
+            .start()
+            .await
+            .expect("start embedded UI server");
+        let endpoint = running.endpoint_uri().to_string();
+        let client = reqwest::Client::new();
+
+        let spa_route = client
+            .get(format!("{endpoint}/some/spa/route"))
+            .send()
+            .await
+            .expect("spa route request");
+        assert_eq!(spa_route.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            spa_route
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/html; charset=utf-8")
+        );
+
+        let grpc_path = format!("{endpoint}/coral.v1.SourceService/ListSources");
+        let grpc_response = client
+            .post(&grpc_path)
+            .header("content-type", "application/grpc-web+proto")
+            .header("x-grpc-web", "1")
+            .body(grpc_web_body(&ListSourcesRequest {
+                workspace: Some(default_workspace()),
+            }))
+            .send()
+            .await
+            .expect("gRPC-Web request");
+        assert_eq!(grpc_response.status(), reqwest::StatusCode::OK);
+        let grpc_status = grpc_response
+            .headers()
+            .get("grpc-status")
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned);
+        let body = grpc_response.bytes().await.expect("gRPC-Web response");
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            grpc_status.as_deref() == Some("16")
+                || body.contains("grpc-status: 16")
+                || body.contains("grpc-status:16"),
+            "expected unauthenticated gRPC-Web status, got header {grpc_status:?} and body {body:?}"
+        );
 
         running.shutdown().await.expect("shutdown");
     }

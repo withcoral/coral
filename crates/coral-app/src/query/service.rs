@@ -47,12 +47,7 @@ impl QueryServiceApi for QueryService {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let execution = queries
-                .execute_sql_with_context(
-                    &workspace_name,
-                    &request_context,
-                    &inner.sql,
-                    &attribution,
-                )
+                .execute_sql(&workspace_name, &request_context, &inner.sql, &attribution)
                 .await
                 .map_err(query_status)?;
             let response = ExecuteSqlResponse {
@@ -83,12 +78,7 @@ impl QueryServiceApi for QueryService {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let plan = queries
-                .explain_sql_with_context(
-                    &workspace_name,
-                    &request_context,
-                    &inner.sql,
-                    &attribution,
-                )
+                .explain_sql(&workspace_name, &request_context, &inner.sql, &attribution)
                 .await
                 .map_err(query_status)?;
             Ok(Response::new(ExplainSqlResponse {
