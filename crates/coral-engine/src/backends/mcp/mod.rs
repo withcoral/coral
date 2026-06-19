@@ -19,7 +19,6 @@ use async_trait::async_trait;
 use coral_spec::backends::mcp::{McpServerSpec, McpSourceManifest, McpTableSpec};
 use coral_spec::v4::McpToolCatalog;
 use coral_spec::{ManifestInputSpec, SourceBackend, resolve_inputs};
-use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 
@@ -29,9 +28,9 @@ use self::provider::McpTableProvider;
 use self::transport::{StdioMcpToolCaller, StreamableHttpMcpToolCaller};
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
-    BackendSchemaRegistration, CompiledBackendSource, RegisteredSource, SourceTableFunctions,
-    build_registered_inputs, build_registered_table, build_registered_table_function,
-    internal_table_function_name, registered_columns_from_specs, required_filter_names,
+    BackendSchemaRegistration, CompiledBackendSource, RegisteredSource,
+    SourceFunctionProviderFactory, build_registered_inputs, build_registered_table,
+    build_registered_table_function, registered_columns_from_specs, required_filter_names,
     validate_lookup_key_filter_backend_support,
 };
 use crate::runtime::error::datafusion_to_core;
@@ -197,23 +196,19 @@ impl CompiledBackendSource for McpCompiledSource {
         _ctx: &datafusion::prelude::SessionContext,
         _registration: &BackendRegistrationContext,
     ) -> Result<BackendRegistration> {
-        let mut table_functions =
-            SourceTableFunctions::with_capacity(self.manifest.functions.len());
         let mut table_function_infos = Vec::with_capacity(self.manifest.functions.len());
 
         for function in &self.manifest.functions {
-            let internal_name =
-                internal_table_function_name(&self.manifest.common.name, function.name());
-            let function_impl: Arc<dyn TableFunctionImpl> = Arc::new(McpSourceTableFunction::new(
-                self.caller.clone(),
-                self.manifest.common.name.clone(),
-                function.clone(),
-            )?);
-            table_functions.insert(internal_name.clone(), function_impl);
+            let factory: Arc<dyn SourceFunctionProviderFactory> =
+                Arc::new(McpSourceTableFunction::new(
+                    self.caller.clone(),
+                    self.manifest.common.name.clone(),
+                    function.clone(),
+                )?);
             table_function_infos.push(build_registered_table_function(
                 &self.manifest.common.name,
                 &function.common,
-                internal_name,
+                factory,
             ));
         }
 
@@ -252,7 +247,6 @@ impl CompiledBackendSource for McpCompiledSource {
         Ok(BackendRegistration {
             schemas: vec![BackendSchemaRegistration {
                 tables,
-                table_functions,
                 source: RegisteredSource {
                     schema_name,
                     tables: table_infos,

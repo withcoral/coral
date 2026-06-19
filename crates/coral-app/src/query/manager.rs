@@ -11,7 +11,7 @@ use coral_engine::{
     SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
-use opentelemetry::{KeyValue, trace::Status as OtelStatus};
+use opentelemetry::trace::Status as OtelStatus;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
@@ -404,6 +404,7 @@ impl QueryManager {
             .iter()
             .map(|source| source.source_name().to_string())
             .collect::<Vec<_>>();
+        runtime.memory = config.memory_config()?;
         runtime.dependent_join = config.dependent_join_config(&selected_source_names)?;
         Ok(runtime)
     }
@@ -466,20 +467,19 @@ where
     let query_span = create_query_span(operation, workspace_name, sql, episode_id);
     let result = query.instrument(query_span.clone()).await;
 
-    let metrics = crate::telemetry::metrics::metrics();
-    let status = crate::telemetry::metrics::status_attr(result.is_ok());
-    let attributes = [status, KeyValue::new("operation", operation.as_str())];
-    metrics.count.add(1, &attributes);
-    metrics
-        .duration
-        .record(started_at.elapsed().as_secs_f64(), &attributes);
+    let row_count = result.as_ref().ok().and_then(row_count);
+    crate::telemetry::metrics::metrics().record_query(
+        operation.as_str(),
+        started_at.elapsed(),
+        row_count,
+        result.is_ok(),
+    );
 
-    if let Ok(value) = &result {
+    if result.is_ok() {
         query_span.record("status", "ok");
         query_span.set_status(OtelStatus::Ok);
-        if let Some(row_count) = row_count(value) {
+        if let Some(row_count) = row_count {
             query_span.record("row_count", row_count);
-            metrics.rows.record(row_count, &attributes);
         }
     } else if let Err(error) = &result {
         let error_kind = query_error_kind(error);

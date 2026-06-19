@@ -110,6 +110,49 @@ impl McpToolCaller for FakePaginatedMcpTableCaller {
     }
 }
 
+/// Returns offset-paginated pages and records each MCP tool call.
+#[derive(Debug)]
+struct FakeOffsetPaginatedMcpTableCaller {
+    calls: Mutex<Vec<(String, JsonObject)>>,
+}
+
+#[async_trait]
+impl McpToolCaller for FakeOffsetPaginatedMcpTableCaller {
+    async fn call_tool(
+        &self,
+        _relation: &str,
+        tool_name: &str,
+        arguments: JsonObject,
+    ) -> Result<Value> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push((tool_name.to_string(), arguments.clone()));
+        let offset = arguments
+            .get("offset")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let limit = arguments
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        match (offset, limit) {
+            (0, 2) => Ok(json!({
+                "issues": [
+                    { "id": "1", "title": "Bug A", "state": "open" },
+                    { "id": "2", "title": "Bug B", "state": "open" }
+                ]
+            })),
+            (2, 1) => Ok(json!({
+                "issues": [
+                    { "id": "3", "title": "Bug C", "state": "closed" }
+                ]
+            })),
+            other => panic!("unexpected offset pagination call: {other:?}"),
+        }
+    }
+}
+
 /// Repeats the same next cursor forever unless the fetch plan stops it.
 #[derive(Debug)]
 struct FakeRepeatedCursorMcpTableCaller {
@@ -240,6 +283,24 @@ fn compile_sources(
     compile_sources_with_inputs(manifest, caller, BTreeMap::new(), None)
 }
 
+fn compile_sources_with_mcp_manifest(
+    source_manifest: coral_spec::ValidatedSourceManifest,
+    mcp_manifest: coral_spec::backends::mcp::McpSourceManifest,
+    caller: Arc<dyn McpToolCaller>,
+) -> Vec<CompiledQuerySource> {
+    let source = QuerySource::new(source_manifest, BTreeMap::new(), BTreeMap::new());
+    let source_input_resolution = SourceInputResolutionContext::from_query_source(&source);
+    let resolved_inputs = Arc::new(coral_spec::resolve_inputs(
+        &mcp_manifest.declared_inputs,
+        source_input_resolution.secrets(),
+        source_input_resolution.variables(),
+    ));
+    let source_inputs = Arc::new(McpSourceInputs::static_inputs(resolved_inputs));
+    let compiled =
+        compile_source_with_caller(mcp_manifest, source_input_resolution, source_inputs, caller);
+    vec![CompiledQuerySource { source, compiled }]
+}
+
 fn compile_sources_with_inputs(
     manifest: coral_spec::ValidatedSourceManifest,
     caller: Arc<dyn McpToolCaller>,
@@ -367,7 +428,8 @@ fn register_test_sources(ctx: &SessionContext, sources: Vec<CompiledQuerySource>
             .iter()
             .flat_map(|source| source.table_functions.iter()),
     );
-    ctx.register_relation_planner(Arc::new(source_functions))
+    source_functions
+        .install(ctx)
         .expect("source function planner should register");
 }
 
@@ -380,7 +442,8 @@ fn register_test_sources_with_catalog(ctx: &SessionContext, sources: Vec<Compile
             .iter()
             .flat_map(|source| source.table_functions.iter()),
     );
-    ctx.register_relation_planner(Arc::new(source_functions))
+    source_functions
+        .install(ctx)
         .expect("source function planner should register");
 }
 
@@ -1170,6 +1233,78 @@ async fn limit_binding_omits_arg_when_no_limit_set() {
         "unbounded scan should not pass page_size: {:?}",
         call.1
     );
+}
+
+fn mcp_table_with_generated_offset_pagination_manifest() -> (
+    coral_spec::ValidatedSourceManifest,
+    coral_spec::backends::mcp::McpSourceManifest,
+) {
+    let source_manifest = coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "server": { "transport": "stdio", "command": "unused" },
+        "tables": [{
+            "name": "issues",
+            "description": "issues with generated offset pagination",
+            "tool": "list_issues",
+            "response": { "rows_path": ["issues"] },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" }
+            ]
+        }]
+    }))
+    .expect("offset pagination manifest should parse");
+    let mut mcp_manifest = source_manifest.as_mcp().expect("mcp manifest").clone();
+    let table = mcp_manifest.tables.first_mut().expect("table");
+    table.offset_pagination = Some(coral_spec::backends::mcp::McpOffsetPaginationSpec {
+        limit_arg: "limit".to_string(),
+        default_limit: 2,
+        max_limit: 2,
+        offset_arg: "offset".to_string(),
+        offset_start: 0,
+        max_pages: Some(5),
+    });
+    (source_manifest, mcp_manifest)
+}
+
+#[tokio::test]
+async fn generated_offset_pagination_pushes_limit_and_offset_pages() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeOffsetPaginatedMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    let (source_manifest, mcp_manifest) = mcp_table_with_generated_offset_pagination_manifest();
+    register_test_sources(
+        &ctx,
+        compile_sources_with_mcp_manifest(source_manifest, mcp_manifest, caller.clone()),
+    );
+
+    let batches = ctx
+        .sql("SELECT id FROM test_mcp.issues LIMIT 3")
+        .await
+        .expect("offset pagination query should plan")
+        .collect()
+        .await
+        .expect("offset pagination query should execute");
+
+    let total_rows: usize = batches
+        .iter()
+        .map(datafusion::arrow::array::RecordBatch::num_rows)
+        .sum();
+    assert_eq!(total_rows, 3);
+
+    let calls = caller.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 2);
+    let first_call = calls.first().expect("first call");
+    let second_call = calls.get(1).expect("second call");
+    assert_eq!(first_call.1.get("limit"), Some(&Value::from(2_u64)));
+    assert_eq!(first_call.1.get("offset"), Some(&Value::from(0_u64)));
+    assert_eq!(second_call.1.get("limit"), Some(&Value::from(1_u64)));
+    assert_eq!(second_call.1.get("offset"), Some(&Value::from(2_u64)));
 }
 
 #[tokio::test]

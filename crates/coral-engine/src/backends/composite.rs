@@ -11,7 +11,7 @@ use datafusion::prelude::SessionContext;
 use crate::backends::{
     BackendRegistration, BackendRegistrationContext, BackendSchemaRegistration,
     CompiledBackendSource, RegisteredInput, RegisteredSource, RegisteredTable,
-    RegisteredTableFunction, SourceTableFunctions,
+    RegisteredTableFunction,
 };
 
 struct CompositeCompiledSource {
@@ -68,22 +68,17 @@ impl CompiledBackendSource for CompositeCompiledSource {
                         )));
                     }
                 }
-                for (name, function) in schema.table_functions {
-                    if target
-                        .table_functions
-                        .insert(name.clone(), function)
-                        .is_some()
-                    {
+                for function in schema.source.table_functions {
+                    let function_name = function.function_name.clone();
+                    if !target.function_keys.insert(function_name.clone()) {
                         return Err(DataFusionError::Execution(format!(
-                            "source '{}' schema '{schema_name}' registered duplicate table function '{name}'",
+                            "source '{}' schema '{schema_name}' registered duplicate table function '{function_name}'",
                             self.source_name
                         )));
                     }
+                    target.registered_functions.push(function);
                 }
                 target.registered_tables.extend(schema.source.tables);
-                target
-                    .registered_functions
-                    .extend(schema.source.table_functions);
                 for input in schema.source.inputs {
                     if target.input_keys.insert(input.key.clone()) {
                         target.inputs.push(input);
@@ -104,7 +99,7 @@ impl CompiledBackendSource for CompositeCompiledSource {
 struct CompositeSchemaRegistration {
     schema_name: String,
     tables: HashMap<String, Arc<dyn TableProvider>>,
-    table_functions: SourceTableFunctions,
+    function_keys: BTreeSet<String>,
     registered_tables: Vec<RegisteredTable>,
     registered_functions: Vec<RegisteredTableFunction>,
     inputs: Vec<RegisteredInput>,
@@ -116,7 +111,7 @@ impl CompositeSchemaRegistration {
         Self {
             schema_name,
             tables: HashMap::new(),
-            table_functions: SourceTableFunctions::new(),
+            function_keys: BTreeSet::new(),
             registered_tables: Vec::new(),
             registered_functions: Vec::new(),
             inputs: Vec::new(),
@@ -127,7 +122,6 @@ impl CompositeSchemaRegistration {
     fn into_registration(self) -> BackendSchemaRegistration {
         BackendSchemaRegistration {
             tables: self.tables,
-            table_functions: self.table_functions,
             source: RegisteredSource {
                 schema_name: self.schema_name,
                 tables: self.registered_tables,

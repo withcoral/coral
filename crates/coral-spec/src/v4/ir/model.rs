@@ -249,6 +249,7 @@ mod tests {
                 execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
                     tool_name: "list_items".to_string(),
                     pagination: None,
+                    offset_pagination: None,
                 }),
                 diagnostics: Vec::new(),
             }],

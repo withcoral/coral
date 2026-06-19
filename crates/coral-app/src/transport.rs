@@ -49,13 +49,6 @@ impl Extractor for MetadataExtractor<'_> {
     }
 }
 
-/// Extracts a W3C trace context from incoming gRPC request metadata.
-pub(crate) fn extract_trace_context(
-    metadata: &tonic::metadata::MetadataMap,
-) -> opentelemetry::Context {
-    opentelemetry::global::get_text_map_propagator(|p| p.extract(&MetadataExtractor(metadata)))
-}
-
 /// Wraps a generated tonic service and stores inbound request context on the request.
 ///
 /// Tonic preserves `http::Request` extensions when it decodes the protobuf
@@ -104,7 +97,6 @@ where
 
 /// Creates a span parented to the trace context extracted from a gRPC request.
 pub(crate) fn grpc_span<T>(request: &Request<T>) -> tracing::Span {
-    let parent_cx = extract_trace_context(request.metadata());
     let metadata = grpc_method(request);
     let span_name = format!("{}/{}", metadata.service, metadata.method);
     let span = tracing::info_span!(
@@ -123,7 +115,7 @@ pub(crate) fn grpc_span<T>(request: &Request<T>) -> tracing::Span {
         grpc.code = tracing::field::Empty,
         status = tracing::field::Empty,
     );
-    drop(span.set_parent(parent_cx));
+    coral_telemetry::set_parent_from_extractor(&span, &MetadataExtractor(request.metadata()));
     span
 }
 

@@ -130,8 +130,12 @@ pub fn request_spec_for_projection(
     for input in &projection.inputs {
         if input.source_location == IrInputLocation::Path {
             let replacement = match input.sql_exposure {
-                SqlInputExposure::Filter => format!("{{{{filter.{}}}}}", input.name),
-                SqlInputExposure::FunctionArg => format!("{{{{arg.{}}}}}", input.name),
+                SqlInputExposure::Filter => {
+                    path_template_token("filter", &input.name, input.default_value.as_deref())
+                }
+                SqlInputExposure::FunctionArg => {
+                    path_template_token("arg", &input.name, input.default_value.as_deref())
+                }
                 SqlInputExposure::Internal => continue,
             };
             path = path.replace(&format!("{{{}}}", input.wire_name), &replacement);
@@ -173,4 +177,43 @@ pub fn request_spec_for_projection(
         body: crate::BodySpec::default(),
         headers: Vec::new(),
     })
+}
+
+fn path_template_token(namespace: &str, key: &str, default: Option<&str>) -> String {
+    default.map_or_else(
+        || format!("{{{{{namespace}.{key}}}}}"),
+        |default| {
+            let encoded_default = encode_path_segment_default(default);
+            format!("{{{{{namespace}.{key}|{encoded_default}}}}}")
+        },
+    )
+}
+
+fn encode_path_segment_default(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    let is_dot_segment = matches!(value, "." | "..");
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'~' => {
+                encoded.push(byte as char);
+            }
+            b'.' if is_dot_segment => encoded.push_str("%252E"),
+            _ => push_percent_encoded(&mut encoded, byte),
+        }
+    }
+    encoded
+}
+
+fn push_percent_encoded(output: &mut String, byte: u8) {
+    output.push('%');
+    output.push(hex_digit(byte >> 4));
+    output.push(hex_digit(byte & 0x0f));
+}
+
+fn hex_digit(nibble: u8) -> char {
+    match nibble {
+        0..=9 => char::from(b'0' + nibble),
+        10..=15 => char::from(b'A' + (nibble - 10)),
+        _ => unreachable!("hex nibble must be in 0..=15"),
+    }
 }

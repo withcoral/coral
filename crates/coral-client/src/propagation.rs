@@ -1,32 +1,13 @@
 //! W3C Trace Context propagation for tonic gRPC clients.
 
-use std::{future::Future, sync::OnceLock};
+use std::future::Future;
 
 use coral_api::CORAL_EPISODE_ID_METADATA_KEY;
 use opentelemetry::propagation::Injector;
-use opentelemetry_sdk::propagation::TraceContextPropagator;
 use tonic::metadata::{Ascii, MetadataValue};
-use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-
-static PROPAGATOR_INIT: OnceLock<()> = OnceLock::new();
 
 tokio::task_local! {
     static EPISODE_ID: Option<MetadataValue<Ascii>>;
-}
-
-/// Installs `TraceContextPropagator` as the process-global text-map
-/// propagator the first time this is called.
-///
-/// `RequestContextInterceptor` injects via the global propagator on every
-/// outgoing request. Without this, a client-only process (talking to a
-/// remote endpoint or a separate test server, with no local
-/// `ServerBuilder::start` to install one) would fall back to the default
-/// no-op propagator and silently drop `traceparent` even when the caller
-/// has an active span.
-pub(crate) fn ensure_global_propagator() {
-    PROPAGATOR_INIT.get_or_init(|| {
-        opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
-    });
 }
 
 struct MetadataInjector<'a>(&'a mut tonic::metadata::MetadataMap);
@@ -67,10 +48,7 @@ impl tonic::service::Interceptor for RequestContextInterceptor {
         &mut self,
         mut request: tonic::Request<()>,
     ) -> Result<tonic::Request<()>, tonic::Status> {
-        let cx = tracing::Span::current().context();
-        opentelemetry::global::get_text_map_propagator(|p| {
-            p.inject_context(&cx, &mut MetadataInjector(request.metadata_mut()));
-        });
+        coral_telemetry::inject_current_context(&mut MetadataInjector(request.metadata_mut()));
         if let Ok(Some(episode_id)) = EPISODE_ID.try_with(Clone::clone) {
             request
                 .metadata_mut()

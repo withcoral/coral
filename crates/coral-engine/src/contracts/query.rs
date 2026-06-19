@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use arrow::datatypes::Schema;
@@ -375,6 +376,8 @@ pub struct QueryRuntimeConfig {
     pub context: QueryRuntimeContext,
     /// Optional engine extensions for this runtime build.
     pub extensions: EngineExtensions,
+    /// Engine-wide query memory policy.
+    pub memory: QueryMemoryConfig,
     /// Runtime policy for dependent predicate pushdown.
     pub dependent_join: DependentJoinConfig,
 }
@@ -386,9 +389,129 @@ impl QueryRuntimeConfig {
         Self {
             context,
             extensions,
+            memory: QueryMemoryConfig::default(),
             dependent_join: DependentJoinConfig::default(),
         }
     }
+}
+
+/// Engine-wide query memory policy.
+///
+/// This type is non-exhaustive so additional global memory policy can be added
+/// later without changing the meaning of [`Self::limit`], including source- or
+/// table-scoped retained-memory budgets and memory-pool strategy selection.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QueryMemoryConfig {
+    /// Optional total query-engine memory limit.
+    pub limit: Option<MemorySize>,
+}
+
+impl QueryMemoryConfig {
+    /// Builds a memory policy with an optional whole-runtime memory limit.
+    #[must_use]
+    pub fn with_limit(limit: Option<MemorySize>) -> Self {
+        Self { limit }
+    }
+}
+
+/// Human-readable memory size stored internally as bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MemorySize {
+    bytes: usize,
+}
+
+impl MemorySize {
+    /// Builds a memory size from a positive byte count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `bytes` is zero.
+    pub fn from_bytes(bytes: usize) -> Result<Self, MemorySizeParseError> {
+        if bytes == 0 {
+            return Err(MemorySizeParseError::new(
+                "memory limit must be greater than 0",
+            ));
+        }
+        Ok(Self { bytes })
+    }
+
+    /// Returns this size in bytes.
+    #[must_use]
+    pub fn as_bytes(self) -> usize {
+        self.bytes
+    }
+}
+
+/// Error returned when parsing a human-readable memory size fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemorySizeParseError {
+    detail: String,
+}
+
+impl MemorySizeParseError {
+    fn new(detail: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+        }
+    }
+}
+
+impl fmt::Display for MemorySizeParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for MemorySizeParseError {}
+
+impl FromStr for MemorySize {
+    type Err = MemorySizeParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        let value = raw.trim();
+        if value.is_empty() {
+            return Err(MemorySizeParseError::new("memory limit must not be empty"));
+        }
+
+        let (number, multiplier) = parse_memory_unit(value)?;
+        if number.is_empty() || !number.chars().all(|ch| ch.is_ascii_digit()) {
+            return Err(MemorySizeParseError::new(
+                "memory limit must be an integer followed by Ki, Mi, Gi, or Ti",
+            ));
+        }
+
+        let amount = number
+            .parse::<u128>()
+            .map_err(|_error| MemorySizeParseError::new("memory limit is too large"))?;
+        if amount == 0 {
+            return Err(MemorySizeParseError::new(
+                "memory limit must be greater than 0",
+            ));
+        }
+        let bytes = amount
+            .checked_mul(multiplier)
+            .ok_or_else(|| MemorySizeParseError::new("memory limit is too large"))?;
+        let bytes = usize::try_from(bytes)
+            .map_err(|_error| MemorySizeParseError::new("memory limit is too large"))?;
+        Self::from_bytes(bytes)
+    }
+}
+
+fn parse_memory_unit(value: &str) -> Result<(&str, u128), MemorySizeParseError> {
+    for (suffix, multiplier) in [
+        ("Ki", 1024_u128),
+        ("Mi", 1024_u128.pow(2)),
+        ("Gi", 1024_u128.pow(3)),
+        ("Ti", 1024_u128.pow(4)),
+    ] {
+        if let Some(number) = value.strip_suffix(suffix) {
+            return Ok((number, multiplier));
+        }
+    }
+    Err(MemorySizeParseError::new(
+        "memory limit must use binary unit Ki, Mi, Gi, or Ti",
+    ))
 }
 
 /// Runtime policy for dependent predicate pushdown.
@@ -608,5 +731,39 @@ impl QueryExecution {
     /// Returns the total number of rows across all batches.
     pub fn row_count(&self) -> usize {
         self.row_count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr as _;
+
+    use super::MemorySize;
+
+    #[test]
+    fn memory_size_parses_binary_units() {
+        assert_eq!(MemorySize::from_str("1Ki").unwrap().as_bytes(), 1024);
+        assert_eq!(
+            MemorySize::from_str("2Mi").unwrap().as_bytes(),
+            2 * 1024 * 1024
+        );
+        assert_eq!(
+            MemorySize::from_str("3Gi").unwrap().as_bytes(),
+            3 * 1024 * 1024 * 1024
+        );
+        assert_eq!(
+            MemorySize::from_str("1Ti").unwrap().as_bytes(),
+            1024_usize.pow(4)
+        );
+    }
+
+    #[test]
+    fn memory_size_rejects_invalid_values() {
+        for raw in ["", "0Mi", "2GiB", "2.5Gi", "2gi", "2G", "Gi"] {
+            assert!(
+                MemorySize::from_str(raw).is_err(),
+                "{raw:?} should be rejected"
+            );
+        }
     }
 }

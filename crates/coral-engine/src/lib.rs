@@ -68,11 +68,11 @@ pub use composition::{
 };
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
-    DescribeTableInfo, EffectiveDependentJoinConfig, QueryExecution, QueryPlan, QueryRuntimeConfig,
-    QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess,
-    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode,
-    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
-    TableFunctionResultColumnInfo, TableInfo,
+    DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution, QueryMemoryConfig,
+    QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure,
+    QueryTestResult, QueryTestSuccess, RuntimeSourceComponent, RuntimeSourcePackage,
+    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
+    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
