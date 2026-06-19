@@ -18,5 +18,7 @@ jsonschema.workspace = true
 schemars.workspace = true
 url.workspace = true
 
+coral-api.workspace = true
+
 [dev-dependencies]
 tracing.workspace = true

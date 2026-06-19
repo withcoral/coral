@@ -76,6 +76,16 @@ pub const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
 /// Canonical default workspace name used across local Coral surfaces.
 pub const DEFAULT_WORKSPACE_ID: &str = "default";
 
+/// Built-in MCP tool names reserved by Coral's MCP adapter.
+pub const BUILT_IN_MCP_TOOL_NAMES: &[&str] = &[
+    "sql",
+    "list_catalog",
+    "search_catalog",
+    "describe_table",
+    "list_columns",
+    "feedback",
+];
+
 /// gRPC metadata key carrying the originating episode id on Coral calls after
 /// `EpisodeService.OpenEpisode`. The single source of truth for the wire
 /// contract; consumed by both the server (`coral-app`) and clients

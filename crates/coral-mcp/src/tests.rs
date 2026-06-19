@@ -721,6 +721,14 @@ publish:
             .expect("recipe tool description")
             .contains("Messages by type")
     );
+    let annotations = recipe_tool
+        .annotations
+        .as_ref()
+        .expect("recipe tool annotations");
+    assert_eq!(annotations.read_only_hint, Some(true));
+    assert_eq!(annotations.destructive_hint, Some(false));
+    assert_eq!(annotations.idempotent_hint, Some(true));
+    assert_eq!(annotations.open_world_hint, Some(true));
 
     let result = session
         .client

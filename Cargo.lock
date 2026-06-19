@@ -1399,6 +1399,7 @@ dependencies = [
 name = "coral-spec"
 version = "0.4.3"
 dependencies = [
+ "coral-api",
  "jsonschema",
  "schemars",
  "serde",

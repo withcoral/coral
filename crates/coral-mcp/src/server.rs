@@ -31,7 +31,7 @@ use tonic::{
 };
 
 use crate::{
-    McpOptions,
+    McpOptions, RECIPE_MCP_TOOL_PREFIX, recipe_mcp_tool_name,
     surface::{
         CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
         describe_table_tool, describe_table_value, feedback_tool, guide_resource,
@@ -51,15 +51,6 @@ const LIST_CATALOG_COUNT_LIMIT: u32 = 1;
 const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified;
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
-const BUILT_IN_TOOL_NAMES: &[&str] = &[
-    "sql",
-    "list_catalog",
-    "search_catalog",
-    "describe_table",
-    "list_columns",
-    "feedback",
-];
-
 enum ToolCallOutcome {
     Success(Value),
     ToolError {
@@ -676,23 +667,11 @@ fn recipe_mcp_tools(recipe: &Recipe) -> Vec<Tool> {
         .publish
         .iter()
         .filter_map(|publish| match publish.target.as_ref()? {
-            recipe_published_surface::Target::McpTool(target)
-                if !is_built_in_tool_name(&target.name) =>
-            {
-                Some(Tool::new(
-                    target.name.clone(),
-                    recipe_tool_description(recipe, &target.description),
-                    recipe_input_schema(recipe),
-                ))
-            }
-            recipe_published_surface::Target::McpTool(target) => {
-                tracing::warn!(
-                    recipe = %recipe.name,
-                    tool = %target.name,
-                    "skipping recipe MCP tool because it collides with a built-in tool"
-                );
-                None
-            }
+            recipe_published_surface::Target::McpTool(target) => Some(Tool::new(
+                recipe_mcp_tool_name(&target.name),
+                recipe_tool_description(recipe, &target.description),
+                recipe_input_schema(recipe),
+            )),
             recipe_published_surface::Target::TableFunction(_) => None,
         })
         .map(|tool| {
@@ -701,24 +680,23 @@ fn recipe_mcp_tools(recipe: &Recipe) -> Vec<Tool> {
                     ToolAnnotations::with_title("Run Recipe")
                         .read_only(true)
                         .destructive(false)
-                        .idempotent(false)
+                        .idempotent(true)
                         .open_world(true),
                 )
         })
         .collect()
 }
 
-fn is_built_in_tool_name(name: &str) -> bool {
-    BUILT_IN_TOOL_NAMES.contains(&name)
-}
-
 fn recipe_has_mcp_tool(recipe: &Recipe, tool_name: &str) -> bool {
+    let Some(authored_name) = tool_name.strip_prefix(RECIPE_MCP_TOOL_PREFIX) else {
+        return false;
+    };
     recipe_table_function(recipe).is_some()
         && recipe.publish.iter().any(|publish| {
             matches!(
                 publish.target.as_ref(),
                 Some(recipe_published_surface::Target::McpTool(target))
-                    if target.name == tool_name && !is_built_in_tool_name(&target.name)
+                    if target.name == authored_name
             )
         })
 }
