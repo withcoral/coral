@@ -1055,7 +1055,7 @@ mod tests {
             }),
             sql: "SELECT 1".to_string(),
         });
-        let episode_id = crate::episode::EpisodeId::parse("ep_trace_1").expect("episode id");
+        let episode_id = EpisodeId::parse("ep_trace_1").expect("episode id");
         request
             .extensions_mut()
             .insert(RequestContext::with_attribution(
