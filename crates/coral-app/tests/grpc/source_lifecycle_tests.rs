@@ -7,14 +7,15 @@
 use std::{fs, path::PathBuf};
 
 use coral_api::v1::{
-    AddIdentitySpecRequest, CreateBundledSourceRequest,
-    CreateUserOwnedIdentityWithFixedTokenRequest, DeleteSourceRequest, DiscoverSourcesRequest,
-    ExecuteSqlRequest, ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest,
-    ImportSourceRequest, ListCatalogRequest, ListUserOwnedIdentitiesRequest,
-    OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest, QueryTestFailure,
-    QueryTestSuccess, Source, SourceCredentialStorage, SourceIdentityBinding, SourceIdentityOwner,
-    SourceOrigin, SourceSecret, SourceVariable, UserSourceIdentityBinding, ValidateSourceRequest,
-    Workspace, catalog_item, import_source_response, query_test_result,
+    AddIdentitySpecRequest, CreateBundledSourceRequest, CreateUserOwnedIdentityRequest,
+    DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest, ExplainSqlRequest,
+    FixedTokenUserOwnedIdentitySetup, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
+    ListCatalogRequest, ListUserOwnedIdentitiesRequest, OauthCredentialFlowType,
+    OauthCredentialScopeDelimiter, PaginationRequest, QueryTestFailure, QueryTestSuccess, Source,
+    SourceCredentialStorage, SourceIdentityBinding, SourceIdentityOwner, SourceOrigin,
+    SourceSecret, SourceVariable, UserSourceIdentityBinding, ValidateSourceRequest, Workspace,
+    catalog_item, create_user_owned_identity_request, create_user_owned_identity_response,
+    import_source_response, query_test_result,
     source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -149,19 +150,21 @@ async fn install_test_fixed_token_identity(harness: &GrpcHarness) {
         .identity_spec_client()
         .add_identity_spec(Request::new(AddIdentitySpecRequest {
             manifest_yaml: fixed_token_identity_spec_yaml(),
-            inputs: Vec::new(),
+            input_values: Vec::new(),
         }))
         .await
         .expect("add identity spec");
     harness
         .identity_client()
-        .create_user_owned_identity_with_fixed_token(Request::new(
-            CreateUserOwnedIdentityWithFixedTokenRequest {
-                name: "test_local".to_string(),
-                identity_spec: "test_pat".to_string(),
-                token: "test-token".to_string(),
-            },
-        ))
+        .create_user_owned_identity(Request::new(CreateUserOwnedIdentityRequest {
+            name: "test_local".to_string(),
+            identity_spec: "test_pat".to_string(),
+            setup: Some(create_user_owned_identity_request::Setup::FixedToken(
+                FixedTokenUserOwnedIdentitySetup {
+                    token: "test-token".to_string(),
+                },
+            )),
+        }))
         .await
         .expect("create identity");
 }
@@ -172,21 +175,34 @@ async fn create_and_assert_scoped_fixed_token_identity(
     user_id: &str,
     token: &str,
 ) {
-    let created = harness
+    let mut stream = harness
         .identity_client()
-        .create_user_owned_identity_with_fixed_token(request_as(
+        .create_user_owned_identity(request_as(
             user_id,
-            CreateUserOwnedIdentityWithFixedTokenRequest {
+            CreateUserOwnedIdentityRequest {
                 name: "test_local".to_string(),
                 identity_spec: "test_pat".to_string(),
-                token: token.to_string(),
+                setup: Some(create_user_owned_identity_request::Setup::FixedToken(
+                    FixedTokenUserOwnedIdentitySetup {
+                        token: token.to_string(),
+                    },
+                )),
             },
         ))
         .await
         .expect("create identity")
-        .into_inner()
-        .identity
-        .expect("created identity");
+        .into_inner();
+    let created = match stream
+        .message()
+        .await
+        .expect("identity creation event")
+        .expect("created identity event")
+        .event
+        .expect("identity creation event payload")
+    {
+        create_user_owned_identity_response::Event::Identity(identity) => identity,
+        event => panic!("expected identity event, got {event:?}"),
+    };
     assert_eq!(created.name, "test_local");
 
     let listed = harness
@@ -346,7 +362,7 @@ async fn user_identity_source_bindings_are_scoped_to_request_principal() {
             "alice",
             AddIdentitySpecRequest {
                 manifest_yaml: fixed_token_identity_spec_yaml(),
-                inputs: Vec::new(),
+                input_values: Vec::new(),
             },
         ))
         .await
