@@ -738,6 +738,7 @@ mod tests {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "github_v4".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },
