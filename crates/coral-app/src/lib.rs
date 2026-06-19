@@ -67,9 +67,7 @@ pub use identities::{
     IdentityOwnerKey, UserOwnedIdentityMaterialGuard, UserOwnedIdentityRecord,
     UserOwnedIdentityStore,
 };
-pub use identity::{
-    SingleUserPrincipalProvider, UserPrincipal, UserPrincipalError, UserPrincipalProvider,
-};
+pub use identity::{SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider};
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
