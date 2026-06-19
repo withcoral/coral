@@ -17,11 +17,11 @@ use coral_api::{
 };
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::Status as OtelStatus;
-use tonic::body::Body;
 use tonic::codegen::{Service, http};
 use tonic::metadata::MetadataMap;
 use tonic::{Code, Request, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
+use tower::Layer;
 use tracing::{Instrument as _, field};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
@@ -55,7 +55,7 @@ impl Extractor for MetadataExtractor<'_> {
     }
 }
 
-/// Wraps a generated tonic service and installs Coral request context.
+/// Tower layer that installs Coral request context for gRPC route trees.
 ///
 /// Tonic preserves `http::Request` extensions when it decodes the protobuf
 /// message into a `tonic::Request`, but generated server wrappers do not insert
@@ -67,26 +67,42 @@ impl Extractor for MetadataExtractor<'_> {
 /// to a service handler, so every registered gRPC route is covered by the same
 /// principal-selection path.
 #[derive(Clone)]
-pub(crate) struct GrpcRequestContextService<S> {
-    inner: S,
+pub(crate) struct GrpcRequestContextLayer {
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
 }
 
-impl<S> GrpcRequestContextService<S> {
-    pub(crate) fn new(inner: S, user_principal_provider: Arc<dyn UserPrincipalProvider>) -> Self {
+impl GrpcRequestContextLayer {
+    pub(crate) fn new(user_principal_provider: Arc<dyn UserPrincipalProvider>) -> Self {
         Self {
-            inner,
             user_principal_provider,
         }
     }
 }
 
-impl<S, B> Service<http::Request<B>> for GrpcRequestContextService<S>
+impl<S> Layer<S> for GrpcRequestContextLayer {
+    type Service = GrpcRequestContextService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        GrpcRequestContextService {
+            inner,
+            user_principal_provider: Arc::clone(&self.user_principal_provider),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct GrpcRequestContextService<S> {
+    inner: S,
+    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+}
+
+impl<S, B, ResBody> Service<http::Request<B>> for GrpcRequestContextService<S>
 where
-    S: Service<http::Request<B>, Response = http::Response<Body>> + Clone + Send + 'static,
+    S: Service<http::Request<B>, Response = http::Response<ResBody>> + Clone + Send + 'static,
     S::Future: Send + 'static,
     S::Error: Send + 'static,
     B: Send + 'static,
+    ResBody: Default + Send + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
