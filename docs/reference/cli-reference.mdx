@@ -221,10 +221,6 @@ List installed recipes.
 coral recipe list
 ```
 
-#### Options
-
-This command has no options.
-
 The output is inventory-only and does not re-run runtime validation, so it stays fast. Coral shows each recipe's origin, enabled status, publish target, and result columns cached during the last successful `coral recipe add --file`.
 
 If a recipe publishes a SQL table function and declares required inputs, call it with named arguments:
@@ -238,21 +234,11 @@ Recipes without required inputs can be called with empty parentheses.
 
 ### `coral recipe remove <NAME>`
 
-Remove a user-installed recipe.
+Remove the user-installed recipe named `<NAME>`.
 
 ```shellscript
 coral recipe remove open_prs
 ```
-
-#### Arguments
-
-| Argument | Description                                  |
-| -------- | -------------------------------------------- |
-| `<NAME>` | Name of the user-installed recipe to remove |
-
-#### Options
-
-This command has no options.
 
 Only user-installed recipes are managed by this command. Bundled or source-owned recipes are managed with the source package that installed them.
 
