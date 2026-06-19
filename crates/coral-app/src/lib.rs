@@ -64,8 +64,8 @@ pub use bootstrap::{
 };
 pub use coral_engine::{EngineExtensions, QuerySource};
 pub use identities::{
-    IdentityOwnerKey, UserOwnedIdentityMaterialGuard, UserOwnedIdentityRecord,
-    UserOwnedIdentityStore,
+    IdentityOwnerKey, UserOwnedIdentityMaterialGuard, UserOwnedIdentityName,
+    UserOwnedIdentityRecord, UserOwnedIdentityStore,
 };
 pub use identity::{SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider};
 pub use query::extensions::{
