@@ -1943,19 +1943,19 @@ test_queries:
                 },
             )
             .expect("import v4 source alias");
+        let query_context = QueryContext::new(
+            workspace_name.clone(),
+            RequestContext::with_attribution(UserPrincipal::local(), QueryAttribution::default()),
+        );
 
         fixture
             .manager
-            .validate_source(&workspace_name, &UserPrincipal::local(), &source_name)
+            .validate_source(&query_context, &source_name)
             .await
             .expect("authored validation query is rewritten to installed alias");
         let execution = fixture
             .manager
-            .execute_sql(
-                &workspace_name,
-                "SELECT id, title FROM github_alias.issues",
-                &QueryAttribution::default(),
-            )
+            .execute_sql(&query_context, "SELECT id, title FROM github_alias.issues")
             .await
             .expect("query executes through installed alias");
 
@@ -2020,14 +2020,14 @@ test_queries:
                 },
             )
             .expect("import v4 source alias");
+        let query_context = QueryContext::new(
+            workspace_name.clone(),
+            RequestContext::with_attribution(UserPrincipal::local(), QueryAttribution::default()),
+        );
 
         let execution = fixture
             .manager
-            .execute_sql(
-                &workspace_name,
-                "SELECT id, title FROM github_alias.issues",
-                &QueryAttribution::default(),
-            )
+            .execute_sql(&query_context, "SELECT id, title FROM github_alias.issues")
             .await
             .expect("query executes without parsing validation SQL during runtime load");
         assert_eq!(
@@ -2037,7 +2037,7 @@ test_queries:
 
         let validation_result = fixture
             .manager
-            .validate_source(&workspace_name, &UserPrincipal::local(), &source_name)
+            .validate_source(&query_context, &source_name)
             .await;
         assert!(
             validation_result.is_err(),
