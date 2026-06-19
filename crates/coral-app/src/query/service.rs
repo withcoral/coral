@@ -11,12 +11,9 @@ use coral_api::v1::{
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::core_status;
-use crate::query::QueryAttribution;
+use crate::query::QueryContext;
 use crate::query::manager::QueryManager;
-use crate::transport::{
-    grpc_span, instrument_grpc, query_status, request_context as request_context_from_request,
-    workspace_name_from_proto,
-};
+use crate::transport::{grpc_span, instrument_grpc, query_status, workspace_name_from_proto};
 
 #[derive(Clone)]
 pub(crate) struct QueryService {
@@ -39,13 +36,12 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
-        let attribution = QueryAttribution::from_extensions(request.extensions());
-        Box::pin(instrument_grpc(span, async move {
-            let request_context = request_context_from_request(&request)?;
+        instrument_grpc(span, async move {
+            let workspace_name = workspace_name_from_proto(request.get_ref().workspace.as_ref())?;
+            let context = QueryContext::from_request(workspace_name, &request)?;
             let inner = request.into_inner();
-            let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let execution = queries
-                .execute_sql(&workspace_name, &request_context, &inner.sql, &attribution)
+                .execute_sql(&context, &inner.sql)
                 .await
                 .map_err(query_status)?;
             let response = ExecuteSqlResponse {
@@ -58,7 +54,7 @@ impl QueryServiceApi for QueryService {
                 row_count: i64::try_from(execution.row_count()).unwrap_or(i64::MAX),
             };
             Ok(Response::new(response))
-        }))
+        })
         .await
     }
 
@@ -68,19 +64,18 @@ impl QueryServiceApi for QueryService {
     ) -> Result<Response<ExplainSqlResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
-        let attribution = QueryAttribution::from_extensions(request.extensions());
-        Box::pin(instrument_grpc(span, async move {
-            let request_context = request_context_from_request(&request)?;
+        instrument_grpc(span, async move {
+            let workspace_name = workspace_name_from_proto(request.get_ref().workspace.as_ref())?;
+            let context = QueryContext::from_request(workspace_name, &request)?;
             let inner = request.into_inner();
-            let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let plan = queries
-                .explain_sql(&workspace_name, &request_context, &inner.sql, &attribution)
+                .explain_sql(&context, &inner.sql)
                 .await
                 .map_err(query_status)?;
             Ok(Response::new(ExplainSqlResponse {
                 plan: Some(query_plan_to_proto(&plan)),
             }))
-        }))
+        })
         .await
     }
 }
