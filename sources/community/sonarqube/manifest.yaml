@@ -472,13 +472,25 @@ tables:
             - analysisDate
   - name: qualityprofiles
     description: Search quality profiles
+    filters:
+      - name: organization
+        required: true
     request:
       path: /qualityprofiles/search
       method: GET
+      query:
+        - name: organization
+          from: filter
+          key: organization
     response:
       rows_path:
         - profiles
     columns:
+      - name: organization
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: organization
       - name: key
         type: Utf8
       - name: name
@@ -499,9 +511,16 @@ tables:
             - activeRuleCount
   - name: user_groups
     description: Search user groups
+    filters:
+      - name: organization
+        required: true
     request:
       path: /user_groups/search
       method: GET
+      query:
+        - name: organization
+          from: filter
+          key: organization
     response:
       rows_path:
         - groups
@@ -514,6 +533,11 @@ tables:
         max: 500
         query_param: ps
     columns:
+      - name: organization
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: organization
       - name: name
         type: Utf8
       - name: description

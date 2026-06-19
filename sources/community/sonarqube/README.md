@@ -4,7 +4,7 @@ This is a Coral source manifest for [SonarQube](https://www.sonarqube.org/) and 
 
 ## How to Connect & Authenticate
 
-To connect Coral to your SonarQube or SonarCloud instance, you will need a personal User Token. 
+To connect Coral to your SonarQube or SonarCloud instance, you will need a personal User Token.
 
 ### 1. Generate a SonarQube Token
 1. Log into your SonarQube or SonarCloud instance.
@@ -46,8 +46,8 @@ This manifest provides comprehensive access to the following tables:
 | `users` | Search users | `/users/search` | *(None)* | Yes |
 | `rules` | Search coding rules | `/rules/search` | *(None)* | Yes |
 | `project_pull_requests` | List pull requests of a project | `/project_pull_requests/list` | `project` | No |
-| `qualityprofiles` | Search quality profiles | `/qualityprofiles/search` | *(None)* | No |
-| `user_groups` | Search user groups | `/user_groups/search` | *(None)* | Yes |
+| `qualityprofiles` | Search quality profiles | `/qualityprofiles/search` | `organization` | No |
+| `user_groups` | Search user groups (may require admin privileges) | `/user_groups/search` | `organization` | Yes |
 
 ## Features
 
@@ -60,20 +60,21 @@ Once loaded into Coral with your `SONARQUBE_API_KEY` set in your environment, yo
 
 **Get all issues for a specific project:**
 ```sql
-SELECT key, message, severity, status 
-FROM sonar.issues 
+SELECT key, message, severity, status
+FROM sonar.issues
 WHERE projects = 'my-project-key';
 ```
 
 **Find security hotspots:**
 ```sql
-SELECT message, vulnerability_probability 
-FROM sonar.hotspots 
+SELECT message, vulnerability_probability
+FROM sonar.hotspots
 WHERE project_key = 'my-project-key';
 ```
 
 **List users:**
+*(Note: On SonarCloud, this endpoint is not a reliable organization member listing and may require admin privileges. It is primarily meant for self-hosted instances or admin scopes.)*
 ```sql
-SELECT login, name, email 
+SELECT login, name, email
 FROM sonar.users;
 ```
