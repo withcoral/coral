@@ -165,7 +165,7 @@ impl SourceInputResolutionContext {
     }
 
     #[must_use]
-    /// Returns the canonical source name. This is also the SQL schema name.
+    /// Returns the canonical installed source name.
     pub fn source_name(&self) -> &str {
         &self.source_name
     }

@@ -23,6 +23,7 @@ opentelemetry.workspace = true
 
 coral-api.workspace = true
 coral-client.workspace = true
+coral-telemetry.workspace = true
 
 [dev-dependencies]
 coral-app.workspace = true

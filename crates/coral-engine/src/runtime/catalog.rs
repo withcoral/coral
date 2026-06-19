@@ -940,6 +940,9 @@ fn catalog_columns_batch(schema: Arc<Schema>, rows: &[CatalogColumn]) -> Result<
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use crate::backends::common::test_support::StubSourceFunctionFactory;
     use crate::backends::{RegisteredSource, RegisteredTableFunction};
 
     use super::collect_table_functions;
@@ -952,7 +955,7 @@ mod tests {
             table_functions: vec![RegisteredTableFunction {
                 schema_name: "function_schema".to_string(),
                 function_name: "search".to_string(),
-                internal_name: "internal_search".to_string(),
+                factory: Arc::new(StubSourceFunctionFactory::default()),
                 kind: "search".to_string(),
                 description: String::new(),
                 arguments: Vec::new(),

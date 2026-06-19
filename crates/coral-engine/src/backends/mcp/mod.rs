@@ -1,5 +1,6 @@
 //! MCP-backed source runtime pieces.
 
+mod catalog;
 mod client;
 pub(crate) mod error;
 mod fetch;
@@ -15,9 +16,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coral_spec::SourceBackend;
 use coral_spec::backends::mcp::{McpServerSpec, McpSourceManifest, McpTableSpec};
-use datafusion::catalog::TableFunctionImpl;
+use coral_spec::v4::McpToolCatalog;
+use coral_spec::{ManifestInputSpec, SourceBackend, resolve_inputs};
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 
@@ -26,12 +27,16 @@ use self::function::McpSourceTableFunction;
 use self::provider::McpTableProvider;
 use self::transport::{StdioMcpToolCaller, StreamableHttpMcpToolCaller};
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
-    RegisteredSource, SourceTableFunctions, build_registered_inputs, build_registered_table,
-    build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
-    required_filter_names, validate_lookup_key_filter_backend_support,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
+    BackendSchemaRegistration, CompiledBackendSource, RegisteredSource,
+    SourceFunctionProviderFactory, build_registered_inputs, build_registered_table,
+    build_registered_table_function, registered_columns_from_specs, required_filter_names,
+    validate_lookup_key_filter_backend_support,
 };
-use crate::{SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError};
+use crate::runtime::error::datafusion_to_core;
+use crate::{
+    CoreError, SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
+};
 
 #[derive(Debug, Clone)]
 struct McpCompiledSource {
@@ -123,6 +128,33 @@ pub(crate) fn compile_manifest(
     )
 }
 
+/// Connects to an MCP server and returns its declared tool catalog.
+///
+/// This is used by DSL v4 materialization to snapshot MCP `tools/list`
+/// metadata into app-owned artifacts before query runtime assembly.
+///
+/// # Errors
+///
+/// Returns [`CoreError`] when source inputs cannot be resolved, the MCP server
+/// cannot be initialized, or tool catalog discovery fails.
+pub async fn discover_tool_catalog(
+    source_name: &str,
+    server: McpServerSpec,
+    declared_inputs: &[ManifestInputSpec],
+    source_variables: BTreeMap<String, String>,
+    source_secrets: BTreeMap<String, String>,
+) -> std::result::Result<McpToolCatalog, CoreError> {
+    let resolved_inputs = Arc::new(resolve_inputs(
+        declared_inputs,
+        &source_secrets,
+        &source_variables,
+    ));
+    let source_inputs = Arc::new(McpSourceInputs::static_inputs(resolved_inputs));
+    catalog::inspect_tools(source_name.to_string(), server, source_inputs)
+        .await
+        .map_err(|error| datafusion_to_core(&error, &[]))
+}
+
 fn compile_source_with_caller(
     manifest: McpSourceManifest,
     source_input_resolution: SourceInputResolutionContext,
@@ -164,23 +196,19 @@ impl CompiledBackendSource for McpCompiledSource {
         _ctx: &datafusion::prelude::SessionContext,
         _registration: &BackendRegistrationContext,
     ) -> Result<BackendRegistration> {
-        let mut table_functions =
-            SourceTableFunctions::with_capacity(self.manifest.functions.len());
         let mut table_function_infos = Vec::with_capacity(self.manifest.functions.len());
 
         for function in &self.manifest.functions {
-            let internal_name =
-                internal_table_function_name(&self.manifest.common.name, function.name());
-            let function_impl: Arc<dyn TableFunctionImpl> = Arc::new(McpSourceTableFunction::new(
-                self.caller.clone(),
-                self.manifest.common.name.clone(),
-                function.clone(),
-            )?);
-            table_functions.insert(internal_name.clone(), function_impl);
+            let factory: Arc<dyn SourceFunctionProviderFactory> =
+                Arc::new(McpSourceTableFunction::new(
+                    self.caller.clone(),
+                    self.manifest.common.name.clone(),
+                    function.clone(),
+                )?);
             table_function_infos.push(build_registered_table_function(
                 &self.manifest.common.name,
                 &function.common,
-                internal_name,
+                factory,
             ));
         }
 
@@ -215,15 +243,17 @@ impl CompiledBackendSource for McpCompiledSource {
             &secret_keys,
         );
 
+        let schema_name = self.manifest.common.name.clone();
         Ok(BackendRegistration {
-            tables,
-            table_functions,
-            source: RegisteredSource {
-                schema_name: self.manifest.common.name.clone(),
-                tables: table_infos,
-                table_functions: table_function_infos,
-                inputs,
-            },
+            schemas: vec![BackendSchemaRegistration {
+                tables,
+                source: RegisteredSource {
+                    schema_name,
+                    tables: table_infos,
+                    table_functions: table_function_infos,
+                    inputs,
+                },
+            }],
         })
     }
 }

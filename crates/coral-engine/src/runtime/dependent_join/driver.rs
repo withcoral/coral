@@ -25,7 +25,7 @@ pub(crate) async fn run_binding_phase(
 
     while let Some(result) = tasks.join_next().await {
         let (tuple, rows) = result.map_err(|error| join_error(&error))??;
-        state.buffer_fetch_result(tuple, rows);
+        state.buffer_fetch_result(tuple, rows)?;
 
         if let Some((binding_index, tuple)) = tuples.next() {
             spawn_fetch(&mut tasks, fetcher.clone(), binding_index, tuple);
