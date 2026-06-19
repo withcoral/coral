@@ -8,7 +8,9 @@ use serde_json::{Map, Value, json};
 
 use coral_api::{CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_INTENT_MAX_CHARS};
 
-use super::{Pagination, parse_pagination, parse_pagination_with_limits};
+use super::{
+    Pagination, connected_source_names_text, parse_pagination, parse_pagination_with_limits,
+};
 
 const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by open_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
 const EPISODE_ID_JSON_SCHEMA_PATTERN: &str = "^[!-~]+$";
@@ -513,14 +515,6 @@ fn search_catalog_description(context: &ToolDescriptionContext) -> String {
         context.visible_table_count,
         context.visible_function_count
     )
-}
-
-fn connected_source_names_text(source_names: &[String]) -> Option<String> {
-    if source_names.is_empty() {
-        return None;
-    }
-
-    Some(source_names.join(", "))
 }
 
 pub(crate) fn with_episode_id_argument(mut tool: Tool) -> Tool {
