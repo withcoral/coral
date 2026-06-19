@@ -56,7 +56,7 @@ use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
-use crate::transport::GrpcMethodAnnotatedService;
+use crate::transport::GrpcRequestContextService;
 
 /// A static asset (e.g., a built SPA file) served on the same port as
 /// gRPC-Web.
@@ -319,14 +319,9 @@ impl ServerBuilder {
         let trace_service = if telemetry_config.trace_history.enabled {
             // Trace records can expose SQL text, span attributes, and optional
             // captured payload previews. They are process-local rather than
-            // principal-scoped, so the provider is used as the request auth gate.
-            installed_trace_store.map(|store| {
-                TraceService::new(
-                    store.dir,
-                    store.retention,
-                    Arc::clone(&user_principal_provider),
-                )
-            })
+            // principal-scoped, so the transport-level provider is used as the
+            // request auth gate.
+            installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
         } else {
             None
         };
@@ -422,28 +417,25 @@ async fn start_server(
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
-    let source_service = SourceService::new(
-        source_manager,
-        query_manager.clone(),
-        Arc::clone(&user_principal_provider),
-    );
-    let catalog_service =
-        CatalogService::new(query_manager.clone(), Arc::clone(&user_principal_provider));
-    let query_service = QueryService::new(query_manager, Arc::clone(&user_principal_provider));
-    let feedback_service =
-        FeedbackService::new(feedback_manager, Arc::clone(&user_principal_provider));
+    let source_service = SourceService::new(source_manager, query_manager.clone());
+    let catalog_service = CatalogService::new(query_manager.clone());
+    let query_service = QueryService::new(query_manager);
+    let feedback_service = FeedbackService::new(feedback_manager);
     let episode_service = EpisodeService::new(episode_store);
     let mut routes = Routes::default()
-        .add_service(GrpcMethodAnnotatedService::new(SourceServiceServer::new(
-            source_service,
-        )))
-        .add_service(GrpcMethodAnnotatedService::new(
+        .add_service(GrpcRequestContextService::new(
+            SourceServiceServer::new(source_service),
+            Arc::clone(&user_principal_provider),
+        ))
+        .add_service(GrpcRequestContextService::new(
             CatalogServiceServer::new(catalog_service)
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
+            Arc::clone(&user_principal_provider),
         ))
-        .add_service(GrpcMethodAnnotatedService::new(FeedbackServiceServer::new(
-            feedback_service,
-        )))
+        .add_service(GrpcRequestContextService::new(
+            FeedbackServiceServer::new(feedback_service),
+            Arc::clone(&user_principal_provider),
+        ))
         // Registered unconditionally, like `FeedbackService` above: the local
         // transport is feature-agnostic by design (effective features are resolved
         // in `coral-cli`, which gates the *consumers*, not the routes). The
@@ -451,17 +443,20 @@ async fn start_server(
         // so on a default/disabled install this endpoint is reachable but inert:
         // nothing opens an episode, so no intent is ever written. See the
         // `EpisodeService` module docs and `open_episode_*` server tests below.
-        .add_service(GrpcMethodAnnotatedService::new(EpisodeServiceServer::new(
-            episode_service,
-        )))
-        .add_service(GrpcMethodAnnotatedService::new(
+        .add_service(GrpcRequestContextService::new(
+            EpisodeServiceServer::new(episode_service),
+            Arc::clone(&user_principal_provider),
+        ))
+        .add_service(GrpcRequestContextService::new(
             QueryServiceServer::new(query_service)
                 .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
+            Arc::clone(&user_principal_provider),
         ));
     if let Some(trace_service) = trace_service {
-        routes = routes.add_service(GrpcMethodAnnotatedService::new(
+        routes = routes.add_service(GrpcRequestContextService::new(
             TraceServiceServer::new(trace_service)
                 .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
+            Arc::clone(&user_principal_provider),
         ));
     }
 
@@ -762,6 +757,7 @@ enabled = false
             .await
             .expect("connect");
         let mut source_client = SourceServiceClient::new(channel.clone());
+        let mut episode_client = EpisodeServiceClient::new(channel.clone());
         let mut query_client = QueryServiceClient::new(channel);
 
         let status = source_client
@@ -770,6 +766,18 @@ enabled = false
             }))
             .await
             .expect_err("source list should require a request principal");
+
+        assert_eq!(status.code(), Code::Unauthenticated);
+
+        let status = episode_client
+            .open_episode(Request::new(OpenEpisodeRequest {
+                workspace: Some(default_workspace()),
+                episode_id: "ep_auth_gate".to_string(),
+                intent: "test central auth".to_string(),
+                parent_episode_id: String::new(),
+            }))
+            .await
+            .expect_err("episode open should require a request principal");
 
         assert_eq!(status.code(), Code::Unauthenticated);
 
@@ -932,11 +940,8 @@ enabled = false
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let trace_service = TraceService::new(
-            temp.path().join("trace-store"),
-            Duration::from_mins(1),
-            Arc::clone(&user_principal_provider),
-        );
+        let trace_service =
+            TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         start_server(
             source_manager,
             query_manager,
