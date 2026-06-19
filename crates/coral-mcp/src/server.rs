@@ -51,6 +51,14 @@ const LIST_CATALOG_COUNT_LIMIT: u32 = 1;
 const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified;
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
+const BUILT_IN_TOOL_NAMES: &[&str] = &[
+    "sql",
+    "list_catalog",
+    "search_catalog",
+    "describe_table",
+    "list_columns",
+    "feedback",
+];
 enum ToolCallOutcome {
     Success(Value),
     ToolError {
