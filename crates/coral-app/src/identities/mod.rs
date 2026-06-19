@@ -3,6 +3,6 @@
 mod manager;
 
 pub use manager::{
-    IdentityOwnerKey, UserOwnedIdentityMaterialGuard, UserOwnedIdentityRecord,
-    UserOwnedIdentityStore,
+    IdentityOwnerKey, UserOwnedIdentityMaterialGuard, UserOwnedIdentityName,
+    UserOwnedIdentityRecord, UserOwnedIdentityStore,
 };
