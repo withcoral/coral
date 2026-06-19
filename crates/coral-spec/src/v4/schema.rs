@@ -62,6 +62,8 @@ struct V4McpSurfaceSchema {
     namespace_suffix: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identity_requirements: Option<IdentityRequirementsSchema>,
     server: McpServerSpec,
 }
 
@@ -257,6 +259,10 @@ fn post_process_surface_variants(surface_schema: &mut Value) {
                 file.insert("type".to_string(), json!("string"));
                 file.insert("minLength".to_string(), json!(1));
             }
+            if let Some(sha256) = properties.get_mut("sha256").and_then(Value::as_object_mut) {
+                sha256.insert("type".to_string(), json!("string"));
+                sha256.insert("pattern".to_string(), json!("^[0-9a-f]{64}$"));
+            }
             if let Some(base_url) = properties
                 .get_mut("base_url")
                 .and_then(Value::as_object_mut)
@@ -392,16 +398,9 @@ surfaces:
   - id: mcp
     namespace_suffix: mcp
     type: mcp
-    inputs:
-      MCP_TOKEN:
-        kind: secret
     server:
       transport: streamable_http
       url: https://mcp.example.com/mcp
-      auth:
-        type: bearer
-        from: input
-        key: MCP_TOKEN
 ";
 
         if let Err(errors) = validator().validate(&manifest_json(raw)) {
@@ -421,28 +420,21 @@ surfaces:
     namespace_suffix: stdio
     type: mcp
     inputs:
-      MCP_TOKEN:
-        kind: secret
+      MCP_LOG_LEVEL:
+        kind: variable
     server:
       transport: stdio
       command: demo-mcp-server
       env:
-        - name: MCP_TOKEN
+        - name: MCP_LOG_LEVEL
           from: input
-          key: MCP_TOKEN
+          key: MCP_LOG_LEVEL
   - id: http_mcp
     namespace_suffix: http
     type: mcp
-    inputs:
-      HTTP_TOKEN:
-        kind: secret
     server:
       transport: streamable_http
       url: https://mcp.example.com/mcp
-      auth:
-        type: bearer
-        from: input
-        key: HTTP_TOKEN
 ";
 
         if let Err(errors) = validator().validate(&manifest_json(raw)) {
@@ -551,6 +543,7 @@ surfaces:
   - id: rest
     type: openapi
     url: https://example.com/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
   - id: mcp
     namespace_suffix: mcp
     type: mcp
@@ -576,6 +569,7 @@ surfaces:
   - id: rest
     type: openapi
     url: https://example.com/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
   - id: mcp
     type: mcp
     server:
@@ -601,6 +595,7 @@ surfaces:
     namespace_suffix: GitHubRest
     type: openapi
     url: https://example.com/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
 ";
 
         assert!(

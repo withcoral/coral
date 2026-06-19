@@ -114,14 +114,14 @@ fn rejects_empty_v4_identity_requirement_accepts() {
 }
 
 #[test]
-fn reserved_default_relation_namespace_is_rejected() {
+fn reserved_source_name_is_rejected_before_default_relation_namespace() {
     let error = parse_source_manifest_yaml(&v4_yaml("name: public", ""))
-        .expect_err("reserved relation namespace should fail");
+        .expect_err("reserved source name should fail");
 
     assert!(
         error
             .to_string()
-            .contains("source surface relation namespace 'public' is reserved"),
+            .contains("source name 'public' is reserved and cannot be used by manifests"),
         "unexpected error: {error}"
     );
 }
@@ -287,8 +287,8 @@ fn rejects_v4_surface_secret_inputs() {
     .expect_err("v4 secret input should fail");
 
     assert!(
-        error.to_string().contains("/surfaces/0/inputs/API_TOKEN")
-            && error.to_string().contains("schema validation"),
+        error.to_string().contains("schema validation")
+            && error.to_string().contains(r#""kind":"secret""#),
         "unexpected error: {error}"
     );
 }

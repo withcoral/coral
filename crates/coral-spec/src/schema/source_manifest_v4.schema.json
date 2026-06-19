@@ -68,7 +68,8 @@
               "minLength": 1
             },
             "sha256": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
             },
             "inputs": {
               "type": "object",
@@ -153,6 +154,16 @@
               "propertyNames": {
                 "minLength": 1
               }
+            },
+            "identity_requirements": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/IdentityRequirementsSchema"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "server": {
               "$ref": "#/$defs/McpServerSpec"

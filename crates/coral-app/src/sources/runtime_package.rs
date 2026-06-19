@@ -478,6 +478,7 @@ mod tests {
                 location: "demo-mcp-server".to_string(),
             },
             inputs: Vec::new(),
+            identity_requirements: None,
             runtime: SurfaceRuntimeConfig::Mcp(McpRuntimeConfig {
                 server: McpServerSpec::Stdio {
                     command: "demo-mcp-server".to_string(),
@@ -573,6 +574,7 @@ mod tests {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "github_v4".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },
@@ -625,6 +627,7 @@ mod tests {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "github_v4".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },
@@ -685,6 +688,7 @@ mod tests {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "github_v4".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },

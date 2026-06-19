@@ -214,6 +214,7 @@ fn github_v4_source(base_url: &str, surface_extra: &str) -> QuerySource {
     let v4 = manifest.as_v4().expect("v4");
     let surface = v4.surfaces.first().expect("one surface");
     let (tables, functions) = published_projection_specs(v4, surface);
+    let openapi_runtime = surface.openapi_runtime().expect("openapi runtime");
 
     let http_manifest = HttpSourceManifest {
         common: SourceManifestCommon {
@@ -223,10 +224,10 @@ fn github_v4_source(base_url: &str, surface_extra: &str) -> QuerySource {
             description: v4.common.description.clone(),
             test_queries: Vec::new(),
         },
-        base_url: surface.openapi_runtime.base_url.clone(),
-        auth: surface.openapi_runtime.auth.clone(),
-        request_headers: surface.openapi_runtime.request_headers.clone(),
-        rate_limit: surface.openapi_runtime.rate_limit.clone(),
+        base_url: openapi_runtime.base_url.clone(),
+        auth: openapi_runtime.auth.clone(),
+        request_headers: openapi_runtime.request_headers.clone(),
+        rate_limit: openapi_runtime.rate_limit.clone(),
         tables,
         functions,
         declared_inputs: surface.inputs.clone(),
@@ -282,7 +283,9 @@ fn published_projection_specs(
             .expect("projection operation");
         let request = request_spec_for_projection(projection, operation).expect("request spec");
         let columns = projection_column_specs(projection);
-        let IrExecutionAttachment::Rest(rest) = &operation.execution;
+        let IrExecutionAttachment::Rest(rest) = &operation.execution else {
+            panic!("published OpenAPI projection must use REST execution");
+        };
         match &projection.kind {
             ProjectionKind::Table => tables.push(HttpTableSpec {
                 common: TableCommon {

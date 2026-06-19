@@ -1601,8 +1601,7 @@ variables = {}
 secrets = []
 origin = "imported"
 "#,
-    )
-    .expect("write initial config");
+    );
     let demo_manifest = fixture_manifest_yaml(temp.path()).replace("local_messages", "demo");
     let demo_manifest_path = source_dir(&config_dir, "demo").join("manifest.yaml");
     fs::create_dir_all(demo_manifest_path.parent().expect("manifest parent"))

@@ -126,6 +126,17 @@ struct PersistSourceRequest<'a> {
     materialization_tmp: Option<PathBuf>,
 }
 
+#[derive(Clone, Copy)]
+struct PrepareV4MaterializationRequest<'a> {
+    workspace_name: &'a WorkspaceName,
+    candidate: &'a CandidateSource,
+    manifest: &'a ValidatedSourceManifest,
+    manifest_yaml: &'a str,
+    inputs: &'a MaterializationInputs,
+    origin: SourceOrigin,
+    suffix_prefix: &'a str,
+}
+
 struct SourceRollbackState {
     source: InstalledSource,
     manifest_yaml: Option<String>,
@@ -440,15 +451,15 @@ impl SourceManager {
                 origin: request.origin,
                 credential_storage,
                 materialization_tmp: self
-                    .prepare_v4_materialization(
+                    .prepare_v4_materialization(PrepareV4MaterializationRequest {
                         workspace_name,
-                        request.candidate,
-                        &manifest,
-                        request.materialization_manifest_yaml,
-                        &materialization_inputs,
-                        request.origin,
-                        "tmp",
-                    )?
+                        candidate: request.candidate,
+                        manifest: &manifest,
+                        manifest_yaml: request.materialization_manifest_yaml,
+                        inputs: &materialization_inputs,
+                        origin: request.origin,
+                        suffix_prefix: "tmp",
+                    })?
                     .map(|build| build.temp_dir),
             },
         )
@@ -519,15 +530,15 @@ impl SourceManager {
                 origin: request.origin,
                 credential_storage,
                 materialization_tmp: self
-                    .prepare_v4_materialization(
+                    .prepare_v4_materialization(PrepareV4MaterializationRequest {
                         workspace_name,
-                        request.candidate,
-                        &manifest,
-                        request.materialization_manifest_yaml,
-                        &materialization_inputs,
-                        request.origin,
-                        "tmp",
-                    )?
+                        candidate: request.candidate,
+                        manifest: &manifest,
+                        manifest_yaml: request.materialization_manifest_yaml,
+                        inputs: &materialization_inputs,
+                        origin: request.origin,
+                        suffix_prefix: "tmp",
+                    })?
                     .map(|build| build.temp_dir),
             },
         )
@@ -782,19 +793,13 @@ impl SourceManager {
 
     fn prepare_v4_materialization(
         &self,
-        workspace_name: &WorkspaceName,
-        candidate: &CandidateSource,
-        manifest: &ValidatedSourceManifest,
-        manifest_yaml: &str,
-        inputs: &MaterializationInputs,
-        origin: SourceOrigin,
-        suffix_prefix: &str,
+        request: PrepareV4MaterializationRequest<'_>,
     ) -> Result<Option<MaterializationBuild>, AppError> {
-        let Some(v4) = manifest.as_v4() else {
+        let Some(v4) = request.manifest.as_v4() else {
             return Ok(None);
         };
         self.features.ensure_dsl_v4_enabled()?;
-        if matches!(origin, SourceOrigin::Bundled)
+        if matches!(request.origin, SourceOrigin::Bundled)
             && v4.surfaces.iter().any(|surface| {
                 matches!(
                     surface.descriptor,
@@ -809,12 +814,12 @@ impl SourceManager {
         }
         build_v4_materialization_tmp(
             &self.layout,
-            workspace_name,
-            &candidate.name,
-            manifest_yaml,
+            request.workspace_name,
+            &request.candidate.name,
+            request.manifest_yaml,
             v4,
-            inputs,
-            &new_materialization_suffix(suffix_prefix),
+            request.inputs,
+            &new_materialization_suffix(request.suffix_prefix),
         )
         .map(Some)
     }
@@ -825,7 +830,7 @@ impl SourceManager {
         candidate_name: &SourceName,
         candidate_manifest: &ValidatedSourceManifest,
     ) -> Result<(), AppError> {
-        let candidate_schema_names = runtime_schema_names(&candidate_manifest);
+        let candidate_schema_names = runtime_schema_names(candidate_manifest);
         for installed in self.list_registry_sources(workspace_name)? {
             if installed.name == *candidate_name {
                 continue;
@@ -1608,7 +1613,6 @@ fn cleanup_empty_parent(root: &std::path::Path, path: Option<&std::path::Path>) 
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
-    use std::io::{Read as _, Write as _};
     use std::net::TcpListener as StdTcpListener;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc as std_mpsc;
@@ -2227,6 +2231,7 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: vec!["OTHER_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::Keychain),
+                    identity_bindings: BTreeMap::new(),
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -2343,7 +2348,8 @@ surfaces:
         assert!(message.contains("conflicts with installed source 'github_v4_rest'"));
         let rejected_source = SourceName::parse("github_v4").expect("source");
         assert!(
-            manager
+            fixture
+                .manager
                 .get_source(&default_workspace(), &rejected_source)
                 .is_err(),
             "rejected source should not be persisted"

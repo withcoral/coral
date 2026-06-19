@@ -862,8 +862,7 @@ impl UserOwnedIdentityStore for FileUserOwnedIdentityStore {
         let identity_name = identity_name.clone();
         tokio::task::spawn_blocking(move || {
             let owner_key = validate_identity_owner_key(&owner_key)?;
-            let lock =
-                Self::material_lock_for_layout(&layout, &owner_key, identity_name.as_str())?;
+            let lock = Self::material_lock_for_layout(&layout, &owner_key, identity_name.as_str())?;
             Ok(Box::new(FileUserOwnedIdentityMaterialGuard {
                 layout,
                 owner_key,

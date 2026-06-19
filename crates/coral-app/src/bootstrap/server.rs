@@ -1019,6 +1019,7 @@ enabled = false
         layout.ensure().expect("layout dirs");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let episode_store = EpisodeStore::new(layout.clone());
         let identity_spec_manager = IdentitySpecManager::new(layout.clone());
         let user_owned_identity_manager =
             UserOwnedIdentityManager::new(layout.clone(), identity_spec_manager.clone());
@@ -1041,6 +1042,7 @@ enabled = false
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             management_authorizer: Arc::new(AllowAllManagementAuthorizer),
             feedback_manager: FeedbackManager::new(layout.clone()),
+            episode_store,
             trace_service,
             mode: ServerMode::NativeGrpc,
             native_grpc_bind_addr: None,
@@ -1271,14 +1273,14 @@ enabled = false
         );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
+        let user_owned_identity_manager =
+            UserOwnedIdentityManager::new(layout.clone(), identity_spec_manager.clone());
+        let extension_context = ServerExtensionContext::new(user_owned_identity_manager.handle());
         start_server(ServerServices {
             source_manager,
             query_manager,
             identity_spec_manager: identity_spec_manager.clone(),
-            user_owned_identity_manager: UserOwnedIdentityManager::new(
-                layout,
-                identity_spec_manager,
-            ),
+            user_owned_identity_manager,
             user_principal_provider,
             management_authorizer: Arc::new(AllowAllManagementAuthorizer),
             feedback_manager,
@@ -1287,6 +1289,7 @@ enabled = false
             mode: ServerMode::NativeGrpc,
             native_grpc_bind_addr: None,
             grpc_route_extenders: Vec::new(),
+            extension_context,
         })
         .await
         .expect("start server")

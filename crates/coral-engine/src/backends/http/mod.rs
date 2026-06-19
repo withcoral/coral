@@ -9,6 +9,8 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
+#[cfg(test)]
+use crate::backends::BackendCompileRequest;
 use crate::backends::{
     BackendRegistration, BackendRegistrationContext, BackendSchemaRegistration,
     CompiledBackendSource, RegisteredSource, RegisteredTable, SourceFunctionProviderFactory,

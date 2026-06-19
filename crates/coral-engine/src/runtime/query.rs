@@ -70,6 +70,17 @@ struct RegisteredRuntime {
     failures: Vec<SourceRegistrationFailure>,
 }
 
+struct RegisteredRuntimeBuildConfig<'a> {
+    sources: &'a [QuerySource],
+    runtime_context: &'a QueryRuntimeContext,
+    request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
+    source_decorators: &'a mut [Box<dyn SourceDecorator>],
+    dependent_join: &'a DependentJoinConfig,
+    memory: &'a QueryMemoryConfig,
+}
+
 enum SqlExecutionFailure {
     Planning(DataFusionError),
     Collection(DataFusionError),
@@ -116,16 +127,16 @@ async fn build_runtime_inner(
         })
     });
 
-    let primary = build_registered_runtime(
+    let primary = build_registered_runtime(RegisteredRuntimeBuildConfig {
         sources,
-        &runtime_context,
-        &request_authenticators,
+        runtime_context: &runtime_context,
+        request_authenticators: &request_authenticators,
         source_input_resolver,
         request_identity_resolver,
-        extensions.source_decorators.as_mut_slice(),
-        &dependent_join,
-        &memory,
-    )
+        source_decorators: extensions.source_decorators.as_mut_slice(),
+        dependent_join: &dependent_join,
+        memory: &memory,
+    })
     .await?;
 
     Ok(QueryRuntimeAdapter {
@@ -140,24 +151,17 @@ async fn build_runtime_inner(
 }
 
 async fn build_registered_runtime(
-    sources: &[QuerySource],
-    runtime_context: &QueryRuntimeContext,
-    request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
-    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
-    source_decorators: &mut [Box<dyn SourceDecorator>],
-    dependent_join: &DependentJoinConfig,
-    memory: &QueryMemoryConfig,
+    config: RegisteredRuntimeBuildConfig<'_>,
 ) -> Result<RegisteredRuntime, CoreError> {
-    let ctx = build_session_context(dependent_join, memory)?;
+    let ctx = build_session_context(config.dependent_join, config.memory)?;
     let registration = register_runtime_sources(
         &ctx,
-        sources,
-        runtime_context,
-        request_authenticators,
-        source_input_resolver,
-        request_identity_resolver,
-        source_decorators,
+        config.sources,
+        config.runtime_context,
+        config.request_authenticators,
+        config.source_input_resolver,
+        config.request_identity_resolver,
+        config.source_decorators,
     )
     .await?;
     catalog::register(&ctx, &registration.active_sources)
@@ -553,16 +557,17 @@ fn format_memory_limit(limit: MemorySize) -> String {
 impl FallbackRuntimeConfig {
     async fn build_without_dependent_join(&self) -> Result<RegisteredRuntime, CoreError> {
         let mut source_decorators = Vec::new();
-        build_registered_runtime(
-            &self.sources,
-            &self.runtime_context,
-            &self.request_authenticators,
-            self.source_input_resolver.clone(),
-            self.request_identity_resolver.clone(),
-            source_decorators.as_mut_slice(),
-            &self.dependent_join.without_rewrites(),
-            &self.memory,
-        )
+        let dependent_join = self.dependent_join.without_rewrites();
+        build_registered_runtime(RegisteredRuntimeBuildConfig {
+            sources: &self.sources,
+            runtime_context: &self.runtime_context,
+            request_authenticators: &self.request_authenticators,
+            source_input_resolver: self.source_input_resolver.clone(),
+            request_identity_resolver: self.request_identity_resolver.clone(),
+            source_decorators: source_decorators.as_mut_slice(),
+            dependent_join: &dependent_join,
+            memory: &self.memory,
+        })
         .await
     }
 }
@@ -710,6 +715,7 @@ mod tests {
             },
             request_authenticators: HashMap::new(),
             source_input_resolver: None,
+            request_identity_resolver: None,
         };
 
         let runtime = fallback

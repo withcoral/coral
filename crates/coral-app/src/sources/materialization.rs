@@ -301,16 +301,16 @@ fn validate_fingerprint_surfaces(
                 ),
             ));
         }
-        if let Some(expected_sha256) = surface.descriptor.sha256() {
-            if fingerprint_surface.descriptor_sha256 != expected_sha256 {
-                return Err(incompatible_materialization_error(
-                    source_name,
-                    format!(
-                        "surface '{}' descriptor hash fingerprint does not match installed manifest",
-                        surface.id
-                    ),
-                ));
-            }
+        if let Some(expected_sha256) = surface.descriptor.sha256()
+            && fingerprint_surface.descriptor_sha256 != expected_sha256
+        {
+            return Err(incompatible_materialization_error(
+                source_name,
+                format!(
+                    "surface '{}' descriptor hash fingerprint does not match installed manifest",
+                    surface.id
+                ),
+            ));
         }
         let expected = stable_input_declarations_sha256(&surface.inputs)?;
         if fingerprint_surface.input_declarations_sha256 != expected {
@@ -1464,10 +1464,10 @@ dsl_version: 4
 surfaces:
   - id: rest
     namespace_suffix: rest
-	    type: openapi
-	    file: {}
-	    sha256: {}
-	    base_url: https://api.example.com
+    type: openapi
+    file: {}
+    sha256: {}
+    base_url: https://api.example.com
   - id: mcp
     namespace_suffix: mcp
     type: mcp
