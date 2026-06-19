@@ -26,6 +26,7 @@ use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
     TRACE_RESPONSE_MAX_MESSAGE_SIZE,
 };
+use coral_engine::QueryRuntimeContext;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -592,12 +593,9 @@ impl ServerBuilder {
             &extension_context,
             &identity_manager,
         );
-        let source_registry = self
-            .config
-            .source_registry
-            .unwrap_or_else(|| Arc::new(config_store.clone()));
-        let source_manager = SourceManager::new_with_source_registry_and_features(
-            source_registry,
+        let source_manager = source_manager_for_server(
+            self.config.source_registry,
+            &config_store,
             credential_manager.clone(),
             layout.clone(),
             features.clone(),
@@ -612,16 +610,14 @@ impl ServerBuilder {
             .query_runtime_context()
             .with_body_capture_max_bytes(body_capture_max_bytes);
 
-        let query_manager = QueryManager::new_with_options(
+        let query_manager = query_manager_for_server(
             config_store,
             credential_manager,
             query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
-            QueryManagerOptions {
-                features,
-                source_identity_providers,
-            },
+            features,
+            source_identity_providers,
         );
         let trace_service = if telemetry_config.trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
@@ -701,6 +697,50 @@ fn source_identity_providers_for_server(
         .collect();
     providers.push(Arc::new(identity_manager.clone()));
     providers
+}
+
+fn source_registry_for_server(
+    registry: Option<Arc<dyn SourceRegistry>>,
+    config_store: &ConfigStore,
+) -> Arc<dyn SourceRegistry> {
+    registry.unwrap_or_else(|| Arc::new(config_store.clone()))
+}
+
+fn source_manager_for_server(
+    registry: Option<Arc<dyn SourceRegistry>>,
+    config_store: &ConfigStore,
+    credential_manager: CredentialManager,
+    layout: AppStateLayout,
+    features: Features,
+) -> SourceManager {
+    SourceManager::new_with_source_registry_and_features(
+        source_registry_for_server(registry, config_store),
+        credential_manager,
+        layout,
+        features,
+    )
+}
+
+fn query_manager_for_server(
+    config_store: ConfigStore,
+    credential_manager: CredentialManager,
+    query_runtime_context: QueryRuntimeContext,
+    layout: AppStateLayout,
+    engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    features: Features,
+    source_identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
+) -> QueryManager {
+    QueryManager::new_with_options(
+        config_store,
+        credential_manager,
+        query_runtime_context,
+        layout,
+        engine_extensions_providers,
+        QueryManagerOptions {
+            features,
+            source_identity_providers,
+        },
+    )
 }
 
 struct ServerServices {
