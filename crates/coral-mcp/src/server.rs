@@ -1,7 +1,5 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
-use std::sync::{Arc, Mutex};
-
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
@@ -79,53 +77,6 @@ struct EpisodeOpenedValue {
     instructions: &'static str,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum RecipeMcpToolSurfaceChange {
-    FirstObservation,
-    Unchanged,
-    Changed,
-}
-
-#[derive(Debug, PartialEq)]
-struct RecipeMcpToolSurface {
-    tools: Vec<Tool>,
-}
-
-#[derive(Debug)]
-enum RecipeMcpToolSurfaceTracker {
-    Unobserved,
-    Observed(RecipeMcpToolSurface),
-}
-
-impl RecipeMcpToolSurface {
-    fn from_recipes(recipes: &[Recipe]) -> Self {
-        let mut tools = recipes
-            .iter()
-            .flat_map(recipe_mcp_tools)
-            .collect::<Vec<_>>();
-        tools.sort_by(|left, right| left.name.cmp(&right.name));
-        Self { tools }
-    }
-}
-
-impl RecipeMcpToolSurfaceTracker {
-    fn observe(&mut self, surface: RecipeMcpToolSurface) -> RecipeMcpToolSurfaceChange {
-        match self {
-            Self::Unobserved => {
-                *self = Self::Observed(surface);
-                RecipeMcpToolSurfaceChange::FirstObservation
-            }
-            Self::Observed(previous) if *previous == surface => {
-                RecipeMcpToolSurfaceChange::Unchanged
-            }
-            Self::Observed(previous) => {
-                *previous = surface;
-                RecipeMcpToolSurfaceChange::Changed
-            }
-        }
-    }
-}
-
 fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
     serde_json::to_value(value).map_err(|error| tonic::Status::internal(error.to_string()))
 }
@@ -191,7 +142,6 @@ pub(crate) struct CoralMcpServer {
     feedback: FeedbackClient,
     episode: EpisodeClient,
     options: McpOptions,
-    observed_recipe_mcp_tool_surface: Arc<Mutex<RecipeMcpToolSurfaceTracker>>,
 }
 
 impl CoralMcpServer {
@@ -204,9 +154,6 @@ impl CoralMcpServer {
             feedback: app.feedback_client(),
             episode: app.episode_client(),
             options,
-            observed_recipe_mcp_tool_surface: Arc::new(Mutex::new(
-                RecipeMcpToolSurfaceTracker::Unobserved,
-            )),
         }
     }
 
@@ -230,56 +177,6 @@ impl CoralMcpServer {
             .await?
             .into_inner()
             .recipes)
-    }
-
-    fn observe_recipe_mcp_tool_surface(&self, recipes: &[Recipe]) -> RecipeMcpToolSurfaceChange {
-        let surface = RecipeMcpToolSurface::from_recipes(recipes);
-        let mut tracker = self
-            .observed_recipe_mcp_tool_surface
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        tracker.observe(surface)
-    }
-
-    async fn load_recipe_mcp_tools_and_notify_if_changed(
-        &self,
-        context: &RequestContext<RoleServer>,
-    ) -> Result<Vec<Recipe>, tonic::Status> {
-        let recipes = match self.load_recipe_mcp_tools().await {
-            Ok(recipes) => recipes,
-            Err(status) => {
-                tracing::warn!(
-                    detail = %status,
-                    "failed to refresh recipe MCP tool surface"
-                );
-                return Err(status);
-            }
-        };
-        if self.observe_recipe_mcp_tool_surface(&recipes) != RecipeMcpToolSurfaceChange::Changed {
-            return Ok(recipes);
-        }
-        if let Err(error) = context.peer.notify_tool_list_changed().await {
-            tracing::debug!(
-                detail = %error,
-                "failed to send MCP tool-list changed notification"
-            );
-        }
-        Ok(recipes)
-    }
-
-    async fn notify_if_recipe_mcp_tool_surface_changed(
-        &self,
-        context: &RequestContext<RoleServer>,
-    ) {
-        if self
-            .load_recipe_mcp_tools_and_notify_if_changed(context)
-            .await
-            .is_err()
-        {
-            // The refresh path already logged the status. Non-tool calls should
-            // keep serving their primary resource even if recipe inventory is
-            // temporarily unavailable.
-        }
     }
 
     async fn load_catalog(
@@ -897,7 +794,6 @@ impl ServerHandler for CoralMcpServer {
             ServerCapabilities::builder()
                 .enable_resources()
                 .enable_tools()
-                .enable_tool_list_changed()
                 .build(),
         )
         .with_server_info(Implementation::new("coral", env!("CARGO_PKG_VERSION")))
@@ -954,7 +850,6 @@ impl ServerHandler for CoralMcpServer {
                 .load_recipe_mcp_tools()
                 .await
                 .map_err(|status| status_to_error_data(&status))?;
-            self.observe_recipe_mcp_tool_surface(&recipes);
             let mut seen_tools = tools
                 .iter()
                 .map(|tool| tool.name.to_string())
@@ -972,11 +867,9 @@ impl ServerHandler for CoralMcpServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let recipe_mcp_tools = self
-            .load_recipe_mcp_tools_and_notify_if_changed(&context)
-            .await;
+        let recipe_mcp_tools = self.load_recipe_mcp_tools().await;
         let span =
             telemetry::call_tool_span(request.name.as_ref(), self.options.trace_parent.as_deref());
         let inject_episode_metadata = request.name.as_ref() != "open_episode";
@@ -1004,10 +897,8 @@ impl ServerHandler for CoralMcpServer {
     async fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        self.notify_if_recipe_mcp_tool_surface_changed(&context)
-            .await;
         let span = telemetry::list_resources_span(self.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
             let (sources, visible_table_count, visible_function_count) = self
@@ -1025,10 +916,8 @@ impl ServerHandler for CoralMcpServer {
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
-        self.notify_if_recipe_mcp_tool_surface_changed(&context)
-            .await;
         let span = telemetry::read_resource_span(
             request.uri.as_str(),
             self.options.trace_parent.as_deref(),
