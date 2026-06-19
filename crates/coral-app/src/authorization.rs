@@ -135,22 +135,20 @@ pub trait WorkspaceReadAuthorizer: fmt::Debug + Send + Sync + 'static {
         workspace_id: &str,
     ) -> Result<(), AuthorizationError>;
 
-    /// Returns whether every workspace read is allowed without filtering.
+    /// Returns whether reads without recoverable workspace metadata are allowed.
     ///
-    /// Product runtimes should keep the default `false`; the default OSS
-    /// allow-all authorizer overrides this to preserve local single-user
-    /// behavior on loopback transports.
-    fn allows_all_workspace_reads(&self) -> bool {
+    /// Product runtimes should keep the default `false` so records that cannot
+    /// be mapped to a workspace fail closed.
+    fn allows_unscoped_workspace_reads(&self) -> bool {
         false
     }
 
-    /// Returns whether workspace reads may proceed without a scoped workspace
-    /// authorization decision.
+    /// Returns whether every workspace read is allowed without filtering.
     ///
-    /// Product runtimes should keep the default `false`; this lets native gRPC
-    /// public-bind validation reject authorizers that are safe only for local
-    /// single-user transports.
-    fn allows_unscoped_workspace_reads(&self) -> bool {
+    /// Product runtimes should keep the default `false`; the default OSS
+    /// allow-all authorizer overrides this to preserve local single-user trace
+    /// pagination behavior.
+    fn allows_all_workspace_reads(&self) -> bool {
         false
     }
 }
@@ -188,11 +186,11 @@ impl WorkspaceReadAuthorizer for AllowAllWorkspaceReadAuthorizer {
         Ok(())
     }
 
-    fn allows_all_workspace_reads(&self) -> bool {
+    fn allows_unscoped_workspace_reads(&self) -> bool {
         true
     }
 
-    fn allows_unscoped_workspace_reads(&self) -> bool {
+    fn allows_all_workspace_reads(&self) -> bool {
         true
     }
 }

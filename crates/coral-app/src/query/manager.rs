@@ -1295,7 +1295,10 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
-        let service = CatalogService::new(fixture.manager.clone());
+        let service = CatalogService::new(
+            fixture.manager.clone(),
+            Arc::new(AllowAllWorkspaceReadAuthorizer),
+        );
 
         call_catalog_tools_with_episode(&service).await;
 
