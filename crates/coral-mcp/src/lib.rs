@@ -36,6 +36,18 @@ use rmcp::ServiceExt;
 pub use error::McpError;
 pub(crate) use server::CoralMcpServer;
 
+/// Prefix used for recipe-backed MCP tools.
+///
+/// Recipe artifacts author the local target name, while the MCP adapter exposes
+/// it under this namespace to avoid collisions with built-in tools.
+pub const RECIPE_MCP_TOOL_PREFIX: &str = "recipe_";
+
+/// Returns the MCP tool name for a recipe-authored MCP publish target.
+#[must_use]
+pub fn recipe_mcp_tool_name(name: &str) -> String {
+    format!("{RECIPE_MCP_TOOL_PREFIX}{name}")
+}
+
 /// Optional MCP surface features.
 #[derive(Debug, Clone, Default)]
 pub struct McpOptions {

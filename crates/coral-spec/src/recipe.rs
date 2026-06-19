@@ -748,22 +748,8 @@ publish:
 
     #[test]
     fn parse_recipe_yaml_rejects_malformed_mcp_publish_target() {
-        let error = parse_recipe_yaml(
-            r"
-kind: recipe
-name: demo
-implementation:
-  kind: coral_sql
-  query: select 1
-publish:
-  table_function:
-    schema: recipes
-    name: demo
-  mcp:
-    name: Demo
-",
-        )
-        .expect_err("mixed-case mcp target should fail");
+        let error = parse_recipe_yaml(&recipe_yaml_with_mcp_name("Demo"))
+            .expect_err("mixed-case mcp target should fail");
 
         assert_eq!(
             error.to_string(),
@@ -773,7 +759,14 @@ publish:
 
     #[test]
     fn parse_recipe_yaml_allows_builtin_mcp_publish_name() {
-        let spec = parse_recipe_yaml(
+        let spec = parse_recipe_yaml(&recipe_yaml_with_mcp_name("sql"))
+            .expect("built-in MCP names are prefixed by the MCP adapter");
+
+        assert_eq!(spec.publish().mcp.as_ref().expect("mcp").name, "sql");
+    }
+
+    fn recipe_yaml_with_mcp_name(name: &str) -> String {
+        format!(
             r"
 kind: recipe
 name: demo
@@ -785,11 +778,8 @@ publish:
     schema: recipes
     name: demo
   mcp:
-    name: sql
-",
+    name: {name}
+"
         )
-        .expect("built-in MCP names are prefixed by the MCP adapter");
-
-        assert_eq!(spec.publish().mcp.as_ref().expect("mcp").name, "sql");
     }
 }

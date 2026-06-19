@@ -51,7 +51,6 @@ const LIST_CATALOG_COUNT_LIMIT: u32 = 1;
 const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified;
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
-const RECIPE_MCP_TOOL_PREFIX: &str = "recipe_";
 enum ToolCallOutcome {
     Success(Value),
     ToolError {
@@ -242,10 +241,10 @@ impl CoralMcpServer {
         tracker.observe(surface)
     }
 
-    async fn notify_if_recipe_mcp_tool_surface_changed(
+    async fn load_recipe_mcp_tools_and_notify_if_changed(
         &self,
         context: &RequestContext<RoleServer>,
-    ) {
+    ) -> Result<Vec<Recipe>, tonic::Status> {
         let recipes = match self.load_recipe_mcp_tools().await {
             Ok(recipes) => recipes,
             Err(status) => {
@@ -253,17 +252,33 @@ impl CoralMcpServer {
                     detail = %status,
                     "failed to refresh recipe MCP tool surface"
                 );
-                return;
+                return Err(status);
             }
         };
         if self.observe_recipe_mcp_tool_surface(&recipes) != RecipeMcpToolSurfaceChange::Changed {
-            return;
+            return Ok(recipes);
         }
         if let Err(error) = context.peer.notify_tool_list_changed().await {
             tracing::debug!(
                 detail = %error,
                 "failed to send MCP tool-list changed notification"
             );
+        }
+        Ok(recipes)
+    }
+
+    async fn notify_if_recipe_mcp_tool_surface_changed(
+        &self,
+        context: &RequestContext<RoleServer>,
+    ) {
+        if self
+            .load_recipe_mcp_tools_and_notify_if_changed(context)
+            .await
+            .is_err()
+        {
+            // The refresh path already logged the status. Non-tool calls should
+            // keep serving their primary resource even if recipe inventory is
+            // temporarily unavailable.
         }
     }
 
@@ -526,6 +541,7 @@ impl CoralMcpServer {
         &self,
         request: CallToolRequestParams,
         span: &tracing::Span,
+        recipe_mcp_tools: Result<Vec<Recipe>, tonic::Status>,
     ) -> Result<ToolCallOutcome, ErrorData> {
         match request.name.as_ref() {
             "sql" => {
@@ -586,9 +602,7 @@ impl CoralMcpServer {
                 ))
             }
             name => {
-                let Some(recipe) = self
-                    .load_recipe_mcp_tools()
-                    .await
+                let Some(recipe) = recipe_mcp_tools
                     .map_err(|status| status_to_error_data(&status))?
                     .into_iter()
                     .find(|recipe| recipe_has_mcp_tool(recipe, name))
@@ -960,7 +974,8 @@ impl ServerHandler for CoralMcpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.notify_if_recipe_mcp_tool_surface_changed(&context)
+        let recipe_mcp_tools = self
+            .load_recipe_mcp_tools_and_notify_if_changed(&context)
             .await;
         let span =
             telemetry::call_tool_span(request.name.as_ref(), self.options.trace_parent.as_deref());
@@ -974,7 +989,10 @@ impl ServerHandler for CoralMcpServer {
                     .flatten();
                 telemetry::instrument(
                     span.clone(),
-                    with_episode_metadata(episode_id_metadata, self.dispatch_tool(request, &span)),
+                    with_episode_metadata(
+                        episode_id_metadata,
+                        self.dispatch_tool(request, &span, recipe_mcp_tools),
+                    ),
                 )
                 .await
             }

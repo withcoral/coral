@@ -31,7 +31,7 @@ use tempfile::TempDir;
 use tokio::sync::Notify;
 use tonic::Request;
 
-use crate::{CoralMcpServer, McpOptions};
+use crate::{CoralMcpServer, McpOptions, recipe_mcp_tool_name};
 
 fn write_fixture_manifest(root: &Path) -> PathBuf {
     let source_dir = root.join("fixture-source");
@@ -276,10 +276,11 @@ impl TestMcpClient {
     async fn wait_for_tool_list_changed_since(&self, previous: usize) {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
+                let notified = self.tool_list_changed_notify.notified();
                 if self.tool_list_changed_count() > previous {
                     return;
                 }
-                self.tool_list_changed_notify.notified().await;
+                notified.await;
             }
         })
         .await
@@ -395,10 +396,6 @@ async fn remove_demo_recipe(recipe_client: &mut RecipeClient, name: &str) {
         }))
         .await
         .expect("remove recipe");
-}
-
-fn recipe_mcp_tool_name(name: &str) -> String {
-    format!("recipe_{name}")
 }
 
 fn recipe_tool_yaml(name: &str) -> String {
