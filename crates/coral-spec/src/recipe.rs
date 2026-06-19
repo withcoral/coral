@@ -15,14 +15,6 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{ManifestError, Result, validate_identifier};
 
 const RESERVED_TABLE_FUNCTION_SCHEMAS: &[&str] = &["coral", "coral_admin", "__coral_recipes"];
-const RESERVED_MCP_TOOL_NAMES: &[&str] = &[
-    "sql",
-    "list_catalog",
-    "search_catalog",
-    "describe_table",
-    "list_columns",
-    "feedback",
-];
 
 /// Validated recipe artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -405,12 +397,6 @@ fn validate_publish_targets(recipe: &str, publish: &RecipePublishSpec) -> Result
     }
     if let Some(mcp) = &publish.mcp {
         validate_lowercase_identifier(&mcp.name, &format!("recipe '{recipe}' mcp publish name"))?;
-        if RESERVED_MCP_TOOL_NAMES.contains(&mcp.name.as_str()) {
-            return Err(ManifestError::validation(format!(
-                "recipe '{recipe}' mcp publish name '{}' is reserved",
-                mcp.name
-            )));
-        }
     }
     Ok(())
 }
@@ -786,8 +772,8 @@ publish:
     }
 
     #[test]
-    fn parse_recipe_yaml_rejects_reserved_mcp_publish_target() {
-        let error = parse_recipe_yaml(
+    fn parse_recipe_yaml_allows_builtin_mcp_publish_name() {
+        let spec = parse_recipe_yaml(
             r"
 kind: recipe
 name: demo
@@ -802,11 +788,8 @@ publish:
     name: sql
 ",
         )
-        .expect_err("reserved mcp target should fail");
+        .expect("built-in MCP names are prefixed by the MCP adapter");
 
-        assert_eq!(
-            error.to_string(),
-            "recipe 'demo' mcp publish name 'sql' is reserved"
-        );
+        assert_eq!(spec.publish().mcp.as_ref().expect("mcp").name, "sql");
     }
 }

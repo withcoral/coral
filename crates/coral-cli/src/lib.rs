@@ -781,7 +781,7 @@ fn recipe_publish_summary(recipe: &Recipe) -> String {
         targets.push(format!("sql: {}.{}", target.schema, target.name));
     }
     if let Some(target) = publish.mcp.as_ref() {
-        targets.push(format!("mcp: {}", target.name));
+        targets.push(format!("mcp: recipe_{}", target.name));
     }
     if targets.is_empty() {
         "-".to_string()

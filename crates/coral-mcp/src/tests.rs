@@ -397,6 +397,10 @@ async fn remove_demo_recipe(recipe_client: &mut RecipeClient, name: &str) {
         .expect("remove recipe");
 }
 
+fn recipe_mcp_tool_name(name: &str) -> String {
+    format!("recipe_{name}")
+}
+
 fn recipe_tool_yaml(name: &str) -> String {
     format!(
         r"
@@ -713,7 +717,8 @@ publish:
         .expect("add recipe");
 
     let tools = session.client.list_all_tools().await.expect("tools");
-    let recipe_tool = tool_by_name(&tools, "message_lookup");
+    let recipe_tool_name = recipe_mcp_tool_name("message_lookup");
+    let recipe_tool = tool_by_name(&tools, &recipe_tool_name);
     assert!(
         recipe_tool
             .description
@@ -733,7 +738,7 @@ publish:
     let result = session
         .client
         .call_tool(
-            CallToolRequestParams::new("message_lookup").with_arguments(json_object(&json!({
+            CallToolRequestParams::new(recipe_tool_name).with_arguments(json_object(&json!({
                 "kind": "user"
             }))),
         )
@@ -756,9 +761,10 @@ async fn mcp_recipe_tool_rejects_invalid_arguments() {
     )
     .await;
     let client = &session.client;
+    let tool_name = recipe_mcp_tool_name("invalid_recipe_args");
 
     let missing = client
-        .call_tool(CallToolRequestParams::new("invalid_recipe_args"))
+        .call_tool(CallToolRequestParams::new(tool_name.clone()))
         .await
         .expect_err("missing required argument should fail");
     assert!(
@@ -769,7 +775,7 @@ async fn mcp_recipe_tool_rejects_invalid_arguments() {
 
     let unknown = client
         .call_tool(
-            CallToolRequestParams::new("invalid_recipe_args").with_arguments(json_object(&json!({
+            CallToolRequestParams::new(tool_name.clone()).with_arguments(json_object(&json!({
                 "text": "hello",
                 "other": "nope"
             }))),
@@ -784,7 +790,7 @@ async fn mcp_recipe_tool_rejects_invalid_arguments() {
 
     let wrong_type = client
         .call_tool(
-            CallToolRequestParams::new("invalid_recipe_args").with_arguments(json_object(&json!({
+            CallToolRequestParams::new(tool_name.clone()).with_arguments(json_object(&json!({
                 "text": 42
             }))),
         )
@@ -798,7 +804,7 @@ async fn mcp_recipe_tool_rejects_invalid_arguments() {
 
     let null = client
         .call_tool(
-            CallToolRequestParams::new("invalid_recipe_args").with_arguments(json_object(&json!({
+            CallToolRequestParams::new(tool_name).with_arguments(json_object(&json!({
                 "text": null
             }))),
         )
@@ -825,9 +831,11 @@ async fn mcp_recipe_tool_escapes_string_arguments() {
     let result = session
         .client
         .call_tool(
-            CallToolRequestParams::new("escaped_recipe_arg").with_arguments(json_object(&json!({
-                "text": "can't stop"
-            }))),
+            CallToolRequestParams::new(recipe_mcp_tool_name("escaped_recipe_arg")).with_arguments(
+                json_object(&json!({
+                    "text": "can't stop"
+                })),
+            ),
         )
         .await
         .expect("call recipe tool");
@@ -855,7 +863,7 @@ async fn mcp_recipe_tools_skip_stale_runtime_metadata() {
     assert!(
         initial_tools
             .iter()
-            .any(|tool| tool.name == "stale_recipe_tool")
+            .any(|tool| tool.name == "recipe_stale_recipe_tool")
     );
 
     let recipe_file = temp
@@ -887,7 +895,7 @@ async fn mcp_recipe_tools_skip_stale_runtime_metadata() {
     assert!(
         updated_tools
             .iter()
-            .all(|tool| tool.name != "stale_recipe_tool")
+            .all(|tool| tool.name != "recipe_stale_recipe_tool")
     );
 
     session.shutdown().await;
@@ -920,7 +928,7 @@ async fn mcp_notifies_when_recipe_tool_surface_changes_after_add() {
     assert!(
         tools_after_notification
             .iter()
-            .any(|tool| tool.name == "notified_mcp_recipe")
+            .any(|tool| tool.name == "recipe_notified_mcp_recipe")
     );
 
     session.shutdown().await;
@@ -941,7 +949,7 @@ async fn mcp_notifies_when_recipe_tool_surface_changes_after_remove() {
     assert!(
         tools_after_add
             .iter()
-            .any(|tool| tool.name == "removed_mcp_recipe")
+            .any(|tool| tool.name == "recipe_removed_mcp_recipe")
     );
 
     remove_demo_recipe(&mut session.recipe_client, "removed_mcp_recipe").await;
@@ -960,7 +968,7 @@ async fn mcp_notifies_when_recipe_tool_surface_changes_after_remove() {
     assert!(
         tools_after_remove
             .iter()
-            .all(|tool| tool.name != "removed_mcp_recipe")
+            .all(|tool| tool.name != "recipe_removed_mcp_recipe")
     );
 
     session.shutdown().await;
