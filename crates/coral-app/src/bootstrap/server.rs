@@ -1343,7 +1343,10 @@ enabled = false
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let user_owned_identity_manager =
             UserOwnedIdentityManager::new(layout.clone(), identity_spec_manager.clone());
-        let extension_context = ServerExtensionContext::new(user_owned_identity_manager.handle());
+        let extension_context = ServerExtensionContext::new(
+            user_owned_identity_manager.handle(),
+            SourceManagementHandle::new(source_manager.clone()),
+        );
         start_server(ServerServices {
             source_manager,
             query_manager,

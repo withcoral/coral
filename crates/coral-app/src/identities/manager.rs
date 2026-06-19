@@ -579,7 +579,7 @@ impl UserOwnedIdentityManager {
         self.store
             .load_identity(owner, &identity_name)
             .await?
-            .ok_or_else(|| AppError::IdentityNotFound(identity_name))
+            .ok_or_else(|| AppError::IdentityNotFound(identity_name.to_string()))
     }
 
     pub(crate) async fn get_user_owned_identity(
@@ -610,11 +610,10 @@ impl UserOwnedIdentityManager {
         let span = info_span!("coral.app.identities.delete_user_owned");
         let _guard = span.enter();
         let owner = IdentityOwnerKey::for_user_principal(principal)?;
-        let identity_name = validate_identity_name(identity_name)?;
-        if self.delete_identity(&owner, &identity_name).await? {
+        if self.delete_identity(&owner, identity_name).await? {
             Ok(())
         } else {
-            Err(AppError::IdentityNotFound(identity_name))
+            Err(AppError::IdentityNotFound(identity_name.to_string()))
         }
     }
 
