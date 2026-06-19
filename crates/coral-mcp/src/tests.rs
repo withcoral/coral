@@ -6,11 +6,16 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use std::time::Duration;
 
 use coral_api::recipe_mcp_tool_name;
 use coral_api::{
     CORAL_EPISODE_ID_MAX_LEN,
-    v1::{AddRecipeRequest, ImportSourceRequest, import_source_response},
+    v1::{AddRecipeRequest, ImportSourceRequest, RemoveRecipeRequest, import_source_response},
 };
 use coral_client::{
     AppClient, RecipeClient, SourceClient, default_workspace,
@@ -20,10 +25,11 @@ use jsonschema::JSONSchema;
 use rmcp::{
     ClientHandler, RoleClient, ServiceExt,
     model::{CallToolRequestParams, ReadResourceRequestParams, Tool},
-    service::RunningService,
+    service::{MaybeSendFuture, NotificationContext, RunningService},
 };
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
+use tokio::sync::Notify;
 use tonic::Request;
 
 use crate::{CoralMcpServer, McpOptions};
@@ -194,6 +200,7 @@ async fn add_demo_source(source_client: &mut SourceClient, manifest_yaml: String
 struct TestSession {
     source_client: SourceClient,
     recipe_client: RecipeClient,
+    client_handler: TestMcpClient,
     client: RunningService<RoleClient, TestMcpClient>,
     app_server: RunningServer,
     mcp_server_task: tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
@@ -203,6 +210,7 @@ impl TestSession {
     async fn shutdown(self) {
         let Self {
             client,
+            client_handler: _,
             app_server,
             mcp_server_task,
             ..
@@ -248,6 +256,7 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
     TestSession {
         source_client,
         recipe_client,
+        client_handler,
         client,
         app_server: server,
         mcp_server_task,
@@ -255,9 +264,41 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
 }
 
 #[derive(Clone, Default)]
-struct TestMcpClient;
+struct TestMcpClient {
+    tool_list_changed_count: Arc<AtomicUsize>,
+    tool_list_changed_notify: Arc<Notify>,
+}
 
-impl ClientHandler for TestMcpClient {}
+impl TestMcpClient {
+    fn tool_list_changed_count(&self) -> usize {
+        self.tool_list_changed_count.load(Ordering::SeqCst)
+    }
+
+    async fn wait_for_tool_list_changed_since(&self, previous: usize) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let notified = self.tool_list_changed_notify.notified();
+                if self.tool_list_changed_count() > previous {
+                    return;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .expect("MCP client should receive tools/list_changed");
+    }
+}
+
+impl ClientHandler for TestMcpClient {
+    fn on_tool_list_changed(
+        &self,
+        _context: NotificationContext<RoleClient>,
+    ) -> impl std::future::Future<Output = ()> + MaybeSendFuture + '_ {
+        self.tool_list_changed_count.fetch_add(1, Ordering::SeqCst);
+        self.tool_list_changed_notify.notify_waiters();
+        std::future::ready(())
+    }
+}
 
 fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
     match &result.contents[0] {
@@ -346,6 +387,36 @@ async fn add_demo_recipe(recipe_client: &mut RecipeClient, yaml: &str) {
         }))
         .await
         .expect("add recipe");
+}
+
+async fn remove_demo_recipe(recipe_client: &mut RecipeClient, name: &str) {
+    recipe_client
+        .remove_recipe(Request::new(RemoveRecipeRequest {
+            workspace: Some(default_workspace()),
+            name: name.to_string(),
+        }))
+        .await
+        .expect("remove recipe");
+}
+
+fn recipe_tool_yaml(name: &str) -> String {
+    format!(
+        r"
+kind: recipe
+name: {name}
+description: Demo MCP recipe.
+implementation:
+  kind: coral_sql
+  query: |
+    select 1 as id
+publish:
+  table_function:
+    schema: recipes
+    name: {name}
+  mcp:
+    name: {name}
+"
+    )
 }
 
 fn echo_recipe_tool_yaml(name: &str) -> String {
@@ -803,6 +874,17 @@ async fn mcp_recipe_tools_skip_stale_runtime_metadata() {
     )
     .expect("rewrite recipe yaml");
 
+    let previous_notifications = session.client_handler.tool_list_changed_count();
+    session
+        .client
+        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .await
+        .expect("list catalog");
+    session
+        .client_handler
+        .wait_for_tool_list_changed_since(previous_notifications)
+        .await;
+
     let updated_tools = session
         .client
         .list_all_tools()
@@ -812,6 +894,79 @@ async fn mcp_recipe_tools_skip_stale_runtime_metadata() {
         updated_tools
             .iter()
             .all(|tool| tool.name != "recipe_stale_recipe_tool")
+    );
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_notifies_when_recipe_tool_surface_changes_after_add() {
+    let temp = TempDir::new().expect("temp dir");
+    let mut session = start_session(&temp).await;
+    let client = &session.client;
+
+    client.list_all_tools().await.expect("initial tools");
+    add_demo_recipe(
+        &mut session.recipe_client,
+        &recipe_tool_yaml("notified_mcp_recipe"),
+    )
+    .await;
+
+    let previous_notifications = session.client_handler.tool_list_changed_count();
+    client
+        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .await
+        .expect("list catalog");
+    session
+        .client_handler
+        .wait_for_tool_list_changed_since(previous_notifications)
+        .await;
+
+    let tools_after_notification = client.list_all_tools().await.expect("tools after add");
+    assert!(
+        tools_after_notification
+            .iter()
+            .any(|tool| tool.name == "recipe_notified_mcp_recipe")
+    );
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_notifies_when_recipe_tool_surface_changes_after_remove() {
+    let temp = TempDir::new().expect("temp dir");
+    let mut session = start_session(&temp).await;
+    let client = &session.client;
+
+    add_demo_recipe(
+        &mut session.recipe_client,
+        &recipe_tool_yaml("removed_mcp_recipe"),
+    )
+    .await;
+    let tools_after_add = client.list_all_tools().await.expect("tools after add");
+    assert!(
+        tools_after_add
+            .iter()
+            .any(|tool| tool.name == "recipe_removed_mcp_recipe")
+    );
+
+    remove_demo_recipe(&mut session.recipe_client, "removed_mcp_recipe").await;
+
+    let previous_notifications = session.client_handler.tool_list_changed_count();
+    client
+        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .await
+        .expect("list catalog");
+    session
+        .client_handler
+        .wait_for_tool_list_changed_since(previous_notifications)
+        .await;
+
+    let tools_after_remove = client.list_all_tools().await.expect("tools after remove");
+    assert!(
+        tools_after_remove
+            .iter()
+            .all(|tool| tool.name != "recipe_removed_mcp_recipe")
     );
 
     session.shutdown().await;
