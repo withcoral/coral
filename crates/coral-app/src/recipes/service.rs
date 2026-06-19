@@ -3,8 +3,8 @@
 use coral_api::v1::recipe_service_server::RecipeService as RecipeServiceApi;
 use coral_api::v1::{
     AddRecipeRequest, AddRecipeResponse, ListRecipesRequest, ListRecipesResponse, Recipe,
-    RecipeArgument, RecipeOrigin as ProtoRecipeOrigin, RecipePublish, RecipeResultColumn,
-    RecipeTableFunctionPublish, RemoveRecipeRequest, RemoveRecipeResponse, recipe_publish,
+    RecipeArgument, RecipeOrigin as ProtoRecipeOrigin, RecipePublishedSurface, RecipeResultColumn,
+    RecipeTableFunctionPublish, RemoveRecipeRequest, RemoveRecipeResponse, recipe_published_surface,
 };
 use coral_engine::{RecipeRuntimeArgumentType, RecipeRuntimeDefinition, RecipeRuntimePublish};
 use tonic::{Request, Response, Status};
@@ -139,13 +139,13 @@ fn runtime_recipe_to_proto(
     }
 }
 
-fn recipe_publish_to_proto(publish: RecipeRuntimePublish) -> RecipePublish {
-    let target = recipe_publish::Target::TableFunction(RecipeTableFunctionPublish {
+fn recipe_publish_to_proto(publish: RecipeRuntimePublish) -> RecipePublishedSurface {
+    let target = recipe_published_surface::Target::TableFunction(RecipeTableFunctionPublish {
         schema: publish.table_function.schema,
         name: publish.table_function.name,
         description: publish.table_function.description,
     });
-    RecipePublish {
+    RecipePublishedSurface {
         target: Some(target),
     }
 }

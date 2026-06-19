@@ -29,7 +29,7 @@ use clap::{
 use clap_complete::{Shell, generate};
 use coral_api::v1::{
     AddRecipeRequest, ExecuteSqlRequest, ListRecipesRequest, Recipe,
-    RecipeOrigin as ProtoRecipeOrigin, RemoveRecipeRequest, recipe_publish,
+    RecipeOrigin as ProtoRecipeOrigin, RemoveRecipeRequest, recipe_published_surface,
 };
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
@@ -796,7 +796,7 @@ fn recipe_publish_summary(recipe: &Recipe) -> String {
         .publish
         .iter()
         .filter_map(|publish| match publish.target.as_ref()? {
-            recipe_publish::Target::TableFunction(target) => {
+            recipe_published_surface::Target::TableFunction(target) => {
                 Some(format!("sql: {}.{}", target.schema, target.name))
             }
         })

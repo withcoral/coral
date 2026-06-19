@@ -48,8 +48,8 @@ message RecipeTableFunctionPublish {
   string description = 3;
 }
 
-// One public surface requested by a recipe.
-message RecipePublish {
+// One public surface published by a recipe.
+message RecipePublishedSurface {
   // Published target.
   oneof target {
     // SQL table-function publication.
@@ -66,7 +66,7 @@ message Recipe {
   // Declared arguments.
   repeated RecipeArgument arguments = 3;
   // Published surfaces.
-  repeated RecipePublish publish = 4;
+  repeated RecipePublishedSurface publish = 4;
   // Inferred result columns.
   repeated RecipeResultColumn result_columns = 5;
   // Where the installed recipe came from.
