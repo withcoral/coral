@@ -4,7 +4,8 @@ use coral_api::v1::recipe_service_server::RecipeService as RecipeServiceApi;
 use coral_api::v1::{
     AddRecipeRequest, AddRecipeResponse, ListRecipesRequest, ListRecipesResponse, Recipe,
     RecipeArgument, RecipeOrigin as ProtoRecipeOrigin, RecipePublishedSurface, RecipeResultColumn,
-    RecipeTableFunctionPublish, RemoveRecipeRequest, RemoveRecipeResponse, recipe_published_surface,
+    RecipeTableFunctionPublish, RemoveRecipeRequest, RemoveRecipeResponse,
+    recipe_published_surface,
 };
 use coral_engine::{RecipeRuntimeArgumentType, RecipeRuntimeDefinition, RecipeRuntimePublish};
 use tonic::{Request, Response, Status};

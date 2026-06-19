@@ -112,7 +112,8 @@ impl QueryManager {
                 let sources = self
                     .load_query_sources(workspace_name, &config)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self.runtime_config_with_recipes(workspace_name, &sources, &config)?;
+                let runtime =
+                    self.runtime_config_with_recipes(workspace_name, &sources, &config)?;
                 CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -142,7 +143,8 @@ impl QueryManager {
                 let sources = self
                     .load_query_sources(workspace_name, &config)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self.runtime_config_with_recipes(workspace_name, &sources, &config)?;
+                let runtime =
+                    self.runtime_config_with_recipes(workspace_name, &sources, &config)?;
                 CoralQuery::list_catalog(&sources, runtime, schema_filter)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -183,7 +185,8 @@ impl QueryManager {
                 let sources = self
                     .load_query_sources(workspace_name, &config)
                     .map_err(QueryManagerError::App)?;
-                let runtime = self.runtime_config_with_recipes(workspace_name, &sources, &config)?;
+                let runtime =
+                    self.runtime_config_with_recipes(workspace_name, &sources, &config)?;
                 CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -1206,7 +1209,11 @@ publish:
 
         let catalog = fixture
             .manager
-            .list_catalog(&workspace_name, Some("recipes"))
+            .list_catalog(
+                &workspace_name,
+                Some("recipes"),
+                &QueryAttribution::default(),
+            )
             .await
             .expect("catalog");
         let recipe_function = catalog.table_functions.first().expect("recipe function");

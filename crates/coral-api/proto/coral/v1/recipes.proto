@@ -101,7 +101,7 @@ message ListRecipesRequest {
 
 // Installed recipes.
 message ListRecipesResponse {
-  // Recipes visible to the current workspace runtime.
+  // Installed recipe inventory, including disabled or stale recipes.
   repeated Recipe recipes = 1;
 }
 

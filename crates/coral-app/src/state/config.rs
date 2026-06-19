@@ -964,9 +964,8 @@ mod tests {
 
     use super::{
         AppConfig, PersistedAppConfig, PersistedEngineConfig, PersistedMemoryConfig,
-        RawFeatureContainerState, RawFeatureValue, SourceCatalog, load_raw_feature_overrides,
-        render_config, set_raw_feature_override,
-        RecipeCatalog,
+        RawFeatureContainerState, RawFeatureValue, RecipeCatalog, SourceCatalog,
+        load_raw_feature_overrides, render_config, set_raw_feature_override,
     };
     use crate::credentials::CredentialStorageKind;
     use crate::recipes::model::{InstalledRecipe, RecipeName, RecipeOrigin};
