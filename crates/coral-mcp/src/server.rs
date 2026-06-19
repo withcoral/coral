@@ -5,15 +5,14 @@ use std::sync::{Arc, Mutex};
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListRecipesRequest, ListSourcesRequest, PaginationRequest, Recipe, RecipeArgument,
-    SearchCatalogRequest, Source, SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
-    catalog_item, recipe_publish, OpenEpisodeRequest,
+    ListRecipeMcpToolsRequest, ListSourcesRequest, OpenEpisodeRequest, PaginationRequest, Recipe,
+    RecipeArgument, SearchCatalogRequest, Source, SubmitFeedbackRequest,
+    TableSummary as ProtoTableSummary, catalog_item, recipe_published_surface,
 };
 use coral_client::{
     AppClient, CatalogClient, EpisodeClient, FeedbackClient, QueryClient, RecipeClient,
-    SourceClient,
-    batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
-    with_episode_metadata,
+    SourceClient, batches_to_json_rows_json_safe_numbers, decode_execute_sql_response,
+    default_workspace, with_episode_metadata,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -40,8 +39,7 @@ use crate::{
         list_catalog_tool, list_catalog_value, list_columns_arguments, list_columns_tool,
         list_columns_value, open_episode_arguments, open_episode_tool,
         optional_episode_id_argument, required_string_argument, search_catalog_arguments,
-        search_catalog_tool, search_catalog_value, sql_tool, status_to_error_data,
-        tables_resource,
+        search_catalog_tool, search_catalog_value, sql_tool, status_to_error_data, tables_resource,
         tables_resource_content, tool_error_from_status, tool_error_result,
         with_episode_id_argument,
     },
@@ -232,10 +230,10 @@ impl CoralMcpServer {
             .sources)
     }
 
-    async fn load_recipes(&self) -> Result<Vec<Recipe>, tonic::Status> {
+    async fn load_recipe_mcp_tools(&self) -> Result<Vec<Recipe>, tonic::Status> {
         let mut recipe_client = self.recipe.clone();
         Ok(recipe_client
-            .list_recipes(Request::new(ListRecipesRequest {
+            .list_recipe_mcp_tools(Request::new(ListRecipeMcpToolsRequest {
                 workspace: Some(default_workspace()),
             }))
             .await?
@@ -256,7 +254,7 @@ impl CoralMcpServer {
         &self,
         context: &RequestContext<RoleServer>,
     ) {
-        let recipes = match self.load_recipes().await {
+        let recipes = match self.load_recipe_mcp_tools().await {
             Ok(recipes) => recipes,
             Err(status) => {
                 tracing::warn!(
@@ -597,7 +595,7 @@ impl CoralMcpServer {
             }
             name => {
                 let Some(recipe) = self
-                    .load_recipes()
+                    .load_recipe_mcp_tools()
                     .await
                     .map_err(|status| status_to_error_data(&status))?
                     .into_iter()
@@ -678,14 +676,16 @@ fn recipe_mcp_tools(recipe: &Recipe) -> Vec<Tool> {
         .publish
         .iter()
         .filter_map(|publish| match publish.target.as_ref()? {
-            recipe_publish::Target::McpTool(target) if !is_built_in_tool_name(&target.name) => {
+            recipe_published_surface::Target::McpTool(target)
+                if !is_built_in_tool_name(&target.name) =>
+            {
                 Some(Tool::new(
                     target.name.clone(),
                     recipe_tool_description(recipe, &target.description),
                     recipe_input_schema(recipe),
                 ))
             }
-            recipe_publish::Target::McpTool(target) => {
+            recipe_published_surface::Target::McpTool(target) => {
                 tracing::warn!(
                     recipe = %recipe.name,
                     tool = %target.name,
@@ -693,7 +693,7 @@ fn recipe_mcp_tools(recipe: &Recipe) -> Vec<Tool> {
                 );
                 None
             }
-            recipe_publish::Target::TableFunction(_) => None,
+            recipe_published_surface::Target::TableFunction(_) => None,
         })
         .map(|tool| {
             tool.with_raw_output_schema(recipe_output_schema())
@@ -717,7 +717,7 @@ fn recipe_has_mcp_tool(recipe: &Recipe, tool_name: &str) -> bool {
         && recipe.publish.iter().any(|publish| {
             matches!(
                 publish.target.as_ref(),
-                Some(recipe_publish::Target::McpTool(target))
+                Some(recipe_published_surface::Target::McpTool(target))
                     if target.name == tool_name && !is_built_in_tool_name(&target.name)
             )
         })
@@ -783,10 +783,10 @@ fn recipe_table_function(recipe: &Recipe) -> Option<(&str, &str)> {
         .publish
         .iter()
         .find_map(|publish| match publish.target.as_ref()? {
-            recipe_publish::Target::TableFunction(target) => {
+            recipe_published_surface::Target::TableFunction(target) => {
                 Some((target.schema.as_str(), target.name.as_str()))
             }
-            recipe_publish::Target::McpTool(_) => None,
+            recipe_published_surface::Target::McpTool(_) => None,
         })
 }
 
@@ -823,13 +823,15 @@ fn recipe_tool_sql(
         }
         sql_arguments.push(format!(
             "{} => {}",
-            argument.name,
+            quote_sql_identifier(&argument.name),
             recipe_sql_literal(argument, value)?
         ));
     }
 
     Ok(format!(
-        "select * from {schema}.{function}({})",
+        "select * from {}.{}({})",
+        quote_sql_identifier(schema),
+        quote_sql_identifier(function),
         sql_arguments.join(", ")
     ))
 }
@@ -883,6 +885,10 @@ fn recipe_sql_literal(argument: &RecipeArgument, value: &Value) -> Result<String
 
 fn sql_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+fn quote_sql_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 fn recipe_argument_type_error(name: &str, data_type: &str) -> ErrorData {
@@ -952,7 +958,7 @@ impl ServerHandler for CoralMcpServer {
                 tools.push(feedback);
             }
             let recipes = self
-                .load_recipes()
+                .load_recipe_mcp_tools()
                 .await
                 .map_err(|status| status_to_error_data(&status))?;
             self.observe_recipe_mcp_tool_surface(&recipes);

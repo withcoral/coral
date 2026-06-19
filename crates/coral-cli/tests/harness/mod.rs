@@ -25,13 +25,14 @@ use coral_api::v1::{
     DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest,
     ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
     GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListCatalogRequest,
-    ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, ListRecipesRequest,
-    ListRecipesResponse, ListSourcesRequest, ListSourcesResponse, PaginationRequest,
-    PaginationResponse, QueryPlan, RemoveRecipeRequest, RemoveRecipeResponse, SearchCatalogRequest,
-    SearchCatalogResponse, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
-    SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
-    import_source_response, source_input_spec::Input as ProtoSourceInput,
+    ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, ListRecipeMcpToolsRequest,
+    ListRecipeMcpToolsResponse, ListRecipesRequest, ListRecipesResponse, ListSourcesRequest,
+    ListSourcesResponse, PaginationRequest, PaginationResponse, QueryPlan, RemoveRecipeRequest,
+    RemoveRecipeResponse, SearchCatalogRequest, SearchCatalogResponse, Source,
+    SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table,
+    TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    create_bundled_source_with_o_auth_response, import_source_response,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
 use tempfile::TempDir;
@@ -835,6 +836,15 @@ impl RecipeService for MockRecipeService {
         _request: Request<ListRecipesRequest>,
     ) -> Result<Response<ListRecipesResponse>, Status> {
         Ok(Response::new(ListRecipesResponse {
+            recipes: Vec::new(),
+        }))
+    }
+
+    async fn list_recipe_mcp_tools(
+        &self,
+        _request: Request<ListRecipeMcpToolsRequest>,
+    ) -> Result<Response<ListRecipeMcpToolsResponse>, Status> {
+        Ok(Response::new(ListRecipeMcpToolsResponse {
             recipes: Vec::new(),
         }))
     }

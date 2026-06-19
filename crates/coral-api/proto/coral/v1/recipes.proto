@@ -94,6 +94,18 @@ message ListRecipesResponse {
   repeated Recipe recipes = 1;
 }
 
+// Lists recipe-backed MCP tools in one workspace.
+message ListRecipeMcpToolsRequest {
+  // Workspace that scopes recipes and selected sources.
+  Workspace workspace = 1;
+}
+
+// Recipe-backed MCP tools derived from runtime-ready recipes.
+message ListRecipeMcpToolsResponse {
+  // Runtime-ready recipes with non-conflicting MCP presentation targets.
+  repeated Recipe recipes = 1;
+}
+
 // Removes one user recipe.
 message RemoveRecipeRequest {
   // Workspace that owns the recipe.
@@ -111,6 +123,8 @@ service RecipeService {
   rpc AddRecipe(AddRecipeRequest) returns (AddRecipeResponse);
   // Lists installed recipes without runtime validation.
   rpc ListRecipes(ListRecipesRequest) returns (ListRecipesResponse);
+  // Lists recipe-backed MCP tools derived from runtime-ready recipes.
+  rpc ListRecipeMcpTools(ListRecipeMcpToolsRequest) returns (ListRecipeMcpToolsResponse);
   // Removes one user recipe.
   rpc RemoveRecipe(RemoveRecipeRequest) returns (RemoveRecipeResponse);
 }

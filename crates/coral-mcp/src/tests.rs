@@ -417,6 +417,33 @@ publish:
     )
 }
 
+fn echo_recipe_tool_yaml(name: &str) -> String {
+    format!(
+        r"
+kind: recipe
+name: {name}
+description: Echo text through a recipe MCP tool.
+inputs:
+  text:
+    type: string
+    required: true
+implementation:
+  kind: coral_sql
+  query: |
+    select $text as text
+validation:
+  args:
+    text: hello
+publish:
+  table_function:
+    schema: recipes
+    name: {name}
+  mcp:
+    name: {name}
+"
+    )
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -707,6 +734,153 @@ publish:
     let structured = result.structured_content.expect("structured recipe result");
     assert_eq!(structured["rows"], json!([{"text": "hello"}]));
     assert_matches_output_schema(recipe_tool, &structured);
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_recipe_tool_rejects_invalid_arguments() {
+    let temp = TempDir::new().expect("temp dir");
+    let mut session = start_session(&temp).await;
+    add_demo_recipe(
+        &mut session.recipe_client,
+        &echo_recipe_tool_yaml("invalid_recipe_args"),
+    )
+    .await;
+    let client = &session.client;
+
+    let missing = client
+        .call_tool(CallToolRequestParams::new("invalid_recipe_args"))
+        .await
+        .expect_err("missing required argument should fail");
+    assert!(
+        missing
+            .to_string()
+            .contains("missing recipe argument 'text'")
+    );
+
+    let unknown = client
+        .call_tool(
+            CallToolRequestParams::new("invalid_recipe_args").with_arguments(json_object(&json!({
+                "text": "hello",
+                "other": "nope"
+            }))),
+        )
+        .await
+        .expect_err("unknown argument should fail");
+    assert!(
+        unknown
+            .to_string()
+            .contains("unknown recipe argument 'other'")
+    );
+
+    let wrong_type = client
+        .call_tool(
+            CallToolRequestParams::new("invalid_recipe_args").with_arguments(json_object(&json!({
+                "text": 42
+            }))),
+        )
+        .await
+        .expect_err("wrong argument type should fail");
+    assert!(
+        wrong_type
+            .to_string()
+            .contains("recipe argument 'text' must be string")
+    );
+
+    let null = client
+        .call_tool(
+            CallToolRequestParams::new("invalid_recipe_args").with_arguments(json_object(&json!({
+                "text": null
+            }))),
+        )
+        .await
+        .expect_err("null required argument should fail");
+    assert!(
+        null.to_string()
+            .contains("recipe argument 'text' is required and cannot be null")
+    );
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_recipe_tool_escapes_string_arguments() {
+    let temp = TempDir::new().expect("temp dir");
+    let mut session = start_session(&temp).await;
+    add_demo_recipe(
+        &mut session.recipe_client,
+        &echo_recipe_tool_yaml("escaped_recipe_arg"),
+    )
+    .await;
+
+    let result = session
+        .client
+        .call_tool(
+            CallToolRequestParams::new("escaped_recipe_arg").with_arguments(json_object(&json!({
+                "text": "can't stop"
+            }))),
+        )
+        .await
+        .expect("call recipe tool");
+    let structured = result.structured_content.expect("structured recipe result");
+    assert_eq!(structured["rows"], json!([{"text": "can't stop"}]));
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_recipe_tools_skip_stale_runtime_metadata() {
+    let temp = TempDir::new().expect("temp dir");
+    let mut session = start_session(&temp).await;
+    add_demo_recipe(
+        &mut session.recipe_client,
+        &echo_recipe_tool_yaml("stale_recipe_tool"),
+    )
+    .await;
+
+    let initial_tools = session
+        .client
+        .list_all_tools()
+        .await
+        .expect("initial tools");
+    assert!(
+        initial_tools
+            .iter()
+            .any(|tool| tool.name == "stale_recipe_tool")
+    );
+
+    let recipe_file = temp
+        .path()
+        .join("coral-config/workspaces/default/recipes/stale_recipe_tool/recipe.yaml");
+    std::fs::write(
+        recipe_file,
+        echo_recipe_tool_yaml("stale_recipe_tool")
+            .replace("select $text as text", "select $text as changed_text"),
+    )
+    .expect("rewrite recipe yaml");
+
+    let previous_notifications = session.client_handler.tool_list_changed_count();
+    session
+        .client
+        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .await
+        .expect("list catalog");
+    session
+        .client_handler
+        .wait_for_tool_list_changed_since(previous_notifications)
+        .await;
+
+    let updated_tools = session
+        .client
+        .list_all_tools()
+        .await
+        .expect("updated tools");
+    assert!(
+        updated_tools
+            .iter()
+            .all(|tool| tool.name != "stale_recipe_tool")
+    );
 
     session.shutdown().await;
 }

@@ -363,7 +363,6 @@ mod tests {
                     name: "open_pull_requests".to_string(),
                     description: String::new(),
                 },
-                mcp: None,
             },
             result_columns: Vec::new(),
         }

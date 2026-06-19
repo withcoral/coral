@@ -2,7 +2,8 @@
 //!
 //! Recipes are source-neutral task capabilities. This module validates the
 //! artifact shape only; installed-source references, SQL planning, and publish
-//! collisions are checked by the app/runtime layers.
+//! collisions against live catalog objects are checked by the app/runtime
+//! layers.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -14,6 +15,14 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{ManifestError, Result, validate_identifier};
 
 const RESERVED_TABLE_FUNCTION_SCHEMAS: &[&str] = &["coral", "coral_admin", "__coral_recipes"];
+const RESERVED_MCP_TOOL_NAMES: &[&str] = &[
+    "sql",
+    "list_catalog",
+    "search_catalog",
+    "describe_table",
+    "list_columns",
+    "feedback",
+];
 
 /// Validated recipe artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -396,6 +405,12 @@ fn validate_publish_targets(recipe: &str, publish: &RecipePublishSpec) -> Result
     }
     if let Some(mcp) = &publish.mcp {
         validate_lowercase_identifier(&mcp.name, &format!("recipe '{recipe}' mcp publish name"))?;
+        if RESERVED_MCP_TOOL_NAMES.contains(&mcp.name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "recipe '{recipe}' mcp publish name '{}' is reserved",
+                mcp.name
+            )));
+        }
     }
     Ok(())
 }
@@ -767,6 +782,31 @@ publish:
         assert_eq!(
             error.to_string(),
             "recipe 'demo' mcp publish name 'Demo' must be lowercase"
+        );
+    }
+
+    #[test]
+    fn parse_recipe_yaml_rejects_reserved_mcp_publish_target() {
+        let error = parse_recipe_yaml(
+            r"
+kind: recipe
+name: demo
+implementation:
+  kind: coral_sql
+  query: select 1
+publish:
+  table_function:
+    schema: recipes
+    name: demo
+  mcp:
+    name: sql
+",
+        )
+        .expect_err("reserved mcp target should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "recipe 'demo' mcp publish name 'sql' is reserved"
         );
     }
 }

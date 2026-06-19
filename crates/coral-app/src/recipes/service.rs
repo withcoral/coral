@@ -2,9 +2,10 @@
 
 use coral_api::v1::recipe_service_server::RecipeService as RecipeServiceApi;
 use coral_api::v1::{
-    AddRecipeRequest, AddRecipeResponse, ListRecipesRequest, ListRecipesResponse, Recipe,
-    RecipeArgument, RecipeMcpToolPublish, RecipePublish, RecipeResultColumn,
-    RecipeTableFunctionPublish, RemoveRecipeRequest, RemoveRecipeResponse,
+    AddRecipeRequest, AddRecipeResponse, ListRecipeMcpToolsRequest, ListRecipeMcpToolsResponse,
+    ListRecipesRequest, ListRecipesResponse, Recipe, RecipeArgument, RecipeMcpToolPublish,
+    RecipePublish, RecipeResultColumn, RecipeTableFunctionPublish, RemoveRecipeRequest,
+    RemoveRecipeResponse,
 };
 use coral_engine::{
     RecipeRuntimeArgumentType, RecipeRuntimeDefinition, RecipeRuntimeMcpToolPublish,
@@ -75,6 +76,26 @@ impl RecipeServiceApi for RecipeService {
                 .map(recipe_listing_to_proto)
                 .collect();
             Ok(Response::new(ListRecipesResponse { recipes }))
+        })
+        .await
+    }
+
+    async fn list_recipe_mcp_tools(
+        &self,
+        request: Request<ListRecipeMcpToolsRequest>,
+    ) -> Result<Response<ListRecipeMcpToolsResponse>, Status> {
+        let span = grpc_span(&request);
+        let queries = self.queries.clone();
+        instrument_grpc(span, async move {
+            let inner = request.into_inner();
+            let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            let recipes = queries
+                .list_recipe_mcp_tools(&workspace_name)
+                .map_err(query_status)?
+                .into_iter()
+                .map(recipe_listing_to_proto)
+                .collect();
+            Ok(Response::new(ListRecipeMcpToolsResponse { recipes }))
         })
         .await
     }

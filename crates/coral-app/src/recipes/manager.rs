@@ -1,6 +1,6 @@
 //! Owns user-installed recipe files and workspace inventory.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -42,6 +42,15 @@ struct RecipeArtifact {
 pub(crate) struct RecipeListing {
     /// Runtime definition for the recipe.
     pub(crate) definition: RecipeRuntimeDefinition,
+    /// Optional MCP tool presentation for this recipe.
+    pub(crate) mcp: Option<RecipeMcpPresentation>,
+}
+
+/// App-owned MCP presentation metadata for one recipe.
+#[derive(Debug, Clone)]
+pub(crate) struct RecipeMcpPresentation {
+    pub(crate) name: String,
+    pub(crate) description: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -201,15 +210,22 @@ impl RecipeManager {
             AppError::InvalidInput(format!("recipe validation failed: {error}"))
         })?;
         let recipe_name = RecipeName::parse(spec.name())?;
-        let mut publish_targets = source_publish_targets(selected_sources);
-        self.record_installed_recipe_publish_targets(
+        let mut sql_publish_targets = source_sql_publish_targets(selected_sources);
+        self.record_installed_recipe_sql_publish_targets(
             workspace_name,
             &recipe_name,
-            &mut publish_targets,
+            &mut sql_publish_targets,
+        )?;
+        let mut mcp_publish_targets = HashSet::new();
+        self.record_installed_recipe_mcp_publish_targets(
+            workspace_name,
+            &recipe_name,
+            &mut mcp_publish_targets,
         )?;
         let runtime_recipe =
             validate_runtime_recipe(selected_sources, runtime_config()?, &spec).await?;
-        record_publish_targets(&runtime_recipe, &mut publish_targets)?;
+        record_sql_publish_target(&runtime_recipe, &mut sql_publish_targets)?;
+        record_mcp_publish_target(spec.publish(), &mut mcp_publish_targets)?;
         Ok(runtime_recipe)
     }
 
@@ -242,7 +258,10 @@ impl RecipeManager {
                 &artifact.raw_yaml,
                 &runtime_validation_arguments(&spec),
             );
-            recipes.push(RecipeListing { definition: recipe });
+            recipes.push(RecipeListing {
+                mcp: recipe_mcp_presentation(&spec),
+                definition: recipe,
+            });
         }
         Ok(recipes)
     }
@@ -252,13 +271,35 @@ impl RecipeManager {
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
     ) -> Result<Vec<RecipeRuntimeDefinition>, AppError> {
+        Ok(self
+            .list_runtime_recipe_listings(workspace_name, selected_sources)?
+            .into_iter()
+            .map(|listing| listing.definition)
+            .collect())
+    }
+
+    pub(crate) fn list_recipe_mcp_tools(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[QuerySource],
+    ) -> Result<Vec<RecipeListing>, AppError> {
+        let runtime_recipes =
+            self.list_runtime_recipe_listings(workspace_name, selected_sources)?;
+        Ok(filter_presentable_recipe_mcp_tools(runtime_recipes))
+    }
+
+    fn list_runtime_recipe_listings(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[QuerySource],
+    ) -> Result<Vec<RecipeListing>, AppError> {
         let artifacts = self.load_recipe_artifacts(workspace_name)?;
         if artifacts.is_empty() {
             return Ok(Vec::new());
         }
 
         let mut seen_names = HashSet::new();
-        let mut publish_targets = source_publish_targets(selected_sources);
+        let mut sql_publish_targets = source_sql_publish_targets(selected_sources);
         let mut runtime_recipes = Vec::new();
         for artifact in artifacts {
             if !seen_names.insert(artifact.name.clone()) {
@@ -289,11 +330,15 @@ impl RecipeManager {
                 );
                 continue;
             }
-            if let Err(error) = record_publish_targets(&runtime_recipe, &mut publish_targets) {
+            if let Err(error) = record_sql_publish_target(&runtime_recipe, &mut sql_publish_targets)
+            {
                 skip_recipe(&artifact, format_args!("{error}"));
                 continue;
             }
-            runtime_recipes.push(runtime_recipe);
+            runtime_recipes.push(RecipeListing {
+                mcp: recipe_mcp_presentation(&spec),
+                definition: runtime_recipe,
+            });
         }
         Ok(runtime_recipes)
     }
@@ -359,11 +404,11 @@ impl RecipeManager {
         Ok(artifacts)
     }
 
-    fn record_installed_recipe_publish_targets(
+    fn record_installed_recipe_sql_publish_targets(
         &self,
         workspace_name: &WorkspaceName,
         replacing_recipe: &RecipeName,
-        publish_targets: &mut HashSet<PublishTarget>,
+        publish_targets: &mut HashSet<SqlPublishTarget>,
     ) -> Result<(), AppError> {
         let mut seen_names = HashSet::new();
         for artifact in self.load_recipe_artifacts(workspace_name)? {
@@ -383,7 +428,35 @@ impl RecipeManager {
                 ))
             })?;
             let runtime_recipe = runtime_recipe_without_columns(&spec);
-            record_publish_targets(&runtime_recipe, publish_targets)?;
+            record_sql_publish_target(&runtime_recipe, publish_targets)?;
+        }
+        Ok(())
+    }
+
+    fn record_installed_recipe_mcp_publish_targets(
+        &self,
+        workspace_name: &WorkspaceName,
+        replacing_recipe: &RecipeName,
+        publish_targets: &mut HashSet<McpPublishTarget>,
+    ) -> Result<(), AppError> {
+        let mut seen_names = HashSet::new();
+        for artifact in self.load_recipe_artifacts(workspace_name)? {
+            if artifact.name == *replacing_recipe {
+                continue;
+            }
+            if !seen_names.insert(artifact.name.clone()) {
+                return Err(AppError::FailedPrecondition(format!(
+                    "recipe '{}' is installed more than once",
+                    artifact.name
+                )));
+            }
+            let spec = parse_recipe_yaml(&artifact.raw_yaml).map_err(|error| {
+                AppError::FailedPrecondition(format!(
+                    "installed recipe '{}' is invalid: {error}",
+                    artifact.name
+                ))
+            })?;
+            record_mcp_publish_target(spec.publish(), publish_targets)?;
         }
         Ok(())
     }
@@ -463,52 +536,72 @@ fn skip_recipe(artifact: &RecipeArtifact, detail: fmt::Arguments<'_>) {
     );
 }
 
-fn source_publish_targets(selected_sources: &[QuerySource]) -> HashSet<PublishTarget> {
+fn filter_presentable_recipe_mcp_tools(recipes: Vec<RecipeListing>) -> Vec<RecipeListing> {
+    let mut target_counts = HashMap::new();
+    for listing in &recipes {
+        if let Some(mcp) = &listing.mcp {
+            let target = McpPublishTarget::new(&mcp.name);
+            *target_counts.entry(target).or_insert(0usize) += 1;
+        }
+    }
+
+    recipes
+        .into_iter()
+        .filter_map(|listing| {
+            let Some(mcp) = &listing.mcp else {
+                return None;
+            };
+            let target = McpPublishTarget::new(&mcp.name);
+            if target_counts.get(&target).copied() == Some(1) {
+                return Some(listing);
+            }
+            tracing::warn!(
+                recipe = %listing.definition.name,
+                tool = %mcp.name,
+                "skipping recipe MCP tool because its publish target is installed more than once"
+            );
+            None
+        })
+        .collect()
+}
+
+fn source_sql_publish_targets(selected_sources: &[QuerySource]) -> HashSet<SqlPublishTarget> {
     let mut targets = HashSet::new();
     for source in selected_sources {
         for component in source.components() {
-            record_source_component_targets(component, &mut targets);
+            record_source_component_sql_targets(component, &mut targets);
         }
     }
     targets
 }
 
-fn record_source_component_targets(
+fn record_source_component_sql_targets(
     component: &RuntimeSourceComponent,
-    targets: &mut HashSet<PublishTarget>,
+    targets: &mut HashSet<SqlPublishTarget>,
 ) {
     match component {
         RuntimeSourceComponent::Http(manifest) => {
             for table in &manifest.tables {
-                targets.insert(PublishTarget::sql_relation(
-                    &manifest.common.name,
-                    table.name(),
-                ));
+                targets.insert(SqlPublishTarget::new(&manifest.common.name, table.name()));
             }
             for function in &manifest.functions {
-                targets.insert(PublishTarget::sql_relation(
-                    &manifest.common.name,
-                    &function.name,
-                ));
+                targets.insert(SqlPublishTarget::new(&manifest.common.name, &function.name));
             }
         }
         RuntimeSourceComponent::File(manifest) => {
             for table in &manifest.tables {
-                targets.insert(PublishTarget::sql_relation(
-                    &manifest.common.name,
-                    table.name(),
-                ));
+                targets.insert(SqlPublishTarget::new(&manifest.common.name, table.name()));
             }
         }
         RuntimeSourceComponent::Mcp(manifest) => {
             for table in &manifest.tables {
-                targets.insert(PublishTarget::sql_relation(
+                targets.insert(SqlPublishTarget::new(
                     &manifest.common.name,
                     &table.common.name,
                 ));
             }
             for function in &manifest.functions {
-                targets.insert(PublishTarget::sql_relation(
+                targets.insert(SqlPublishTarget::new(
                     &manifest.common.name,
                     &function.common.name,
                 ));
@@ -626,11 +719,21 @@ fn runtime_publish(spec: &RecipePublishSpec) -> RecipeRuntimePublish {
     }
 }
 
-fn record_publish_targets(
+fn recipe_mcp_presentation(spec: &RecipeSpec) -> Option<RecipeMcpPresentation> {
+    spec.publish()
+        .mcp
+        .as_ref()
+        .map(|mcp| RecipeMcpPresentation {
+            name: mcp.name.clone(),
+            description: mcp.description.clone(),
+        })
+}
+
+fn record_sql_publish_target(
     recipe: &RecipeRuntimeDefinition,
-    publish_targets: &mut HashSet<PublishTarget>,
+    publish_targets: &mut HashSet<SqlPublishTarget>,
 ) -> Result<(), AppError> {
-    let target = PublishTarget::sql_relation(
+    let target = SqlPublishTarget::new(
         &recipe.publish.table_function.schema,
         &recipe.publish.table_function.name,
     );
@@ -643,23 +746,55 @@ fn record_publish_targets(
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum PublishTarget {
-    SqlRelation { schema: String, name: String },
+fn record_mcp_publish_target(
+    publish: &RecipePublishSpec,
+    publish_targets: &mut HashSet<McpPublishTarget>,
+) -> Result<(), AppError> {
+    if let Some(mcp) = &publish.mcp {
+        let target = McpPublishTarget::new(&mcp.name);
+        if !publish_targets.insert(target.clone()) {
+            return Err(AppError::FailedPrecondition(format!(
+                "recipe publish target '{}' is installed more than once",
+                target.display_name()
+            )));
+        }
+    }
+    Ok(())
 }
 
-impl PublishTarget {
-    fn sql_relation(schema: &str, name: &str) -> Self {
-        Self::SqlRelation {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SqlPublishTarget {
+    schema: String,
+    name: String,
+}
+
+impl SqlPublishTarget {
+    fn new(schema: &str, name: &str) -> Self {
+        Self {
             schema: schema.to_ascii_lowercase(),
             name: name.to_ascii_lowercase(),
         }
     }
 
     fn display_name(&self) -> String {
-        match self {
-            Self::SqlRelation { schema, name } => format!("{schema}.{name}"),
+        format!("{}.{}", self.schema, self.name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct McpPublishTarget {
+    name: String,
+}
+
+impl McpPublishTarget {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_ascii_lowercase(),
         }
+    }
+
+    fn display_name(&self) -> String {
+        format!("mcp tool {}", self.name)
     }
 }
 
@@ -759,6 +894,31 @@ publish:
   table_function:
     schema: {schema}
     name: {function}
+"
+        )
+    }
+
+    fn recipe_yaml_with_publish_and_mcp(
+        name: &str,
+        publish_target: &str,
+        mcp_tool: &str,
+    ) -> String {
+        let (schema, function) = publish_target
+            .split_once('.')
+            .expect("publish target should be schema.name");
+        format!(
+            r"
+kind: recipe
+name: {name}
+implementation:
+  kind: coral_sql
+  query: select 1 as id
+publish:
+  table_function:
+    schema: {schema}
+    name: {function}
+  mcp:
+    name: {mcp_tool}
 "
         )
     }
@@ -891,6 +1051,90 @@ publish:
             error,
             AppError::FailedPrecondition(message) if message.contains("recipes.shared_queue")
         ));
+    }
+
+    #[tokio::test]
+    async fn validate_user_recipe_yaml_rejects_installed_mcp_publish_collision() {
+        let (_temp, _layout, _config_store, manager) = fixture();
+        let workspace = workspace();
+        let existing_yaml = recipe_yaml_with_publish_and_mcp(
+            "existing_queue",
+            "recipes.existing_queue",
+            "shared_queue",
+        );
+        manager
+            .install_validated_user_recipe(
+                &workspace,
+                &existing_yaml,
+                &validated_recipe(&existing_yaml),
+            )
+            .expect("install existing recipe");
+
+        let error = manager
+            .validate_user_recipe_yaml(
+                &workspace,
+                &[],
+                || Ok(QueryRuntimeConfig::default()),
+                &recipe_yaml_with_publish_and_mcp("new_queue", "recipes.new_queue", "shared_queue"),
+            )
+            .await
+            .expect_err("mcp collision should fail validation");
+
+        assert!(matches!(
+            error,
+            AppError::FailedPrecondition(message) if message.contains("mcp tool shared_queue")
+        ));
+    }
+
+    #[test]
+    fn load_runtime_recipes_allows_duplicate_mcp_names_when_sql_targets_are_unique() {
+        let (_temp, _layout, _config_store, manager) = fixture();
+        let workspace = workspace();
+        let first_yaml =
+            recipe_yaml_with_publish_and_mcp("first_queue", "recipes.first_queue", "shared_queue");
+        let second_yaml = recipe_yaml_with_publish_and_mcp(
+            "second_queue",
+            "recipes.second_queue",
+            "shared_queue",
+        );
+        install_fixture_recipe(&manager, &workspace, &first_yaml);
+        install_fixture_recipe(&manager, &workspace, &second_yaml);
+
+        let runtime_recipes = manager
+            .load_runtime_recipes(&workspace, &[])
+            .expect("load runtime recipes");
+
+        assert_eq!(
+            runtime_recipes
+                .iter()
+                .map(|recipe| recipe.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first_queue", "second_queue"]
+        );
+    }
+
+    #[test]
+    fn list_recipe_mcp_tools_drops_duplicate_mcp_names() {
+        let (_temp, _layout, _config_store, manager) = fixture();
+        let workspace = workspace();
+        let first_yaml =
+            recipe_yaml_with_publish_and_mcp("first_queue", "recipes.first_queue", "shared_queue");
+        let second_yaml = recipe_yaml_with_publish_and_mcp(
+            "second_queue",
+            "recipes.second_queue",
+            "shared_queue",
+        );
+        install_fixture_recipe(&manager, &workspace, &first_yaml);
+        install_fixture_recipe(&manager, &workspace, &second_yaml);
+
+        let mcp_tools = manager
+            .list_recipe_mcp_tools(&workspace, &[])
+            .expect("list recipe MCP tools");
+
+        assert!(
+            mcp_tools.is_empty(),
+            "duplicate MCP tool names should not expose an arbitrary recipe"
+        );
     }
 
     #[test]

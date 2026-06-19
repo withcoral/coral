@@ -435,6 +435,22 @@ impl QueryManager {
             .map_err(QueryManagerError::App)
     }
 
+    pub(crate) fn list_recipe_mcp_tools(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<RecipeListing>, QueryManagerError> {
+        let config = self
+            .config_store
+            .load_config()
+            .map_err(QueryManagerError::App)?;
+        let sources = self
+            .load_query_sources(workspace_name, &config)
+            .map_err(QueryManagerError::App)?;
+        self.recipe_manager
+            .list_recipe_mcp_tools(workspace_name, &sources)
+            .map_err(QueryManagerError::App)
+    }
+
     pub(crate) fn recipe_manager(&self) -> RecipeManager {
         self.recipe_manager.clone()
     }
