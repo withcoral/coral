@@ -2155,7 +2155,7 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = source_manager_with_dsl_v4(config_store, credential_manager, layout);
+        let manager = SourceManager::new(config_store, credential_manager, layout);
         let (event_tx, mut event_rx) = import_event_channel();
 
         let error = manager
