@@ -2098,7 +2098,7 @@ audience:
             .expect("validate metadata")
             .expect("identity");
 
-        assert_eq!(validated.name.as_str(), "github_local");
+        assert_eq!(validated.name, identity_name);
         identity_specs
             .remove_identity_spec("github_pat", true)
             .expect("force remove spec");
@@ -2131,9 +2131,10 @@ audience:
         );
         let manager = IdentityManager::new(layout, identity_specs);
         let owner = local_owner();
+        let identity_name = github_local_name();
         let record = IdentityRecord {
             owner: owner.clone(),
-            name: github_local_name(),
+            name: identity_name.clone(),
             identity_spec: manifest.name.clone(),
             identity_spec_fingerprint: Some(
                 identity_spec_fingerprint(&manifest).expect("fingerprint"),
