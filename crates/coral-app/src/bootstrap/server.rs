@@ -47,7 +47,7 @@ use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::episode::service::EpisodeService;
 use crate::episode::store::EpisodeStore;
-use crate::features::FeatureOverrides;
+use crate::features::{FeatureOverrides, Features};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
@@ -555,32 +555,25 @@ impl ServerBuilder {
                 store: Arc::clone(store),
             }));
         }
-        let identity_spec_manager = if let Some(registry) = self.config.identity_spec_registry {
-            IdentitySpecManager::new_with_registry(
-                layout.clone(),
-                registry,
-                features.clone(),
-                identity_spec_usage_providers,
-            )
-        } else {
-            IdentitySpecManager::new_with_credential_store(
-                layout.clone(),
-                credential_store,
-                features.clone(),
-                identity_spec_usage_providers,
-            )
-        };
+        let identity_spec_manager = identity_spec_manager_for_server(
+            layout.clone(),
+            self.config.identity_spec_registry,
+            credential_store,
+            features.clone(),
+            identity_spec_usage_providers,
+        );
         let identity_manager = identity_manager_for_server(
             layout.clone(),
             identity_spec_manager.clone(),
             identity_store,
         );
         let extension_context = ServerExtensionContext::new(identity_manager.handle());
-        let mut source_identity_providers = self.config.source_identity_providers;
-        for source_identity_provider_factory in self.config.source_identity_provider_factories {
-            source_identity_providers.push(source_identity_provider_factory(&extension_context));
-        }
-        source_identity_providers.push(Arc::new(identity_manager.clone()));
+        let source_identity_providers = source_identity_providers_for_server(
+            self.config.source_identity_providers,
+            self.config.source_identity_provider_factories,
+            &extension_context,
+            &identity_manager,
+        );
         let source_manager = SourceManager::new_with_features(
             config_store.clone(),
             credential_manager.clone(),
@@ -653,6 +646,41 @@ impl IdentitySpecUsageProvider for IdentityStoreUsageProvider {
     fn count_identities_for_spec(&self, identity_spec_name: &str) -> Result<u32, AppError> {
         self.store.count_identities_for_spec(identity_spec_name)
     }
+}
+
+fn identity_spec_manager_for_server(
+    layout: AppStateLayout,
+    registry: Option<Arc<dyn IdentitySpecRegistry>>,
+    credential_store: CredentialStore,
+    features: Features,
+    usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
+) -> IdentitySpecManager {
+    match registry {
+        Some(registry) => {
+            IdentitySpecManager::new_with_registry(layout, registry, features, usage_providers)
+        }
+        None => IdentitySpecManager::new_with_credential_store(
+            layout,
+            credential_store,
+            features,
+            usage_providers,
+        ),
+    }
+}
+
+fn source_identity_providers_for_server(
+    mut providers: Vec<Arc<dyn SourceIdentityProvider>>,
+    factories: Vec<SourceIdentityProviderFactory>,
+    extension_context: &ServerExtensionContext,
+    identity_manager: &IdentityManager,
+) -> Vec<Arc<dyn SourceIdentityProvider>> {
+    providers.extend(
+        factories
+            .into_iter()
+            .map(|factory| factory(extension_context)),
+    );
+    providers.push(Arc::new(identity_manager.clone()));
+    providers
 }
 
 struct ServerServices {
