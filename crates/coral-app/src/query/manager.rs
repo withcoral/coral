@@ -11,12 +11,14 @@ use coral_engine::{
     SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
-use opentelemetry::{KeyValue, trace::Status as OtelStatus};
+use opentelemetry::trace::Status as OtelStatus;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
+use crate::episode::EpisodeId;
+use crate::query::QueryAttribution;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
@@ -27,7 +29,7 @@ use crate::sources::materialization::{
 };
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_components_for_v4_source;
-use crate::state::{AppStateLayout, ConfigStore};
+use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug)]
@@ -73,10 +75,16 @@ impl QueryManager {
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
-        let sources = self
-            .load_query_sources(workspace_name)
+        let config = self
+            .config_store
+            .load_config()
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(workspace_name, &sources);
+        let sources = self
+            .load_query_sources(workspace_name, &config)
+            .map_err(QueryManagerError::App)?;
+        let runtime = self
+            .runtime_config(workspace_name, &sources, &config)
+            .map_err(QueryManagerError::App)?;
         CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
             .await
             .map_err(QueryManagerError::Core)
@@ -87,10 +95,16 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, QueryManagerError> {
-        let sources = self
-            .load_query_sources(workspace_name)
+        let config = self
+            .config_store
+            .load_config()
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(workspace_name, &sources);
+        let sources = self
+            .load_query_sources(workspace_name, &config)
+            .map_err(QueryManagerError::App)?;
+        let runtime = self
+            .runtime_config(workspace_name, &sources, &config)
+            .map_err(QueryManagerError::App)?;
         CoralQuery::list_catalog(&sources, runtime, schema_filter)
             .await
             .map_err(QueryManagerError::Core)
@@ -102,10 +116,16 @@ impl QueryManager {
         schema_name: &str,
         table_name: &str,
     ) -> Result<DescribeTableInfo, QueryManagerError> {
-        let sources = self
-            .load_query_sources(workspace_name)
+        let config = self
+            .config_store
+            .load_config()
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(workspace_name, &sources);
+        let sources = self
+            .load_query_sources(workspace_name, &config)
+            .map_err(QueryManagerError::App)?;
+        let runtime = self
+            .runtime_config(workspace_name, &sources, &config)
+            .map_err(QueryManagerError::App)?;
         CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
             .await
             .map_err(QueryManagerError::Core)
@@ -115,16 +135,24 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         sql: &str,
+        attribution: &QueryAttribution,
     ) -> Result<QueryExecution, QueryManagerError> {
         run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
             sql,
+            attribution.episode_id.as_ref(),
             async {
-                let sources = self
-                    .load_query_sources(workspace_name)
+                let config = self
+                    .config_store
+                    .load_config()
                     .map_err(QueryManagerError::App)?;
-                let runtime = self.runtime_config(workspace_name, &sources);
+                let sources = self
+                    .load_query_sources(workspace_name, &config)
+                    .map_err(QueryManagerError::App)?;
+                let runtime = self
+                    .runtime_config(workspace_name, &sources, &config)
+                    .map_err(QueryManagerError::App)?;
                 CoralQuery::execute_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -138,16 +166,24 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         sql: &str,
+        attribution: &QueryAttribution,
     ) -> Result<QueryPlan, QueryManagerError> {
         run_query_operation(
             QueryOperation::ExplainSql,
             workspace_name,
             sql,
+            attribution.episode_id.as_ref(),
             async {
-                let sources = self
-                    .load_query_sources(workspace_name)
+                let config = self
+                    .config_store
+                    .load_config()
                     .map_err(QueryManagerError::App)?;
-                let runtime = self.runtime_config(workspace_name, &sources);
+                let sources = self
+                    .load_query_sources(workspace_name, &config)
+                    .map_err(QueryManagerError::App)?;
+                let runtime = self
+                    .runtime_config(workspace_name, &sources, &config)
+                    .map_err(QueryManagerError::App)?;
                 CoralQuery::explain_sql(&sources, runtime, sql)
                     .await
                     .map_err(QueryManagerError::Core)
@@ -162,14 +198,20 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<ValidatedSource, QueryManagerError> {
-        let source = self
+        let config = self
             .config_store
+            .load_config()
+            .map_err(QueryManagerError::App)?;
+        let source = config
             .get_source(workspace_name, source_name)
+            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
             .map_err(QueryManagerError::App)?;
         let (query_source, version) = self
             .load_query_source(workspace_name, &source)
             .map_err(QueryManagerError::App)?;
-        let runtime = self.runtime_config(workspace_name, std::slice::from_ref(&query_source));
+        let runtime = self
+            .runtime_config(workspace_name, std::slice::from_ref(&query_source), &config)
+            .map_err(QueryManagerError::App)?;
         let report =
             CoralQuery::validate_source(&query_source, runtime, query_source.test_queries())
                 .await
@@ -183,6 +225,7 @@ impl QueryManager {
     fn load_query_sources(
         &self,
         workspace_name: &WorkspaceName,
+        config: &AppConfig,
     ) -> Result<Vec<QuerySource>, AppError> {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
@@ -190,9 +233,8 @@ impl QueryManager {
             source.count = tracing::field::Empty,
         );
         let _guard = span.enter();
-        let catalog = self.config_store.load_catalog()?;
         let mut query_sources = Vec::new();
-        for source in catalog.workspace_sources(workspace_name) {
+        for source in config.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
                 Err(
@@ -298,7 +340,8 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
-    ) -> QueryRuntimeConfig {
+        config: &AppConfig,
+    ) -> Result<QueryRuntimeConfig, AppError> {
         let mut extensions =
             engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources);
         let provider_input_resolver = extensions.source_input_resolver.take();
@@ -308,7 +351,16 @@ impl QueryManager {
             self.credential_manager.clone(),
             provider_input_resolver,
         )));
-        QueryRuntimeConfig::new(self.runtime_context.clone(), extensions)
+        let mut runtime_context = self.runtime_context.clone();
+        runtime_context.trace_context = Some(tracing::Span::current().context());
+        let mut runtime = QueryRuntimeConfig::new(runtime_context, extensions);
+        let selected_source_names = selected_sources
+            .iter()
+            .map(|source| source.source_name().to_string())
+            .collect::<Vec<_>>();
+        runtime.memory = config.memory_config()?;
+        runtime.dependent_join = config.dependent_join_config(&selected_source_names)?;
+        Ok(runtime)
     }
 }
 
@@ -331,6 +383,7 @@ async fn run_query_operation<T, Fut, RowCount>(
     operation: QueryOperation,
     workspace_name: &WorkspaceName,
     sql: &str,
+    episode_id: Option<&EpisodeId>,
     query: Fut,
     row_count: RowCount,
 ) -> Result<T, QueryManagerError>
@@ -339,23 +392,22 @@ where
     RowCount: FnOnce(&T) -> Option<u64>,
 {
     let started_at = Instant::now();
-    let query_span = create_query_span(operation, workspace_name, sql);
+    let query_span = create_query_span(operation, workspace_name, sql, episode_id);
     let result = query.instrument(query_span.clone()).await;
 
-    let metrics = crate::telemetry::metrics::metrics();
-    let status = crate::telemetry::metrics::status_attr(result.is_ok());
-    let attributes = [status, KeyValue::new("operation", operation.as_str())];
-    metrics.count.add(1, &attributes);
-    metrics
-        .duration
-        .record(started_at.elapsed().as_secs_f64(), &attributes);
+    let row_count = result.as_ref().ok().and_then(row_count);
+    crate::telemetry::metrics::metrics().record_query(
+        operation.as_str(),
+        started_at.elapsed(),
+        row_count,
+        result.is_ok(),
+    );
 
-    if let Ok(value) = &result {
+    if result.is_ok() {
         query_span.record("status", "ok");
         query_span.set_status(OtelStatus::Ok);
-        if let Some(row_count) = row_count(value) {
+        if let Some(row_count) = row_count {
             query_span.record("row_count", row_count);
-            metrics.rows.record(row_count, &attributes);
         }
     } else if let Err(error) = &result {
         let error_kind = query_error_kind(error);
@@ -375,20 +427,29 @@ fn create_query_span(
     operation: QueryOperation,
     workspace_name: &WorkspaceName,
     sql: &str,
+    episode_id: Option<&EpisodeId>,
 ) -> tracing::Span {
     let operation = operation.as_str();
-    tracing::info_span!(
+    let span = tracing::info_span!(
         "coral.query",
         otel.name = "coral.query",
         operation = operation,
         workspace = %workspace_name.as_str(),
         sql = %sql,
+        // Trajectory-memory attribution: present only when the caller tagged the
+        // call with a valid `coral-episode-id`. Joins to the intent registered by
+        // `OpenEpisode`; never carries the intent text itself.
+        episode.id = tracing::field::Empty,
         row_count = tracing::field::Empty,
         status = tracing::field::Empty,
         error.kind = tracing::field::Empty,
         error.type = tracing::field::Empty,
         exception.message = tracing::field::Empty,
-    )
+    );
+    if let Some(episode_id) = episode_id {
+        span.record("episode.id", episode_id.as_str());
+    }
+    span
 }
 
 fn query_error_kind(error: &QueryManagerError) -> &'static str {
@@ -526,6 +587,60 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn execute_sql_stamps_episode_id_on_query_span() {
+        use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
+        use coral_api::v1::{ExecuteSqlRequest, Workspace};
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tonic::Request;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        use crate::query::service::QueryService;
+
+        // Capture finished spans into memory via a scoped subscriber so the
+        // assertion exercises the real metadata -> manager -> span path end to end.
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("episode-attribution-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let service = QueryService::new(fixture.manager.clone());
+
+        let mut request = Request::new(ExecuteSqlRequest {
+            workspace: Some(Workspace {
+                name: WorkspaceName::default().as_str().to_string(),
+            }),
+            sql: "SELECT 1".to_string(),
+        });
+        request.metadata_mut().insert(
+            "coral-episode-id",
+            "ep_trace_1".parse().expect("ascii value"),
+        );
+
+        // The query may fail (the fixture has no installed sources); the
+        // `coral.query` span is created and stamped before execution regardless.
+        let _result = service.execute_sql(request).await;
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let query_span = spans
+            .iter()
+            .find(|span| span.name == "coral.query")
+            .expect("coral.query span recorded");
+        let episode_attr = query_span
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key.as_str() == "episode.id")
+            .expect("episode.id attribute present");
+        assert_eq!(episode_attr.value.as_str(), "ep_trace_1");
+    }
+
     fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {
         let mut bytes = Vec::new();
         {
@@ -547,7 +662,8 @@ mod tests {
 
         let runtime = fixture
             .manager
-            .runtime_config(&WorkspaceName::default(), &[]);
+            .runtime_config(&WorkspaceName::default(), &[], &AppConfig::default())
+            .expect("runtime config");
 
         let config = runtime
             .context
@@ -715,6 +831,7 @@ surfaces:
             .execute_sql(
                 &workspace_name,
                 "SELECT id, title FROM github_v4_query.issues",
+                &QueryAttribution::default(),
             )
             .await
             .expect("query executes");
@@ -765,9 +882,14 @@ surfaces:
             )
             .expect("persist source");
 
+        let config = fixture
+            .manager
+            .config_store
+            .load_config()
+            .expect("load config");
         let error = fixture
             .manager
-            .load_query_sources(&workspace_name)
+            .load_query_sources(&workspace_name, &config)
             .expect_err("missing materialization should fail closed");
 
         assert!(
@@ -812,9 +934,10 @@ surfaces:
             layout,
             Vec::new(),
         );
+        let config = manager.config_store.load_config().expect("load config");
 
         let error = manager
-            .load_query_sources(&workspace_name)
+            .load_query_sources(&workspace_name, &config)
             .expect_err("unavailable keychain should fail closed");
 
         assert!(
@@ -939,7 +1062,12 @@ tables:
         let source = QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new());
         let runtime = fixture
             .manager
-            .runtime_config(&workspace_name, std::slice::from_ref(&source));
+            .runtime_config(
+                &workspace_name,
+                std::slice::from_ref(&source),
+                &AppConfig::default(),
+            )
+            .expect("runtime config");
         let input_resolver = runtime
             .extensions
             .source_input_resolver

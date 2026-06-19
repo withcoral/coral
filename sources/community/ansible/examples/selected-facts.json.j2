@@ -1,0 +1,117 @@
+{% set selected_interfaces = {} %}
+{% for interface in ansible_facts.get('interfaces', []) %}
+{% set interface_key = interface | ansible.builtin.regex_replace('-', '_') %}
+{% set details = ansible_facts.get(interface_key, {}) %}
+{% if details is mapping %}
+{% set selected_ipv6 = [] %}
+{% for entry in details.get('ipv6', []) %}
+{% if entry is mapping and entry.get('address') %}
+{% set _ = selected_ipv6.append({'address': entry.get('address')}) %}
+{% endif %}
+{% endfor %}
+{% set _ = selected_interfaces.update({interface_key: {
+  'ipv4': {'address': details.get('ipv4', {}).get('address')} if details.get('ipv4', {}) is mapping else {},
+  'ipv6': selected_ipv6,
+  'macaddress': details.get('macaddress'),
+  'mtu': details.get('mtu'),
+  'active': details.get('active'),
+  'type': details.get('type')
+}}) %}
+{% endif %}
+{% endfor %}
+{% set selected_services = {} %}
+{% if ansible_facts.get('services', {}) is mapping %}
+{% for service_name, service in ansible_facts.get('services', {}).items() %}
+{% if service is mapping %}
+{% set _ = selected_services.update({service_name: {
+  'name': service.get('name') or service_name,
+  'source': service.get('source'),
+  'state': service.get('state'),
+  'status': service.get('status')
+}}) %}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% set selected_packages = {} %}
+{% if ansible_facts.get('packages', {}) is mapping %}
+{% for package_name, versions in ansible_facts.get('packages', {}).items() %}
+{% set selected_versions = [] %}
+{% for package in versions %}
+{% if package is mapping %}
+{% set _ = selected_versions.append({
+  'name': package.get('name') or package_name,
+  'version': package.get('version'),
+  'release': package.get('release'),
+  'arch': package.get('arch'),
+  'source': package.get('source'),
+  'epoch': package.get('epoch'),
+  'origin': package.get('origin')
+}) %}
+{% endif %}
+{% endfor %}
+{% if selected_versions %}
+{% set _ = selected_packages.update({package_name: selected_versions}) %}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% set coral_facts = {
+  'hostname': ansible_facts.get('hostname'),
+  'nodename': ansible_facts.get('nodename'),
+  'fqdn': ansible_facts.get('fqdn'),
+  'distribution': ansible_facts.get('distribution'),
+  'distribution_version': ansible_facts.get('distribution_version'),
+  'distribution_major_version': ansible_facts.get('distribution_major_version'),
+  'os_family': ansible_facts.get('os_family'),
+  'kernel': ansible_facts.get('kernel'),
+  'architecture': ansible_facts.get('architecture'),
+  'system': ansible_facts.get('system'),
+  'service_mgr': ansible_facts.get('service_mgr'),
+  'pkg_mgr': ansible_facts.get('pkg_mgr'),
+  'processor_vcpus': ansible_facts.get('processor_vcpus'),
+  'processor_cores': ansible_facts.get('processor_cores'),
+  'memtotal_mb': ansible_facts.get('memtotal_mb'),
+  'uptime_seconds': ansible_facts.get('uptime_seconds'),
+  'virtualization_type': ansible_facts.get('virtualization_type'),
+  'virtualization_role': ansible_facts.get('virtualization_role'),
+  'python': ansible_facts.get('python'),
+  'mounts': ansible_facts.get('mounts', []),
+  'interfaces': ansible_facts.get('interfaces', []),
+  'selinux': ansible_facts.get('selinux', {}),
+  'apparmor': ansible_facts.get('apparmor', {}),
+  'fips': ansible_facts.get('fips'),
+  'services': selected_services,
+  'packages': selected_packages
+} %}
+{% for interface_key, details in selected_interfaces.items() %}
+{% set _ = coral_facts.update({interface_key: details}) %}
+{% endfor %}
+{% set selected_roles = [] %}
+{% for role in coral_roles | default([]) %}
+{% if role is string %}
+{% set _ = selected_roles.append(role) %}
+{% elif role is mapping %}
+{% set _ = selected_roles.append({
+  'role': role.get('role') or role.get('name'),
+  'environment': role.get('environment'),
+  'source_file': role.get('source_file'),
+  'expected_service': role.get('expected_service')
+}) %}
+{% endif %}
+{% endfor %}
+{% set selected_expected_services = [] %}
+{% for service in coral_expected_services | default([]) %}
+{% if service is mapping %}
+{% set _ = selected_expected_services.append({
+  'role': service.get('role'),
+  'environment': service.get('environment'),
+  'source_file': service.get('source_file'),
+  'expected_service': service.get('expected_service') or service.get('service')
+}) %}
+{% endif %}
+{% endfor %}
+{{ {
+  'inventory_hostname': inventory_hostname,
+  'ansible_facts': coral_facts,
+  'coral_roles': selected_roles,
+  'coral_expected_services': selected_expected_services
+} | to_nice_json }}

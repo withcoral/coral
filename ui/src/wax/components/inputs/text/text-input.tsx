@@ -13,6 +13,7 @@ export interface TextInputProps {
   name?: string
   onBlur?: () => void
   onChange?: (value: string) => void
+  onFocus?: () => void
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
   placeholder?: string
   ref?: React.Ref<HTMLInputElement>
@@ -28,6 +29,7 @@ export function TextInput({
   name,
   onBlur,
   onChange,
+  onFocus,
   onKeyDown,
   placeholder,
   ref,
@@ -55,6 +57,7 @@ export function TextInput({
           name={name}
           onBlur={onBlur}
           onChange={handleChange}
+          onFocus={onFocus}
           onKeyDown={onKeyDown}
           placeholder={placeholder}
           ref={ref}

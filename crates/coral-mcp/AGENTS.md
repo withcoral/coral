@@ -29,5 +29,7 @@
   here.
 - Shape MCP surfaces for agent ergonomics, not raw proto parity.
 - Treat MCP tools, resources, prompts, and other user-facing protocol surfaces
-  as documented surfaces; when they change, update the relevant docs under
-  `docs/` in the same change.
+  as public surfaces. Update `docs/` when a change affects reader-facing
+  behavior or important agent/operator knowledge, choose the best existing docs
+  location, and make the amount of space match the feature's user-facing weight
+  and visibility.
