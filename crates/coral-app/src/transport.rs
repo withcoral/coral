@@ -236,16 +236,22 @@ fn grpc_method<T>(request: &Request<T>) -> GrpcMethodMetadata {
     )
 }
 
-pub(crate) async fn instrument_grpc<T, F>(span: tracing::Span, future: F) -> Result<T, Status>
+pub(crate) fn instrument_grpc<T, F>(
+    span: tracing::Span,
+    future: F,
+) -> Pin<Box<dyn Future<Output = Result<T, Status>> + Send>>
 where
-    F: Future<Output = Result<T, Status>>,
+    T: Send + 'static,
+    F: Future<Output = Result<T, Status>> + Send + 'static,
 {
-    let result = future.instrument(span.clone()).await;
-    match &result {
-        Ok(_) => record_grpc_status(&span, Code::Ok, None),
-        Err(status) => record_grpc_status(&span, status.code(), Some(status)),
-    }
-    result
+    Box::pin(async move {
+        let result = future.instrument(span.clone()).await;
+        match &result {
+            Ok(_) => record_grpc_status(&span, Code::Ok, None),
+            Err(status) => record_grpc_status(&span, status.code(), Some(status)),
+        }
+        result
+    })
 }
 
 fn record_grpc_status(span: &tracing::Span, code: Code, status: Option<&Status>) {
