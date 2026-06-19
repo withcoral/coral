@@ -32,6 +32,7 @@ use crate::catalog::discovery::{
 };
 use crate::episode::EpisodeId;
 use crate::identity::UserPrincipalProvider;
+use crate::query::QueryAttribution;
 use crate::query::manager::QueryManagerError;
 use crate::request_context::RequestContext;
 use crate::workspaces::WorkspaceName;
@@ -124,6 +125,7 @@ where
             |method| GrpcMethodMetadata::new(method.service, method.method),
         );
         let request_metadata = MetadataMap::from_headers(request.headers().clone());
+        let attribution = QueryAttribution::new(episode_id_from_metadata(&request_metadata));
         let user_principal_provider = Arc::clone(&self.user_principal_provider);
 
         let mut inner = self.inner.clone();
@@ -137,7 +139,7 @@ where
                 Ok(principal) => {
                     request
                         .extensions_mut()
-                        .insert(RequestContext::new(principal));
+                        .insert(RequestContext::with_attribution(principal, attribution));
                     inner.call(request).await
                 }
                 Err(error) => {
@@ -244,18 +246,6 @@ where
         Err(status) => record_grpc_status(&span, status.code(), Some(status)),
     }
     result
-}
-
-pub(crate) fn request_context<T>(request: &Request<T>) -> Result<RequestContext, Status> {
-    request
-        .extensions()
-        .get::<RequestContext>()
-        .cloned()
-        .ok_or_else(|| {
-            app_status(AppError::Unauthenticated(
-                "missing request principal".to_string(),
-            ))
-        })
 }
 
 fn record_grpc_status(span: &tracing::Span, code: Code, status: Option<&Status>) {
@@ -563,12 +553,15 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        GrpcMethodMetadata, GrpcServerMethod, episode_id_from_metadata, grpc_method, query_status,
-        query_test_result_to_proto, table_summary_to_proto, table_to_proto,
-        workspace_name_from_proto, workspace_to_proto,
+        GrpcMethodMetadata, GrpcRequestContextLayer, GrpcServerMethod, episode_id_from_metadata,
+        grpc_method, query_status, query_test_result_to_proto, table_summary_to_proto,
+        table_to_proto, workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
+    use crate::episode::EpisodeId;
+    use crate::identity::{SingleUserPrincipalProvider, UserPrincipal};
     use crate::query::manager::QueryManagerError;
+    use crate::request_context::RequestContext;
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
         ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableInfo,
@@ -679,6 +672,44 @@ mod tests {
         assert!(
             episode_id_from_metadata(&malformed).is_none(),
             "a malformed id is ignored, not surfaced"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_context_layer_inserts_principal_and_attribution() {
+        use std::sync::{Arc, Mutex};
+        use tonic::codegen::http;
+        use tower::{Layer as _, Service as _};
+
+        let observed_context = Arc::new(Mutex::new(None));
+        let observed_context_for_service = Arc::clone(&observed_context);
+        let service = tower::service_fn(move |request: http::Request<()>| {
+            let observed_context = Arc::clone(&observed_context_for_service);
+            async move {
+                *observed_context.lock().expect("observed context lock") =
+                    request.extensions().get::<RequestContext>().cloned();
+                Ok::<_, std::convert::Infallible>(http::Response::new(()))
+            }
+        });
+        let mut service =
+            GrpcRequestContextLayer::new(Arc::new(SingleUserPrincipalProvider)).layer(service);
+        let request = http::Request::builder()
+            .uri("/coral.v1.QueryService/ExecuteSql")
+            .header("coral-episode-id", "ep_123")
+            .body(())
+            .expect("http request");
+
+        service.call(request).await.expect("service response");
+
+        let context = observed_context
+            .lock()
+            .expect("observed context lock")
+            .clone()
+            .expect("request context");
+        assert_eq!(context.principal(), &UserPrincipal::local());
+        assert_eq!(
+            context.attribution().episode_id().map(EpisodeId::as_str),
+            Some("ep_123")
         );
     }
 

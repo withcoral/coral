@@ -18,11 +18,10 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::episode::EpisodeId;
-use crate::query::QueryAttribution;
+use crate::query::QueryContext;
 use crate::query::extensions::{
     CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
 };
-use crate::request_context::RequestContext;
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{
@@ -72,12 +71,11 @@ impl QueryManager {
 
     pub(crate) async fn list_tables(
         &self,
-        workspace_name: &WorkspaceName,
-        request_context: &RequestContext,
+        context: &QueryContext,
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
-        let _ = request_context.principal();
+        let workspace_name = context.workspace_name();
         let config = self
             .config_store
             .load_config()
@@ -95,11 +93,10 @@ impl QueryManager {
 
     pub(crate) async fn list_catalog(
         &self,
-        workspace_name: &WorkspaceName,
-        request_context: &RequestContext,
+        context: &QueryContext,
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, QueryManagerError> {
-        let _ = request_context.principal();
+        let workspace_name = context.workspace_name();
         let config = self
             .config_store
             .load_config()
@@ -117,12 +114,11 @@ impl QueryManager {
 
     pub(crate) async fn describe_table(
         &self,
-        workspace_name: &WorkspaceName,
-        request_context: &RequestContext,
+        context: &QueryContext,
         schema_name: &str,
         table_name: &str,
     ) -> Result<DescribeTableInfo, QueryManagerError> {
-        let _ = request_context.principal();
+        let workspace_name = context.workspace_name();
         let config = self
             .config_store
             .load_config()
@@ -140,17 +136,15 @@ impl QueryManager {
 
     pub(crate) async fn execute_sql(
         &self,
-        workspace_name: &WorkspaceName,
-        request_context: &RequestContext,
+        context: &QueryContext,
         sql: &str,
-        attribution: &QueryAttribution,
     ) -> Result<QueryExecution, QueryManagerError> {
-        let _ = request_context.principal();
+        let workspace_name = context.workspace_name();
         run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
             sql,
-            attribution.episode_id.as_ref(),
+            context.episode_id(),
             async {
                 let config = self
                     .config_store
@@ -173,17 +167,15 @@ impl QueryManager {
 
     pub(crate) async fn explain_sql(
         &self,
-        workspace_name: &WorkspaceName,
-        request_context: &RequestContext,
+        context: &QueryContext,
         sql: &str,
-        attribution: &QueryAttribution,
     ) -> Result<QueryPlan, QueryManagerError> {
-        let _ = request_context.principal();
+        let workspace_name = context.workspace_name();
         run_query_operation(
             QueryOperation::ExplainSql,
             workspace_name,
             sql,
-            attribution.episode_id.as_ref(),
+            context.episode_id(),
             async {
                 let config = self
                     .config_store
@@ -572,6 +564,7 @@ mod tests {
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
     use crate::identity::UserPrincipal;
+    use crate::query::QueryAttribution;
     use crate::request_context::RequestContext;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
@@ -613,7 +606,7 @@ mod tests {
         use crate::query::service::QueryService;
 
         // Capture finished spans into memory via a scoped subscriber so the
-        // assertion exercises the real metadata -> manager -> span path end to end.
+        // assertion exercises the request context -> manager -> span path end to end.
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter.clone())
@@ -632,13 +625,13 @@ mod tests {
             }),
             sql: "SELECT 1".to_string(),
         });
+        let episode_id = EpisodeId::parse("ep_trace_1").expect("episode id");
         request
             .extensions_mut()
-            .insert(RequestContext::new(UserPrincipal::local()));
-        request.metadata_mut().insert(
-            "coral-episode-id",
-            "ep_trace_1".parse().expect("ascii value"),
-        );
+            .insert(RequestContext::with_attribution(
+                UserPrincipal::local(),
+                QueryAttribution::new(Some(episode_id)),
+            ));
 
         // The query may fail (the fixture has no installed sources); the
         // `coral.query` span is created and stamped before execution regardless.
@@ -785,7 +778,6 @@ tables:
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
         fixture.manager.layout.ensure().expect("ensure layout");
-        let request_context = RequestContext::new(UserPrincipal::local());
         let source_manager = SourceManager::new(
             fixture.manager.config_store.clone(),
             fixture.manager.credential_manager.clone(),
@@ -843,14 +835,16 @@ surfaces:
             )
             .expect("import v4 source");
         std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
+        let query_context = QueryContext::new(
+            workspace_name.clone(),
+            RequestContext::with_attribution(UserPrincipal::local(), QueryAttribution::default()),
+        );
 
         let execution = fixture
             .manager
             .execute_sql(
-                &workspace_name,
-                &request_context,
+                &query_context,
                 "SELECT id, title FROM github_v4_query.issues",
-                &QueryAttribution::default(),
             )
             .await
             .expect("query executes");
