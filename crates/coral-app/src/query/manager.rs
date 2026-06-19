@@ -693,7 +693,8 @@ mod tests {
 
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
-    use crate::identity::SingleUserPrincipalProvider;
+    use crate::identity::UserPrincipal;
+    use crate::request_context::RequestContext;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
 
@@ -745,10 +746,7 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
-        let service = QueryService::new(
-            fixture.manager.clone(),
-            Arc::new(SingleUserPrincipalProvider),
-        );
+        let service = QueryService::new(fixture.manager.clone());
 
         let mut request = Request::new(ExecuteSqlRequest {
             workspace: Some(Workspace {
@@ -756,6 +754,9 @@ mod tests {
             }),
             sql: "SELECT 1".to_string(),
         });
+        request
+            .extensions_mut()
+            .insert(RequestContext::new(UserPrincipal::local()));
         request
             .extensions_mut()
             .insert(crate::episode::EpisodeId::parse("ep_trace_1").expect("episode id"));
@@ -867,6 +868,9 @@ mod tests {
 
     fn tagged_catalog_request<T>(message: T) -> tonic::Request<T> {
         let mut request = tonic::Request::new(message);
+        request
+            .extensions_mut()
+            .insert(RequestContext::new(UserPrincipal::local()));
         request
             .extensions_mut()
             .insert(crate::episode::EpisodeId::parse("ep_catalog_trace").expect("episode id"));

@@ -1,6 +1,7 @@
 //! Shared gRPC transport helpers for app-owned services.
 
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use coral_api::{
@@ -16,8 +17,10 @@ use coral_api::{
 };
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::Status as OtelStatus;
+use tonic::body::Body;
 use tonic::codegen::{Service, http};
-use tonic::{Code, Request, Response, Status};
+use tonic::metadata::MetadataMap;
+use tonic::{Code, Request, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 use tracing::{Instrument as _, field};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
@@ -52,31 +55,42 @@ impl Extractor for MetadataExtractor<'_> {
     }
 }
 
-/// Wraps a generated tonic service and stores inbound request context on the request.
+/// Wraps a generated tonic service and installs Coral request context.
 ///
 /// Tonic preserves `http::Request` extensions when it decodes the protobuf
 /// message into a `tonic::Request`, but generated server wrappers do not insert
 /// `tonic::GrpcMethod` the way generated clients do. This keeps the method
 /// data and Coral request metadata at the transport boundary and lets handlers
 /// read typed context from the request.
+///
+/// The wrapper also authenticates the inbound metadata once before dispatching
+/// to a service handler, so every registered gRPC route is covered by the same
+/// principal-selection path.
 #[derive(Clone)]
-pub(crate) struct GrpcMethodAnnotatedService<S> {
+pub(crate) struct GrpcRequestContextService<S> {
     inner: S,
+    user_principal_provider: Arc<dyn UserPrincipalProvider>,
 }
 
-impl<S> GrpcMethodAnnotatedService<S> {
-    pub(crate) fn new(inner: S) -> Self {
-        Self { inner }
+impl<S> GrpcRequestContextService<S> {
+    pub(crate) fn new(inner: S, user_principal_provider: Arc<dyn UserPrincipalProvider>) -> Self {
+        Self {
+            inner,
+            user_principal_provider,
+        }
     }
 }
 
-impl<S, B> Service<http::Request<B>> for GrpcMethodAnnotatedService<S>
+impl<S, B> Service<http::Request<B>> for GrpcRequestContextService<S>
 where
-    S: Service<http::Request<B>>,
+    S: Service<http::Request<B>, Response = http::Response<Body>> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+    S::Error: Send + 'static,
+    B: Send + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
-    type Future = S::Future;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(
         &mut self,
@@ -87,11 +101,39 @@ where
 
     fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
         annotate_request_context(&mut request);
-        self.inner.call(request)
+        let method_metadata = request.extensions().get::<GrpcServerMethod>().map_or_else(
+            || GrpcMethodMetadata::new("coral.v1.UnknownService", "Unknown"),
+            |method| GrpcMethodMetadata::new(method.service.as_str(), method.method.as_str()),
+        );
+        let request_metadata = MetadataMap::from_headers(request.headers().clone());
+        let user_principal_provider = Arc::clone(&self.user_principal_provider);
+
+        let mut inner = self.inner.clone();
+        std::mem::swap(&mut self.inner, &mut inner);
+
+        Box::pin(async move {
+            match user_principal_provider
+                .principal_for_metadata(&request_metadata)
+                .await
+            {
+                Ok(principal) => {
+                    request
+                        .extensions_mut()
+                        .insert(RequestContext::new(principal));
+                    inner.call(request).await
+                }
+                Err(error) => {
+                    let status = app_status(error);
+                    let span = grpc_span_for_metadata(&method_metadata, &request_metadata);
+                    record_grpc_status(&span, status.code(), Some(&status));
+                    Ok(status.into_http())
+                }
+            }
+        })
     }
 }
 
-impl<S> tonic::server::NamedService for GrpcMethodAnnotatedService<S>
+impl<S> tonic::server::NamedService for GrpcRequestContextService<S>
 where
     S: tonic::server::NamedService,
 {
@@ -101,6 +143,13 @@ where
 /// Creates a span parented to the trace context extracted from a gRPC request.
 pub(crate) fn grpc_span<T>(request: &Request<T>) -> tracing::Span {
     let metadata = grpc_method(request);
+    grpc_span_for_metadata(&metadata, request.metadata())
+}
+
+fn grpc_span_for_metadata(
+    metadata: &GrpcMethodMetadata,
+    request_metadata: &MetadataMap,
+) -> tracing::Span {
     let span_name = format!("{}/{}", metadata.service, metadata.method);
     let span = tracing::info_span!(
         "grpc",
@@ -118,7 +167,7 @@ pub(crate) fn grpc_span<T>(request: &Request<T>) -> tracing::Span {
         grpc.code = tracing::field::Empty,
         status = tracing::field::Empty,
     );
-    coral_telemetry::set_parent_from_extractor(&span, &MetadataExtractor(request.metadata()));
+    coral_telemetry::set_parent_from_extractor(&span, &MetadataExtractor(request_metadata));
     span
 }
 
@@ -203,55 +252,16 @@ where
     result
 }
 
-/// Creates the request span, requires an authenticated caller, and runs
-/// `handler` with the decoded message, recording the gRPC status on the span.
-///
-/// Use this for services whose state is not yet principal-scoped but whose RPCs
-/// still expose local app data and must not become anonymous when a runtime
-/// installs a real principal provider.
-///
-/// Handlers that need the request span can read it with
-/// `tracing::Span::current()`.
-pub(crate) async fn instrument_authenticated_grpc<Req, Res, F, Fut>(
-    user_principal_provider: &Arc<dyn UserPrincipalProvider>,
-    request: Request<Req>,
-    handler: F,
-) -> Result<Response<Res>, Status>
-where
-    F: FnOnce(Req) -> Fut,
-    Fut: Future<Output = Result<Response<Res>, Status>>,
-{
-    instrument_request_context_grpc(user_principal_provider, request, |_context, request| {
-        handler(request)
-    })
-    .await
-}
-
-/// Creates the request span, authenticates the caller through the provider,
-/// and runs `handler` with the authenticated request context and decoded message,
-/// recording the gRPC status on the span.
-///
-/// Handlers that need the request span can read it with
-/// `tracing::Span::current()`.
-pub(crate) async fn instrument_request_context_grpc<Req, Res, F, Fut>(
-    user_principal_provider: &Arc<dyn UserPrincipalProvider>,
-    request: Request<Req>,
-    handler: F,
-) -> Result<Response<Res>, Status>
-where
-    F: FnOnce(RequestContext, Req) -> Fut,
-    Fut: Future<Output = Result<Response<Res>, Status>>,
-{
-    let span = grpc_span(&request);
-    let user_principal_provider = Arc::clone(user_principal_provider);
-    instrument_grpc(span, async move {
-        let principal = user_principal_provider
-            .principal_for_metadata(request.metadata())
-            .await
-            .map_err(app_status)?;
-        handler(RequestContext::new(principal), request.into_inner()).await
-    })
-    .await
+pub(crate) fn request_context<T>(request: &Request<T>) -> Result<RequestContext, Status> {
+    request
+        .extensions()
+        .get::<RequestContext>()
+        .cloned()
+        .ok_or_else(|| {
+            app_status(AppError::Unauthenticated(
+                "missing request principal".to_string(),
+            ))
+        })
 }
 
 fn record_grpc_status(span: &tracing::Span, code: Code, status: Option<&Status>) {
