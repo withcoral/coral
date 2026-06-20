@@ -566,6 +566,7 @@ async fn run_app_command(
                 app,
                 coral_mcp::McpOptions {
                     feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
+                    episodes_enabled: features.enabled(coral_app::features::Feature::Episodes),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                 },
             ))

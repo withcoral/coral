@@ -1,5 +1,7 @@
 //! Transport-free attribution for a query's originating context.
 
+use tonic::codegen::http;
+
 use crate::episode::EpisodeId;
 
 /// Request-scoped attribution threaded from the gRPC service edge into the query
@@ -15,4 +17,12 @@ pub(crate) struct QueryAttribution {
     /// The episode whose intent this query served, when the caller supplied a
     /// valid `coral-episode-id`; `None` for an untagged query.
     pub(crate) episode_id: Option<EpisodeId>,
+}
+
+impl QueryAttribution {
+    pub(crate) fn from_extensions(extensions: &http::Extensions) -> Self {
+        Self {
+            episode_id: extensions.get::<EpisodeId>().cloned(),
+        }
+    }
 }

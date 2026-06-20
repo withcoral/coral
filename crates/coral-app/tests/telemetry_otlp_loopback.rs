@@ -8,21 +8,26 @@
 use std::path::Path;
 
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
 use opentelemetry_proto::tonic::logs::v1::LogRecord;
+use opentelemetry_proto::tonic::metrics::v1::{Metric, metric, number_data_point};
 use opentelemetry_proto::tonic::trace::v1::Span;
 use prost::Message as _;
 use tempfile::TempDir;
+use tonic::Request;
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
 
+use coral_api::v1::ExecuteSqlRequest;
 use coral_app::{ServerBuilder, shutdown_tracing};
+use coral_client::{AppClient, decode_execute_sql_response, default_workspace};
 
 #[tokio::test]
-async fn otlp_export_loopback_filters_body_spans_and_exports_logs() {
+async fn otlp_export_loopback_covers_traces_logs_and_metrics() {
     let collector = MockServer::start().await;
-    for signal_path in ["/v1/traces", "/v1/logs"] {
+    for signal_path in ["/v1/traces", "/v1/logs", "/v1/metrics"] {
         Mock::given(method("POST"))
             .and(path(signal_path))
             .respond_with(ResponseTemplate::new(200))
@@ -58,7 +63,7 @@ enabled = true
         .await
         .expect("start server with OTLP endpoint");
 
-    emit_test_telemetry();
+    emit_test_telemetry(server.endpoint_uri()).await;
 
     shutdown_tracing();
     server.shutdown().await.expect("shutdown server");
@@ -82,9 +87,32 @@ enabled = true
     );
     let logs = decode_exported_logs(&log_requests);
     assert_exported_log_contract(&logs);
+
+    let metric_requests = metric_requests(&collector).await;
+    assert!(
+        !metric_requests.is_empty(),
+        "collector should receive metric export"
+    );
+    let metrics = decode_exported_metrics(&metric_requests);
+    assert_exported_metric_contract(&metrics);
 }
 
-fn emit_test_telemetry() {
+async fn emit_test_telemetry(endpoint_uri: &str) {
+    let app = AppClient::connect(endpoint_uri)
+        .await
+        .expect("connect loopback client");
+    let response = app
+        .query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: "SELECT 1 AS loopback_value".to_string(),
+        }))
+        .await
+        .expect("execute loopback query")
+        .into_inner();
+    let result = decode_execute_sql_response(&response).expect("decode loopback query");
+    assert_eq!(result.row_count(), 1);
+
     let query = tracing::info_span!(
         target: "coral_app",
         "loopback_query",
@@ -114,15 +142,19 @@ fn emit_test_telemetry() {
     let _mcp_body = mcp_body.enter();
 }
 
-async fn trace_requests(collector: &MockServer) -> Vec<Request> {
+async fn trace_requests(collector: &MockServer) -> Vec<WiremockRequest> {
     requests_for_path(collector, "/v1/traces").await
 }
 
-async fn log_requests(collector: &MockServer) -> Vec<Request> {
+async fn log_requests(collector: &MockServer) -> Vec<WiremockRequest> {
     requests_for_path(collector, "/v1/logs").await
 }
 
-async fn requests_for_path(collector: &MockServer, signal_path: &str) -> Vec<Request> {
+async fn metric_requests(collector: &MockServer) -> Vec<WiremockRequest> {
+    requests_for_path(collector, "/v1/metrics").await
+}
+
+async fn requests_for_path(collector: &MockServer, signal_path: &str) -> Vec<WiremockRequest> {
     collector
         .received_requests()
         .await
@@ -132,7 +164,7 @@ async fn requests_for_path(collector: &MockServer, signal_path: &str) -> Vec<Req
         .collect()
 }
 
-fn decode_trace_exports(trace_requests: &[Request]) -> Vec<ExportTraceServiceRequest> {
+fn decode_trace_exports(trace_requests: &[WiremockRequest]) -> Vec<ExportTraceServiceRequest> {
     trace_requests
         .iter()
         .map(|request| {
@@ -151,7 +183,7 @@ fn exported_spans(trace_exports: &[ExportTraceServiceRequest]) -> Vec<Span> {
         .collect()
 }
 
-fn decode_exported_logs(log_requests: &[Request]) -> Vec<LogRecord> {
+fn decode_exported_logs(log_requests: &[WiremockRequest]) -> Vec<LogRecord> {
     log_requests
         .iter()
         .flat_map(|request| {
@@ -161,6 +193,19 @@ fn decode_exported_logs(log_requests: &[Request]) -> Vec<LogRecord> {
         })
         .flat_map(|resource_logs| resource_logs.scope_logs)
         .flat_map(|scope_logs| scope_logs.log_records)
+        .collect()
+}
+
+fn decode_exported_metrics(metric_requests: &[WiremockRequest]) -> Vec<Metric> {
+    metric_requests
+        .iter()
+        .flat_map(|request| {
+            ExportMetricsServiceRequest::decode(request.body.as_slice())
+                .expect("decode OTLP metric export")
+                .resource_metrics
+        })
+        .flat_map(|resource_metrics| resource_metrics.scope_metrics)
+        .flat_map(|scope_metrics| scope_metrics.metrics)
         .collect()
 }
 
@@ -199,6 +244,83 @@ fn assert_exported_log_contract(logs: &[LogRecord]) {
     );
 }
 
+fn assert_exported_metric_contract(metrics: &[Metric]) {
+    assert_sum_metric_has_point(
+        metrics,
+        "coral.query.count",
+        &[("operation", "execute_sql"), ("status", "ok")],
+        1,
+    );
+    assert_histogram_metric_has_point(
+        metrics,
+        "coral.query.duration",
+        &[("operation", "execute_sql"), ("status", "ok")],
+    );
+    assert_histogram_metric_has_point_with_sum(
+        metrics,
+        "coral.query.rows",
+        &[("operation", "execute_sql"), ("status", "ok")],
+        1,
+        1.0,
+    );
+}
+
+fn assert_sum_metric_has_point(
+    metrics: &[Metric],
+    name: &str,
+    attributes: &[(&str, &str)],
+    expected_value: i64,
+) {
+    let metric = metric_named(metrics, name);
+    let Some(metric::Data::Sum(sum)) = metric.data.as_ref() else {
+        panic!("expected {name} to export as sum: {metric:?}");
+    };
+    assert!(
+        sum.data_points
+            .iter()
+            .any(|point| attrs_include(&point.attributes, attributes)
+                && number_value_is(point.value.as_ref(), expected_value)),
+        "{name} should include attributes {attributes:?} and value {expected_value}: {metric:?}"
+    );
+}
+
+fn assert_histogram_metric_has_point(metrics: &[Metric], name: &str, attributes: &[(&str, &str)]) {
+    let metric = metric_named(metrics, name);
+    let Some(metric::Data::Histogram(histogram)) = metric.data.as_ref() else {
+        panic!("expected {name} to export as histogram: {metric:?}");
+    };
+    assert!(
+        histogram
+            .data_points
+            .iter()
+            .any(|point| point.count > 0 && attrs_include(&point.attributes, attributes)),
+        "{name} should include attributes {attributes:?}: {metric:?}"
+    );
+}
+
+fn assert_histogram_metric_has_point_with_sum(
+    metrics: &[Metric],
+    name: &str,
+    attributes: &[(&str, &str)],
+    expected_count: u64,
+    expected_sum: f64,
+) {
+    let metric = metric_named(metrics, name);
+    let Some(metric::Data::Histogram(histogram)) = metric.data.as_ref() else {
+        panic!("expected {name} to export as histogram: {metric:?}");
+    };
+    assert!(
+        histogram.data_points.iter().any(|point| {
+            point.count == expected_count
+                && point
+                    .sum
+                    .is_some_and(|sum| (sum - expected_sum).abs() < f64::EPSILON)
+                && attrs_include(&point.attributes, attributes)
+        }),
+        "{name} should include attributes {attributes:?}, count {expected_count}, and sum {expected_sum}: {metric:?}"
+    );
+}
+
 fn assert_local_trace_history_contract(local_trace_history: &str) {
     for expected in [
         "loopback_query",
@@ -228,6 +350,27 @@ fn has_span_named(spans: &[Span], name: &str) -> bool {
 
 fn span_names(spans: &[Span]) -> Vec<&str> {
     spans.iter().map(|span| span.name.as_str()).collect()
+}
+
+fn metric_named<'a>(metrics: &'a [Metric], name: &str) -> &'a Metric {
+    metrics
+        .iter()
+        .find(|metric| metric.name == name)
+        .unwrap_or_else(|| panic!("expected metric {name}; got {:?}", metric_names(metrics)))
+}
+
+fn metric_names(metrics: &[Metric]) -> Vec<&str> {
+    metrics.iter().map(|metric| metric.name.as_str()).collect()
+}
+
+fn attrs_include(attributes: &[KeyValue], expected: &[(&str, &str)]) -> bool {
+    expected
+        .iter()
+        .all(|(key, value)| string_attr(attributes, key) == Some(*value))
+}
+
+fn number_value_is(value: Option<&number_data_point::Value>, expected: i64) -> bool {
+    matches!(value, Some(number_data_point::Value::AsInt(value)) if *value == expected)
 }
 
 fn string_attr<'a>(attributes: &'a [KeyValue], key: &str) -> Option<&'a str> {

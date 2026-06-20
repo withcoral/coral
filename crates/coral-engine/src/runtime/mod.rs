@@ -5,6 +5,7 @@ pub(crate) mod catalog;
 pub(crate) mod dependent_join;
 pub(crate) mod error;
 pub(crate) mod json;
+pub(crate) mod memory;
 pub(crate) mod pattern_validator;
 pub(crate) mod query;
 pub(crate) mod query_planner;
