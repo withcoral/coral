@@ -55,11 +55,182 @@ surfaces:
         v4.surfaces
             .first()
             .expect("surface")
-            .openapi_runtime
+            .openapi_runtime()
+            .expect("OpenAPI runtime")
             .base_url
             .raw(),
         ""
     );
+}
+
+#[test]
+fn single_surface_relation_namespace_defaults_to_source_name() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo_source
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+",
+    )
+    .expect("v4 manifest");
+    let v4 = manifest.as_v4().expect("v4");
+
+    assert_eq!(
+        v4.surfaces.first().expect("surface").relation_namespace,
+        "demo_source"
+    );
+}
+
+#[test]
+fn reserved_default_relation_namespace_is_rejected() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: public
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+",
+    )
+    .expect_err("reserved relation namespace should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source surface relation namespace 'public' is reserved"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn rejects_multiple_surfaces_omitting_namespace_suffix() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: github_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+  - id: mcp
+    type: mcp
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+    )
+    .expect_err("only one surface should be allowed to omit namespace_suffix");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("surfaces 'rest' and 'mcp' both omit namespace_suffix")
+            && message
+                .contains("at most one surface may use the default relation namespace 'github_v4'"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn multi_surface_namespace_suffixes_are_source_relative() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+  - id: mcp
+    namespace_suffix: mcp
+    type: mcp
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+    )
+    .expect("v4 manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let namespaces = v4
+        .surfaces
+        .iter()
+        .map(|surface| surface.relation_namespace.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(namespaces, ["github_v4", "github_v4_mcp"]);
+}
+
+#[test]
+fn explicit_surface_namespace_suffix_appends_to_source_name() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    namespace_suffix: api
+    type: openapi
+    file: /tmp/openapi.yaml
+",
+    )
+    .expect("v4 manifest");
+    let v4 = manifest.as_v4().expect("v4");
+
+    assert_eq!(
+        v4.surfaces.first().expect("surface").relation_namespace,
+        "github_v4_api"
+    );
+}
+
+#[test]
+fn unrelated_namespace_suffix_cannot_impersonate_another_source_relation_namespace() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: linear
+dsl_version: 4
+surfaces:
+  - id: rest
+    namespace_suffix: github_rest
+    type: openapi
+    file: /tmp/openapi.yaml
+",
+    )
+    .expect("v4 manifest");
+    let v4 = manifest.as_v4().expect("v4");
+
+    assert_eq!(
+        v4.surfaces.first().expect("surface").relation_namespace,
+        "linear_github_rest"
+    );
+}
+
+#[test]
+fn rejects_duplicate_effective_surface_relation_namespaces() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: github_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    namespace_suffix: api
+    type: openapi
+    file: /tmp/openapi.yaml
+  - id: mcp
+    namespace_suffix: api
+    type: mcp
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+    )
+    .expect_err("duplicate namespace should fail");
+
+    assert!(error.to_string().contains(
+        "surfaces 'rest' and 'mcp' declare duplicate relation namespace 'github_v4_api'"
+    ));
 }
 
 #[test]

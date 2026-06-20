@@ -39,81 +39,123 @@
   ],
   "$defs": {
     "V4SurfaceSchema": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string",
-          "pattern": "^[a-z][a-z0-9_]*$"
-        },
-        "type": {
-          "$ref": "#/$defs/V4SurfaceTypeSchema"
-        },
-        "url": {
-          "type": "string",
-          "pattern": "^https://"
-        },
-        "file": {
-          "type": "string",
-          "minLength": 1
-        },
-        "inputs": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/V4InputSpecSchema"
-          },
-          "propertyNames": {
-            "minLength": 1
-          }
-        },
-        "base_url": {
-          "type": "string",
-          "minLength": 1
-        },
-        "auth": {
-          "$ref": "#/$defs/AuthSpec",
-          "default": {
-            "type": "HeaderAuth",
-            "headers": []
-          }
-        },
-        "request_headers": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/HeaderSpec"
-          }
-        },
-        "rate_limit": {
-          "$ref": "#/$defs/RateLimitSpec",
-          "default": {
-            "extra_statuses": [],
-            "retry_after_header": null,
-            "remaining_header": null,
-            "reset_header": null
-          }
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "type"
-      ],
       "oneOf": [
         {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "namespace_suffix": {
+              "type": "string",
+              "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "url": {
+              "type": "string",
+              "pattern": "^https://"
+            },
+            "file": {
+              "type": "string",
+              "minLength": 1
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/V4InputSpecSchema"
+              },
+              "propertyNames": {
+                "minLength": 1
+              }
+            },
+            "base_url": {
+              "type": "string",
+              "minLength": 1
+            },
+            "auth": {
+              "$ref": "#/$defs/AuthSpec",
+              "default": {
+                "type": "HeaderAuth",
+                "headers": []
+              }
+            },
+            "request_headers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/HeaderSpec"
+              }
+            },
+            "rate_limit": {
+              "$ref": "#/$defs/RateLimitSpec",
+              "default": {
+                "extra_statuses": [],
+                "retry_after_header": null,
+                "remaining_header": null,
+                "reset_header": null
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "openapi"
+            }
+          },
+          "additionalProperties": false,
           "required": [
-            "url"
+            "type",
+            "id"
+          ],
+          "oneOf": [
+            {
+              "required": [
+                "url"
+              ]
+            },
+            {
+              "required": [
+                "file"
+              ]
+            }
           ]
         },
         {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "namespace_suffix": {
+              "type": "string",
+              "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/V4InputSpecSchema"
+              },
+              "propertyNames": {
+                "minLength": 1
+              }
+            },
+            "server": {
+              "$ref": "#/$defs/McpServerSpec"
+            },
+            "type": {
+              "type": "string",
+              "const": "mcp"
+            }
+          },
+          "additionalProperties": false,
           "required": [
-            "file"
+            "type",
+            "id",
+            "server"
           ]
         }
-      ]
-    },
-    "V4SurfaceTypeSchema": {
-      "type": "string",
-      "enum": [
-        "openapi"
       ]
     },
     "V4InputSpecSchema": {
@@ -1011,6 +1053,116 @@
         }
       },
       "additionalProperties": false
+    },
+    "McpServerSpec": {
+      "description": "MCP server connection settings.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "env": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/McpEnvSpec"
+              },
+              "default": []
+            },
+            "transport": {
+              "type": "string",
+              "const": "stdio"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "transport",
+            "command"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "auth": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/McpHttpAuthSpec"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "transport": {
+              "type": "string",
+              "const": "streamable_http"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "transport",
+            "url"
+          ]
+        }
+      ]
+    },
+    "McpEnvSpec": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ValueSourceSpec"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      ],
+      "description": "One environment variable passed to a stdio MCP server process."
+    },
+    "McpHttpAuthSpec": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ValueSourceSpec"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "bearer"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ],
+      "description": "HTTP authentication for Streamable HTTP MCP servers."
+    },
+    "McpHttpAuthKind": {
+      "description": "Supported Streamable HTTP MCP auth schemes.",
+      "type": "string",
+      "enum": [
+        "bearer"
+      ]
     }
   },
   "$id": "https://coral.local/source_manifest_v4.schema.json"
