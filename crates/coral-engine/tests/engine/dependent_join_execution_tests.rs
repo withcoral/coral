@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::str::FromStr as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use coral_engine::{
-    CoralQuery, CoreError, DependentJoinConfig, DependentJoinSourceConfig, QueryRuntimeConfig,
-    QuerySource, StatusCode,
+    CoralQuery, CoreError, DependentJoinConfig, DependentJoinSourceConfig, MemorySize,
+    QueryRuntimeConfig, QuerySource, StatusCode,
 };
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use serde_json::{Value, json};
@@ -34,6 +35,76 @@ async fn sql_join_fetches_http_dependent_rows_per_distinct_binding_tuple() {
         ",
     )
     .await;
+}
+
+#[tokio::test]
+async fn dependent_join_drops_fetched_rows_whose_key_values_do_not_match_binding() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[
+            issue_row("Matching", "withcoral", "coral", 123),
+            issue_row("Renamed", "withcoral", "coral", 777),
+        ],
+    );
+
+    let server = MockServer::start().await;
+    // Honest lookup: the payload's key columns echo what was requested.
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": "open"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Loose lookup (rename/transfer redirect): the API resolves the request
+    // but answers with a row whose key differs from the one asked for.
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/777"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 456,
+                "state": "open"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let execution = CoralQuery::execute_sql(
+        &[
+            build_source(issues_manifest(temp.path())),
+            build_source(github_manifest(&server.uri())),
+        ],
+        test_runtime(),
+        "
+        SELECT i.title AS issue_title, pr.number AS pr_number
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ORDER BY i.title
+        ",
+    )
+    .await
+    .expect("query should succeed");
+
+    // A plain hash join would never pair number=777 with number=456; the
+    // rewritten join must agree and drop the redirected row.
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({ "issue_title": "Matching", "pr_number": 123 })]
+    );
 }
 
 #[tokio::test]
@@ -244,6 +315,62 @@ async fn dependent_join_accepts_safe_casts_on_join_keys() {
 }
 
 #[tokio::test]
+async fn dependent_join_respects_engine_memory_limit() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": "open",
+                "payload": "x".repeat(512 * 1024)
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let sources = vec![
+        build_source(issues_manifest(temp.path())),
+        build_source(github_manifest(&server.uri())),
+    ];
+    let mut runtime = test_runtime();
+    runtime.memory.limit = Some(MemorySize::from_str("256Ki").expect("memory size"));
+
+    let error = CoralQuery::execute_sql(
+        &sources,
+        runtime,
+        "
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ",
+    )
+    .await
+    .expect_err("DPP should fail when retained memory exceeds engine limit");
+
+    assert_eq!(error.status_code(), StatusCode::Unavailable);
+    assert_error_contains(&error, "query engine memory budget exceeded");
+    assert_error_contains(&error, "[engine.memory].limit = 256Ki (262144 bytes)");
+    assert_error_contains(&error, "Increase [engine.memory].limit in config.toml");
+    assert_error_contains(&error, "narrow the query");
+    assert_error_contains(&error, "Additional allocation failed");
+    assert_error_contains(&error, "DependentJoinExec(github.pull_requests)");
+}
+
+#[tokio::test]
 async fn sql_join_reads_all_resolver_partitions() {
     let temp = TempDir::new().expect("temp dir");
     write_jsonl_file(
@@ -262,7 +389,7 @@ async fn sql_join_reads_all_resolver_partitions() {
             "data": [{
                 "owner": "withcoral",
                 "repo": "coral",
-                "number": 1,
+                "number": 123,
                 "state": "open"
             }]
         })))
@@ -460,7 +587,7 @@ async fn literal_filters_and_join_bindings_together_satisfy_required_dependent_f
             "data": [{
                 "owner": "withcoral",
                 "repo": "coral",
-                "number": 1,
+                "number": 123,
                 "state": "open"
             }]
         })))

@@ -22,6 +22,16 @@ impl Tuple {
     pub(crate) fn values(&self) -> &[BindingValue] {
         &self.values
     }
+
+    pub(crate) fn retained_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.values.capacity() * std::mem::size_of::<BindingValue>()
+            + self
+                .values
+                .iter()
+                .map(BindingValue::retained_payload_size)
+                .sum::<usize>()
+    }
 }
 
 pub(crate) fn filter_values_for_tuple(
@@ -71,6 +81,20 @@ impl BindingValue {
             Self::Boolean(value) => value.to_string(),
         }
     }
+    /// Join-equality between a resolver binding value and a dependent row's
+    /// key value. Same-typed values compare directly; mixed types fall back
+    /// to the wire-string form, which is what the binding was rendered as in
+    /// the request templates.
+    pub(crate) fn join_matches(&self, other: &Self) -> bool {
+        self == other || self.to_wire_string() == other.to_wire_string()
+    }
+
+    fn retained_payload_size(&self) -> usize {
+        match self {
+            Self::String(value) => value.len(),
+            Self::Int64(_) | Self::Boolean(_) => 0,
+        }
+    }
 }
 
 pub(crate) struct BindingProjector {
@@ -103,7 +127,7 @@ impl BindingProjector {
     }
 }
 
-fn extract_binding_value(array: &dyn Array, row: usize) -> Result<BindingValue> {
+pub(crate) fn extract_binding_value(array: &dyn Array, row: usize) -> Result<BindingValue> {
     match array.data_type() {
         DataType::Utf8 => {
             let array = array

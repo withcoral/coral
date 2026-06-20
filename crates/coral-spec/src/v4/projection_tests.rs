@@ -1,9 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use serde_json::json;
+
 use super::naming::{pluralize, singularize};
 use super::test_support::github_openapi;
 use super::*;
-use crate::{PaginationMode, SourceTableFunctionKind, parse_source_manifest_yaml};
+use crate::{
+    ManifestDataType, PaginationMode, SourceTableFunctionKind, parse_source_manifest_yaml,
+};
 
 #[test]
 fn imports_and_generates_github_issue_slice() {
@@ -207,8 +211,164 @@ paths:
         .find(|input| input.wire_name == "id")
         .expect("id input");
     assert_eq!(id_input.sql_exposure, SqlInputExposure::FunctionArg);
-    assert!(id_input.required);
+    assert!(!id_input.required);
     assert_eq!(id_input.default_value.as_deref(), Some("public"));
+
+    let id_arg = projection_arg_specs(projection)
+        .into_iter()
+        .find(|arg| arg.name == "id")
+        .expect("id arg");
+    assert!(!id_arg.required);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The fixture keeps related path default escaping cases together."
+)]
+fn request_paths_preserve_path_parameter_defaults() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /tenants/{tenant}/items:
+    get:
+      operationId: list-items
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema:
+            type: string
+            default: '|public}}'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Item'}
+  /search/{tenant}/items:
+    get:
+      operationId: search-items
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema:
+            type: string
+            default: '..'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Item'}
+  /namespaces/{namespace}/items:
+    get:
+      operationId: list-namespace-items
+      parameters:
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+            default: '.'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Item'}
+components:
+  schemas:
+    Item:
+      type: object
+      properties:
+        id: {type: integer}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let table_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "list_items")
+        .expect("table projection");
+    let table_operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == table_projection.operation_id)
+        .expect("table operation");
+    let table_request =
+        request_spec_for_projection(table_projection, table_operation).expect("table request");
+    assert_eq!(
+        table_request.path.raw(),
+        "/tenants/{{filter.tenant|%7Cpublic%7D%7D}}/items"
+    );
+    let table_filter = projection_filter_specs(table_projection)
+        .into_iter()
+        .find(|filter| filter.name == "tenant")
+        .expect("tenant filter");
+    assert!(!table_filter.required);
+
+    let search_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "search_items")
+        .expect("search projection");
+    let search_operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == search_projection.operation_id)
+        .expect("search operation");
+    let search_request =
+        request_spec_for_projection(search_projection, search_operation).expect("search request");
+    assert_eq!(
+        search_request.path.raw(),
+        "/search/{{arg.tenant|%252E%252E}}/items"
+    );
+    let search_arg = projection_arg_specs(search_projection)
+        .into_iter()
+        .find(|arg| arg.name == "tenant")
+        .expect("tenant arg");
+    assert!(!search_arg.required);
+
+    let namespace_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "list_namespace_items")
+        .expect("namespace projection");
+    let namespace_operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == namespace_projection.operation_id)
+        .expect("namespace operation");
+    let namespace_request = request_spec_for_projection(namespace_projection, namespace_operation)
+        .expect("namespace request");
+    assert_eq!(
+        namespace_request.path.raw(),
+        "/namespaces/{{filter.namespace|%252E}}/items"
+    );
 }
 
 #[test]
@@ -371,6 +531,493 @@ components:
     assert_eq!(
         projection_collision_diagnostics,
         catalog_collision_diagnostics.len()
+    );
+}
+
+fn rest_mcp_collision_manifest() -> crate::ValidatedSourceManifest {
+    parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    namespace_suffix: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+  - id: mcp
+    namespace_suffix: mcp
+    type: mcp
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+    )
+    .expect("manifest")
+}
+
+fn two_rest_collision_manifest() -> crate::ValidatedSourceManifest {
+    parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest_primary
+    namespace_suffix: rest_primary
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+  - id: rest_secondary
+    namespace_suffix: rest_secondary
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest")
+}
+
+fn rest_search_openapi() -> &'static [u8] {
+    r"
+openapi: 3.0.3
+paths:
+  /search/issues:
+    get:
+      operationId: issues/search
+      parameters:
+        - {name: q, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: integer}
+                        title: {type: string}
+"
+    .as_bytes()
+}
+
+fn search_issues_mcp_catalog() -> McpToolCatalog {
+    McpToolCatalog {
+        tools: vec![McpToolDescriptor {
+            name: "search_issues".to_string(),
+            title: None,
+            description: None,
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"}
+                },
+                "required": ["query"]
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "integer"},
+                                "title": {"type": "string"}
+                            }
+                        }
+                    }
+                }
+            })),
+            read_only_hint: Some(true),
+        }],
+    }
+}
+
+#[test]
+fn rest_projection_input_names_keep_legacy_normalization() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let openapi = r"
+openapi: 3.0.3
+paths:
+  /issues:
+    get:
+      operationId: issues/search
+      parameters:
+        - name: perPage
+          in: query
+          schema: { type: integer }
+        - name: pullNumber
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: integer }
+";
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("surface");
+    let ir = import_openapi_surface(v4, surface, openapi.as_bytes()).expect("import");
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+    let sql_name_by_wire = projection
+        .inputs
+        .iter()
+        .map(|input| (input.wire_name.as_str(), input.name.as_str()))
+        .collect::<BTreeMap<_, _>>();
+
+    assert_eq!(sql_name_by_wire.get("perPage"), Some(&"perpage"));
+    assert_eq!(sql_name_by_wire.get("pullNumber"), Some(&"pullnumber"));
+}
+
+#[test]
+fn different_surface_namespaces_keep_colliding_projection_names() {
+    let manifest = rest_mcp_collision_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let rest_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "rest")
+        .expect("rest surface");
+    let mcp_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "mcp")
+        .expect("mcp surface");
+    let rest_ir =
+        import_openapi_surface(v4, rest_surface, rest_search_openapi()).expect("rest import");
+    let mcp_ir =
+        import_mcp_surface(v4, mcp_surface, &search_issues_mcp_catalog()).expect("mcp import");
+
+    let catalog = generate_projection_catalog(v4, &[rest_ir, mcp_ir]).expect("catalog");
+    let rest_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| {
+            projection.surface_id == "rest" && projection.operation_id == "issues_search"
+        })
+        .expect("rest search projection");
+    assert_eq!(rest_projection.name, "search_issues");
+    assert_eq!(rest_projection.namespace, "github_rest");
+
+    let mcp_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| {
+            projection.surface_id == "mcp" && projection.operation_id == "search_issues"
+        })
+        .expect("mcp search projection");
+    assert_eq!(mcp_projection.name, "search_issues");
+    assert_eq!(mcp_projection.namespace, "github_mcp");
+
+    assert!(
+        !catalog
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
+    );
+}
+
+#[test]
+fn generated_mcp_projection_exposes_current_row_result_columns() {
+    let manifest = rest_mcp_collision_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let mcp_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "mcp")
+        .expect("mcp surface");
+    let mcp_ir =
+        import_mcp_surface(v4, mcp_surface, &search_issues_mcp_catalog()).expect("mcp import");
+
+    let catalog = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let projection = catalog
+        .projections
+        .iter()
+        .find(|projection| {
+            projection.surface_id == "mcp" && projection.operation_id == "search_issues"
+        })
+        .expect("mcp search projection");
+
+    let columns = projection
+        .columns
+        .iter()
+        .map(|column| {
+            (
+                column.name.clone(),
+                column.data_type,
+                column.source_path.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        columns,
+        vec![
+            ("result".to_string(), ManifestDataType::Utf8, Vec::new()),
+            (
+                "result_json".to_string(),
+                ManifestDataType::Json,
+                Vec::new()
+            )
+        ]
+    );
+}
+
+#[test]
+fn generated_mcp_projection_keeps_pagination_cursor_internal() {
+    let manifest = rest_mcp_collision_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let mcp_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "mcp")
+        .expect("mcp surface");
+    let catalog = McpToolCatalog {
+        tools: vec![McpToolDescriptor {
+            name: "list_items".to_string(),
+            title: None,
+            description: None,
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cursor": {"type": "string"},
+                    "query": {"type": "string"}
+                },
+                "required": ["query"]
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"}
+                            }
+                        }
+                    },
+                    "meta": {
+                        "type": "object",
+                        "properties": {
+                            "nextCursor": {"type": ["string", "null"]}
+                        }
+                    }
+                }
+            })),
+            read_only_hint: Some(true),
+        }],
+    };
+    let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
+
+    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let projection = projections
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "list_items")
+        .expect("mcp projection");
+    let cursor = projection
+        .inputs
+        .iter()
+        .find(|input| input.wire_name == "cursor")
+        .expect("cursor input");
+
+    assert_eq!(cursor.sql_exposure, SqlInputExposure::Internal);
+    assert!(
+        mcp_projection_arg_specs(projection)
+            .iter()
+            .all(|arg| arg.bind.arg != "cursor")
+    );
+}
+
+#[test]
+fn generated_mcp_projection_with_only_pagination_cursor_is_table() {
+    let manifest = rest_mcp_collision_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let mcp_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "mcp")
+        .expect("mcp surface");
+    let catalog = McpToolCatalog {
+        tools: vec![McpToolDescriptor {
+            name: "list_items".to_string(),
+            title: None,
+            description: None,
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cursor": {"type": "string"}
+                }
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"}
+                            }
+                        }
+                    },
+                    "meta": {
+                        "type": "object",
+                        "properties": {
+                            "nextCursor": {"type": ["string", "null"]}
+                        }
+                    }
+                }
+            })),
+            read_only_hint: Some(true),
+        }],
+    };
+    let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
+
+    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let projection = projections
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "list_items")
+        .expect("mcp projection");
+
+    assert!(matches!(projection.kind, ProjectionKind::Table));
+    assert_eq!(
+        projection
+            .inputs
+            .iter()
+            .filter(|input| input.sql_exposure != SqlInputExposure::Internal)
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn generated_mcp_projection_snake_cases_camel_input_names() {
+    let manifest = rest_mcp_collision_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let mcp_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "mcp")
+        .expect("mcp surface");
+    let catalog = McpToolCatalog {
+        tools: vec![McpToolDescriptor {
+            name: "pull_request_read".to_string(),
+            title: None,
+            description: None,
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "perPage": {"type": "number"},
+                    "pullNumber": {"type": "number"},
+                    "alertNumber": {"type": "number"},
+                    "discussionNumber": {"type": "number"},
+                    "ghsaId": {"type": "string"},
+                    "notificationID": {"type": "string"}
+                },
+                "required": ["pullNumber"]
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"}
+                }
+            })),
+            read_only_hint: Some(true),
+        }],
+    };
+    let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
+
+    let projections = generate_projection_catalog(v4, &[mcp_ir]).expect("catalog");
+    let projection = projections
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "pull_request_read")
+        .expect("mcp projection");
+    let sql_name_by_wire = projection
+        .inputs
+        .iter()
+        .map(|input| (input.wire_name.as_str(), input.name.as_str()))
+        .collect::<BTreeMap<_, _>>();
+
+    assert_eq!(sql_name_by_wire.get("perPage"), Some(&"per_page"));
+    assert_eq!(sql_name_by_wire.get("pullNumber"), Some(&"pull_number"));
+    assert_eq!(sql_name_by_wire.get("alertNumber"), Some(&"alert_number"));
+    assert_eq!(
+        sql_name_by_wire.get("discussionNumber"),
+        Some(&"discussion_number")
+    );
+    assert_eq!(sql_name_by_wire.get("ghsaId"), Some(&"ghsa_id"));
+    assert_eq!(
+        sql_name_by_wire.get("notificationID"),
+        Some(&"notification_id")
+    );
+}
+
+#[test]
+fn same_type_surface_namespaces_keep_colliding_projection_names() {
+    let manifest = two_rest_collision_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let primary_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "rest_primary")
+        .expect("primary rest surface");
+    let secondary_surface = v4
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == "rest_secondary")
+        .expect("secondary rest surface");
+    let primary_ir = import_openapi_surface(v4, primary_surface, rest_search_openapi())
+        .expect("primary rest import");
+    let secondary_ir = import_openapi_surface(v4, secondary_surface, rest_search_openapi())
+        .expect("secondary rest import");
+
+    let catalog = generate_projection_catalog(v4, &[primary_ir, secondary_ir]).expect("catalog");
+    let primary_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.surface_id == "rest_primary")
+        .expect("primary projection");
+    assert_eq!(primary_projection.name, "search_issues");
+    assert_eq!(primary_projection.namespace, "github_rest_primary");
+
+    let secondary_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.surface_id == "rest_secondary")
+        .expect("secondary projection");
+    assert_eq!(secondary_projection.name, "search_issues");
+    assert_eq!(secondary_projection.namespace, "github_rest_secondary");
+
+    assert!(
+        !catalog
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
     );
 }
 
