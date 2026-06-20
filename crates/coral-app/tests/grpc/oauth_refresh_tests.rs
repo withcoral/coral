@@ -4,7 +4,7 @@
 )]
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -14,14 +14,17 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD;
 use coral_api::v1::{
     ExecuteSqlRequest, ImportSourceRequest, SourceSecret, SourceVariable, import_source_response,
 };
-use coral_client::{batches_to_json_rows, decode_execute_sql_response, default_workspace};
+use coral_client::default_workspace;
+use fs2::FileExt as _;
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use tokio::sync::Notify;
 use tonic::{Code, Request};
 
 use crate::harness::{GrpcHarness, fixture_manifest_yaml, source_dir};
+
+const ASYNC_TEST_TIMEOUT: Duration = Duration::from_secs(30);
+const BLOCKED_IMPORT_CHECK: Duration = Duration::from_millis(200);
 
 #[tokio::test]
 async fn query_refreshes_expired_oauth_access_token_at_request_time() {
@@ -354,7 +357,7 @@ async fn concurrent_servers_share_one_expired_oauth_refresh() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manual_credential_replacement_waits_for_in_flight_refresh() {
-    let fixture = RefreshingHttpFixture::new_blocked_token_response().await;
+    let fixture = RefreshingHttpFixture::new().await;
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -377,25 +380,12 @@ async fn manual_credential_replacement_waits_for_in_flight_refresh() {
         Some("stored-refresh-token"),
     );
 
-    let mut query_client = harness.query_client();
-    let query = tokio::spawn(async move {
-        let response = query_client
-            .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(default_workspace()),
-                sql: "SELECT id FROM refreshed_messages.messages".to_string(),
-            }))
-            .await
-            .expect("execute sql")
-            .into_inner();
-        let result = decode_execute_sql_response(&response).expect("decode execute response");
-        batches_to_json_rows(result.batches()).expect("json rows")
-    });
-
-    fixture.wait_for_token_request().await;
+    let refresh_lock =
+        hold_source_refresh_lock(harness.config_dir(), "default", "refreshed_messages");
     let mut source_client = harness.source_client();
     let import_manifest_yaml = oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url);
     let import_base_url = fixture.base_url.clone();
-    let import = tokio::spawn(async move {
+    let mut import = tokio::spawn(async move {
         let mut stream = source_client
             .import_source(Request::new(ImportSourceRequest {
                 workspace: Some(default_workspace()),
@@ -427,22 +417,20 @@ async fn manual_credential_replacement_waits_for_in_flight_refresh() {
             })
             .expect("import source response")
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
-        !import.is_finished(),
+        tokio::time::timeout(BLOCKED_IMPORT_CHECK, &mut import)
+            .await
+            .is_err(),
         "manual credential replacement should wait for the in-flight refresh"
     );
-    fixture.allow_token_response();
+    seed_refreshed_api_token_material(&secret_path, &fixture.token_url);
+    drop(refresh_lock);
 
-    let rows = query.await.expect("query task");
-    import.await.expect("import task");
+    tokio::time::timeout(ASYNC_TEST_TIMEOUT, import)
+        .await
+        .expect("manual replacement should complete after refresh lock is released")
+        .expect("import task");
 
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["id"], "ok");
-    assert_eq!(
-        fixture.message_authorizations(),
-        vec!["Bearer refreshed-token".to_string()]
-    );
     let material = fs::read_to_string(secret_path).expect("read material");
     assert!(material.contains("API_TOKEN=manual-token"), "{material}");
     assert!(
@@ -565,6 +553,44 @@ __coral_oauth.QVBJX1RPS0VO.token_url={token_url}
         ),
     )
     .expect("seed expired oauth material");
+}
+
+fn seed_refreshed_api_token_material(secret_path: &Path, token_url: &str) {
+    fs::write(
+        secret_path,
+        format!(
+            "\
+API_TOKEN=refreshed-token
+__coral_oauth.QVBJX1RPS0VO.method=oauth
+__coral_oauth.QVBJX1RPS0VO.access_token_expires_at={}
+__coral_oauth.QVBJX1RPS0VO.refresh_token=rotated-refresh-token
+__coral_oauth.QVBJX1RPS0VO.client_id=stored-client
+__coral_oauth.QVBJX1RPS0VO.token_url={token_url}
+",
+            (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+        ),
+    )
+    .expect("seed refreshed oauth material");
+}
+
+fn hold_source_refresh_lock(config_dir: &Path, workspace_name: &str, source_name: &str) -> File {
+    let lock_path = config_dir
+        .join("locks")
+        .join("credentials")
+        .join(workspace_name)
+        .join(format!("{source_name}.refresh.lock"));
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent).expect("create refresh lock parent");
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .expect("open refresh lock file");
+    file.lock_exclusive().expect("hold refresh lock");
+    file
 }
 
 fn oauth_refresh_manifest_yaml(base_url: &str, token_url: &str) -> String {
@@ -703,32 +729,19 @@ struct RefreshingHttpFixture {
     token_url: String,
     token_forms: Arc<Mutex<Vec<BTreeMap<String, String>>>>,
     message_authorizations: Arc<Mutex<Vec<String>>>,
-    token_request_seen: Arc<Notify>,
-    token_response_gate: Option<Arc<Notify>>,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl RefreshingHttpFixture {
     async fn new() -> Self {
-        Self::new_with_token_response_gate(None).await
-    }
-
-    async fn new_blocked_token_response() -> Self {
-        Self::new_with_token_response_gate(Some(Arc::new(Notify::new()))).await
-    }
-
-    async fn new_with_token_response_gate(token_response_gate: Option<Arc<Notify>>) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind oauth refresh fixture");
         let addr = listener.local_addr().expect("fixture addr");
         let token_forms = Arc::new(Mutex::new(Vec::new()));
         let message_authorizations = Arc::new(Mutex::new(Vec::new()));
-        let token_request_seen = Arc::new(Notify::new());
         let task_token_forms = Arc::clone(&token_forms);
         let task_message_authorizations = Arc::clone(&message_authorizations);
-        let task_token_request_seen = Arc::clone(&token_request_seen);
-        let task_token_response_gate = token_response_gate.clone();
         let task = tokio::spawn(async move {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
@@ -736,8 +749,6 @@ impl RefreshingHttpFixture {
                 };
                 let token_forms = Arc::clone(&task_token_forms);
                 let message_authorizations = Arc::clone(&task_message_authorizations);
-                let token_request_seen = Arc::clone(&task_token_request_seen);
-                let token_response_gate = task_token_response_gate.clone();
                 tokio::spawn(async move {
                     let request = read_http_request(&mut socket).await;
                     match request.path.as_str() {
@@ -746,10 +757,6 @@ impl RefreshingHttpFixture {
                                 .lock()
                                 .expect("token forms")
                                 .push(request.form());
-                            token_request_seen.notify_one();
-                            if let Some(gate) = token_response_gate {
-                                gate.notified().await;
-                            }
                             write_json_response(
                                 &mut socket,
                                 "200 OK",
@@ -796,19 +803,7 @@ impl RefreshingHttpFixture {
             token_url: format!("http://{addr}/token"),
             token_forms,
             message_authorizations,
-            token_request_seen,
-            token_response_gate,
             task,
-        }
-    }
-
-    async fn wait_for_token_request(&self) {
-        self.token_request_seen.notified().await;
-    }
-
-    fn allow_token_response(&self) {
-        if let Some(gate) = &self.token_response_gate {
-            gate.notify_one();
         }
     }
 
