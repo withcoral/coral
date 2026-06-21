@@ -53,9 +53,20 @@ coral source add --file sources/community/dodopayments/manifest.yaml
 ```sql
 -- Recent succeeded payments with customer info
 SELECT payment_id, status, total_amount, currency,
-       customer_id, customer_name, customer_email, created_at
+       customer_id, customer_name, customer_email,
+       refund_status, dispute_status, created_at
 FROM dodopayments.payments
 WHERE status = 'succeeded'
+ORDER BY created_at DESC
+LIMIT 10;
+
+-- Payments with open disputes (no join to disputes table required)
+SELECT payment_id, customer_email, total_amount, currency,
+       dispute_status, created_at
+FROM dodopayments.payments
+WHERE dispute_status NOT IN ('dispute_won', 'dispute_lost',
+                             'dispute_cancelled', 'dispute_expired')
+  AND dispute_status IS NOT NULL
 ORDER BY created_at DESC
 LIMIT 10;
 
@@ -131,6 +142,7 @@ subscription renewals. Join to `customers` via `customer_id` or
 | `created_at` | Utf8 | Payment creation timestamp (ISO 8601) |
 | `subscription_id` | Utf8 | Subscription ID if this is a subscription payment |
 | `invoice_id` | Utf8 | Invoice identifier (India-specific if available) |
+| `invoice_url` | Utf8 | URL to download the invoice PDF for this payment |
 | `payment_provider` | Utf8 | Processor — `stripe`, `adyen`, or `dodo` |
 | `payment_method` | Utf8 | Payment method e.g. `card`, `bank_transfer` |
 | `payment_method_type` | Utf8 | Specific type e.g. `visa`, `mastercard` |
@@ -140,6 +152,7 @@ subscription renewals. Join to `customers` via `customer_id` or
 | `digital_products_delivered` | Boolean | Whether digital products have been delivered |
 | `has_license_key` | Boolean | Whether this payment includes a license key |
 | `refund_status` | Utf8 | `partial`, `full`, or null if no refunds |
+| `dispute_status` | Utf8 | Most recent dispute status for this payment, or null if none (`dispute_opened`, `dispute_won`, etc.) |
 | `metadata` | Json | Additional metadata as a JSON object |
 
 ---
@@ -339,8 +352,9 @@ and to `payments` via `subscription_id`.
   2 on `payouts`, and 6 on `subscriptions`.
 - All 6 declared `test_queries` are source-independent (use `LIMIT` and work
   on any account with data).
-- Column definitions follow the Dodo Payments OpenAPI list-response schemas
-  linked in [Provider docs](#provider-docs).
+- Column definitions are a selected subset of the Dodo Payments OpenAPI
+  list-response schemas linked in [Provider docs](#provider-docs), focused on
+  billing and reconciliation fields users query most often.
 
 ## Limitations
 
@@ -521,7 +535,7 @@ Added source dodopayments (secrets: keychain)
     Query tests
     6 declared · 6 passed · 0 failed
 
-    ✓ SELECT payment_id, status, total_amount, currency FROM dodopayments.payments LIMIT 5
+    ✓ SELECT payment_id, status, total_amount, currency, refund_status, dispute_status FROM dodopayments.payments LIMIT 5
       2 rows
 
     ✓ SELECT customer_id, name, email FROM dodopayments.customers LIMIT 5

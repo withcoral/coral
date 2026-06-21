@@ -39,7 +39,7 @@ request_headers:
     from: literal
     value: application/json
 test_queries:
-  - SELECT payment_id, status, total_amount, currency FROM dodopayments.payments LIMIT 5
+  - SELECT payment_id, status, total_amount, currency, refund_status, dispute_status FROM dodopayments.payments LIMIT 5
   - SELECT customer_id, name, email FROM dodopayments.customers LIMIT 5
   - SELECT refund_id, payment_id, status, amount, is_partial FROM dodopayments.refunds LIMIT 5
   - SELECT dispute_id, payment_id, dispute_status, amount, dispute_stage FROM dodopayments.disputes LIMIT 5
@@ -175,6 +175,13 @@ tables:
         expr:
           kind: path
           path: [invoice_id]
+      - name: invoice_url
+        type: Utf8
+        nullable: true
+        description: URL to download the invoice PDF for this payment.
+        expr:
+          kind: path
+          path: [invoice_url]
       - name: payment_provider
         type: Utf8
         nullable: false
@@ -238,6 +245,15 @@ tables:
         expr:
           kind: path
           path: [refund_status]
+      - name: dispute_status
+        type: Utf8
+        nullable: true
+        description: >-
+          Most recent dispute status for this payment, or null if no disputes
+          exist.
+        expr:
+          kind: path
+          path: [dispute_status]
       - name: metadata
         type: Json
         nullable: false
