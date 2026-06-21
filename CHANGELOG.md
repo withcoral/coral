@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+
+* **spec:** import OpenAPI 3.1 documents in DSL v4 ([#1321](https://github.com/withcoral/coral/issues/1321))
+
 ## [0.4.3](https://github.com/withcoral/coral/compare/v0.4.2...v0.4.3) (2026-06-15)
 
 

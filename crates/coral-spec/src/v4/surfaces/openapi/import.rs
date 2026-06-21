@@ -8,6 +8,8 @@ use crate::v4::manifest::{V4SourceManifest, V4Surface};
 use crate::v4::{OPENAPI_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
 use crate::{ManifestError, Result};
 
+use super::is_supported_openapi_version;
+
 pub fn import_openapi_surface(
     manifest: &V4SourceManifest,
     surface: &V4Surface,
@@ -19,7 +21,7 @@ pub fn import_openapi_surface(
         .get("openapi")
         .and_then(Value::as_str)
         .ok_or_else(|| ManifestError::validation("OpenAPI document is missing openapi version"))?;
-    if !openapi.starts_with("3.0.") {
+    if !is_supported_openapi_version(openapi) {
         return Err(ManifestError::validation(format!(
             "OpenAPI document for surface '{}' uses unsupported version '{openapi}'",
             surface.id

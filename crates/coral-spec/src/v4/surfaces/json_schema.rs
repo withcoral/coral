@@ -21,6 +21,18 @@ pub(crate) fn json_schema_type_contains(schema: &Value, expected: &str) -> bool 
     }
 }
 
+pub(crate) fn json_schema_nullable(schema: &Value) -> bool {
+    schema
+        .get("nullable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || schema_type_values(schema).contains(&"null")
+}
+
+pub(crate) fn json_schema_is_object_like(schema: &Value) -> bool {
+    json_schema_type_contains(schema, "object") || schema.get("type").is_none()
+}
+
 pub(crate) fn json_schema_type_display(schema: &Value) -> String {
     match schema.get("type") {
         Some(Value::String(value)) => value.clone(),
@@ -138,5 +150,36 @@ mod tests {
             json_schema_scalar_type(&json!({"format": "date-time"})),
             Some(IrScalarType::Timestamp)
         );
+    }
+
+    #[test]
+    fn nullable_detects_openapi_30_nullable_keyword() {
+        assert!(json_schema_nullable(
+            &json!({"type": "string", "nullable": true})
+        ));
+    }
+
+    #[test]
+    fn nullable_detects_openapi_31_type_arrays() {
+        assert!(json_schema_nullable(&json!({"type": ["string", "null"]})));
+    }
+
+    #[test]
+    fn nullable_rejects_non_nullable_schemas() {
+        assert!(!json_schema_nullable(&json!({"type": "string"})));
+    }
+
+    #[test]
+    fn object_like_treats_missing_type_as_object() {
+        assert!(json_schema_is_object_like(&json!({
+            "properties": {"id": {"type": "string"}}
+        })));
+    }
+
+    #[test]
+    fn object_like_accepts_openapi_31_object_type_arrays() {
+        assert!(json_schema_is_object_like(&json!({
+            "type": ["object", "null"]
+        })));
     }
 }

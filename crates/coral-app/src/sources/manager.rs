@@ -1628,6 +1628,38 @@ components:
 "#
     }
 
+    fn v4_openapi_31_fixture() -> &'static str {
+        r"
+openapi: 3.1.0
+paths:
+  /repos/{owner}/{repo}/issues:
+    get:
+      operationId: issues/list-for-repo
+      parameters:
+        - {name: owner, in: path, required: true, schema: {type: string}}
+        - {name: repo, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type:
+                  - array
+                  - 'null'
+                items: {$ref: '#/components/schemas/issue'}
+components:
+  schemas:
+    issue:
+      type: object
+      properties:
+        id: {type: integer}
+        title:
+          type:
+            - string
+            - 'null'
+"
+    }
+
     fn manifest_v4_with_file_descriptor(openapi_file: &std::path::Path) -> String {
         format!(
             r#"
@@ -1975,6 +2007,44 @@ tables:
             .get_source_info(&default_workspace(), &source_name)
             .expect("installed v4 source should be usable");
         assert_eq!(info.name.as_str(), "github_v4_test");
+    }
+
+    #[test]
+    fn import_v4_openapi_31_source_writes_materialized_artifacts() {
+        let temp = TempDir::new().expect("temp dir");
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let openapi_file = descriptor_temp.path().join("github-openapi-31.yaml");
+        std::fs::write(&openapi_file, v4_openapi_31_fixture()).expect("write fixture");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+
+        let installed = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_v4_with_file_descriptor(&openapi_file),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import v4 OpenAPI 3.1 source");
+
+        assert_eq!(installed.name.as_str(), "github_v4_test");
+        let source_name = SourceName::parse("github_v4_test").expect("source");
+        let materialized = layout.v4_materialized_dir(&default_workspace(), &source_name);
+        assert!(materialized.join("fingerprint.yaml").exists());
+        assert!(materialized.join("projections.yaml").exists());
+        assert!(
+            materialized
+                .join("surfaces")
+                .join("rest")
+                .join("semantic-ir.yaml")
+                .exists()
+        );
     }
 
     #[test]

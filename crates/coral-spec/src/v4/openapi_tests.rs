@@ -814,3 +814,300 @@ paths:
     );
     assert_eq!(operation.output.cardinality, OutputCardinality::Unknown);
 }
+
+fn openapi_v4_manifest() -> V4SourceManifest {
+    parse_source_manifest_yaml(
+        r"
+name: openapi31
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone()
+}
+
+#[test]
+fn extracts_openapi_31_document_metadata() {
+    let metadata = openapi_document_metadata(
+        r"
+openapi: 3.1.0
+info:
+  title: Demo
+  description: OpenAPI 3.1 demo.
+servers:
+  - url: https://api.example.com/v1
+paths: {}
+"
+        .as_bytes(),
+    )
+    .expect("metadata");
+    assert_eq!(metadata.description.as_deref(), Some("OpenAPI 3.1 demo."));
+    assert_eq!(
+        metadata.server_url.as_deref(),
+        Some("https://api.example.com/v1")
+    );
+}
+
+#[test]
+fn rejects_unsupported_openapi_32_document() {
+    let error = openapi_document_metadata(
+        r"
+openapi: 3.2.0
+info:
+  title: Demo
+paths: {}
+"
+        .as_bytes(),
+    )
+    .expect_err("3.2 should be rejected");
+    assert!(
+        error.to_string().contains("unsupported version '3.2.0'"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn importer_accepts_openapi_31_documents() {
+    let manifest = openapi_v4_manifest();
+    let surface = manifest.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        &manifest,
+        surface,
+        r"
+openapi: 3.1.0
+paths:
+  /items/{id}:
+    get:
+      operationId: items/get
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: include_archived
+          in: query
+          schema:
+            type:
+              - boolean
+              - 'null'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  nickname:
+                    type:
+                      - string
+                      - 'null'
+"
+        .as_bytes(),
+    )
+    .expect("3.1 import");
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.id, "items_get");
+
+    let types = ir
+        .types
+        .iter()
+        .map(|ty| (ty.id.as_str(), ty))
+        .collect::<BTreeMap<_, _>>();
+    let row = types
+        .get(operation.output.type_ref.as_str())
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row.shape else {
+        panic!("row imported as {:?}", row.shape);
+    };
+    let nickname = fields
+        .iter()
+        .find(|field| field.name == "nickname")
+        .expect("nickname field");
+    let nickname_type = types
+        .get(nickname.type_ref.as_str())
+        .expect("nickname type");
+    assert!(nickname_type.nullable);
+    assert!(matches!(
+        nickname_type.shape,
+        IrTypeShape::Scalar(IrScalarType::String)
+    ));
+
+    let include_archived = operation
+        .inputs
+        .iter()
+        .find(|input| input.name == "include_archived")
+        .expect("include_archived parameter");
+    assert_eq!(include_archived.data_type, IrScalarType::Boolean);
+}
+
+#[test]
+fn importer_classifies_openapi_31_wrapped_list_responses() {
+    let manifest = openapi_v4_manifest();
+    let surface = manifest.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        &manifest,
+        surface,
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type:
+                      - array
+                      - 'null'
+                    items:
+                      $ref: '#/components/schemas/Item'
+components:
+  schemas:
+    Item:
+      type: object
+      properties:
+        id:
+          type: string
+        note:
+          type:
+            - string
+            - 'null'
+"
+        .as_bytes(),
+    )
+    .expect("3.1 wrapped list import");
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
+    assert_eq!(operation.output.row_path, vec!["data".to_string()]);
+
+    let catalog = generate_projection_catalog(&manifest, &[ir]).expect("catalog");
+    let projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "items_list")
+        .expect("projection");
+    assert_eq!(projection.name, "items");
+    assert!(matches!(projection.kind, ProjectionKind::Table));
+}
+
+#[test]
+fn importer_handles_openapi_31_array_response_items() {
+    let manifest = openapi_v4_manifest();
+    let surface = manifest.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        &manifest,
+        surface,
+        r"
+openapi: 3.1.0
+paths:
+  /widgets:
+    get:
+      operationId: widgets/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type:
+                  - array
+                  - 'null'
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+"
+        .as_bytes(),
+    )
+    .expect("3.1 array response import");
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::List);
+}
+
+#[test]
+fn importer_imports_object_schemas_without_explicit_type() {
+    let manifest = openapi_v4_manifest();
+    let surface = manifest.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        &manifest,
+        surface,
+        r"
+openapi: 3.1.0
+paths:
+  /records/{id}:
+    get:
+      operationId: records/get
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                properties:
+                  id: {type: string}
+                  label:
+                    type:
+                      - string
+                      - 'null'
+"
+        .as_bytes(),
+    )
+    .expect("schema without explicit type imports");
+    let operation = ir.operations.first().expect("operation");
+    let row = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row.shape else {
+        panic!("row imported as {:?}", row.shape);
+    };
+    assert_eq!(fields.len(), 2);
+}
+
+#[test]
+fn importer_rejects_unsupported_openapi_32_surface() {
+    let manifest = openapi_v4_manifest();
+    let surface = manifest.surfaces.first().expect("one surface");
+    let error = import_openapi_surface(
+        &manifest,
+        surface,
+        r"
+openapi: 3.2.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+"
+        .as_bytes(),
+    )
+    .expect_err("3.2 should be rejected");
+    assert!(
+        error.to_string().contains("unsupported version '3.2.0'"),
+        "unexpected error: {error}"
+    );
+}

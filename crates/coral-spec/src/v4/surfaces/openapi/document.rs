@@ -2,6 +2,8 @@ use serde_json::{Map, Value};
 
 use crate::{ManifestError, Result};
 
+use super::is_supported_openapi_version;
+
 pub fn normalize_source_document(bytes: &[u8]) -> Result<String> {
     let value: Value = serde_yaml::from_slice(bytes).map_err(ManifestError::parse_yaml)?;
     serde_yaml::to_string(&value).map_err(ManifestError::parse_yaml)
@@ -20,7 +22,7 @@ pub fn openapi_document_metadata(document_bytes: &[u8]) -> Result<OpenApiDocumen
         .get("openapi")
         .and_then(Value::as_str)
         .ok_or_else(|| ManifestError::validation("OpenAPI document is missing openapi version"))?;
-    if !openapi.starts_with("3.0.") {
+    if !is_supported_openapi_version(openapi) {
         return Err(ManifestError::validation(format!(
             "OpenAPI document uses unsupported version '{openapi}'"
         )));

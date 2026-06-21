@@ -5,7 +5,10 @@ use serde_json::{Map, Value};
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrField, IrType, IrTypeShape};
 use crate::v4::naming::normalize_identifier;
-use crate::v4::surfaces::json_schema::json_schema_scalar_type;
+use crate::v4::surfaces::json_schema::{
+    json_schema_is_object_like, json_schema_nullable, json_schema_scalar_type,
+    json_schema_type_contains,
+};
 
 use super::import::OpenApiImporter;
 
@@ -34,10 +37,7 @@ impl OpenApiImporter<'_> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let nullable = resolved
-            .get("nullable")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let nullable = json_schema_nullable(&resolved);
         self.types.insert(
             type_id.clone(),
             IrType {
@@ -83,52 +83,43 @@ impl OpenApiImporter<'_> {
             }
         } else if let Some(scalar) = json_schema_scalar_type(&resolved) {
             IrTypeShape::Scalar(scalar)
-        } else {
-            match resolved
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("object")
-            {
-                "object" => {
-                    if let Some(properties) = resolved.get("properties").and_then(Value::as_object)
-                    {
-                        let required = required_fields(&resolved);
-                        IrTypeShape::Object {
-                            fields: self.import_object_fields(
-                                properties,
-                                &required,
-                                &type_id,
-                                operation_id,
-                                diagnostics,
-                            ),
-                        }
-                    } else if let Some(additional) = resolved.get("additionalProperties") {
-                        if additional.as_bool() == Some(false) {
-                            IrTypeShape::Object { fields: Vec::new() }
-                        } else {
-                            let value_type_ref = self
-                                .import_schema(
-                                    additional,
-                                    &format!("{type_id}_value"),
-                                    operation_id,
-                                    diagnostics,
-                                )
-                                .unwrap_or_else(|| "json".to_string());
-                            IrTypeShape::Map { value_type_ref }
-                        }
-                    } else {
-                        IrTypeShape::Json
-                    }
+        } else if json_schema_is_object_like(&resolved) {
+            if let Some(properties) = resolved.get("properties").and_then(Value::as_object) {
+                let required = required_fields(&resolved);
+                IrTypeShape::Object {
+                    fields: self.import_object_fields(
+                        properties,
+                        &required,
+                        &type_id,
+                        operation_id,
+                        diagnostics,
+                    ),
                 }
-                "array" => {
-                    let item = resolved.get("items").unwrap_or(&Value::Null);
-                    let item_type_ref = self
-                        .import_schema(item, &format!("{type_id}_item"), operation_id, diagnostics)
+            } else if let Some(additional) = resolved.get("additionalProperties") {
+                if additional.as_bool() == Some(false) {
+                    IrTypeShape::Object { fields: Vec::new() }
+                } else {
+                    let value_type_ref = self
+                        .import_schema(
+                            additional,
+                            &format!("{type_id}_value"),
+                            operation_id,
+                            diagnostics,
+                        )
                         .unwrap_or_else(|| "json".to_string());
-                    IrTypeShape::List { item_type_ref }
+                    IrTypeShape::Map { value_type_ref }
                 }
-                _ => IrTypeShape::Json,
+            } else {
+                IrTypeShape::Json
             }
+        } else if json_schema_type_contains(&resolved, "array") {
+            let item = resolved.get("items").unwrap_or(&Value::Null);
+            let item_type_ref = self
+                .import_schema(item, &format!("{type_id}_item"), operation_id, diagnostics)
+                .unwrap_or_else(|| "json".to_string());
+            IrTypeShape::List { item_type_ref }
+        } else {
+            IrTypeShape::Json
         };
         self.types.insert(
             type_id.clone(),

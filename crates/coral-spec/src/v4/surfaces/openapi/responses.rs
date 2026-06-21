@@ -5,6 +5,7 @@ use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
     IrEntityCandidate, IrOperationOutput, OutputCardinality, RestResponseAttachment,
 };
+use crate::v4::surfaces::json_schema::{json_schema_is_object_like, json_schema_type_contains};
 
 use super::import::OpenApiImporter;
 
@@ -183,7 +184,7 @@ fn classify_response_schema(
     if schema == &Value::Null {
         return (OutputCardinality::None, Vec::new(), Value::Null, None);
     }
-    if schema.get("type").and_then(Value::as_str) == Some("array") {
+    if json_schema_type_contains(schema, "array") {
         let item = schema.get("items").cloned().unwrap_or(Value::Null);
         return (
             OutputCardinality::List,
@@ -194,12 +195,7 @@ fn classify_response_schema(
                 .map(entity_name_from_ref),
         );
     }
-    if schema
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("object")
-        == "object"
-    {
+    if json_schema_is_object_like(schema) {
         if let Some((property_name, items)) = schema
             .get("properties")
             .and_then(Value::as_object)
@@ -235,7 +231,7 @@ fn wrapped_list_property(properties: &Map<String, Value>) -> Option<(&str, &Valu
         .find_map(|name| {
             properties
                 .get(*name)
-                .filter(|property| property.get("type").and_then(Value::as_str) == Some("array"))
+                .filter(|property| json_schema_type_contains(property, "array"))
                 .map(|property| (*name, property))
         })
         .or_else(|| single_array_payload_property(properties))
@@ -244,7 +240,7 @@ fn wrapped_list_property(properties: &Map<String, Value>) -> Option<(&str, &Valu
 fn single_array_payload_property(properties: &Map<String, Value>) -> Option<(&str, &Value)> {
     let array_properties = properties
         .iter()
-        .filter(|(_, property)| property.get("type").and_then(Value::as_str) == Some("array"))
+        .filter(|(_, property)| json_schema_type_contains(property, "array"))
         .filter(|(name, _)| !is_wrapper_metadata_property(name))
         .collect::<Vec<_>>();
     match array_properties.as_slice() {
