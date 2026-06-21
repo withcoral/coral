@@ -91,7 +91,7 @@ LIMIT 10;
 
 -- Payout settlement summary
 SELECT payout_id, status, amount, currency, fee, tax,
-       created_at, updated_at
+       refunds, chargebacks, created_at, updated_at
 FROM dodopayments.payouts
 ORDER BY created_at DESC
 LIMIT 10;
@@ -129,7 +129,6 @@ subscription renewals. Join to `customers` via `customer_id` or
 | `customer_name` | Utf8 | Customer name |
 | `customer_email` | Utf8 | Customer email (primary join key for cross-source queries) |
 | `created_at` | Utf8 | Payment creation timestamp (ISO 8601) |
-| `updated_at` | Utf8 | Last update timestamp (ISO 8601) |
 | `subscription_id` | Utf8 | Subscription ID if this is a subscription payment |
 | `invoice_id` | Utf8 | Invoice identifier (India-specific if available) |
 | `payment_provider` | Utf8 | Processor — `stripe`, `adyen`, or `dodo` |
@@ -147,8 +146,10 @@ subscription renewals. Join to `customers` via `customer_id` or
 
 ### `customers`
 
-Customers in your Dodo Payments account. Join to `payments`, `subscriptions`,
-`refunds`, and `disputes` via `customer_id`.
+Customers in your Dodo Payments account. Join to `payments` and
+`subscriptions` via `customer_id`. For `refunds` and `disputes`, use
+`WHERE customer_id = ...` to push the API filter, or join through
+`payments.payment_id` when you need customer fields on each row.
 
 **Filters**
 
@@ -185,7 +186,7 @@ Refunds issued for payments. Join to `payments` via `payment_id`.
 | `created_at_lte` | Utf8 | | Refunds created on or before this timestamp |
 | `status` | Utf8 | | Refund status: `succeeded`, `failed`, `pending`, `review` |
 | `subscription_id` | Utf8 | | Filter by subscription ID |
-| `customer_id` | Utf8 | | Filter by customer ID |
+| `customer_id` | Utf8 | | Filter by customer ID (query param only; not returned on list rows) |
 
 **Columns**
 
@@ -200,6 +201,8 @@ Refunds issued for payments. Join to `payments` via `payment_id`.
 | `is_partial` | Boolean | Whether this is a partial refund |
 | `reason` | Utf8 | Reason provided for the refund |
 | `created_at` | Utf8 | Refund creation timestamp (ISO 8601) |
+| `subscription_id` | Utf8 | Filter-only virtual column (query param; not on list rows) |
+| `customer_id` | Utf8 | Filter-only virtual column (query param; not on list rows) |
 
 ---
 
@@ -215,7 +218,7 @@ Payment disputes (chargebacks). Join to `payments` via `payment_id`.
 | `created_at_lte` | Utf8 | | Disputes created on or before this timestamp |
 | `dispute_status` | Utf8 | | `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost` |
 | `dispute_stage` | Utf8 | | `pre_dispute`, `dispute`, `pre_arbitration` |
-| `customer_id` | Utf8 | | Filter by customer ID |
+| `customer_id` | Utf8 | | Filter by customer ID (query param only; not returned on list rows) |
 
 **Columns**
 
@@ -231,6 +234,7 @@ Payment disputes (chargebacks). Join to `payments` via `payment_id`.
 | `is_resolved_by_rdr` | Boolean | Whether resolved by Rapid Dispute Resolution |
 | `payment_provider` | Utf8 | Processor — `stripe`, `adyen`, or `dodo` |
 | `created_at` | Utf8 | Dispute creation timestamp (ISO 8601) |
+| `customer_id` | Utf8 | Filter-only virtual column (query param; not on list rows) |
 
 ---
 
@@ -258,7 +262,9 @@ Settlement payouts to your connected bank account.
 | `name` | Utf8 | Payout recipient name or purpose |
 | `remarks` | Utf8 | Additional remarks |
 | `fee` | Int64 | Processing fee |
-| `tax` | Int64 | Tax applied to the payout (deprecated in v3 API, use breakup endpoints instead) |
+| `tax` | Int64 | Tax applied to the payout (deprecated; prefer v3 breakup endpoints) |
+| `refunds` | Int64 | Total refund value associated with the payout (deprecated) |
+| `chargebacks` | Int64 | Total chargeback value associated with the payout (deprecated) |
 | `payout_document_url` | Utf8 | URL to download payout document |
 | `created_at` | Utf8 | Creation timestamp (ISO 8601) |
 | `updated_at` | Utf8 | Last update timestamp (ISO 8601) |
@@ -290,7 +296,8 @@ and to `payments` via `subscription_id`.
 | `customer_name` | Utf8 | Customer name |
 | `customer_email` | Utf8 | Customer email |
 | `product_id` | Utf8 | Product identifier |
-| `product_name` | Utf8 | Product name |
+| `product_name` | Utf8 | Product name (when returned by the list endpoint) |
+| `brand_id` | Utf8 | Brand identifier this subscription belongs to |
 | `status` | Utf8 | Subscription status |
 | `quantity` | Int64 | Number of units |
 | `recurring_pre_tax_amount` | Int64 | Recurring charge before tax (smallest currency unit) |
@@ -328,12 +335,12 @@ and to `payments` via `subscription_id`.
 - Covers read-only access: payments, customers, refunds, disputes, payouts,
   and subscriptions.
 - Page-based pagination (`page_number` starting at 0, `page_size` up to 100).
-- 8 filters on `payments`, 4 on `customers`, 5 on `refunds`, 5 on `disputes`,
+- 7 filters on `payments`, 4 on `customers`, 5 on `refunds`, 5 on `disputes`,
   2 on `payouts`, and 6 on `subscriptions`.
 - All 6 declared `test_queries` are source-independent (use `LIMIT` and work
   on any account with data).
-- Column definitions are validated against the
-  [Dodo Payments API reference](https://docs.dodopayments.com/api-reference/introduction).
+- Column definitions follow the Dodo Payments OpenAPI list-response schemas
+  linked in [Provider docs](#provider-docs).
 
 ## Limitations
 
@@ -343,87 +350,134 @@ and to `payments` via `subscription_id`.
 - No `products`, `addons`, `discounts`, `license_keys`, `entitlements`,
   `meters`, or `usage_events` tables yet.
 - No credit-based billing or wallet tables.
-- The `payouts` table includes legacy `tax` and deprecated chargeback/refund
-  aggregations. Use the v3 payout breakup endpoints for detailed breakdowns
-  (not yet exposed).
+- The `payments` list endpoint does not return `updated_at`; use `created_at`
+  for recency filters.
+- The `payouts` table exposes deprecated `tax`, `refunds`, and `chargebacks`
+  aggregations from the list endpoint. Use the v3 payout breakup endpoints for
+  detailed breakdowns (not yet exposed as Coral tables).
 - Dodo Payments rate limits apply: 40 req/s burst, 240 req/min sustained
   (Tier 0). Use date-range filters to reduce API calls on large datasets.
 - Test mode accounts may return empty results for some tables until test data
-  is created through the dashboard or API.
+  is created through the dashboard, API, or the
+  [Dodo CLI](https://docs.dodopayments.com/developer-resources/sdks/cli)
+  (`dodo customers create`, `dodo checkout new`, etc.).
 
 ## Provider docs
 
 - Dodo Payments API reference: https://docs.dodopayments.com/api-reference/introduction
 - Dodo Payments dashboard: https://app.dodopayments.com
+- Dodo CLI (manage resources, seed test data): https://docs.dodopayments.com/developer-resources/sdks/cli
 - Authentication: https://docs.dodopayments.com/api-reference/introduction
 - Test mode vs live mode: https://docs.dodopayments.com/miscellaneous/test-mode-vs-live-mode
 
 ## Cross-source JOIN examples
 
-### Stripe + Dodo Payments
-
-Revenue comparison for customers on both platforms:
-
-```sql
-SELECT
-  d.customer_email,
-  SUM(d.total_amount) / 100.0 AS dodo_revenue,
-  SUM(s.amount_total) / 100.0 AS stripe_revenue
-FROM dodopayments.payments d
-LEFT JOIN stripe.payment_intents s
-  ON LOWER(d.customer_email) = LOWER(s.receipt_email)
-WHERE d.status = 'succeeded'
-  AND d.created_at >= NOW() - INTERVAL '30 days'
-GROUP BY 1
-HAVING dodo_revenue > 0 AND stripe_revenue > 0
-ORDER BY dodo_revenue DESC
-LIMIT 20;
-```
+These examples use bundled core sources (`intercom`, `linear`) or community
+sources that must be installed separately (for example `hubspot`). Dodo
+Payments timestamp columns are `Utf8` ISO 8601 strings — prefer the
+`created_at_gte` / `created_at_lte` API filters or fixed ISO literals instead
+of comparing against `NOW() - INTERVAL ...` directly.
 
 ### HubSpot + Dodo Payments
 
-Revenue by customer lifecycle stage:
+Requires `coral source add --file sources/community/hubspot/manifest.yaml`
+in addition to this source. Revenue by customer lifecycle stage:
 
 ```sql
 SELECT
-  h.lifecycle_stage,
+  h.lifecyclestage,
   COUNT(DISTINCT d.customer_id) AS paying_customers,
   SUM(d.total_amount) / 100.0 AS revenue
 FROM dodopayments.payments d
 JOIN hubspot.contacts h
   ON LOWER(h.email) = LOWER(d.customer_email)
 WHERE d.status = 'succeeded'
-  AND d.created_at >= NOW() - INTERVAL '90 days'
+  AND d.created_at >= '2026-01-01T00:00:00Z'
 GROUP BY 1
 ORDER BY revenue DESC;
 ```
 
-### SendGrid + Dodo Payments
+Alternatively, push the date filter to the API:
 
-Revenue by customers who received recent emails:
+```sql
+SELECT
+  h.lifecyclestage,
+  COUNT(DISTINCT d.customer_id) AS paying_customers,
+  SUM(d.total_amount) / 100.0 AS revenue
+FROM dodopayments.payments d
+JOIN hubspot.contacts h
+  ON LOWER(h.email) = LOWER(d.customer_email)
+WHERE d.status = 'succeeded'
+  AND d.created_at_gte = '2026-01-01T00:00:00Z'
+GROUP BY 1
+ORDER BY revenue DESC;
+```
+
+### Intercom + Dodo Payments
+
+Paying customers matched to Intercom contacts:
 
 ```sql
 SELECT
   d.customer_email,
-  COUNT(DISTINCT sg.message_id) AS emails_opened,
+  i.name AS intercom_name,
   SUM(d.total_amount) / 100.0 AS revenue
 FROM dodopayments.payments d
-JOIN sendgrid.messages sg
-  ON LOWER(sg.to_email) = LOWER(d.customer_email)
+JOIN intercom.contacts i
+  ON LOWER(i.email) = LOWER(d.customer_email)
 WHERE d.status = 'succeeded'
-  AND sg.opened = true
-  AND d.created_at >= NOW() - INTERVAL '30 days'
-GROUP BY 1
+  AND d.created_at >= '2026-01-01T00:00:00Z'
+GROUP BY 1, 2
 ORDER BY revenue DESC
+LIMIT 20;
+```
+
+### Linear + Dodo Payments
+
+Payments from Linear workspace members:
+
+```sql
+SELECT
+  u.email,
+  u.name AS linear_name,
+  COUNT(*) AS payment_count,
+  SUM(d.total_amount) / 100.0 AS revenue
+FROM dodopayments.payments d
+JOIN linear.users u
+  ON LOWER(u.email) = LOWER(d.customer_email)
+WHERE d.status = 'succeeded'
+GROUP BY 1, 2
+ORDER BY revenue DESC
+LIMIT 20;
+```
+
+### Customers with refunds (via payments)
+
+For row-level customer fields on refunds, join through `payments` (the
+`customer_id` column on `refunds` is filter-only and echoes the query param):
+
+```sql
+SELECT
+  c.customer_id,
+  c.name,
+  c.email,
+  r.refund_id,
+  r.amount,
+  r.currency
+FROM dodopayments.customers c
+JOIN dodopayments.payments p ON p.customer_id = c.customer_id
+JOIN dodopayments.refunds r ON r.payment_id = p.payment_id
+ORDER BY r.created_at DESC
 LIMIT 20;
 ```
 
 ## Live validation commands
 
-To validate this source against a live Dodo Payments account, run the
-following:
-
 ```bash
+# YAML style (requires: cargo install ryl --locked)
+make lint-sources
+
+# Manifest structure and smoke queries (requires Coral CLI)
 coral source lint sources/community/dodopayments/manifest.yaml
 
 export DODO_API_KEY=dodo_test_...
@@ -433,9 +487,15 @@ coral source add --file sources/community/dodopayments/manifest.yaml
 coral source test dodopayments
 ```
 
+To validate this source against a live Dodo Payments account, run the
+commands above.
+
 ### Live validation output
 
-Validated against Dodo Payments test mode with a read-only API key.
+Re-run the commands above locally after manifest changes. Example output from
+Dodo Payments test mode with a read-only API key after seeding test data via
+the [Dodo CLI](https://docs.dodopayments.com/developer-resources/sdks/cli) or
+API (`POST /customers`, `POST /products`, etc.):
 
 ```bash
 $ coral source lint sources/community/dodopayments/manifest.yaml
@@ -462,28 +522,29 @@ Added source dodopayments (secrets: keychain)
     6 declared · 6 passed · 0 failed
 
     ✓ SELECT payment_id, status, total_amount, currency FROM dodopayments.payments LIMIT 5
-      0 rows
+      2 rows
 
     ✓ SELECT customer_id, name, email FROM dodopayments.customers LIMIT 5
+      1 row
+
+    ✓ SELECT refund_id, payment_id, status, amount, is_partial FROM dodopayments.refunds LIMIT 5
       0 rows
 
-    ✓ SELECT refund_id, payment_id, status FROM dodopayments.refunds LIMIT 5
+    ✓ SELECT dispute_id, payment_id, dispute_status, amount, dispute_stage FROM dodopayments.disputes LIMIT 5
       0 rows
 
-    ✓ SELECT dispute_id, payment_id, dispute_status FROM dodopayments.disputes LIMIT 5
-      0 rows
-
-    ✓ SELECT payout_id, status, amount, currency FROM dodopayments.payouts LIMIT 5
+    ✓ SELECT payout_id, status, amount, currency, fee, refunds, chargebacks FROM dodopayments.payouts LIMIT 5
       0 rows
 
     ✓ SELECT subscription_id, customer_id, status FROM dodopayments.subscriptions LIMIT 5
-      0 rows
+      1 row
 ```
 
-> **Note:** A fresh test account returns 0 rows for all tables until test
-> products, customers, and payments are created through the Dodo Payments
-> dashboard. The 0-row results confirm successful API authentication and
-> correct schema mapping.
+> **Note:** Empty tables (`refunds`, `disputes`, `payouts`) are expected until
+> those events occur in the account. The non-empty results above exercise list
+> row paths and column mapping for `customers`, `payments`, and
+> `subscriptions`. Accounts with no data still confirm authentication when all
+> queries return 0 rows.
 
 ```bash
 $ coral source test dodopayments

@@ -27,6 +27,7 @@ inputs:
     hint: |
       Dodo Payments API base URL.
       Use https://test.dodopayments.com for sandbox/test mode.
+      Use https://live.dodopayments.com for live mode.
 auth:
   type: HeaderAuth
   headers:
@@ -40,9 +41,9 @@ request_headers:
 test_queries:
   - SELECT payment_id, status, total_amount, currency FROM dodopayments.payments LIMIT 5
   - SELECT customer_id, name, email FROM dodopayments.customers LIMIT 5
-  - SELECT refund_id, payment_id, status FROM dodopayments.refunds LIMIT 5
-  - SELECT dispute_id, payment_id, dispute_status FROM dodopayments.disputes LIMIT 5
-  - SELECT payout_id, status, amount, currency FROM dodopayments.payouts LIMIT 5
+  - SELECT refund_id, payment_id, status, amount, is_partial FROM dodopayments.refunds LIMIT 5
+  - SELECT dispute_id, payment_id, dispute_status, amount, dispute_stage FROM dodopayments.disputes LIMIT 5
+  - SELECT payout_id, status, amount, currency, fee, refunds, chargebacks FROM dodopayments.payouts LIMIT 5
   - SELECT subscription_id, customer_id, status FROM dodopayments.subscriptions LIMIT 5
 
 tables:
@@ -160,13 +161,6 @@ tables:
         expr:
           kind: path
           path: [created_at]
-      - name: updated_at
-        type: Utf8
-        nullable: true
-        description: Last update timestamp (ISO 8601).
-        expr:
-          kind: path
-          path: [updated_at]
       - name: subscription_id
         type: Utf8
         nullable: true
@@ -254,8 +248,10 @@ tables:
 
   - name: customers
     description: >-
-      Customers in your Dodo Payments account. Join to payments,
-      subscriptions, refunds, and disputes via customer_id.
+      Customers in your Dodo Payments account. Join to payments and
+      subscriptions via customer_id. Join to refunds and disputes through
+      payments.payment_id; those tables expose customer_id only as a query
+      filter, not as a response column.
     fetch_limit_default: 100
     filters:
       - name: email
@@ -346,7 +342,8 @@ tables:
 
   - name: refunds
     description: >-
-      Refunds issued for payments. Join to payments via payment_id.
+      Refunds issued for payments. Join to payments via payment_id. Filter by
+      customer_id through the API, but list rows do not include customer_id.
     fetch_limit_default: 100
     filters:
       - name: created_at_gte
@@ -453,10 +450,32 @@ tables:
         expr:
           kind: path
           path: [created_at]
+      - name: subscription_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter-only. Echoes the subscription_id query param; not returned on
+          list rows.
+        expr:
+          kind: from_filter
+          key: subscription_id
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter-only. Echoes the customer_id query param; not returned on list
+          rows. Join through payments.payment_id for customer context.
+        expr:
+          kind: from_filter
+          key: customer_id
 
   - name: disputes
     description: >-
-      Payment disputes (chargebacks). Join to payments via payment_id.
+      Payment disputes (chargebacks). Join to payments via payment_id. Filter
+      by customer_id through the API, but list rows do not include
+      customer_id.
     fetch_limit_default: 100
     filters:
       - name: created_at_gte
@@ -570,6 +589,16 @@ tables:
         expr:
           kind: path
           path: [created_at]
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter-only. Echoes the customer_id query param; not returned on list
+          rows. Join through payments.payment_id for customer context.
+        expr:
+          kind: from_filter
+          key: customer_id
 
   - name: payouts
     description: >-
@@ -668,10 +697,30 @@ tables:
       - name: tax
         type: Int64
         nullable: false
-        description: Tax applied to the payout.
+        description: >-
+          Tax applied to the payout (deprecated; prefer v3 payout breakup
+          endpoints).
         expr:
           kind: path
           path: [tax]
+      - name: refunds
+        type: Int64
+        nullable: false
+        description: >-
+          Total value of refunds associated with the payout (deprecated;
+          prefer v3 payout breakup endpoints).
+        expr:
+          kind: path
+          path: [refunds]
+      - name: chargebacks
+        type: Int64
+        nullable: false
+        description: >-
+          Total value of chargebacks associated with the payout (deprecated;
+          prefer v3 payout breakup endpoints).
+        expr:
+          kind: path
+          path: [chargebacks]
       - name: payout_document_url
         type: Utf8
         nullable: true
@@ -784,10 +833,17 @@ tables:
       - name: product_name
         type: Utf8
         nullable: true
-        description: Product name.
+        description: Product name when returned by the list endpoint.
         expr:
           kind: path
           path: [product_name]
+      - name: brand_id
+        type: Utf8
+        nullable: true
+        description: Brand identifier this subscription belongs to.
+        expr:
+          kind: path
+          path: [brand_id]
       - name: status
         type: Utf8
         nullable: false
@@ -860,14 +916,14 @@ tables:
           path: [payment_frequency_count]
       - name: next_billing_date
         type: Utf8
-        nullable: true
+        nullable: false
         description: Next scheduled billing timestamp (ISO 8601).
         expr:
           kind: path
           path: [next_billing_date]
       - name: previous_billing_date
         type: Utf8
-        nullable: true
+        nullable: false
         description: Previous billing timestamp (ISO 8601).
         expr:
           kind: path
@@ -916,7 +972,7 @@ tables:
           path: [discounts]
       - name: metadata
         type: Json
-        nullable: true
+        nullable: false
         description: Additional metadata as a JSON object.
         expr:
           kind: path
