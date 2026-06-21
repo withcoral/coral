@@ -48,27 +48,27 @@ tables:
         description: Human-readable model name.
       - name: can_be_finetuned
         type: Boolean
-        nullable: false
+        nullable: true
         description: Whether the model can be fine-tuned.
       - name: can_do_text_to_speech
         type: Boolean
-        nullable: false
+        nullable: true
         description: Whether the model supports text-to-speech.
       - name: can_do_voice_conversion
         type: Boolean
-        nullable: false
+        nullable: true
         description: Whether the model supports voice conversion.
       - name: can_use_style
         type: Boolean
-        nullable: false
+        nullable: true
         description: Whether the model supports style customization.
       - name: can_use_speaker_boost
         type: Boolean
-        nullable: false
+        nullable: true
         description: Whether the model supports speaker boost.
       - name: serves_pro_voices
         type: Boolean
-        nullable: false
+        nullable: true
         description: Whether the model serves pro voices.
       - name: token_cost_factor
         type: Float64
@@ -80,7 +80,7 @@ tables:
         description: Description of the model's capabilities.
       - name: requires_alpha_access
         type: Boolean
-        nullable: false
+        nullable: true
         description: Whether the model requires alpha access.
       - name: max_characters_request_free_user
         type: Int64
