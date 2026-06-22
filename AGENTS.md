@@ -82,6 +82,8 @@
   Secret identity inputs are owned by the installed identity spec, not by
   identities instantiated from it; they are stored as identity-spec input
   material so identity materialization and token refresh can retrieve them.
+  Trim secret identity input values before storage and reject whitespace-only
+  values as empty at collection time.
 - Changes to `scripts/install.sh` must keep the `Validate` workflow's
   install-script matrix in sync with every OS/architecture target that the
   installer supports.

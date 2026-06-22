@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputSpec,
     ValidatedSourceManifest,
+    v4::{SurfaceType, V4SourceManifest},
 };
 
 /// Render the `changelog.mdx` page from a raw `CHANGELOG.md`.
@@ -259,12 +260,29 @@ fn backend_label(manifest: &ValidatedSourceManifest) -> &'static str {
         "http"
     } else if manifest.as_file().is_some() {
         "file"
-    } else if manifest.as_v4().is_some() {
-        "dsl v4"
+    } else if let Some(v4) = manifest.as_v4() {
+        v4_surface_label(v4)
     } else {
         // ValidatedSourceManifest covers all current backends; unreachable in
         // practice but we avoid `unreachable!` to keep the generator robust.
         "unknown"
+    }
+}
+
+fn v4_surface_label(manifest: &V4SourceManifest) -> &'static str {
+    let mut has_openapi = false;
+    let mut has_mcp = false;
+    for surface in &manifest.surfaces {
+        match surface.surface_type {
+            SurfaceType::OpenApi => has_openapi = true,
+            SurfaceType::Mcp => has_mcp = true,
+        }
+    }
+    match (has_openapi, has_mcp) {
+        (true, true) => "openapi + mcp",
+        (true, false) => "openapi",
+        (false, true) => "mcp",
+        (false, false) => "unknown",
     }
 }
 
@@ -581,6 +599,22 @@ surfaces:
     base_url: https://api.github.com
 ";
 
+    const V4_MIXED_MANIFEST: &str = r"
+name: github_v4_local
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+    base_url: https://api.github.com
+  - id: tools
+    namespace_suffix: tools
+    type: mcp
+    server:
+      transport: streamable_http
+      url: https://api.example.com/mcp
+";
+
     #[test]
     fn escape_mdx_escapes_angle_and_brace_in_prose() {
         let input = "See https://<host>/api/v3 and the {workspace} placeholder.";
@@ -717,9 +751,12 @@ surfaces:
     }
 
     #[test]
-    fn backend_label_renders_v4_manifest_generation() {
+    fn backend_label_renders_v4_surface_generation() {
         let manifest = parse_source_manifest_yaml(V4_OPENAPI_MANIFEST).expect("parse v4");
-        assert_eq!(super::backend_label(&manifest), "dsl v4");
+        assert_eq!(super::backend_label(&manifest), "openapi");
+
+        let mixed = parse_source_manifest_yaml(V4_MIXED_MANIFEST).expect("parse mixed v4");
+        assert_eq!(super::backend_label(&mixed), "openapi + mcp");
     }
 
     #[test]
