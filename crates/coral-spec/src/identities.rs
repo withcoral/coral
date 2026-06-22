@@ -104,7 +104,7 @@ struct RawIdentityManifest {
     // (`const` values) before deserialization; they are declared here only so
     // `deny_unknown_fields` accepts them.
     #[serde(rename = "kind")]
-    _kind: IdentityManifestKind,
+    _kind: String,
     spec_version: u32,
     name: String,
     version: String,
@@ -119,12 +119,6 @@ struct RawIdentityManifest {
     _inputs: Option<Value>,
     #[serde(default)]
     oauth: Option<Value>,
-}
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum IdentityManifestKind {
-    Identity,
 }
 
 /// Parse and validate one identity manifest from YAML.
@@ -460,7 +454,7 @@ fn optional_string(
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct IdentityManifestSchema {
-    kind: IdentityManifestKind,
+    kind: String,
     spec_version: u32,
     name: String,
     version: String,
