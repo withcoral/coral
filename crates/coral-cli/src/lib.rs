@@ -28,7 +28,7 @@ use clap::{
     Parser, Subcommand, ValueEnum,
 };
 use clap_complete::{Shell, generate};
-use coral_api::v1::{ExecuteSqlRequest, ExecuteSqlResponse, Workspace};
+use coral_api::v1::{ExecuteSqlRequest, ExecuteSqlResponse, UserSourceIdentityBinding, Workspace};
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
 use coral_client::{
@@ -36,6 +36,7 @@ use coral_client::{
     format_batches_table, manifest_input_from_proto,
 };
 use dialoguer::console::measure_text_width;
+use dialoguer::{Input, Select, theme::ColorfulTheme};
 use tonic::Request;
 
 #[cfg(test)]
@@ -1293,17 +1294,28 @@ async fn import_source_file(
         source_ops::shell_quote_arg(&file.display().to_string())
     );
     let identity_spec_manifest_yamls = loaded.identity_spec_manifest_yamls();
-    let identity_bindings = source_ops::import_source_identity_bindings_from_args(
+    let has_identity_binding_args =
+        !user_identity_bindings.is_empty() || !workspace_identity_bindings.is_empty();
+    let mut identity_bindings = source_ops::import_source_identity_bindings_from_args(
         user_identity_bindings,
         workspace_identity_bindings,
     )?;
+    let should_prompt_identity_bindings =
+        interactive && !has_identity_binding_args && source_has_identity_requirements(&loaded);
 
     if interactive {
         let inputs = source_ops::prompt_for_inputs_with_credential_methods(
             loaded.manifest.declared_inputs(),
         )?;
-        let identity_spec_inputs =
-            source_ops::prompt_identity_spec_inputs_for_import(&loaded.identity_manifests)?;
+        let (identity_spec_manifest_yamls, identity_spec_inputs) =
+            if should_prompt_identity_bindings {
+                identity_bindings = prompt_user_identity_bindings_for_import(app, &loaded).await?;
+                (Vec::new(), Vec::new())
+            } else {
+                let identity_spec_inputs =
+                    source_ops::prompt_identity_spec_inputs_for_import(&loaded.identity_manifests)?;
+                (identity_spec_manifest_yamls, identity_spec_inputs)
+            };
         return source_ops::import_source_with_credentials(
             app,
             loaded.manifest_yaml,
@@ -1335,6 +1347,214 @@ async fn import_source_file(
     )
     .await
     .map_err(Into::into)
+}
+
+fn source_has_identity_requirements(loaded: &source_ops::LoadedManifestFile) -> bool {
+    loaded.manifest.as_v4().is_some_and(|v4| {
+        v4.surfaces
+            .iter()
+            .any(|surface| surface.identity_requirements.is_some())
+    })
+}
+
+async fn prompt_user_identity_bindings_for_import(
+    app: &AppClient,
+    loaded: &source_ops::LoadedManifestFile,
+) -> Result<source_ops::ImportSourceIdentityBindings, CliError> {
+    let Some(v4) = loaded.manifest.as_v4() else {
+        return Ok(source_ops::ImportSourceIdentityBindings::default());
+    };
+
+    let mut bindings = Vec::new();
+    for surface in &v4.surfaces {
+        let Some(requirements) = &surface.identity_requirements else {
+            continue;
+        };
+        let accepted = select_accepted_identity_for_surface(&surface.id, requirements)?;
+        let identity =
+            select_or_create_user_identity_for_surface(app, loaded, &surface.id, &accepted).await?;
+        bindings.push(UserSourceIdentityBinding {
+            surface_id: surface.id.clone(),
+            identity,
+            accepted_identity: accepted.id,
+        });
+    }
+
+    source_ops::import_source_user_identity_bindings(bindings).map_err(Into::into)
+}
+
+fn select_accepted_identity_for_surface(
+    surface_id: &str,
+    requirements: &coral_spec::v4::IdentityRequirements,
+) -> Result<coral_spec::v4::AcceptedIdentityRequirement, anyhow::Error> {
+    if requirements.accepts.len() == 1 {
+        let accepted = requirements
+            .accepts
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("surface {surface_id} accepts no identities"))?;
+        return Ok(accepted.clone());
+    }
+    let theme = ColorfulTheme::default();
+    let labels = requirements
+        .accepts
+        .iter()
+        .map(|accepted| accepted.id.clone())
+        .collect::<Vec<_>>();
+    let selected = Select::with_theme(&theme)
+        .with_prompt(format!("Identity requirement for surface {surface_id}"))
+        .items(&labels)
+        .default(0)
+        .interact()?;
+    requirements
+        .accepts
+        .get(selected)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("identity requirement selection is out of range"))
+}
+
+async fn select_or_create_user_identity_for_surface(
+    app: &AppClient,
+    loaded: &source_ops::LoadedManifestFile,
+    surface_id: &str,
+    accepted: &coral_spec::v4::AcceptedIdentityRequirement,
+) -> Result<String, CliError> {
+    let identities = source_ops::list_user_owned_identities(app).await?;
+    let compatible = identities
+        .into_iter()
+        .filter(|identity| {
+            accepted
+                .identity_specs
+                .iter()
+                .any(|identity_spec| identity_spec == &identity.identity_spec)
+        })
+        .collect::<Vec<_>>();
+
+    if compatible.is_empty() {
+        return create_user_identity_for_surface(app, loaded, surface_id, accepted).await;
+    }
+
+    let theme = ColorfulTheme::default();
+    let mut labels = compatible
+        .iter()
+        .map(|identity| format!("Use {} ({})", identity.name, identity.identity_spec))
+        .collect::<Vec<_>>();
+    labels.push("Create new identity".to_string());
+    let create_index = labels.len() - 1;
+    let selected = Select::with_theme(&theme)
+        .with_prompt(format!("Identity for surface {surface_id}"))
+        .items(&labels)
+        .default(0)
+        .interact()
+        .map_err(anyhow::Error::from)?;
+    if selected == create_index {
+        create_user_identity_for_surface(app, loaded, surface_id, accepted).await
+    } else {
+        compatible
+            .get(selected)
+            .map(|identity| identity.name.clone())
+            .ok_or_else(|| anyhow::anyhow!("identity selection is out of range").into())
+    }
+}
+
+async fn create_user_identity_for_surface(
+    app: &AppClient,
+    loaded: &source_ops::LoadedManifestFile,
+    surface_id: &str,
+    accepted: &coral_spec::v4::AcceptedIdentityRequirement,
+) -> Result<String, CliError> {
+    let identity_spec = select_identity_spec_for_surface(surface_id, accepted)?;
+    let manifest = ensure_identity_spec_available(app, loaded, &identity_spec).await?;
+    let default_name = default_identity_name(&manifest);
+    let name = Input::<String>::with_theme(&ColorfulTheme::default())
+        .with_prompt("Identity name")
+        .default(default_name)
+        .interact_text()
+        .map_err(anyhow::Error::from)?;
+    let identity = match manifest.identity_type {
+        coral_spec::IdentitySpecType::OAuth => {
+            let selected = source_ops::identity_oauth_method(&manifest)?;
+            source_ops::print_oauth_hint(selected.hint);
+            source_ops::create_user_owned_identity_with_oauth(
+                app,
+                &name,
+                &manifest.name,
+                &selected.label,
+            )
+            .await?
+        }
+        coral_spec::IdentitySpecType::FixedToken => {
+            let token = source_ops::prompt_fixed_token_identity_token(&manifest.name)?;
+            source_ops::create_user_owned_identity_with_fixed_token(
+                app,
+                &name,
+                &manifest.name,
+                token,
+            )
+            .await?
+        }
+    };
+    Ok(identity.name)
+}
+
+fn select_identity_spec_for_surface(
+    surface_id: &str,
+    accepted: &coral_spec::v4::AcceptedIdentityRequirement,
+) -> Result<String, anyhow::Error> {
+    if accepted.identity_specs.len() == 1 {
+        let identity_spec = accepted.identity_specs.first().ok_or_else(|| {
+            anyhow::anyhow!("accepted identity '{}' has no identity specs", accepted.id)
+        })?;
+        return Ok(identity_spec.clone());
+    }
+    let selected = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!("Identity spec for surface {surface_id}"))
+        .items(&accepted.identity_specs)
+        .default(0)
+        .interact()?;
+    accepted
+        .identity_specs
+        .get(selected)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("identity spec selection is out of range"))
+}
+
+async fn ensure_identity_spec_available(
+    app: &AppClient,
+    loaded: &source_ops::LoadedManifestFile,
+    identity_spec: &str,
+) -> Result<coral_spec::IdentityManifest, CliError> {
+    if let Some(document) = loaded
+        .identity_manifests
+        .iter()
+        .find(|document| document.manifest.name == identity_spec)
+    {
+        let inputs = source_ops::prompt_required_identity_spec_inputs(&document.manifest)?;
+        source_ops::add_identity_spec(app, document.manifest_yaml.clone(), inputs).await?;
+        return Ok(document.manifest.clone());
+    }
+
+    let installed = source_ops::get_identity_spec(app, identity_spec).await?;
+    coral_spec::parse_identity_manifest_yaml(&installed.manifest_yaml)
+        .map_err(anyhow::Error::from)
+        .map_err(Into::into)
+}
+
+fn default_identity_name(manifest: &coral_spec::IdentityManifest) -> String {
+    let mut issuer = manifest
+        .issuer
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if issuer.is_empty() || issuer.starts_with(|ch: char| ch.is_ascii_digit()) {
+        issuer.insert_str(0, "identity_");
+    }
+    format!("{issuer}_local")
 }
 
 #[cfg(test)]

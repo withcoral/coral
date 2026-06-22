@@ -424,6 +424,28 @@ pub(crate) fn import_source_identity_bindings_from_args(
     })
 }
 
+pub(crate) fn import_source_user_identity_bindings(
+    user_bindings: Vec<UserSourceIdentityBinding>,
+) -> Result<ImportSourceIdentityBindings, anyhow::Error> {
+    let mut seen_surfaces = BTreeSet::new();
+    let mut source_bindings = Vec::new();
+    for binding in &user_bindings {
+        reject_repeated_identity_binding_surface(&mut seen_surfaces, &binding.surface_id)?;
+        source_bindings.push(SourceIdentityBinding {
+            surface_id: binding.surface_id.clone(),
+            identity: String::new(),
+            owner: SourceIdentityOwner::User as i32,
+            accepted_identity: String::new(),
+        });
+    }
+
+    Ok(ImportSourceIdentityBindings {
+        replace_existing: !source_bindings.is_empty(),
+        source_bindings,
+        user_selections: user_bindings,
+    })
+}
+
 struct CliIdentityBinding {
     surface_id: String,
     identity: String,
@@ -1052,6 +1074,62 @@ pub(crate) fn identity_spec_inputs_for_add(
         return prompt_identity_spec_inputs(manifest);
     }
     collect_identity_spec_inputs_from_env(manifest, interactive_command)
+}
+
+pub(crate) fn prompt_required_identity_spec_inputs(
+    manifest: &IdentityManifest,
+) -> Result<Vec<IdentitySpecInputValue>, anyhow::Error> {
+    let mut values = Vec::new();
+    for input in &manifest.inputs {
+        match identity_spec_input_prompt_action(input, read_identity_spec_input_env(&input.key)) {
+            IdentitySpecInputPromptAction::Use(value) => values.push(IdentitySpecInputValue {
+                key: input.key.clone(),
+                value,
+            }),
+            IdentitySpecInputPromptAction::Skip => {}
+            IdentitySpecInputPromptAction::Prompt => match input.kind {
+                ManifestInputKind::Variable => {
+                    if let Some(variable) = prompt_variable(input)? {
+                        values.push(IdentitySpecInputValue {
+                            key: variable.key,
+                            value: variable.value,
+                        });
+                    }
+                }
+                ManifestInputKind::Secret => {
+                    if let Some(secret) = prompt_source_config_secret(input, None)? {
+                        values.push(IdentitySpecInputValue {
+                            key: secret.key,
+                            value: secret.value,
+                        });
+                    }
+                }
+            },
+        }
+    }
+    Ok(values)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum IdentitySpecInputPromptAction {
+    Use(String),
+    Prompt,
+    Skip,
+}
+
+fn identity_spec_input_prompt_action(
+    input: &ManifestInputSpec,
+    env_value: Option<String>,
+) -> IdentitySpecInputPromptAction {
+    if let Some(value) = env_value.filter(|value| !value.is_empty()) {
+        return IdentitySpecInputPromptAction::Use(value);
+    }
+    let default_resolves_in_manifest =
+        input.kind == ManifestInputKind::Variable && !input.default_value.is_empty();
+    if default_resolves_in_manifest || !input.required {
+        return IdentitySpecInputPromptAction::Skip;
+    }
+    IdentitySpecInputPromptAction::Prompt
 }
 
 pub(crate) fn prompt_identity_spec_inputs_for_import(
@@ -2096,8 +2174,16 @@ fn http_status_is_success(status: &str) -> bool {
 fn prompt_oauth_credential_inputs(
     oauth: &ManifestOAuthCredentialSpec,
 ) -> Result<Vec<OAuthCredentialInput>, anyhow::Error> {
+    prompt_oauth_credential_inputs_with_skip(oauth, |_| false)
+}
+
+fn prompt_oauth_credential_inputs_with_skip(
+    oauth: &ManifestOAuthCredentialSpec,
+    skip: impl Fn(&str) -> bool,
+) -> Result<Vec<OAuthCredentialInput>, anyhow::Error> {
     let mut values = Vec::new();
     if let Some(input_key) = oauth.client.id.input.as_deref()
+        && !skip(input_key)
         && let Some(value) = prompt_oauth_client_id(input_key, oauth.client.id.default.as_deref())?
     {
         values.push(OAuthCredentialInput {
@@ -2106,6 +2192,9 @@ fn prompt_oauth_credential_inputs(
         });
     }
     if let Some(secret) = oauth.client.secret.as_ref() {
+        if skip(&secret.input) {
+            return Ok(values);
+        }
         let value = prompt_oauth_client_secret(&secret.input)?;
         values.push(OAuthCredentialInput {
             key: secret.input.clone(),
@@ -2220,9 +2309,9 @@ mod tests {
     use super::{
         CredentialPromptMode, RedirectPromptAction, ValidationFollowUp, ValidationSeverityMode,
         apply_redirect_prompt_key, collect_inputs_with_hint, expected_oauth_redirect,
-        finalize_input_value, render_redirect_prompt_key_echo, resolve_prompt_hint,
-        shell_quote_arg, source_name_arg, submit_oauth_redirect_url, validate_oauth_redirect_url,
-        validation_follow_up,
+        finalize_input_value, identity_spec_input_prompt_action, render_redirect_prompt_key_echo,
+        resolve_prompt_hint, shell_quote_arg, source_name_arg, submit_oauth_redirect_url,
+        validate_oauth_redirect_url, validation_follow_up,
     };
 
     #[test]
@@ -2281,6 +2370,57 @@ mod tests {
 
         assert!(CredentialPromptMode::EnvFirst.reads_env_before_prompt(&input));
         assert!(!CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&input));
+    }
+
+    #[test]
+    fn required_identity_spec_input_prompt_action_uses_env_first() {
+        let input = ManifestInputSpec {
+            key: "GITHUB_OAUTH_CLIENT_ID".to_string(),
+            kind: ManifestInputKind::Variable,
+            required: true,
+            default_value: "default-client".to_string(),
+            hint: None,
+            credential: None,
+        };
+
+        assert_eq!(
+            identity_spec_input_prompt_action(&input, Some("env-client".to_string())),
+            super::IdentitySpecInputPromptAction::Use("env-client".to_string())
+        );
+    }
+
+    #[test]
+    fn required_identity_spec_input_prompt_action_skips_defaulted_variable() {
+        let input = ManifestInputSpec {
+            key: "GITHUB_OAUTH_CLIENT_ID".to_string(),
+            kind: ManifestInputKind::Variable,
+            required: true,
+            default_value: "default-client".to_string(),
+            hint: None,
+            credential: None,
+        };
+
+        assert_eq!(
+            identity_spec_input_prompt_action(&input, None),
+            super::IdentitySpecInputPromptAction::Skip
+        );
+    }
+
+    #[test]
+    fn required_identity_spec_input_prompt_action_prompts_missing_required_secret() {
+        let input = ManifestInputSpec {
+            key: "GITHUB_OAUTH_CLIENT_SECRET".to_string(),
+            kind: ManifestInputKind::Secret,
+            required: true,
+            default_value: String::new(),
+            hint: None,
+            credential: None,
+        };
+
+        assert_eq!(
+            identity_spec_input_prompt_action(&input, None),
+            super::IdentitySpecInputPromptAction::Prompt
+        );
     }
 
     fn secret_with_method(
