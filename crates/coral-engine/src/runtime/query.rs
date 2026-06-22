@@ -29,7 +29,6 @@ use crate::runtime::json::register_json_support;
 use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::query_planner::CoralQueryPlanner;
 use crate::runtime::recipe_functions::RecipeFunctionRegistry;
-use crate::runtime::recipes::published_table_functions;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
@@ -168,15 +167,12 @@ async fn build_registered_runtime(
         config.source_decorators,
     )
     .await?;
-    let recipe_table_functions =
-        published_table_functions(config.recipes).map_err(|err| datafusion_to_core(&err, &[]))?;
-    reject_duplicate_table_function_surfaces(&registration.active_sources, &recipe_table_functions)
+    reject_duplicate_table_function_surfaces(&registration.active_sources, config.recipes)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
-    catalog::register(&ctx, &registration.active_sources, &recipe_table_functions)
+    catalog::register(&ctx, &registration.active_sources)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
     let tables = catalog::collect_tables(&registration.active_sources);
-    let table_functions =
-        catalog::collect_table_functions(&registration.active_sources, &recipe_table_functions);
+    let table_functions = catalog::collect_table_functions(&registration.active_sources);
     let source_function_schemas = registration
         .active_sources
         .iter()
@@ -403,7 +399,30 @@ impl QueryRuntimeAdapter {
         sql: &str,
         params: &QueryParameters,
     ) -> Result<QueryExecution, CoreError> {
-        match self.execute_sql_once(&self.ctx, sql, params).await {
+        self.execute_sql_with_row_limit(sql, params, None).await
+    }
+
+    pub(crate) async fn validate_sql(
+        &self,
+        sql: &str,
+        params: &QueryParameters,
+    ) -> Result<Arc<arrow::datatypes::Schema>, CoreError> {
+        let execution = self
+            .execute_sql_with_row_limit(sql, params, Some(1))
+            .await?;
+        Ok(Arc::clone(execution.arrow_schema()))
+    }
+
+    async fn execute_sql_with_row_limit(
+        &self,
+        sql: &str,
+        params: &QueryParameters,
+        row_limit: Option<usize>,
+    ) -> Result<QueryExecution, CoreError> {
+        match self
+            .execute_sql_once(&self.ctx, sql, params, row_limit)
+            .await
+        {
             Ok(execution) => Ok(execution),
             Err(SqlExecutionFailure::Collection(error)) => {
                 // Resolver-row overflow is a dependent-join buffering limit, not
@@ -432,7 +451,10 @@ impl QueryRuntimeAdapter {
                     .get_or_build_without_dependent_join()
                     .await?;
 
-                match self.execute_sql_once(&fallback.ctx, sql, params).await {
+                match self
+                    .execute_sql_once(&fallback.ctx, sql, params, row_limit)
+                    .await
+                {
                     Ok(execution) => Ok(execution),
                     Err(error) => {
                         if is_missing_required_filter_failure(&error) {
@@ -452,6 +474,7 @@ impl QueryRuntimeAdapter {
         ctx: &SessionContext,
         sql: &str,
         params: &QueryParameters,
+        row_limit: Option<usize>,
     ) -> Result<QueryExecution, SqlExecutionFailure> {
         let df = ctx
             .sql_with_options(sql, read_only_sql_options())
@@ -459,6 +482,12 @@ impl QueryRuntimeAdapter {
             .map_err(SqlExecutionFailure::Planning)?;
         let df = apply_query_parameters(df, params).map_err(SqlExecutionFailure::Planning)?;
         let arrow_schema = Arc::new(df.schema().as_arrow().clone());
+        let df = match row_limit {
+            Some(limit) => df
+                .limit(0, Some(limit))
+                .map_err(SqlExecutionFailure::Planning)?,
+            None => df,
+        };
         let batches = df
             .collect()
             .await
@@ -506,12 +535,8 @@ impl QueryRuntimeAdapter {
         Ok(())
     }
 
-    pub(crate) async fn explain_sql(
-        &self,
-        sql: &str,
-        params: &QueryParameters,
-    ) -> Result<QueryPlan, CoreError> {
-        let df = self.sql_dataframe(sql, params).await?;
+    pub(crate) async fn explain_sql(&self, sql: &str) -> Result<QueryPlan, CoreError> {
+        let df = self.sql_dataframe(sql, &QueryParameters::new()).await?;
         let unoptimized_logical_plan = df.logical_plan().display_indent_schema().to_string();
         let (session_state, logical_plan) = df.into_parts();
         let optimized_logical_plan = session_state
@@ -534,15 +559,6 @@ impl QueryRuntimeAdapter {
             optimized_logical_plan_display,
             physical_plan,
         ))
-    }
-
-    pub(crate) async fn infer_sql_schema(
-        &self,
-        sql: &str,
-        params: &QueryParameters,
-    ) -> Result<Arc<arrow::datatypes::Schema>, CoreError> {
-        let df = self.sql_dataframe(sql, params).await?;
-        Ok(Arc::new(df.schema().as_arrow().clone()))
     }
 
     async fn sql_dataframe(
@@ -715,7 +731,7 @@ pub(crate) fn read_only_sql_options() -> SQLOptions {
 
 fn reject_duplicate_table_function_surfaces(
     active_sources: &[RegisteredSource],
-    recipe_table_functions: &[catalog::CatalogTableFunction],
+    recipes: &[RecipeRuntimeDefinition],
 ) -> Result<(), DataFusionError> {
     let mut source_functions = HashMap::new();
     for source in active_sources {
@@ -730,11 +746,18 @@ fn reject_duplicate_table_function_surfaces(
         }
     }
 
-    for function in recipe_table_functions {
-        if let Some(kind) = source_functions.get(&(
-            function.schema_name.as_str(),
-            function.function_name.as_str(),
-        )) {
+    let mut recipe_functions = HashSet::new();
+    for recipe in recipes {
+        let publish = &recipe.publish.table_function;
+        let key = (publish.schema.as_str(), publish.name.as_str());
+        if !recipe_functions.insert(key) {
+            return Err(DataFusionError::Plan(format!(
+                "duplicate recipe table function {}.{}",
+                key.0, key.1
+            )));
+        }
+
+        if let Some(kind) = source_functions.get(&key) {
             let existing = if *kind == "table" {
                 "table function".to_string()
             } else {
@@ -742,7 +765,7 @@ fn reject_duplicate_table_function_surfaces(
             };
             return Err(DataFusionError::Plan(format!(
                 "recipe table function {}.{} conflicts with existing {existing}",
-                function.schema_name, function.function_name
+                key.0, key.1
             )));
         }
     }
