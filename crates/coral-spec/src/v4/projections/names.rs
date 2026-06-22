@@ -23,10 +23,10 @@ pub(super) fn resolve_projection_name_collisions(
                 .map(move |operation| ((ir.surface_id.as_str(), operation.id.as_str()), operation))
         })
         .collect::<HashMap<_, _>>();
-    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
     for (index, projection) in projections.iter().enumerate() {
         groups
-            .entry(projection.name.clone())
+            .entry((projection.namespace.clone(), projection.name.clone()))
             .or_default()
             .push(index);
     }
@@ -52,15 +52,18 @@ pub(super) fn resolve_projection_name_collisions(
         keep_base_name.insert(keep);
     }
 
-    let mut used_names = HashSet::new();
+    let mut used_names_by_namespace = BTreeMap::<String, HashSet<String>>::new();
     for index in keep_base_name.iter().copied() {
         if let Some(projection) = projections.get(index) {
-            used_names.insert(projection.name.clone());
+            used_names_by_namespace
+                .entry(projection.namespace.clone())
+                .or_default()
+                .insert(projection.name.clone());
         }
     }
 
     let mut diagnostics = Vec::new();
-    for indexes in groups.values().filter(|indexes| indexes.len() > 1) {
+    for ((namespace, _), indexes) in groups.iter().filter(|(_, indexes)| indexes.len() > 1) {
         for index in indexes {
             if keep_base_name.contains(index) {
                 continue;
@@ -68,22 +71,17 @@ pub(super) fn resolve_projection_name_collisions(
             let projection = projections
                 .get(*index)
                 .expect("projection index came from projections");
-            let operation = operations.get(&(
-                projection.surface_id.as_str(),
-                projection.operation_id.as_str(),
-            ));
-            let base_name = projection.name.clone();
-            let mut name = operation.map_or_else(
-                || normalize_identifier(&projection.operation_id, "projection"),
-                |operation| contextual_projection_name(&base_name, operation),
-            );
-            if name == base_name || used_names.contains(&name) {
-                let suffix = stable_suffix(&format!(
-                    "{}/{}/{}",
-                    manifest.common.name, projection.surface_id, projection.operation_id
-                ));
-                name = format!("{name}__{suffix}");
-            }
+            let operation = operations
+                .get(&(
+                    projection.surface_id.as_str(),
+                    projection.operation_id.as_str(),
+                ))
+                .copied();
+            let used_names = used_names_by_namespace
+                .entry(namespace.clone())
+                .or_default();
+            let name =
+                collision_resolved_projection_name(manifest, projection, operation, used_names);
             used_names.insert(name.clone());
             let projection = projections
                 .get_mut(*index)
@@ -118,6 +116,28 @@ fn projection_name_priority(
     )
 }
 
+fn collision_resolved_projection_name(
+    manifest: &V4SourceManifest,
+    projection: &Projection,
+    operation: Option<&IrOperation>,
+    used_names: &HashSet<String>,
+) -> String {
+    let base_name = projection.name.as_str();
+    let contextual_name = operation.map_or_else(
+        || normalize_identifier(&projection.operation_id, "projection"),
+        |operation| contextual_projection_name(base_name, operation),
+    );
+    if contextual_name != base_name && !used_names.contains(&contextual_name) {
+        return contextual_name;
+    }
+
+    let suffix = stable_suffix(&format!(
+        "{}/{}/{}",
+        manifest.common.name, projection.surface_id, projection.operation_id
+    ));
+    format!("{contextual_name}__{suffix}")
+}
+
 fn required_input_count(operation: &IrOperation) -> usize {
     operation
         .inputs
@@ -148,11 +168,14 @@ fn projection_path_context(operation: &IrOperation) -> Option<String> {
 }
 
 fn rest_literal_path_segments(operation: &IrOperation) -> Vec<String> {
-    let IrExecutionAttachment::Rest(rest) = &operation.execution;
-    rest.path_template
-        .split('/')
-        .filter_map(normalized_path_literal_segment)
-        .collect()
+    match &operation.execution {
+        IrExecutionAttachment::Rest(rest) => rest
+            .path_template
+            .split('/')
+            .filter_map(normalized_path_literal_segment)
+            .collect(),
+        IrExecutionAttachment::Mcp(_) => Vec::new(),
+    }
 }
 
 fn normalized_path_literal_segment(segment: &str) -> Option<String> {
@@ -297,6 +320,7 @@ pub(super) fn is_search_operation(operation: &IrOperation) -> bool {
             .path_template
             .split(|c: char| !c.is_ascii_alphanumeric())
             .any(|token| token.eq_ignore_ascii_case("search")),
+        IrExecutionAttachment::Mcp(_) => false,
     };
     path_has_search
         || id_tokens

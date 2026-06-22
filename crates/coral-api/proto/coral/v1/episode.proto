@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/resources.proto";
+
+// Episode lifecycle for trajectory memory (experimental; gated by the `episodes`
+// feature). An *episode* is one task-attempt — its queries grouped under one
+// intent. `OpenEpisode` registers the intent (and optional parent) against a
+// client-minted episode id; every subsequent Coral call then carries only the
+// opaque `coral-episode-id` metadata key, so intent never rides tool calls.
+service EpisodeService {
+  // Registers an episode: records `{ episode_id -> intent, parent }` once, into
+  // the per-workspace episode store. Idempotent for an identical
+  // `{ episode_id, intent, parent_episode_id }`; the same `episode_id` with a
+  // different intent/parent is an error.
+  rpc OpenEpisode(OpenEpisodeRequest) returns (OpenEpisodeResponse);
+}
+
+// Registers an episode: its intent (and optional parent) keyed by a
+// client-minted id. See `EpisodeService.OpenEpisode`.
+message OpenEpisodeRequest {
+  // Workspace that scopes the episode (per-tenant isolation).
+  Workspace workspace = 1;
+  // Client-minted, opaque episode id (e.g. a UUID or ULID). Carried on every
+  // subsequent call as the `coral-episode-id` gRPC metadata value, so it must be
+  // a valid ASCII metadata value: graphic ASCII only (0x21–0x7E — no spaces,
+  // control bytes, or non-ASCII) and at most 128 bytes. The server validates and
+  // rejects ids outside this contract with `INVALID_ARGUMENT`.
+  string episode_id = 2;
+  // Natural-language task description — the retrieval handle. Possibly PII;
+  // persisted only in the episode store, never on spans, headers, or logs.
+  // Required and non-empty (trimmed) and at most 4096 characters; the server
+  // rejects a blank or over-long intent with `INVALID_ARGUMENT`. Not carried as
+  // metadata.
+  string intent = 3;
+  // Set for a child episode (a sub-task); links to the open parent episode.
+  // Empty when there is no parent (a root episode); otherwise the same format
+  // contract as `episode_id`.
+  string parent_episode_id = 4;
+}
+
+// Acknowledgement; intentionally empty for v1.
+message OpenEpisodeResponse {}

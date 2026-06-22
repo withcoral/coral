@@ -6,6 +6,7 @@ use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
+use crate::query::QueryAttribution;
 use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::workspaces::WorkspaceName;
 
@@ -151,6 +152,14 @@ pub(crate) struct ListColumnsQuery<'a> {
     pub(crate) pagination: Pagination,
 }
 
+pub(crate) struct SearchCatalogQuery<'a> {
+    pub(crate) pattern: &'a str,
+    pub(crate) schema_name: Option<&'a str>,
+    pub(crate) kind: Option<CatalogItemKind>,
+    pub(crate) ignore_case: bool,
+    pub(crate) pagination: Pagination,
+}
+
 #[derive(Clone)]
 pub(crate) struct CatalogDiscovery {
     queries: QueryManager,
@@ -169,10 +178,11 @@ impl CatalogDiscovery {
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
         pagination: Pagination,
+        attribution: &QueryAttribution,
     ) -> Result<CatalogPage, QueryManagerError> {
         let catalog = self
             .queries
-            .list_catalog(workspace_name, schema_name)
+            .list_catalog(workspace_name, schema_name, attribution)
             .await?;
         let counts = catalog_counts(&catalog);
         let items = catalog_items(catalog, kind);
@@ -187,10 +197,11 @@ impl CatalogDiscovery {
         workspace_name: &WorkspaceName,
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
+        attribution: &QueryAttribution,
     ) -> Result<Vec<CatalogItem>, QueryManagerError> {
         let catalog = self
             .queries
-            .list_catalog(workspace_name, schema_name)
+            .list_catalog(workspace_name, schema_name, attribution)
             .await?;
         Ok(catalog_items(catalog, kind))
     }
@@ -199,10 +210,16 @@ impl CatalogDiscovery {
         &self,
         workspace_name: &WorkspaceName,
         table_ref: CatalogTableRef<'_>,
+        attribution: &QueryAttribution,
     ) -> Result<DescribeTableResult, QueryManagerError> {
         let table_lookup = self
             .queries
-            .describe_table(workspace_name, table_ref.schema_name, table_ref.table_name)
+            .describe_table(
+                workspace_name,
+                table_ref.schema_name,
+                table_ref.table_name,
+                attribution,
+            )
             .await?;
         if let Some(table) = table_lookup.table {
             return Ok(DescribeTableResult::Found(table));
@@ -261,15 +278,13 @@ impl CatalogDiscovery {
     pub(crate) async fn search_catalog(
         &self,
         workspace_name: &WorkspaceName,
-        pattern: &str,
-        schema_name: Option<&str>,
-        kind: Option<CatalogItemKind>,
-        ignore_case: bool,
-        pagination: Pagination,
+        query: SearchCatalogQuery<'_>,
+        attribution: &QueryAttribution,
     ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
-        let regex = compile_metadata_regex(pattern, ignore_case).map_err(QueryManagerError::App)?;
+        let regex = compile_metadata_regex(query.pattern, query.ignore_case)
+            .map_err(QueryManagerError::App)?;
         let matches = self
-            .catalog_items(workspace_name, schema_name, kind)
+            .catalog_items(workspace_name, query.schema_name, query.kind, attribution)
             .await?
             .into_iter()
             .filter_map(|item| {
@@ -280,13 +295,14 @@ impl CatalogDiscovery {
                 })
             })
             .collect();
-        Ok(page_items(matches, pagination))
+        Ok(page_items(matches, query.pagination))
     }
 
     pub(crate) async fn list_columns(
         &self,
         workspace_name: &WorkspaceName,
         query: ListColumnsQuery<'_>,
+        attribution: &QueryAttribution,
     ) -> Result<Option<Page<ColumnSearchResult>>, QueryManagerError> {
         let table = self
             .queries
@@ -294,6 +310,7 @@ impl CatalogDiscovery {
                 workspace_name,
                 Some(query.table_ref.schema_name),
                 Some(query.table_ref.table_name),
+                attribution,
             )
             .await?
             .into_iter()

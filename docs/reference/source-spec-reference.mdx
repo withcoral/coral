@@ -7,10 +7,9 @@ Coral is extensible through source specs. These are YAML files that describe how
 
 <Tip>
   For a guided walkthrough, see [Write a custom
-  source](/guides/write-a-custom-source). If you are adding OAuth credential
-  setup, start with [OAuth credential
-  setup](/guides/write-a-custom-source#oauth-credential-setup), then use this
-  page for field-level details.
+  source](/guides/write-a-custom-source). Use this page for field-level details,
+  including HTTP authentication, source inputs, OAuth credential methods,
+  response mapping, pagination, search functions, and file-backed tables.
 </Tip>
 
 ## Top-level fields
@@ -32,7 +31,7 @@ test_queries:
 | `version`     | Source spec version string                         |
 | `dsl_version` | Coral source spec DSL version (currently `3`)      |
 | `backend`     | How data is fetched: `http`, `file`, or `mcp` |
-| `test_queries` | Optional read-only SQL checks Coral runs during `coral source test` |
+| `test_queries` | Optional read-only SQL checks Coral runs during source validation |
 
 ## Test queries
 
@@ -47,9 +46,12 @@ test_queries:
 
 Notes:
 
-- Each query result is reported individually during `coral source test`.
-- `coral source add` and `coral onboard` surface post-install validation issues as warnings; `coral source test` is the strict pass/fail command.
+- `coral source lint` validates the field but does not execute the queries.
+- Each query result records the SQL text, pass/fail status, and either a row count
+  or an error message.
+- `coral source add`, `coral source add --file`, and `coral onboard` surface post-install validation issues as warnings; `coral source test` is the strict pass/fail command.
 - Prefer cheap read-only checks that validate connectivity and mapping logic. For example, `SELECT * FROM schema.table LIMIT 1` is usually a better fit than `SELECT COUNT(*)`.
+- For credentialed sources, validate both a correctly configured source and an intentionally misconfigured one. The configured source should pass; the misconfigured source should still install but make `coral source test` exit non-zero.
 - Keep these queries read-only. Statements such as `CREATE`, `COPY`, `INSERT`,
   `UPDATE`, `DELETE`, or `SET` are reported as failed validation queries.
 
@@ -97,6 +99,9 @@ FROM coral.columns
 WHERE schema_name = 'github' AND table_name = 'issues'
 ORDER BY ordinal_position
 ```
+
+When authoring source specs, prefer the `parent__child` style for flattened
+nested fields so related values are recognizable in SQL and metadata tables.
 
 ### Querying JSON columns
 
@@ -487,25 +492,39 @@ In this minimal example:
 - `auth` declares how stored values are used to authenticate outgoing HTTP requests
 - `{{input.API_TOKEN}}` is resolved from the secret store because `API_TOKEN` is declared as `kind: secret`
 
+### Table filters
+
+HTTP tables can declare `filters` that Coral binds from SQL `WHERE` predicates into provider requests. MCP tables use the same SQL-facing filter fields and add a required `tool_arg` field to bind the filter to an MCP tool argument.
+
+| Field       | Type    | Default    | Description                                                                  |
+| ----------- | ------- | ---------- | ---------------------------------------------------------------------------- |
+| `name`      | string  | required   | SQL filter name                                                              |
+| `type`      | type    | `Utf8`     | Filter value type                                                            |
+| `required`  | boolean | `false`    | Whether queries must provide this filter                                     |
+| `mode`      | string  | `equality` | Predicate mode: `equality`, `contains`, or compatibility-only `search`       |
+| `description` | string | `""`      | Human-readable filter description surfaced through `coral.filters`           |
+| `tool_arg`  | string  | MCP only   | MCP table tool argument that receives the filter value                       |
+
+Use `mode: equality` for exact lookup and scoping filters. Use `mode: contains` only when the provider supports normal substring matching for a table filter. `mode: search` remains accepted for compatibility with older table manifests, but new provider-ranked search endpoints should be modeled as `kind: search` table functions with `search_limits`.
+
 ### HTTP table functions
 
-HTTP sources can declare source-scoped table functions for provider-native
-operations that return rows and need invocation arguments. A function adds
-invocation arguments, but it still owns the same execution shape as an HTTP
-table: request, response mapping, pagination, and result columns. It does not
-need a backing table.
+HTTP sources can declare source-scoped table functions for endpoints that return
+rows and need invocation arguments. A function adds invocation arguments, but it
+still owns the same execution shape as an HTTP table: request, response mapping,
+pagination, and result columns. It does not need a backing table.
 
-Table functions are not only for search. Use the default `kind: table` for
-parameterized non-retrieval operations, such as scoped child collections,
-time-range log queries, metrics queries, or detail operations that do not map
-cleanly to a stable table. Use `kind: search` only for provider-ranked
-retrieval surfaces.
+Use the default `kind: table` for parameterized non-retrieval operations, such as
+scoped child collections, time-range log queries, metrics queries, or detail
+operations that do not map cleanly to a stable table. If the endpoint is a
+provider search surface, such as GitHub issue search, use `kind: search` and
+declare `search_limits`.
 
 ```yaml
 functions:
   - name: search_issues
     kind: search
-    description: Search provider issues
+    description: Search GitHub issues
     search_limits:
       default_top_k: 10
       max_top_k: 100
@@ -570,6 +589,12 @@ FROM github.search_issues(q => 'repo:withcoral/coral source functions')
 LIMIT 10;
 ```
 
+Search result columns should help users and agents decide which candidate to
+inspect next. Prefer stable identifiers and follow-up handles such as `id`,
+`html_url`, `title`, `score`, `rank`, or provider timestamps. If a search row is
+intentionally thin, expose enough stable identifiers for ordinary detail tables
+to fetch the full record.
+
 `mode: contains` remains available for ordinary table filters whose provider
 API supports substring matching. It is not a retrieval marker and should not be
 used as a replacement for `kind: search`:
@@ -582,12 +607,15 @@ filters:
     mode: contains
 ```
 
-Provider-ranked retrieval surfaces must be declared as `kind: search`
-functions. Table filters are for exact lookup, required scoping, or ordinary
-provider-side filtering on list/detail tables.
+Provider-ranked retrieval surfaces must be declared as `kind: search` functions.
+Table filters are for exact lookup, required scoping, or ordinary provider-side
+filtering on list/detail tables.
 
-`search_limits` values must be positive. `default_top_k` and `max_top_k` are
-capped at 1000, `max_calls_per_query` is capped at 100, and
+For `kind: search` functions, `search_limits` is required. `default_top_k` is
+used when SQL does not specify a `LIMIT`, `max_top_k` caps candidates requested
+per provider call, and `max_calls_per_query` caps provider calls for one SQL
+query. Values must be positive. `default_top_k` and `max_top_k` are capped at
+1000, `max_calls_per_query` is capped at 100, and
 `max_top_k * max_calls_per_query` cannot exceed 10000 candidates.
 
 ### MCP sources
@@ -773,6 +801,8 @@ but auth is source-scoped: `from: literal`, `from: template`, `from: input`,
 `from: bearer`, and `from: one_of` are meaningful here. Filter, argument, and
 state values have no value at auth time. Use `from: bearer` when Coral stores a
 raw token but the API expects an `Authorization: Bearer <token>` header.
+If the token was collected with an OAuth credential method, runtime auth still
+uses the same stored secret input.
 
 Use `from: one_of` when a source supports multiple credential shapes. Coral
 uses the first value that is present and non-empty:
@@ -1060,11 +1090,14 @@ The `pagination` object controls how Coral fetches additional pages of results.
 | `cursor_body_path`            | list of strings | `[]`    | JSON path in the request body for the cursor (`cursor_body` mode)                                      |
 | `page_param`                  | string          | —       | Query parameter name for the page number (`page` mode)                                                 |
 | `page_start`                  | integer         | `0`     | Starting page number                                                                                   |
+| `page_step`                   | integer         | `1`     | Amount to increment the page number between requests (`page` mode)                                      |
 | `offset_param`                | string          | —       | Query parameter name for the offset (`offset` mode)                                                    |
 | `offset_start`                | integer         | `0`     | Starting offset value                                                                                  |
+| `offset_step`                 | integer         | —       | Amount to increment the offset between requests; required for `offset` mode unless `page_size` is set   |
 | `page_size.default`           | integer         | —       | Default page size                                                                                      |
 | `page_size.max`               | integer         | —       | Maximum page size                                                                                      |
 | `page_size.query_param`       | string          | —       | Query parameter name for the page size                                                                 |
+| `page_size.body_path`         | list of strings | `[]`    | JSON path in the request body for the page size                                                        |
 | `max_pages`                   | integer         | —       | Maximum number of pages to fetch                                                                       |
 | `link_header_require_results` | boolean         | `false` | For `link_header` mode, require non-empty results to continue                                          |
 
@@ -1211,6 +1244,43 @@ inputs:
                   - read:org
         - type: source_config
           label: Paste token
+```
+
+Authorization-code OAuth uses a loopback redirect and can require PKCE:
+
+```yaml
+inputs:
+  DEMO_API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Demo
+          description: Open a browser and authorize Coral to read Demo API data.
+          hint: |
+            Signs you in through Demo in your browser and requests the
+            `read:data` scope. To use your own app, set DEMO_OAUTH_CLIENT_ID
+            to its Client ID.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://demo.example.com/oauth/authorize
+              token_url: https://demo.example.com/oauth/token
+            client:
+              id:
+                input: DEMO_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - read:data
+        - type: source_config
+          label: Paste token
+          hint: Paste a Demo API token with read access to the data you query.
 ```
 
 ### OAuth flow and client settings

@@ -1,0 +1,6 @@
+{"hostname":"rhel-control","name":"coral-backend.service","source":"systemd","state":"running","status":"enabled"}
+{"hostname":"alpine-api","name":"checkout-api","source":"openrc","state":"stopped","status":"enabled"}
+{"hostname":"arch-observe","name":"datadog-agent.service","source":"systemd","state":"running","status":"enabled"}
+{"hostname":"debian-db","name":"postgresql.service","source":"systemd","state":"running","status":"enabled"}
+{"hostname":"debian-db","name":"rabbitmq-server.service","source":"systemd","state":"failed","status":"enabled"}
+{"hostname":"suse-auth","name":"auth-gateway.service","source":"systemd","state":"running","status":"enabled"}
