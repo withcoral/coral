@@ -1281,6 +1281,7 @@ limit = 2147483648
                 ..PersistedEngineConfig::default()
             },
             catalog: SourceCatalog::default(),
+            recipes: RecipeCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -1306,6 +1307,7 @@ flag = true
                 ..PersistedEngineConfig::default()
             },
             catalog: SourceCatalog::default(),
+            recipes: RecipeCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), Some(existing_raw));
@@ -1331,6 +1333,7 @@ flag = true
             version: 1,
             engine: PersistedEngineConfig::default(),
             catalog: SourceCatalog::default(),
+            recipes: RecipeCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), Some(existing_raw));
