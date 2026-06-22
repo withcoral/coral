@@ -4,10 +4,10 @@ use std::pin::Pin;
 
 use coral_api::v1::identity_service_server::IdentityService as IdentityServiceApi;
 use coral_api::v1::{
-    CreateUserOwnedIdentityWithFixedTokenRequest, CreateUserOwnedIdentityWithFixedTokenResponse,
-    CreateUserOwnedIdentityWithOAuthRequest, CreateUserOwnedIdentityWithOAuthResponse,
-    CredentialMetadata, Identity, IdentityOwner, ListUserOwnedIdentitiesRequest,
-    ListUserOwnedIdentitiesResponse,
+    CreateUserOwnedIdentityRequest, CreateUserOwnedIdentityResponse, CredentialMetadata,
+    FixedTokenUserOwnedIdentitySetup, Identity, IdentityOwner, ListUserOwnedIdentitiesRequest,
+    ListUserOwnedIdentitiesResponse, create_user_owned_identity_request,
+    create_user_owned_identity_response,
 };
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
@@ -32,42 +32,43 @@ impl IdentityService {
 
 #[tonic::async_trait]
 impl IdentityServiceApi for IdentityService {
-    type CreateUserOwnedIdentityWithOAuthStream = CreateUserOwnedIdentityResponseStreamBox;
+    type CreateUserOwnedIdentityStream = CreateUserOwnedIdentityResponseStreamBox;
 
-    async fn create_user_owned_identity_with_o_auth(
+    async fn create_user_owned_identity(
         &self,
-        _request: Request<CreateUserOwnedIdentityWithOAuthRequest>,
-    ) -> Result<Response<Self::CreateUserOwnedIdentityWithOAuthStream>, Status> {
-        Err(Status::unimplemented(
-            "OAuth identity creation is not enabled by this server",
-        ))
-    }
-
-    async fn create_user_owned_identity_with_fixed_token(
-        &self,
-        request: Request<CreateUserOwnedIdentityWithFixedTokenRequest>,
-    ) -> Result<Response<CreateUserOwnedIdentityWithFixedTokenResponse>, Status> {
+        request: Request<CreateUserOwnedIdentityRequest>,
+    ) -> Result<Response<Self::CreateUserOwnedIdentityStream>, Status> {
         let span = grpc_span(&request);
         let identities = self.identities.clone();
         instrument_grpc(span, async move {
             let principal = RequestContext::from_request(&request)?.principal().clone();
             let request = request.into_inner();
+            let Some(create_user_owned_identity_request::Setup::FixedToken(
+                FixedTokenUserOwnedIdentitySetup { token },
+            )) = request.setup
+            else {
+                return Err(Status::unimplemented(
+                    "OAuth identity creation is not enabled by this server",
+                ));
+            };
             let record = identities
                 .create_user_owned_fixed_token_identity(
                     &principal,
                     CreateFixedTokenIdentityCommand {
                         name: request.name,
                         identity_spec: request.identity_spec,
-                        token: request.token,
+                        token,
                     },
                 )
                 .await
                 .map_err(app_status)?;
-            Ok(Response::new(
-                CreateUserOwnedIdentityWithFixedTokenResponse {
-                    identity: Some(identity_record_to_proto(record)),
-                },
-            ))
+            let response = CreateUserOwnedIdentityResponse {
+                event: Some(create_user_owned_identity_response::Event::Identity(
+                    identity_record_to_proto(record),
+                )),
+            };
+            let stream = Box::pin(tokio_stream::iter([Ok(response)]));
+            Ok(Response::new(stream as CreateUserOwnedIdentityResponseStreamBox))
         })
         .await
     }
@@ -94,7 +95,7 @@ impl IdentityServiceApi for IdentityService {
 }
 
 type CreateUserOwnedIdentityResponseStreamBox =
-    Pin<Box<dyn Stream<Item = Result<CreateUserOwnedIdentityWithOAuthResponse, Status>> + Send>>;
+    Pin<Box<dyn Stream<Item = Result<CreateUserOwnedIdentityResponse, Status>> + Send>>;
 
 fn identity_record_to_proto(record: UserOwnedIdentityRecord) -> Identity {
     Identity {

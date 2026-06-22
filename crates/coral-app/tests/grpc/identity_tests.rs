@@ -1,8 +1,9 @@
 use std::fs;
 
 use coral_api::v1::{
-    AddIdentitySpecRequest, CreateUserOwnedIdentityWithFixedTokenRequest,
-    ListUserOwnedIdentitiesRequest,
+    AddIdentitySpecRequest, CreateUserOwnedIdentityRequest, FixedTokenUserOwnedIdentitySetup,
+    ListUserOwnedIdentitiesRequest, create_user_owned_identity_request,
+    create_user_owned_identity_response,
 };
 use tempfile::TempDir;
 use tonic::Request;
@@ -25,25 +26,36 @@ async fn identity_service_creates_and_lists_user_fixed_token_identity() {
         .identity_spec_client()
         .add_identity_spec(Request::new(AddIdentitySpecRequest {
             manifest_yaml: fixed_token_identity_spec_yaml(),
-            inputs: Vec::new(),
+            input_values: Vec::new(),
         }))
         .await
         .expect("add identity spec");
 
-    let created = harness
+    let mut stream = harness
         .identity_client()
-        .create_user_owned_identity_with_fixed_token(Request::new(
-            CreateUserOwnedIdentityWithFixedTokenRequest {
-                name: "github_local".to_string(),
-                identity_spec: "github_pat".to_string(),
-                token: "ghp_secret".to_string(),
-            },
-        ))
+        .create_user_owned_identity(Request::new(CreateUserOwnedIdentityRequest {
+            name: "github_local".to_string(),
+            identity_spec: "github_pat".to_string(),
+            setup: Some(create_user_owned_identity_request::Setup::FixedToken(
+                FixedTokenUserOwnedIdentitySetup {
+                    token: "ghp_secret".to_string(),
+                },
+            )),
+        }))
         .await
         .expect("create fixed-token identity")
-        .into_inner()
-        .identity
-        .expect("created identity");
+        .into_inner();
+    let created = match stream
+        .message()
+        .await
+        .expect("identity creation event")
+        .expect("created identity event")
+        .event
+        .expect("identity creation event payload")
+    {
+        create_user_owned_identity_response::Event::Identity(identity) => identity,
+        event => panic!("expected identity event, got {event:?}"),
+    };
     assert_eq!(created.name, "github_local");
     assert_eq!(created.identity_spec, "github_pat");
     assert_eq!(created.issuer, "github");
