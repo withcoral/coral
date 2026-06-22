@@ -177,7 +177,7 @@ impl Features {
             return Ok(());
         }
         Err(AppError::SourceUnservable(
-            "DSL v4 sources require the 'dsl_v4' runtime feature. Run `coral features enable dsl_v4` or pass `--enable-dsl-v4` and retry."
+            "DSL v4 source and identity-spec management requires the 'dsl_v4' runtime feature."
                 .to_string(),
         ))
     }

@@ -3,7 +3,9 @@
 mod manager;
 mod service;
 
-pub(crate) use manager::{IdentitySpecInputValue, IdentitySpecManager, IdentitySpecRecord};
+pub(crate) use manager::{
+    IdentitySpecInputValue, IdentitySpecManager, IdentitySpecName, IdentitySpecRecord,
+};
 pub use manager::{
     IdentitySpecManifestMetadata, IdentitySpecRegistry, IdentitySpecRegistryRecord,
     IdentitySpecUsageProvider, identity_spec_input_material_from_manifest,

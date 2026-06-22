@@ -10,7 +10,9 @@ use coral_api::v1::{
 };
 use tonic::{Request, Response, Status};
 
-use crate::authorization::{ManagementAuthorizer, authorization_status};
+use crate::authorization::{
+    ManagementAuthorizer, ManagementMutation, ResourceMutationKind, authorization_status,
+};
 use crate::identity_specs::{IdentitySpecInputValue, IdentitySpecManager, IdentitySpecRecord};
 use crate::request_context::RequestContext;
 use crate::transport::{grpc_span, instrument_grpc, run_blocking_operation};
@@ -46,7 +48,12 @@ impl IdentitySpecServiceApi for IdentitySpecService {
             let principal = RequestContext::from_request(&request)?.principal().clone();
             let request = request.into_inner();
             management_authorizer
-                .authorize_identity_spec_mutation(&principal)
+                .authorize_management_mutation(
+                    &principal,
+                    ManagementMutation::IdentitySpec {
+                        kind: ResourceMutationKind::Upsert,
+                    },
+                )
                 .await
                 .map_err(authorization_status)?;
             let inputs = request
@@ -128,7 +135,12 @@ impl IdentitySpecServiceApi for IdentitySpecService {
             let principal = RequestContext::from_request(&request)?.principal().clone();
             let request = request.into_inner();
             management_authorizer
-                .authorize_identity_spec_mutation(&principal)
+                .authorize_management_mutation(
+                    &principal,
+                    ManagementMutation::IdentitySpec {
+                        kind: ResourceMutationKind::Delete,
+                    },
+                )
                 .await
                 .map_err(authorization_status)?;
             let orphaned_identities =

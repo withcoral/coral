@@ -1,7 +1,9 @@
 //! Filesystem-backed global identity-spec registry.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::fs;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use coral_spec::{IdentityManifest, ManifestInputKind, parse_identity_manifest_yaml};
@@ -35,6 +37,37 @@ pub(crate) struct IdentitySpecRecord {
 pub(crate) struct IdentitySpecInputValue {
     pub(crate) key: String,
     pub(crate) value: String,
+}
+
+/// Validated storage name for one installed identity spec.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct IdentitySpecName(String);
+
+impl IdentitySpecName {
+    /// Parse and validate an identity-spec name for app-internal use.
+    pub(crate) fn parse(name: &str) -> Result<Self, AppError> {
+        parse_path_segment("identity spec", name).map(Self)
+    }
+
+    /// Borrow the normalized identity-spec name at string boundaries.
+    #[must_use]
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for IdentitySpecName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for IdentitySpecName {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
 }
 
 /// Validated identity of one identity-spec manifest.
@@ -279,9 +312,9 @@ impl IdentitySpecManager {
         let _guard = span.enter();
         self.features.ensure_dsl_v4_enabled()?;
         let record = parse_identity_spec_record(manifest_yaml)?;
-        let name = record.manifest.name.clone();
+        let name = validate_identity_spec_name(&record.manifest.name)?;
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
-        let existing = self.registry.get_identity_spec(&name)?;
+        let existing = self.registry.get_identity_spec(name.as_str())?;
         let replaced = existing.is_some();
         let existing_input_material = existing
             .as_ref()
@@ -321,7 +354,7 @@ impl IdentitySpecManager {
             &provided_inputs,
         )?;
         self.registry.upsert_identity_spec(
-            &record.manifest.name,
+            name.as_str(),
             IdentitySpecRegistryRecord {
                 manifest_yaml: record.manifest_yaml.clone(),
                 input_material,
@@ -364,7 +397,7 @@ impl IdentitySpecManager {
         let _lock = FileLock::shared(self.layout.state_lock())?;
         let stored = self
             .registry
-            .get_identity_spec(&name)?
+            .get_identity_spec(name.as_str())?
             .map(|record| record.input_material)
             .unwrap_or_default();
         resolve_identity_spec_inputs_for_use(manifest, &stored)
@@ -376,8 +409,8 @@ impl IdentitySpecManager {
         self.features.ensure_dsl_v4_enabled()?;
         let name = validate_identity_spec_name(name)?;
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
-        if !self.registry.identity_spec_exists(&name)? {
-            return Err(AppError::IdentitySpecNotFound(name));
+        if !self.registry.identity_spec_exists(name.as_str())? {
+            return Err(AppError::IdentitySpecNotFound(name.as_str().to_string()));
         }
         let orphaned_identities = self.count_identities_for_spec_unlocked(&name)?;
         if orphaned_identities > 0 && !force {
@@ -387,20 +420,19 @@ impl IdentitySpecManager {
                 plural_pronoun(orphaned_identities)
             )));
         }
-        self.registry.remove_identity_spec(&name)?;
+        self.registry.remove_identity_spec(name.as_str())?;
         Ok(orphaned_identities)
     }
 
     fn load_identity_spec_manifest_unlocked(
         &self,
-        name: &str,
+        name: &IdentitySpecName,
     ) -> Result<IdentitySpecRecord, AppError> {
-        let name = validate_identity_spec_name(name)?;
-        let Some(manifest_yaml) = self.registry.get_identity_spec_manifest(&name)? else {
-            return Err(AppError::IdentitySpecNotFound(name));
+        let Some(manifest_yaml) = self.registry.get_identity_spec_manifest(name.as_str())? else {
+            return Err(AppError::IdentitySpecNotFound(name.as_str().to_string()));
         };
         let record = parse_identity_spec_record(&manifest_yaml)?;
-        if record.manifest.name != name {
+        if record.manifest.name != name.as_str() {
             return Err(AppError::FailedPrecondition(format!(
                 "identity spec registry record '{name}' contains identity spec '{}'",
                 record.manifest.name
@@ -411,14 +443,14 @@ impl IdentitySpecManager {
 
     fn count_identities_for_spec_unlocked(
         &self,
-        identity_spec_name: &str,
+        identity_spec_name: &IdentitySpecName,
     ) -> Result<u32, AppError> {
         let mut count = self.count_user_owned_identities_for_spec_unlocked(identity_spec_name)?;
         for provider in &self.usage_providers {
             count = checked_add_identity_count(
                 count,
-                provider.count_identities_for_spec(identity_spec_name)?,
-                identity_spec_name,
+                provider.count_identities_for_spec(identity_spec_name.as_str())?,
+                identity_spec_name.as_str(),
             )?;
         }
         Ok(count)
@@ -426,7 +458,7 @@ impl IdentitySpecManager {
 
     fn count_user_owned_identities_for_spec_unlocked(
         &self,
-        identity_spec_name: &str,
+        identity_spec_name: &IdentitySpecName,
     ) -> Result<u32, AppError> {
         let users_root = self.layout.identities_root().join("users");
         if !users_root.exists() {
@@ -449,8 +481,8 @@ impl IdentitySpecManager {
                 }
                 let raw = fs::read_to_string(&manifest_path)?;
                 let reference: UserOwnedIdentitySpecReference = serde_yaml::from_str(&raw)?;
-                if reference.identity_spec == identity_spec_name {
-                    count = checked_add_identity_count(count, 1, identity_spec_name)?;
+                if reference.identity_spec == identity_spec_name.as_str() {
+                    count = checked_add_identity_count(count, 1, identity_spec_name.as_str())?;
                 }
             }
         }
@@ -479,14 +511,14 @@ impl FileIdentitySpecRegistry {
         }
     }
 
-    fn input_material_state_file(&self, name: &str) -> std::path::PathBuf {
+    fn input_material_state_file(&self, name: &IdentitySpecName) -> std::path::PathBuf {
         self.layout
             .identity_spec_dir(name)
             .join(IDENTITY_SPEC_INPUT_MATERIAL_STATE_FILE_NAME)
     }
 
-    fn credential_set_id(name: &str) -> CredentialSetId {
-        CredentialSetId::for_identity_spec(name)
+    fn credential_set_id(name: &IdentitySpecName) -> CredentialSetId {
+        CredentialSetId::for_identity_spec(name.as_str())
     }
 
     fn input_material_workspace() -> WorkspaceName {
@@ -495,7 +527,7 @@ impl FileIdentitySpecRegistry {
 
     fn load_input_material_state(
         &self,
-        name: &str,
+        name: &IdentitySpecName,
     ) -> Result<IdentitySpecInputMaterialState, AppError> {
         let path = self.input_material_state_file(name);
         if !path.exists() {
@@ -514,7 +546,7 @@ impl FileIdentitySpecRegistry {
 
     fn write_input_material_state(
         &self,
-        name: &str,
+        name: &IdentitySpecName,
         state: &IdentitySpecInputMaterialState,
     ) -> Result<(), AppError> {
         let path = self.input_material_state_file(name);
@@ -529,7 +561,7 @@ impl FileIdentitySpecRegistry {
 
     fn read_input_material(
         &self,
-        name: &str,
+        name: &IdentitySpecName,
         storage: CredentialStorageKind,
     ) -> Result<BTreeMap<String, String>, AppError> {
         self.credential_store.read_material(
@@ -541,7 +573,7 @@ impl FileIdentitySpecRegistry {
 
     fn replace_input_material(
         &self,
-        name: &str,
+        name: &IdentitySpecName,
         existing_storage: Option<CredentialStorageKind>,
         next_storage: Option<CredentialStorageKind>,
         material: &BTreeMap<String, String>,
@@ -569,7 +601,7 @@ impl FileIdentitySpecRegistry {
 
     fn restore_after_failed_upsert(
         &self,
-        name: &str,
+        name: &IdentitySpecName,
         rollback: &IdentitySpecUpsertRollback,
     ) -> Result<(), AppError> {
         if let (Some(storage), Some(material)) = (
@@ -605,7 +637,7 @@ impl FileIdentitySpecRegistry {
         Ok(())
     }
 
-    fn remove_input_material(&self, name: &str) -> Result<(), AppError> {
+    fn remove_input_material(&self, name: &IdentitySpecName) -> Result<(), AppError> {
         let state = self.load_input_material_state(name)?;
         if let Some(storage) = state.credential_storage {
             self.credential_store.remove_material_unlocked(
@@ -759,7 +791,7 @@ impl IdentitySpecRegistry for FileIdentitySpecRegistry {
         if let Err(error) = result {
             if let Err(rollback_error) = self.restore_after_failed_upsert(&name, &rollback) {
                 warn!(
-                    identity_spec = name,
+                    identity_spec = %name,
                     error = %rollback_error,
                     "failed to roll back identity spec upsert"
                 );
@@ -893,10 +925,14 @@ fn merge_identity_spec_input_material(
     for input in &manifest.inputs {
         if let Some(value) = provided
             .get(&input.key)
-            .filter(|value| !value.is_empty())
-            .or_else(|| stored.get(&input.key).filter(|value| !value.is_empty()))
+            .and_then(|value| trimmed_non_empty_value(value))
+            .or_else(|| {
+                stored
+                    .get(&input.key)
+                    .and_then(|value| trimmed_non_empty_value(value))
+            })
         {
-            material.insert(input.key.clone(), value.clone());
+            material.insert(input.key.clone(), value);
         }
     }
     resolve_identity_spec_inputs_for_use(manifest, &material)?;
@@ -911,8 +947,7 @@ fn resolve_identity_spec_inputs_for_use(
     for input in &manifest.inputs {
         let value = material
             .get(&input.key)
-            .filter(|value| !value.is_empty())
-            .cloned()
+            .and_then(|value| trimmed_non_empty_value(value))
             .or_else(|| {
                 (input.kind == ManifestInputKind::Variable && !input.default_value.is_empty())
                     .then(|| input.default_value.clone())
@@ -927,6 +962,11 @@ fn resolve_identity_spec_inputs_for_use(
         }
     }
     Ok(resolved)
+}
+
+fn trimmed_non_empty_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 fn remove_file_if_exists(path: &std::path::Path) -> Result<(), AppError> {
@@ -962,8 +1002,8 @@ fn normalized_manifest_yaml(manifest_yaml: &str) -> String {
     }
 }
 
-pub(crate) fn validate_identity_spec_name(name: &str) -> Result<String, AppError> {
-    parse_path_segment("identity spec", name)
+pub(crate) fn validate_identity_spec_name(name: &str) -> Result<IdentitySpecName, AppError> {
+    IdentitySpecName::parse(name)
 }
 
 #[cfg(test)]
@@ -978,7 +1018,7 @@ mod tests {
 
     use super::{
         IDENTITY_SPEC_INPUT_MATERIAL_STATE_FILE_NAME, IdentitySpecInputValue, IdentitySpecManager,
-        IdentitySpecRecord, IdentitySpecUsageProvider, identity_spec_fingerprint,
+        IdentitySpecName, IdentitySpecRecord, IdentitySpecUsageProvider, identity_spec_fingerprint,
     };
     use crate::bootstrap::AppError;
     use crate::credentials::{CredentialStoragePreference, CredentialStore, parse_env_file};
@@ -987,6 +1027,10 @@ mod tests {
 
     fn manager() -> (TempDir, IdentitySpecManager, AppStateLayout) {
         manager_with(dsl_v4_features(), Vec::new())
+    }
+
+    fn identity_spec_name(name: &str) -> IdentitySpecName {
+        IdentitySpecName::parse(name).expect("identity spec name")
     }
 
     fn manager_with(
@@ -1279,7 +1323,7 @@ oauth:
     #[test]
     fn add_identity_spec_repairs_malformed_existing_record() {
         let (_temp, manager, layout) = manager();
-        let manifest_path = layout.identity_spec_manifest_file("github_oauth");
+        let manifest_path = layout.identity_spec_manifest_file(&identity_spec_name("github_oauth"));
         fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
             .expect("create identity spec dir");
         fs::write(
@@ -1337,12 +1381,16 @@ oauth:
         assert_input(&resolved, "DEMO_TENANT", "tenant-a");
         assert_input(&resolved, "DEMO_OAUTH_CLIENT_SECRET", "client-secret");
         assert!(
-            layout.identity_spec_material_file("demo_oauth").exists(),
+            layout
+                .identity_spec_material_file(&identity_spec_name("demo_oauth"))
+                .exists(),
             "input material belongs under the installed identity spec"
         );
         let stored = parse_env_file(
-            &fs::read_to_string(layout.identity_spec_material_file("demo_oauth"))
-                .expect("identity spec material file"),
+            &fs::read_to_string(
+                layout.identity_spec_material_file(&identity_spec_name("demo_oauth")),
+            )
+            .expect("identity spec material file"),
         )
         .expect("parse material");
         assert!(
@@ -1352,8 +1400,59 @@ oauth:
 
         remove_spec(&manager, "demo_oauth", false);
 
-        assert!(!layout.identity_spec_material_file("demo_oauth").exists());
-        assert!(!layout.identity_spec_dir("demo_oauth").exists());
+        assert!(
+            !layout
+                .identity_spec_material_file(&identity_spec_name("demo_oauth"))
+                .exists()
+        );
+        assert!(
+            !layout
+                .identity_spec_dir(&identity_spec_name("demo_oauth"))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn spec_owned_input_material_is_trimmed_and_whitespace_only_is_missing() {
+        let (_temp, trimming_manager, layout) = manager();
+        let (record, _replaced) = trimming_manager
+            .add_identity_spec_with_inputs(
+                &oauth_identity_yaml_with_inputs(),
+                vec![IdentitySpecInputValue {
+                    key: "DEMO_OAUTH_CLIENT_SECRET".to_string(),
+                    value: "  client-secret  \n".to_string(),
+                }],
+            )
+            .expect("trimmed input should satisfy required secret");
+
+        let resolved = resolved_inputs(&trimming_manager, &record);
+        assert_input(&resolved, "DEMO_OAUTH_CLIENT_SECRET", "client-secret");
+        let stored = parse_env_file(
+            &fs::read_to_string(
+                layout.identity_spec_material_file(&identity_spec_name("demo_oauth")),
+            )
+            .expect("identity spec material file"),
+        )
+        .expect("parse material");
+        assert_eq!(
+            stored.get("DEMO_OAUTH_CLIENT_SECRET").map(String::as_str),
+            Some("client-secret")
+        );
+
+        let (_temp, manager, _layout) = manager();
+        let error = manager
+            .add_identity_spec_with_inputs(
+                &oauth_identity_yaml_with_inputs(),
+                vec![IdentitySpecInputValue {
+                    key: "DEMO_OAUTH_CLIENT_SECRET".to_string(),
+                    value: " \t\n ".to_string(),
+                }],
+            )
+            .expect_err("whitespace-only secret should be missing");
+        assert_failed_precondition(
+            &error,
+            ["missing identity spec input", "DEMO_OAUTH_CLIENT_SECRET"],
+        );
     }
 
     #[test]
@@ -1361,7 +1460,7 @@ oauth:
         let (_temp, manager, layout) = manager();
         add_spec_with_secret(&manager, &oauth_identity_yaml_with_inputs());
 
-        let material_file = layout.identity_spec_material_file("demo_oauth");
+        let material_file = layout.identity_spec_material_file(&identity_spec_name("demo_oauth"));
         fs::write(&material_file, "not env material\n").expect("write malformed material");
         let record = manager
             .get_identity_spec("demo_oauth")
@@ -1384,7 +1483,11 @@ oauth:
             !material_file.exists(),
             "malformed material should be deleted"
         );
-        assert!(!layout.identity_spec_dir("demo_oauth").exists());
+        assert!(
+            !layout
+                .identity_spec_dir(&identity_spec_name("demo_oauth"))
+                .exists()
+        );
     }
 
     #[test]
@@ -1405,9 +1508,9 @@ oauth:
         );
         add_spec_with_secret(&manager, &oauth_identity_yaml_with_inputs());
 
-        let manifest_file = layout.identity_spec_manifest_file("demo_oauth");
+        let manifest_file = layout.identity_spec_manifest_file(&identity_spec_name("demo_oauth"));
         let state_file = layout
-            .identity_spec_dir("demo_oauth")
+            .identity_spec_dir(&identity_spec_name("demo_oauth"))
             .join(IDENTITY_SPEC_INPUT_MATERIAL_STATE_FILE_NAME);
         fs::write(&state_file, "version: 1\ncredential_storage: keychain\n")
             .expect("route cleanup through unavailable keychain");
@@ -1429,7 +1532,11 @@ oauth:
         remove_spec(&manager, "demo_oauth", false);
 
         assert!(!manifest_file.exists());
-        assert!(!layout.identity_spec_dir("demo_oauth").exists());
+        assert!(
+            !layout
+                .identity_spec_dir(&identity_spec_name("demo_oauth"))
+                .exists()
+        );
     }
 
     #[test]
@@ -1438,7 +1545,7 @@ oauth:
         let (record, _replaced) =
             add_spec_with_secret_value(&manager, &oauth_identity_yaml_with_inputs(), "old-secret");
         let state_file = layout
-            .identity_spec_dir("demo_oauth")
+            .identity_spec_dir(&identity_spec_name("demo_oauth"))
             .join(IDENTITY_SPEC_INPUT_MATERIAL_STATE_FILE_NAME);
         let state_temp_file = state_file.with_file_name(format!(
             "{IDENTITY_SPEC_INPUT_MATERIAL_STATE_FILE_NAME}.tmp.{}",

@@ -848,8 +848,8 @@ mod tests {
     use crate::workspaces::WorkspaceName;
     use crate::{
         AllowAllManagementAuthorizer, AppError, AuthorizationError, AwsEngineExtensionsProvider,
-        ManagementAuthorizer, NoopEngineExtensionsProvider, SingleUserPrincipalProvider,
-        SourceMutationKind, UserPrincipal, UserPrincipalProvider,
+        ManagementAuthorizer, ManagementMutation, NoopEngineExtensionsProvider,
+        SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider,
     };
 
     fn default_workspace() -> Workspace {
@@ -894,20 +894,15 @@ enabled = false
 
     #[tonic::async_trait]
     impl ManagementAuthorizer for DenyingSourceManagementAuthorizer {
-        async fn authorize_identity_spec_mutation(
+        async fn authorize_management_mutation(
             &self,
             _principal: &UserPrincipal,
+            mutation: ManagementMutation<'_>,
         ) -> Result<(), AuthorizationError> {
+            if matches!(mutation, ManagementMutation::WorkspaceSource { .. }) {
+                return Err(AuthorizationError::forbidden("source mutation denied"));
+            }
             Ok(())
-        }
-
-        async fn authorize_source_mutation(
-            &self,
-            _principal: &UserPrincipal,
-            _workspace_id: &str,
-            _kind: SourceMutationKind,
-        ) -> Result<(), AuthorizationError> {
-            Err(AuthorizationError::forbidden("source mutation denied"))
         }
     }
 

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, choose_native_strategy};
 
 use crate::bootstrap::AppError;
+use crate::identity_specs::IdentitySpecName;
 use crate::sources::SourceName;
 use crate::storage::fs::ensure_dir;
 use crate::workspaces::WorkspaceName;
@@ -100,16 +101,22 @@ impl AppStateLayout {
         self.config_dir.join("identity-specs")
     }
 
-    pub(crate) fn identity_spec_dir(&self, identity_spec_name: &str) -> PathBuf {
-        self.identity_specs_root().join(identity_spec_name)
+    pub(crate) fn identity_spec_dir(&self, identity_spec_name: &IdentitySpecName) -> PathBuf {
+        self.identity_specs_root().join(identity_spec_name.as_str())
     }
 
-    pub(crate) fn identity_spec_manifest_file(&self, identity_spec_name: &str) -> PathBuf {
+    pub(crate) fn identity_spec_manifest_file(
+        &self,
+        identity_spec_name: &IdentitySpecName,
+    ) -> PathBuf {
         self.identity_spec_dir(identity_spec_name)
             .join(INSTALLED_MANIFEST_FILE_NAME)
     }
 
-    pub(crate) fn identity_spec_material_file(&self, identity_spec_name: &str) -> PathBuf {
+    pub(crate) fn identity_spec_material_file(
+        &self,
+        identity_spec_name: &IdentitySpecName,
+    ) -> PathBuf {
         self.identity_spec_dir(identity_spec_name)
             .join(INSTALLED_SECRETS_FILE_NAME)
     }

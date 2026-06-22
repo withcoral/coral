@@ -27,7 +27,7 @@ async fn identity_spec_service_installs_lists_gets_and_deletes_spec() {
             manifest_yaml: identity_spec_yaml(),
             input_values: vec![IdentitySpecInputValue {
                 key: "DEMO_OAUTH_CLIENT_SECRET".to_string(),
-                value: "secret-value".to_string(),
+                value: " secret-value ".to_string(),
             }],
         }))
         .await
@@ -65,10 +65,9 @@ async fn identity_spec_service_installs_lists_gets_and_deletes_spec() {
         .join("identity-specs")
         .join("demo_oauth")
         .join("secrets.env");
-    assert!(
-        fs::read_to_string(&material_file)
-            .expect("identity spec material")
-            .contains("DEMO_OAUTH_CLIENT_SECRET=secret-value")
+    assert_eq!(
+        fs::read_to_string(&material_file).expect("identity spec material"),
+        "DEMO_OAUTH_CLIENT_SECRET=secret-value\n"
     );
 
     let deleted = client

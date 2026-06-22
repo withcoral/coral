@@ -9,6 +9,7 @@ use std::sync::{Arc, OnceLock};
 use sha2::{Digest as _, Sha256};
 
 use crate::bootstrap::AppError;
+use crate::identity_specs::IdentitySpecName;
 use crate::state::AppStateLayout;
 use crate::storage::fs as storage_fs;
 use crate::storage::fs::FileLock;
@@ -548,7 +549,9 @@ impl FileCredentialBackend {
                 .credential_set_id
                 .identity_spec_name()
                 .map_err(|error| CredentialsError::Parse(error.to_string()))?;
-            return Ok(self.layout.identity_spec_material_file(identity_spec_name));
+            let identity_spec_name = IdentitySpecName::parse(identity_spec_name)
+                .map_err(|error| CredentialsError::Parse(error.to_string()))?;
+            return Ok(self.layout.identity_spec_material_file(&identity_spec_name));
         }
         let source_name = set
             .credential_set_id

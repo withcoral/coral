@@ -10,6 +10,9 @@ pub enum AuthorizationError {
     /// The authenticated principal is not allowed to perform the operation.
     #[error("{0}")]
     Forbidden(String),
+    /// The product authorization policy failed before it could make a decision.
+    #[error("{0}")]
+    Internal(String),
 }
 
 impl AuthorizationError {
@@ -17,6 +20,12 @@ impl AuthorizationError {
     #[must_use]
     pub fn forbidden(message: impl Into<String>) -> Self {
         Self::Forbidden(message.into())
+    }
+
+    /// Builds an internal authorization error.
+    #[must_use]
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::Internal(message.into())
     }
 }
 
@@ -114,7 +123,43 @@ impl ManagementAuthorizer for AllowAllManagementAuthorizer {
 
 pub(crate) fn authorization_status(error: AuthorizationError) -> tonic::Status {
     match error {
-        AuthorizationError::Forbidden(message) => tonic::Status::permission_denied(message),
-        AuthorizationError::Internal(message) => tonic::Status::internal(message),
+        AuthorizationError::Forbidden(message) => {
+            tonic::Status::permission_denied(bounded_status_message(message))
+        }
+        AuthorizationError::Internal(message) => {
+            tonic::Status::internal(bounded_status_message(message))
+        }
+    }
+}
+
+const MAX_AUTHORIZATION_STATUS_MESSAGE_BYTES: usize = 512;
+
+fn bounded_status_message(mut message: String) -> String {
+    const SUFFIX: &str = "...";
+
+    if message.len() <= MAX_AUTHORIZATION_STATUS_MESSAGE_BYTES {
+        return message;
+    }
+
+    let mut end = MAX_AUTHORIZATION_STATUS_MESSAGE_BYTES - SUFFIX.len();
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message.truncate(end);
+    message.push_str(SUFFIX);
+    message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AuthorizationError, MAX_AUTHORIZATION_STATUS_MESSAGE_BYTES, authorization_status};
+
+    #[test]
+    fn authorization_status_bounds_product_messages() {
+        let status = authorization_status(AuthorizationError::forbidden("ø".repeat(1024)));
+
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert!(status.message().len() <= MAX_AUTHORIZATION_STATUS_MESSAGE_BYTES);
+        assert!(status.message().ends_with("..."));
     }
 }

@@ -32,7 +32,9 @@ use coral_spec::{
 };
 use tonic::{Request, Response, Status};
 
-use crate::authorization::{ManagementAuthorizer, SourceMutationKind, authorization_status};
+use crate::authorization::{
+    ManagementAuthorizer, ManagementMutation, WorkspaceSourceMutationKind, authorization_status,
+};
 use crate::bootstrap::{AppError, app_status};
 use crate::credentials::CredentialStorageKind;
 use crate::query::manager::QueryManager;
@@ -173,10 +175,12 @@ impl SourceServiceApi for SourceService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             management_authorizer
-                .authorize_source_mutation(
+                .authorize_management_mutation(
                     &principal,
-                    workspace_name.as_str(),
-                    SourceMutationKind::CreateBundled,
+                    ManagementMutation::WorkspaceSource {
+                        workspace_id: workspace_name.as_str(),
+                        kind: WorkspaceSourceMutationKind::CreateBundled,
+                    },
                 )
                 .await
                 .map_err(authorization_status)?;
@@ -212,10 +216,12 @@ impl SourceServiceApi for SourceService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             management_authorizer
-                .authorize_source_mutation(
+                .authorize_management_mutation(
                     &principal,
-                    workspace_name.as_str(),
-                    SourceMutationKind::CreateBundledWithOAuth,
+                    ManagementMutation::WorkspaceSource {
+                        workspace_id: workspace_name.as_str(),
+                        kind: WorkspaceSourceMutationKind::CreateBundledWithOAuth,
+                    },
                 )
                 .await
                 .map_err(authorization_status)?;
@@ -263,10 +269,12 @@ impl SourceServiceApi for SourceService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             management_authorizer
-                .authorize_source_mutation(
+                .authorize_management_mutation(
                     &principal,
-                    workspace_name.as_str(),
-                    SourceMutationKind::Import,
+                    ManagementMutation::WorkspaceSource {
+                        workspace_id: workspace_name.as_str(),
+                        kind: WorkspaceSourceMutationKind::CreateFromSourceSpec,
+                    },
                 )
                 .await
                 .map_err(authorization_status)?;
@@ -325,10 +333,12 @@ impl SourceServiceApi for SourceService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             management_authorizer
-                .authorize_source_mutation(
+                .authorize_management_mutation(
                     &principal,
-                    workspace_name.as_str(),
-                    SourceMutationKind::Delete,
+                    ManagementMutation::WorkspaceSource {
+                        workspace_id: workspace_name.as_str(),
+                        kind: WorkspaceSourceMutationKind::Delete,
+                    },
                 )
                 .await
                 .map_err(authorization_status)?;
