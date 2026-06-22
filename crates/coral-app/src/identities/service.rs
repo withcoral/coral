@@ -14,18 +14,18 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::identities::{
-    CreateFixedTokenIdentityCommand, UserOwnedIdentityManager, UserOwnedIdentityRecord,
+    CreateFixedTokenIdentityCommand, IdentityInstanceManager, IdentityInstanceRecord,
 };
 use crate::request_context::RequestContext;
 use crate::transport::{grpc_span, instrument_grpc};
 
 #[derive(Clone)]
 pub(crate) struct IdentityService {
-    identities: UserOwnedIdentityManager,
+    identities: IdentityInstanceManager,
 }
 
 impl IdentityService {
-    pub(crate) fn new(identities: UserOwnedIdentityManager) -> Self {
+    pub(crate) fn new(identities: IdentityInstanceManager) -> Self {
         Self { identities }
     }
 }
@@ -68,7 +68,9 @@ impl IdentityServiceApi for IdentityService {
                 )),
             };
             let stream = Box::pin(tokio_stream::iter([Ok(response)]));
-            Ok(Response::new(stream as CreateUserOwnedIdentityResponseStreamBox))
+            Ok(Response::new(
+                stream as CreateUserOwnedIdentityResponseStreamBox,
+            ))
         })
         .await
     }
@@ -97,7 +99,7 @@ impl IdentityServiceApi for IdentityService {
 type CreateUserOwnedIdentityResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<CreateUserOwnedIdentityResponse, Status>> + Send>>;
 
-fn identity_record_to_proto(record: UserOwnedIdentityRecord) -> Identity {
+fn identity_record_to_proto(record: IdentityInstanceRecord) -> Identity {
     Identity {
         name: record.name.to_string(),
         identity_spec: record.identity_spec,

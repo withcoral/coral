@@ -1,12 +1,11 @@
-//! Stored user-owned provider identity registry and APIs.
+//! Stored provider identity-instance registry and user-owned gRPC APIs.
 
 mod manager;
 mod service;
 
-pub(crate) use manager::UserOwnedIdentityManager;
+pub(crate) use manager::IdentityInstanceManager;
 pub use manager::{
-    CreateFixedTokenIdentityCommand, IdentityManagementHandle, IdentityOwnerKey,
-    UserOwnedIdentityMaterialGuard, UserOwnedIdentityName, UserOwnedIdentityRecord,
-    UserOwnedIdentityStore,
+    CreateFixedTokenIdentityCommand, IdentityInstanceMaterialGuard, IdentityInstanceName,
+    IdentityInstanceRecord, IdentityInstanceStore, IdentityManagementHandle, IdentityOwnerKey,
 };
 pub(crate) use service::IdentityService;

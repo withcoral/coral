@@ -53,7 +53,7 @@ use crate::feedback::publisher::{
 };
 use crate::feedback::service::FeedbackService;
 use crate::identities::{
-    IdentityManagementHandle, IdentityService, UserOwnedIdentityManager, UserOwnedIdentityStore,
+    IdentityInstanceManager, IdentityInstanceStore, IdentityManagementHandle, IdentityService,
 };
 use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
 use crate::identity_specs::{
@@ -96,7 +96,7 @@ pub(crate) struct ServerConfig {
     identity_spec_registry: Option<Arc<dyn IdentitySpecRegistry>>,
     identity_spec_usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
     feature_overrides: FeatureOverrides,
-    user_owned_identity_store: Option<Arc<dyn UserOwnedIdentityStore>>,
+    identity_instance_store: Option<Arc<dyn IdentityInstanceStore>>,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
@@ -118,7 +118,7 @@ impl ServerConfig {
             identity_spec_registry: None,
             identity_spec_usage_providers: Vec::new(),
             feature_overrides: FeatureOverrides::default(),
-            user_owned_identity_store: None,
+            identity_instance_store: None,
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             management_authorizer: Arc::new(AllowAllManagementAuthorizer),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
@@ -182,11 +182,11 @@ impl ServerConfig {
         self
     }
 
-    pub(crate) fn with_user_owned_identity_store(
+    pub(crate) fn with_identity_instance_store(
         mut self,
-        user_owned_identity_store: Arc<dyn UserOwnedIdentityStore>,
+        identity_instance_store: Arc<dyn IdentityInstanceStore>,
     ) -> Self {
-        self.user_owned_identity_store = Some(user_owned_identity_store);
+        self.identity_instance_store = Some(identity_instance_store);
         self
     }
 
@@ -356,17 +356,17 @@ impl ServerBuilder {
     }
 
     #[must_use]
-    /// Sets the durable user-owned identity store.
+    /// Sets the durable identity-instance store.
     ///
-    /// The default store persists identities under the local Coral config
-    /// directory.
-    pub fn with_user_owned_identity_store(
+    /// The default store persists identity instances under the local Coral
+    /// config directory's user-owned identity layout.
+    pub fn with_identity_instance_store(
         mut self,
-        user_owned_identity_store: Arc<dyn UserOwnedIdentityStore>,
+        identity_instance_store: Arc<dyn IdentityInstanceStore>,
     ) -> Self {
         self.config = self
             .config
-            .with_user_owned_identity_store(user_owned_identity_store);
+            .with_identity_instance_store(identity_instance_store);
         self
     }
 
@@ -435,10 +435,10 @@ impl ServerBuilder {
                 self.config.identity_spec_usage_providers,
             )
         };
-        let user_owned_identity_manager = user_owned_identity_manager_for_server(
+        let identity_instance_manager = identity_instance_manager_for_server(
             layout.clone(),
             identity_spec_manager.clone(),
-            self.config.user_owned_identity_store,
+            self.config.identity_instance_store,
         );
         let source_manager = SourceManager::new_with_features(
             config_store.clone(),
@@ -478,7 +478,7 @@ impl ServerBuilder {
                 user_principal_provider: self.config.user_principal_provider,
                 management_authorizer: self.config.management_authorizer,
                 identity_spec_manager,
-                user_owned_identity_manager,
+                identity_instance_manager,
             },
             self.config.mode,
         )
@@ -486,14 +486,14 @@ impl ServerBuilder {
     }
 }
 
-fn user_owned_identity_manager_for_server(
+fn identity_instance_manager_for_server(
     layout: AppStateLayout,
     identity_spec_manager: IdentitySpecManager,
-    store: Option<Arc<dyn UserOwnedIdentityStore>>,
-) -> UserOwnedIdentityManager {
+    store: Option<Arc<dyn IdentityInstanceStore>>,
+) -> IdentityInstanceManager {
     match store {
-        Some(store) => UserOwnedIdentityManager::new_with_store(identity_spec_manager, store),
-        None => UserOwnedIdentityManager::new(layout, identity_spec_manager),
+        Some(store) => IdentityInstanceManager::new_with_store(identity_spec_manager, store),
+        None => IdentityInstanceManager::new(layout, identity_spec_manager),
     }
 }
 
@@ -506,7 +506,7 @@ struct ServerServices {
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
     identity_spec_manager: IdentitySpecManager,
-    user_owned_identity_manager: UserOwnedIdentityManager,
+    identity_instance_manager: IdentityInstanceManager,
 }
 
 /// Running Coral server.
@@ -599,7 +599,7 @@ async fn start_server(
         user_principal_provider,
         management_authorizer,
         identity_spec_manager,
-        user_owned_identity_manager,
+        identity_instance_manager,
     } = services;
     let source_service = SourceService::new(
         source_manager,
@@ -611,8 +611,8 @@ async fn start_server(
     let feedback_service = FeedbackService::new(feedback_manager);
     let identity_spec_service =
         IdentitySpecService::new(identity_spec_manager, management_authorizer);
-    let identity_management = user_owned_identity_manager.handle();
-    let identity_service = IdentityService::new(user_owned_identity_manager);
+    let identity_management = identity_instance_manager.handle();
+    let identity_service = IdentityService::new(identity_instance_manager);
     let episode_service = EpisodeService::new(episode_store);
     let mut routes = Routes::default()
         .add_service(SourceServiceServer::new(source_service))
@@ -898,7 +898,7 @@ mod tests {
     use crate::episode::store::EpisodeStore;
     use crate::features::{Feature, FeatureOverrides};
     use crate::feedback::manager::FeedbackManager;
-    use crate::identities::UserOwnedIdentityManager;
+    use crate::identities::IdentityInstanceManager;
     use crate::identity_specs::IdentitySpecManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
@@ -920,11 +920,11 @@ mod tests {
         IdentitySpecManager::new(layout.clone())
     }
 
-    fn test_user_owned_identity_manager(
+    fn test_identity_instance_manager(
         layout: &AppStateLayout,
         identity_specs: &IdentitySpecManager,
-    ) -> UserOwnedIdentityManager {
-        UserOwnedIdentityManager::new(layout.clone(), identity_specs.clone())
+    ) -> IdentityInstanceManager {
+        IdentityInstanceManager::new(layout.clone(), identity_specs.clone())
     }
 
     fn disable_internal_tracing(config_dir: &Path) {
@@ -966,10 +966,12 @@ enabled = false
             _principal: &UserPrincipal,
             mutation: ManagementMutation<'_>,
         ) -> Result<(), AuthorizationError> {
-            if matches!(mutation, ManagementMutation::WorkspaceSource { .. }) {
-                return Err(AuthorizationError::forbidden("source mutation denied"));
+            match mutation {
+                ManagementMutation::WorkspaceSource { .. } => {
+                    Err(AuthorizationError::forbidden("source mutation denied"))
+                }
+                _ => Ok(()),
             }
-            Ok(())
         }
     }
 
@@ -1274,8 +1276,8 @@ type: fixed_token
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let identity_spec_manager = test_identity_spec_manager(&layout);
-        let user_owned_identity_manager =
-            test_user_owned_identity_manager(&layout, &identity_spec_manager);
+        let identity_instance_manager =
+            test_identity_instance_manager(&layout, &identity_spec_manager);
         start_server(
             ServerServices {
                 source_manager,
@@ -1286,7 +1288,7 @@ type: fixed_token
                 user_principal_provider,
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
                 identity_spec_manager,
-                user_owned_identity_manager,
+                identity_instance_manager,
             },
             ServerMode::NativeGrpc,
         )
@@ -1700,8 +1702,8 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let identity_spec_manager = test_identity_spec_manager(&layout);
-        let user_owned_identity_manager =
-            test_user_owned_identity_manager(&layout, &identity_spec_manager);
+        let identity_instance_manager =
+            test_identity_instance_manager(&layout, &identity_spec_manager);
         let running = start_server(
             ServerServices {
                 source_manager,
@@ -1712,7 +1714,7 @@ tables:
                 user_principal_provider: Arc::new(SingleUserPrincipalProvider),
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
                 identity_spec_manager,
-                user_owned_identity_manager,
+                identity_instance_manager,
             },
             ServerMode::NativeGrpc,
         )
@@ -1810,8 +1812,8 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let identity_spec_manager = test_identity_spec_manager(&layout);
-        let user_owned_identity_manager =
-            test_user_owned_identity_manager(&layout, &identity_spec_manager);
+        let identity_instance_manager =
+            test_identity_instance_manager(&layout, &identity_spec_manager);
         let running = start_server(
             ServerServices {
                 source_manager,
@@ -1822,7 +1824,7 @@ tables:
                 user_principal_provider: Arc::new(SingleUserPrincipalProvider),
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
                 identity_spec_manager,
-                user_owned_identity_manager,
+                identity_instance_manager,
             },
             ServerMode::NativeGrpc,
         )
@@ -1920,8 +1922,8 @@ tables:
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let identity_spec_manager = test_identity_spec_manager(&layout);
-        let user_owned_identity_manager =
-            test_user_owned_identity_manager(&layout, &identity_spec_manager);
+        let identity_instance_manager =
+            test_identity_instance_manager(&layout, &identity_spec_manager);
         let running = start_server(
             ServerServices {
                 source_manager,
@@ -1932,7 +1934,7 @@ tables:
                 user_principal_provider: Arc::new(SingleUserPrincipalProvider),
                 management_authorizer: Arc::new(AllowAllManagementAuthorizer),
                 identity_spec_manager,
-                user_owned_identity_manager,
+                identity_instance_manager,
             },
             ServerMode::NativeGrpc,
         )
