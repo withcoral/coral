@@ -12,11 +12,10 @@ message IdentitySpec {
   string description = 3;
   // Provider or issuer name, such as `github`.
   string issuer = 4;
-  // Identity type, such as `oauth`, `fixed_token`, or `username_password`.
+  // Identity type, such as `oauth` or `fixed_token`.
   string identity_type = 5;
   // Canonical identity spec manifest YAML.
-  string manifest_yaml = 7;
-  reserved 6;
+  string manifest_yaml = 6;
 }
 
 // Installs one global identity spec, or replaces an unused existing spec.
@@ -25,17 +24,19 @@ message IdentitySpec {
 message AddIdentitySpecRequest {
   // Raw identity spec manifest YAML to validate and install.
   string manifest_yaml = 1;
-  // Setup input values owned by the installed identity spec. Secret values are
-  // persisted in Coral credential storage for later identity materialization.
-  repeated IdentitySpecInput inputs = 2;
+  // Setup input values owned by the installed identity spec. The server parses
+  // `manifest_yaml`, matches values by key to declared identity spec inputs,
+  // and uses the manifest-declared input kind to decide whether each value is
+  // secret material.
+  repeated IdentitySpecInputValue input_values = 2;
 }
 
 // One setup input value for an installed identity spec.
-message IdentitySpecInput {
-  // Declared identity spec input key.
+message IdentitySpecInputValue {
+  // Declared identity spec input key from AddIdentitySpecRequest.manifest_yaml.
   string key = 1;
-  // Input value. Secret values are only accepted on write requests and are not
-  // returned by identity spec read APIs.
+  // Input value. Callers do not classify values here; the identity spec
+  // manifest determines whether this value is stored as secret material.
   string value = 2;
 }
 
