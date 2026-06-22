@@ -64,32 +64,4 @@ impl FromStr for RecipeName {
 pub(crate) struct InstalledRecipe {
     /// Stable recipe name.
     pub(crate) name: RecipeName,
-    /// Where this installed recipe came from.
-    pub(crate) origin: RecipeOrigin,
-    /// Whether this recipe participates in query and MCP runtime assembly.
-    #[serde(default = "default_recipe_enabled")]
-    pub(crate) enabled: bool,
-}
-
-/// Where an installed recipe came from.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum RecipeOrigin {
-    /// A recipe shipped with a bundled source package.
-    Bundled,
-    /// A recipe installed by the user.
-    User,
-}
-
-impl RecipeOrigin {
-    pub(crate) fn as_config_value(self) -> &'static str {
-        match self {
-            Self::Bundled => "bundled",
-            Self::User => "user",
-        }
-    }
-}
-
-fn default_recipe_enabled() -> bool {
-    true
 }

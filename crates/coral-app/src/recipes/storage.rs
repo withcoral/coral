@@ -95,7 +95,7 @@ pub(crate) trait RecipeArtifactStore: Send + Sync {
         workspace_name: &WorkspaceName,
         recipe_name: &RecipeName,
         raw_yaml: &str,
-        runtime_metadata: Option<&[u8]>,
+        runtime_metadata: &[u8],
     ) -> Result<RecipeArtifactSnapshot, AppError>;
 
     fn remove_user_recipe_artifact(
@@ -142,7 +142,7 @@ impl FsRecipeArtifactStore {
         workspace_name: &WorkspaceName,
         recipe_name: &RecipeName,
         raw_yaml: &str,
-        runtime_metadata: Option<&[u8]>,
+        runtime_metadata: &[u8],
     ) -> Result<(), AppError> {
         let recipe_dir = self.layout.recipe_dir(workspace_name, recipe_name);
         let recipe_file = self.layout.recipe_file(workspace_name, recipe_name);
@@ -150,10 +150,7 @@ impl FsRecipeArtifactStore {
 
         fs::ensure_private_dir(&recipe_dir)?;
         fs::write_atomic(&recipe_file, raw_yaml.as_bytes())?;
-        match runtime_metadata {
-            Some(runtime_metadata) => fs::write_atomic(&runtime_file, runtime_metadata)?,
-            None => remove_file_if_present(&runtime_file)?,
-        }
+        fs::write_atomic(&runtime_file, runtime_metadata)?;
         Ok(())
     }
 }
@@ -189,7 +186,7 @@ impl RecipeArtifactStore for FsRecipeArtifactStore {
         workspace_name: &WorkspaceName,
         recipe_name: &RecipeName,
         raw_yaml: &str,
-        runtime_metadata: Option<&[u8]>,
+        runtime_metadata: &[u8],
     ) -> Result<RecipeArtifactSnapshot, AppError> {
         let previous = self.snapshot(workspace_name, recipe_name)?;
         if let Err(error) = self.write_user_recipe_artifact_inner(

@@ -3,9 +3,8 @@
 use coral_api::v1::recipe_service_server::RecipeService as RecipeServiceApi;
 use coral_api::v1::{
     AddRecipeRequest, AddRecipeResponse, ListRecipesRequest, ListRecipesResponse, Recipe,
-    RecipeArgument, RecipeOrigin as ProtoRecipeOrigin, RecipePublishedSurface, RecipeResultColumn,
-    RecipeTableFunctionPublish, RemoveRecipeRequest, RemoveRecipeResponse,
-    recipe_published_surface,
+    RecipeArgument, RecipePublish, RecipeResultColumn, RecipeTableFunctionPublish,
+    RemoveRecipeRequest, RemoveRecipeResponse,
 };
 use coral_engine::{RecipeRuntimeArgumentType, RecipeRuntimeDefinition, RecipeRuntimePublish};
 use tonic::{Request, Response, Status};
@@ -13,7 +12,7 @@ use tonic::{Request, Response, Status};
 use crate::bootstrap::app_status;
 use crate::query::manager::QueryManager;
 use crate::recipes::manager::{RecipeListing, RecipeManager};
-use crate::recipes::model::{RecipeName, RecipeOrigin};
+use crate::recipes::model::RecipeName;
 use crate::transport::{grpc_span, instrument_grpc, query_status, workspace_name_from_proto};
 
 #[derive(Clone)]
@@ -52,8 +51,6 @@ impl RecipeServiceApi for RecipeService {
                 .map_err(app_status)?;
             Ok(Response::new(AddRecipeResponse {
                 name: recipe.name.as_str().to_string(),
-                origin: proto_recipe_origin(recipe.origin) as i32,
-                enabled: recipe.enabled,
             }))
         })
         .await
@@ -99,18 +96,10 @@ impl RecipeServiceApi for RecipeService {
 }
 
 fn recipe_listing_to_proto(listing: RecipeListing) -> Recipe {
-    runtime_recipe_to_proto(
-        listing.definition,
-        proto_recipe_origin(listing.origin),
-        listing.enabled,
-    )
+    runtime_recipe_to_proto(listing.definition)
 }
 
-fn runtime_recipe_to_proto(
-    recipe: RecipeRuntimeDefinition,
-    origin: ProtoRecipeOrigin,
-    enabled: bool,
-) -> Recipe {
+fn runtime_recipe_to_proto(recipe: RecipeRuntimeDefinition) -> Recipe {
     Recipe {
         name: recipe.name,
         description: recipe.description,
@@ -124,7 +113,7 @@ fn runtime_recipe_to_proto(
                 description: argument.description,
             })
             .collect(),
-        publish: vec![recipe_publish_to_proto(recipe.publish)],
+        publish: Some(recipe_publish_to_proto(recipe.publish)),
         result_columns: recipe
             .result_columns
             .into_iter()
@@ -135,26 +124,16 @@ fn runtime_recipe_to_proto(
                 description: column.description,
             })
             .collect(),
-        origin: origin as i32,
-        enabled,
     }
 }
 
-fn recipe_publish_to_proto(publish: RecipeRuntimePublish) -> RecipePublishedSurface {
-    let target = recipe_published_surface::Target::TableFunction(RecipeTableFunctionPublish {
-        schema: publish.table_function.schema,
-        name: publish.table_function.name,
-        description: publish.table_function.description,
-    });
-    RecipePublishedSurface {
-        target: Some(target),
-    }
-}
-
-fn proto_recipe_origin(origin: RecipeOrigin) -> ProtoRecipeOrigin {
-    match origin {
-        RecipeOrigin::Bundled => ProtoRecipeOrigin::Bundled,
-        RecipeOrigin::User => ProtoRecipeOrigin::User,
+fn recipe_publish_to_proto(publish: RecipeRuntimePublish) -> RecipePublish {
+    RecipePublish {
+        table_function: Some(RecipeTableFunctionPublish {
+            schema: publish.table_function.schema,
+            name: publish.table_function.name,
+            description: publish.table_function.description,
+        }),
     }
 }
 
