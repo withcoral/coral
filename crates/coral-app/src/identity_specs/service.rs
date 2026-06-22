@@ -50,7 +50,7 @@ impl IdentitySpecServiceApi for IdentitySpecService {
                 .await
                 .map_err(authorization_status)?;
             let inputs = request
-                .inputs
+                .input_values
                 .into_iter()
                 .map(|input| IdentitySpecInputValue {
                     key: input.key,

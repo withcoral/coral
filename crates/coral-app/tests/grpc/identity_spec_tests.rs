@@ -1,8 +1,8 @@
 use std::fs;
 
 use coral_api::v1::{
-    AddIdentitySpecRequest, DeleteIdentitySpecRequest, GetIdentitySpecRequest, IdentitySpecInput,
-    ListIdentitySpecsRequest,
+    AddIdentitySpecRequest, DeleteIdentitySpecRequest, GetIdentitySpecRequest,
+    IdentitySpecInputValue, ListIdentitySpecsRequest,
 };
 use tempfile::TempDir;
 use tonic::Request;
@@ -25,7 +25,7 @@ async fn identity_spec_service_installs_lists_gets_and_deletes_spec() {
     let added = client
         .add_identity_spec(Request::new(AddIdentitySpecRequest {
             manifest_yaml: identity_spec_yaml(),
-            inputs: vec![IdentitySpecInput {
+            input_values: vec![IdentitySpecInputValue {
                 key: "DEMO_OAUTH_CLIENT_SECRET".to_string(),
                 value: "secret-value".to_string(),
             }],

@@ -1055,7 +1055,7 @@ issuer: github
 type: fixed_token
 "
                 .to_string(),
-                inputs: Vec::new(),
+                input_values: Vec::new(),
             }))
             .await
             .expect("process-local dsl_v4 override should enable identity spec API");
