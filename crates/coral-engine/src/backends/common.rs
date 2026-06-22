@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock};
 
 use crate::{
-    QueryRuntimeContext, QuerySource, RequestAuthenticator, RequestIdentityResolver,
+    BoundRequestIdentityHttpAuthenticator, QueryRuntimeContext, QuerySource, RequestAuthenticator,
     SourceInputResolver,
 };
 use async_trait::async_trait;
@@ -130,7 +130,8 @@ pub(crate) struct BackendCompileRequest<'a> {
     pub(crate) source_variables: BTreeMap<String, String>,
     pub(crate) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
     pub(crate) source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    pub(crate) request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
+    pub(crate) request_identity_http_authenticators:
+        &'a HashMap<(String, String), BoundRequestIdentityHttpAuthenticator>,
 }
 
 /// Shared resources available while registering one batch of compiled sources.

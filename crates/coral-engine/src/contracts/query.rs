@@ -16,7 +16,10 @@ use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
 use opentelemetry::Context as OtelContext;
 
 use super::ColumnInfo;
-use crate::{EngineExtensions, RequestIdentityResolutionContext, RequestIdentityResolver};
+use crate::{
+    EngineExtensions, RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
+    RequestIdentitySelector,
+};
 
 /// One managed source selected into the current query runtime.
 #[derive(Debug, Clone)]
@@ -59,12 +62,16 @@ pub enum RuntimeSourceComponent {
     Mcp(McpSourceManifest),
 }
 
-/// Backend-ready HTTP component plus optional app-owned runtime metadata.
+/// Backend-ready HTTP component shared by v3 manifests and app-assembled v4 surfaces.
+///
+/// v3 sources normalize their validated HTTP manifest into this component
+/// without identity requirements. v4 OpenAPI surfaces synthesize an HTTP
+/// runtime manifest and may attach the authored surface identity requirements.
 #[derive(Debug, Clone)]
 pub struct RuntimeHttpSourceComponent {
     /// HTTP runtime manifest executed by the engine.
     pub manifest: HttpSourceManifest,
-    /// Request identity requirements associated with this component.
+    /// DSL v4 request identity requirements associated with this component.
     pub identity_requirements: Option<RuntimeIdentityRequirements>,
 }
 
@@ -103,15 +110,15 @@ impl RuntimeHttpSourceComponent {
         }
     }
 
-    /// Builds the request-time identity-resolution context for this component,
+    /// Builds the runtime-build identity-selection context for this component,
     /// or `None` when the component declares no identity requirements.
     #[must_use]
-    pub fn identity_resolution_context(
+    pub fn identity_selection_context(
         &self,
         source_name: impl Into<Arc<str>>,
-    ) -> Option<RequestIdentityResolutionContext> {
+    ) -> Option<RequestIdentitySelectionContext> {
         self.identity_requirements.as_ref().map(|identity| {
-            RequestIdentityResolutionContext::new(
+            RequestIdentitySelectionContext::new(
                 source_name,
                 identity.surface_id.clone(),
                 identity.requirements.clone(),
@@ -442,8 +449,11 @@ pub struct QueryRuntimeConfig {
     pub extensions: EngineExtensions,
     /// Engine-wide query memory policy.
     pub memory: QueryMemoryConfig,
-    /// Request-time resolver for app-selected source identities.
-    pub request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
+    /// Runtime-build selector for app-owned request identities.
+    pub request_identity_selector: Option<Arc<dyn RequestIdentitySelector>>,
+    /// Factory that binds selected identities to request-time HTTP authenticators.
+    pub request_identity_http_authenticator_factory:
+        Option<RequestIdentityHttpAuthenticatorFactory>,
     /// Runtime policy for dependent predicate pushdown.
     pub dependent_join: DependentJoinConfig,
 }
@@ -456,18 +466,29 @@ impl QueryRuntimeConfig {
             context,
             extensions,
             memory: QueryMemoryConfig::default(),
-            request_identity_resolver: None,
+            request_identity_selector: None,
+            request_identity_http_authenticator_factory: None,
             dependent_join: DependentJoinConfig::default(),
         }
     }
 
-    /// Installs an app-selected request identity resolver for this runtime.
+    /// Installs the request identity selector for this runtime.
     #[must_use]
-    pub fn with_request_identity_resolver(
+    pub fn with_request_identity_selector(
         mut self,
-        resolver: Option<Arc<dyn RequestIdentityResolver>>,
+        selector: Option<Arc<dyn RequestIdentitySelector>>,
     ) -> Self {
-        self.request_identity_resolver = resolver;
+        self.request_identity_selector = selector;
+        self
+    }
+
+    /// Installs the request identity HTTP-authenticator factory for this runtime.
+    #[must_use]
+    pub fn with_request_identity_http_authenticator_factory(
+        mut self,
+        factory: Option<RequestIdentityHttpAuthenticatorFactory>,
+    ) -> Self {
+        self.request_identity_http_authenticator_factory = factory;
         self
     }
 }

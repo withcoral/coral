@@ -12,8 +12,8 @@ use crate::backends::mcp::McpProviderQueryError;
 use crate::contracts::{ColumnParts, StructuredQueryError, TableRefParts};
 use crate::runtime::dependent_join::error::DependentJoinError;
 use crate::{
-    CoreError, QueryResultObserverError, RequestIdentityResolverError, SourceDecoratorError,
-    SourceInputResolverError, TableInfo,
+    CoreError, QueryResultObserverError, RequestIdentityHttpAuthenticatorError,
+    RequestIdentitySelectionError, SourceDecoratorError, SourceInputResolverError, TableInfo,
 };
 
 const DATAFUSION_DEFAULT_CATALOG: &str = "datafusion";
@@ -62,8 +62,13 @@ pub(crate) fn datafusion_to_core_with_sql_and_table_functions(
             if let Some(source_input_error) = inner.downcast_ref::<SourceInputResolverError>() {
                 return source_input_resolver_error_to_core(source_input_error);
             }
-            if let Some(identity_error) = inner.downcast_ref::<RequestIdentityResolverError>() {
-                return request_identity_resolver_error_to_core(identity_error);
+            if let Some(identity_error) = inner.downcast_ref::<RequestIdentitySelectionError>() {
+                return request_identity_selection_error_to_core(identity_error);
+            }
+            if let Some(identity_error) =
+                inner.downcast_ref::<RequestIdentityHttpAuthenticatorError>()
+            {
+                return request_identity_http_authenticator_error_to_core(identity_error);
             }
             if let Some(dependent_join_error) = inner.downcast_ref::<DependentJoinError>() {
                 return dependent_join_error.to_core_error();
@@ -103,12 +108,27 @@ fn source_input_resolver_error_to_core(error: &SourceInputResolverError) -> Core
     }
 }
 
-fn request_identity_resolver_error_to_core(error: &RequestIdentityResolverError) -> CoreError {
+pub(crate) fn request_identity_selection_error_to_core(
+    error: &RequestIdentitySelectionError,
+) -> CoreError {
     match error {
-        RequestIdentityResolverError::InvalidInput(detail) => {
+        RequestIdentitySelectionError::InvalidInput(detail) => {
             CoreError::InvalidInput(detail.clone())
         }
-        RequestIdentityResolverError::FailedPrecondition(detail) => {
+        RequestIdentitySelectionError::FailedPrecondition(detail) => {
+            CoreError::FailedPrecondition(detail.clone())
+        }
+    }
+}
+
+fn request_identity_http_authenticator_error_to_core(
+    error: &RequestIdentityHttpAuthenticatorError,
+) -> CoreError {
+    match error {
+        RequestIdentityHttpAuthenticatorError::InvalidInput(detail) => {
+            CoreError::InvalidInput(detail.clone())
+        }
+        RequestIdentityHttpAuthenticatorError::FailedPrecondition(detail) => {
             CoreError::FailedPrecondition(detail.clone())
         }
     }

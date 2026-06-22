@@ -19,8 +19,8 @@ use crate::backends::{
     validate_lookup_key_filter_backend_support,
 };
 use crate::{
-    RequestAuthenticator, RequestIdentityResolutionContext, RequestIdentityResolver,
-    SourceInputResolutionContext, SourceInputResolver,
+    BoundRequestIdentityHttpAuthenticator, RequestAuthenticator, SourceInputResolutionContext,
+    SourceInputResolver,
 };
 use coral_spec::SourceBackend;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
@@ -47,7 +47,7 @@ pub(crate) use client::{HttpSourceClient, HttpSourceClientRuntime};
 pub(crate) use error::ProviderQueryError;
 pub(crate) use provider::HttpSourceTableProvider;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct HttpCompiledSource {
     manifest: HttpSourceManifest,
     source_input_resolution: SourceInputResolutionContext,
@@ -55,17 +55,15 @@ struct HttpCompiledSource {
     body_capture_max_bytes: Option<usize>,
     trace_context: Option<opentelemetry::Context>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    identity_context: Option<RequestIdentityResolutionContext>,
-    request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
+    request_identity_http_authenticator: Option<BoundRequestIdentityHttpAuthenticator>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct HttpCompileRuntime {
     pub(crate) body_capture_max_bytes: Option<usize>,
     pub(crate) trace_context: Option<opentelemetry::Context>,
     pub(crate) source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    pub(crate) identity_context: Option<RequestIdentityResolutionContext>,
-    pub(crate) request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
+    pub(crate) request_identity_http_authenticator: Option<BoundRequestIdentityHttpAuthenticator>,
 }
 
 pub(crate) fn compile_source(
@@ -81,8 +79,7 @@ pub(crate) fn compile_source(
         body_capture_max_bytes: runtime.body_capture_max_bytes,
         trace_context: runtime.trace_context,
         source_input_resolver: runtime.source_input_resolver,
-        identity_context: runtime.identity_context,
-        request_identity_resolver: runtime.request_identity_resolver,
+        request_identity_http_authenticator: runtime.request_identity_http_authenticator,
     })
 }
 
@@ -99,8 +96,7 @@ pub(crate) fn compile_manifest(
             body_capture_max_bytes: request.runtime_context.body_capture_max_bytes,
             trace_context: request.runtime_context.trace_context.clone(),
             source_input_resolver: request.source_input_resolver.clone(),
-            identity_context: None,
-            request_identity_resolver: request.request_identity_resolver.clone(),
+            request_identity_http_authenticator: None,
         },
     )
 }
@@ -136,8 +132,7 @@ impl CompiledBackendSource for HttpCompiledSource {
         let runtime = HttpSourceClientRuntime::new(
             self.source_input_resolution.clone(),
             self.source_input_resolver.clone(),
-            self.identity_context.clone(),
-            self.request_identity_resolver.clone(),
+            self.request_identity_http_authenticator.clone(),
             self.body_capture_max_bytes,
             self.trace_context.clone(),
             http,

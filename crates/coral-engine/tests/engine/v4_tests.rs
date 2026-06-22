@@ -2,9 +2,13 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use coral_engine::{
-    CoralQuery, CoreError, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    RequestIdentityResolutionContext, RequestIdentityResolver, RequestIdentityResolverError,
+    BoundRequestIdentityHttpAuthenticator, CoralQuery, CoreError, EngineExtensions,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RequestAuthenticator,
+    RequestAuthenticatorError, RequestIdentityHttpAuthenticator,
+    RequestIdentityHttpAuthenticatorError, RequestIdentityHttpAuthenticatorFactory,
+    RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
     RuntimeHttpSourceComponent, RuntimeSourceComponent, RuntimeSourcePackage,
+    SelectedRequestIdentity,
 };
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::parse_source_manifest_yaml;
@@ -67,34 +71,94 @@ async fn v4_openapi_projection_executes_generated_table() {
     );
 }
 
+#[derive(Debug)]
+struct DisallowedV4RequestAuthenticator;
+
+impl RequestAuthenticator for DisallowedV4RequestAuthenticator {
+    fn name(&self) -> &'static str {
+        "test_signer"
+    }
+
+    fn authenticate(
+        &self,
+        _auth: &coral_spec::CustomAuthSpec,
+        _request: &reqwest::Request,
+        _resolved_inputs: &BTreeMap<String, String>,
+    ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestAuthenticatorError> {
+        Ok(Vec::new())
+    }
+}
+
+fn runtime_with_request_authenticator() -> QueryRuntimeConfig {
+    let mut extensions = EngineExtensions::default();
+    extensions.request_authenticators.insert(
+        "test_signer".to_string(),
+        Arc::new(DisallowedV4RequestAuthenticator),
+    );
+    QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions)
+}
+
+#[tokio::test]
+async fn v4_openapi_projection_does_not_receive_request_authenticators() {
+    let source = github_v4_source(
+        "http://127.0.0.1:1",
+        "    auth:\n      type: CustomAuth\n      authenticator: test_signer\n",
+    );
+
+    let error = CoralQuery::test_source(&source, runtime_with_request_authenticator())
+        .await
+        .expect_err("v4 surfaces should not use request_authenticators");
+
+    assert!(
+        matches!(error, CoreError::FailedPrecondition(_)),
+        "expected failed precondition, got {error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("custom authenticator 'test_signer' is not registered"),
+        "unexpected error: {error}"
+    );
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ObservedIdentityResolution {
+struct ObservedIdentitySelection {
     source_name: String,
     surface_id: String,
     requirement_id: String,
-    api_base: String,
-    request_path: String,
     accepts_candidate: bool,
 }
 
-type ObservedCell = Arc<Mutex<Option<ObservedIdentityResolution>>>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ObservedIdentityAuthentication {
+    identity_id: String,
+    identity_spec_id: String,
+    api_base: String,
+    request_path: String,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ObservedIdentityEvents {
+    selections: Vec<ObservedIdentitySelection>,
+    authentications: Vec<ObservedIdentityAuthentication>,
+}
+
+type ObservedCell = Arc<Mutex<ObservedIdentityEvents>>;
 
 #[derive(Debug)]
-struct RecordingIdentityResolver {
+struct RecordingIdentitySelector {
     observed: ObservedCell,
-    header_name: HeaderName,
+    identity_spec_id: String,
+    audience: BTreeMap<String, Value>,
 }
 
 #[async_trait::async_trait]
-impl RequestIdentityResolver for RecordingIdentityResolver {
-    async fn resolve_identity_headers(
+impl RequestIdentitySelector for RecordingIdentitySelector {
+    async fn select_identity(
         &self,
-        identity: &RequestIdentityResolutionContext,
-        request: &reqwest::Request,
-        resolved_inputs: &BTreeMap<String, String>,
-    ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestIdentityResolverError> {
-        let audience = BTreeMap::from([("host".to_string(), json!("github.com"))]);
-        let accepts_candidate = identity.accepts_identity("github_oauth", &audience);
+        identity: &RequestIdentitySelectionContext,
+    ) -> Result<SelectedRequestIdentity, RequestIdentitySelectionError> {
+        let accepts_candidate = identity.accepts_identity(&self.identity_spec_id, &self.audience);
         let requirement_id = identity
             .identity_requirements()
             .accepts
@@ -102,17 +166,51 @@ impl RequestIdentityResolver for RecordingIdentityResolver {
             .expect("accepted identity requirement")
             .id
             .clone();
-        *self.observed.lock().expect("observed identity lock") = Some(ObservedIdentityResolution {
-            source_name: identity.source_name().to_string(),
-            surface_id: identity.surface_id().to_string(),
-            requirement_id,
-            api_base: resolved_inputs
-                .get("API_BASE")
-                .expect("resolved API_BASE")
-                .clone(),
-            request_path: request.url().path().to_string(),
-            accepts_candidate,
-        });
+        self.observed
+            .lock()
+            .expect("observed identity lock")
+            .selections
+            .push(ObservedIdentitySelection {
+                source_name: identity.source_name().to_string(),
+                surface_id: identity.surface_id().to_string(),
+                requirement_id,
+                accepts_candidate,
+            });
+        Ok(SelectedRequestIdentity::new(
+            "github-member",
+            self.identity_spec_id.clone(),
+            self.audience.clone(),
+        ))
+    }
+}
+
+#[derive(Debug)]
+struct RecordingIdentityHttpAuthenticator {
+    observed: ObservedCell,
+    header_name: HeaderName,
+}
+
+#[async_trait::async_trait]
+impl RequestIdentityHttpAuthenticator for RecordingIdentityHttpAuthenticator {
+    async fn authenticate_identity_request(
+        &self,
+        identity: &SelectedRequestIdentity,
+        request: &reqwest::Request,
+        resolved_inputs: &BTreeMap<String, String>,
+    ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestIdentityHttpAuthenticatorError> {
+        self.observed
+            .lock()
+            .expect("observed identity lock")
+            .authentications
+            .push(ObservedIdentityAuthentication {
+                identity_id: identity.identity_id().to_string(),
+                identity_spec_id: identity.identity_spec_id().to_string(),
+                api_base: resolved_inputs
+                    .get("API_BASE")
+                    .expect("resolved API_BASE")
+                    .clone(),
+                request_path: request.url().path().to_string(),
+            });
         Ok(vec![(
             self.header_name.clone(),
             HeaderValue::from_static("member-token"),
@@ -120,17 +218,87 @@ impl RequestIdentityResolver for RecordingIdentityResolver {
     }
 }
 
-/// Engine runtime with a [`RecordingIdentityResolver`] writing into `observed`.
+/// Engine runtime with recording selector/authenticator writing into `observed`.
 fn recording_identity_runtime(observed: &ObservedCell) -> QueryRuntimeConfig {
-    QueryRuntimeConfig::new(QueryRuntimeContext::default(), EngineExtensions::default())
-        .with_request_identity_resolver(Some(Arc::new(RecordingIdentityResolver {
+    recording_identity_runtime_with_spec(observed, "github_oauth")
+}
+
+fn recording_identity_runtime_with_spec(
+    observed: &ObservedCell,
+    identity_spec_id: &str,
+) -> QueryRuntimeConfig {
+    let selector: Arc<dyn RequestIdentitySelector> = Arc::new(RecordingIdentitySelector {
+        observed: Arc::clone(observed),
+        identity_spec_id: identity_spec_id.to_string(),
+        audience: BTreeMap::from([("host".to_string(), json!("github.com"))]),
+    });
+    let http_authenticator: Arc<dyn RequestIdentityHttpAuthenticator> =
+        Arc::new(RecordingIdentityHttpAuthenticator {
             observed: Arc::clone(observed),
             header_name: HeaderName::from_static("x-coral-identity"),
-        })))
+        });
+    let factory: RequestIdentityHttpAuthenticatorFactory = Arc::new(move |selected| {
+        let http_authenticator = Arc::clone(&http_authenticator);
+        let bound: BoundRequestIdentityHttpAuthenticator = Arc::new(
+            move |request: &reqwest::Request, resolved_inputs: &BTreeMap<String, String>| {
+                let http_authenticator = Arc::clone(&http_authenticator);
+                let selected = selected.clone();
+                Box::pin(async move {
+                    http_authenticator
+                        .authenticate_identity_request(&selected, request, resolved_inputs)
+                        .await
+                })
+            },
+        );
+        Ok(bound)
+    });
+
+    QueryRuntimeConfig::new(QueryRuntimeContext::default(), EngineExtensions::default())
+        .with_request_identity_selector(Some(selector))
+        .with_request_identity_http_authenticator_factory(Some(factory))
+}
+
+fn identity_events() -> ObservedCell {
+    Arc::new(Mutex::new(ObservedIdentityEvents::default()))
+}
+
+fn selection_only_runtime(observed: &ObservedCell) -> QueryRuntimeConfig {
+    let selector: Arc<dyn RequestIdentitySelector> = Arc::new(RecordingIdentitySelector {
+        observed: Arc::clone(observed),
+        identity_spec_id: "github_oauth".to_string(),
+        audience: BTreeMap::from([("host".to_string(), json!("github.com"))]),
+    });
+    QueryRuntimeConfig::new(QueryRuntimeContext::default(), EngineExtensions::default())
+        .with_request_identity_selector(Some(selector))
 }
 
 #[tokio::test]
-async fn v4_identity_requirements_call_resolver_and_inject_headers() {
+async fn v4_identity_requirements_select_identity_during_runtime_build() {
+    let observed = identity_events();
+    let runtime = recording_identity_runtime(&observed);
+    let source = github_v4_source("http://127.0.0.1:1", identity_requirements_yaml());
+
+    let tables = CoralQuery::list_tables(&[source], runtime, Some("github_v4"), None)
+        .await
+        .expect("identity-backed catalog should build");
+
+    assert_eq!(tables.len(), 1);
+    assert_eq!(
+        *observed.lock().expect("observed identity lock"),
+        ObservedIdentityEvents {
+            selections: vec![ObservedIdentitySelection {
+                source_name: "github_v4".to_string(),
+                surface_id: "rest".to_string(),
+                requirement_id: "github-rest-read".to_string(),
+                accepts_candidate: true,
+            }],
+            authentications: Vec::new(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn v4_identity_requirements_select_identity_and_inject_headers() {
     let server = MockServer::start().await;
     mount_issues_endpoint(
         &server,
@@ -138,7 +306,7 @@ async fn v4_identity_requirements_call_resolver_and_inject_headers() {
         issue_json(7, 99, "Identity routed"),
     )
     .await;
-    let observed: ObservedCell = Arc::new(Mutex::new(None));
+    let observed = identity_events();
     let runtime = recording_identity_runtime(&observed);
     let source = github_v4_source(&server.uri(), identity_requirements_yaml());
 
@@ -154,19 +322,25 @@ async fn v4_identity_requirements_call_resolver_and_inject_headers() {
     );
     assert_eq!(
         *observed.lock().expect("observed identity lock"),
-        Some(ObservedIdentityResolution {
-            source_name: "github_v4".to_string(),
-            surface_id: "rest".to_string(),
-            requirement_id: "github-rest-read".to_string(),
-            api_base: server.uri(),
-            request_path: "/repos/octocat/Hello-World/issues".to_string(),
-            accepts_candidate: true,
-        })
+        ObservedIdentityEvents {
+            selections: vec![ObservedIdentitySelection {
+                source_name: "github_v4".to_string(),
+                surface_id: "rest".to_string(),
+                requirement_id: "github-rest-read".to_string(),
+                accepts_candidate: true,
+            }],
+            authentications: vec![ObservedIdentityAuthentication {
+                identity_id: "github-member".to_string(),
+                identity_spec_id: "github_oauth".to_string(),
+                api_base: server.uri(),
+                request_path: "/repos/octocat/Hello-World/issues".to_string(),
+            }],
+        }
     );
 }
 
 #[tokio::test]
-async fn v4_identity_requirements_fail_closed_without_resolver() {
+async fn v4_identity_requirements_fail_closed_without_selector() {
     let source = github_v4_source("http://127.0.0.1:1", identity_requirements_yaml());
 
     let error = CoralQuery::execute_sql(&[source], test_runtime(), github_issues_sql())
@@ -179,15 +353,77 @@ async fn v4_identity_requirements_fail_closed_without_resolver() {
     );
     assert!(
         error.to_string().contains(
-            "declares identity_requirements but no request identity resolver is installed"
+            "declares identity_requirements but no request identity selector is installed"
         ),
         "unexpected error: {error}"
     );
 }
 
 #[tokio::test]
-async fn v4_identity_resolver_cannot_overwrite_existing_headers() {
-    let runtime = recording_identity_runtime(&Arc::new(Mutex::new(None)));
+async fn v4_identity_requirements_fail_closed_without_http_authenticator_factory() {
+    let observed = identity_events();
+    let runtime = selection_only_runtime(&observed);
+    let source = github_v4_source("http://127.0.0.1:1", identity_requirements_yaml());
+
+    let error = CoralQuery::execute_sql(&[source], runtime, github_issues_sql())
+        .await
+        .expect_err("identity-backed query without HTTP authenticator factory should fail");
+
+    assert!(
+        matches!(error, CoreError::FailedPrecondition(_)),
+        "expected failed precondition, got {error:?}"
+    );
+    assert!(
+        error.to_string().contains(
+            "declares identity_requirements but no request identity HTTP authenticator factory is installed"
+        ),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        observed
+            .lock()
+            .expect("observed identity lock")
+            .selections
+            .len(),
+        0,
+        "factory availability should be checked before selection"
+    );
+}
+
+#[tokio::test]
+async fn v4_identity_requirements_reject_unaccepted_selected_identity() {
+    let observed = identity_events();
+    let runtime = recording_identity_runtime_with_spec(&observed, "gitlab_oauth");
+    let source = github_v4_source("http://127.0.0.1:1", identity_requirements_yaml());
+
+    let error = CoralQuery::execute_sql(&[source], runtime, github_issues_sql())
+        .await
+        .expect_err("unaccepted selected identity should fail before HTTP execution");
+
+    assert!(
+        matches!(error, CoreError::FailedPrecondition(_)),
+        "expected failed precondition, got {error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("does not satisfy identity_requirements"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        observed
+            .lock()
+            .expect("observed identity lock")
+            .authentications
+            .len(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn v4_identity_http_authenticator_cannot_overwrite_existing_headers() {
+    let observed = identity_events();
+    let runtime = recording_identity_runtime(&observed);
     let source = github_v4_source(
         "http://127.0.0.1:1",
         &format!(
@@ -198,12 +434,12 @@ async fn v4_identity_resolver_cannot_overwrite_existing_headers() {
 
     let error = CoralQuery::execute_sql(&[source], runtime, github_issues_sql())
         .await
-        .expect_err("identity resolver should not overwrite existing header");
+        .expect_err("identity HTTP authenticator should not overwrite existing header");
 
     assert!(
-        error
-            .to_string()
-            .contains("request identity resolver attempted to overwrite header 'x-coral-identity'"),
+        error.to_string().contains(
+            "request identity HTTP authenticator attempted to overwrite header 'x-coral-identity'"
+        ),
         "unexpected error: {error}"
     );
 }

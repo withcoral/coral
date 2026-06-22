@@ -31,10 +31,13 @@ use crate::runtime::registry::{
 };
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
-    CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, MemorySize, QueryExecution,
-    QueryMemoryConfig, QueryPlan, QueryResultObserver, QueryResultObserverError,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RequestAuthenticator,
-    RequestIdentityResolver, SourceDecorator, SourceInputResolver, TableFunctionInfo, TableInfo,
+    BoundRequestIdentityHttpAuthenticator, CatalogInfo, CoreError, DependentJoinConfig,
+    DescribeTableInfo, MemorySize, QueryExecution, QueryMemoryConfig, QueryPlan,
+    QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext,
+    QuerySource, RequestAuthenticator, RequestIdentityHttpAuthenticatorError,
+    RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
+    RequestIdentitySelectionError, RequestIdentitySelector, SelectedRequestIdentity,
+    SourceDecorator, SourceInputResolver, TableFunctionInfo, TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -46,6 +49,10 @@ pub(crate) struct QueryRuntimeAdapter {
     failures: Vec<SourceRegistrationFailure>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
 }
+
+type RequestIdentitySurfaceKey = (String, String);
+type BoundRequestIdentityHttpAuthenticators =
+    HashMap<RequestIdentitySurfaceKey, BoundRequestIdentityHttpAuthenticator>;
 
 struct FallbackRuntime {
     config: FallbackRuntimeConfig,
@@ -60,7 +67,7 @@ struct FallbackRuntimeConfig {
     memory: QueryMemoryConfig,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
+    request_identity_http_authenticators: BoundRequestIdentityHttpAuthenticators,
 }
 
 struct RegisteredRuntime {
@@ -75,7 +82,7 @@ struct RegisteredRuntimeBuildConfig<'a> {
     runtime_context: &'a QueryRuntimeContext,
     request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
+    request_identity_http_authenticators: &'a BoundRequestIdentityHttpAuthenticators,
     source_decorators: &'a mut [Box<dyn SourceDecorator>],
     dependent_join: &'a DependentJoinConfig,
     memory: &'a QueryMemoryConfig,
@@ -104,10 +111,17 @@ async fn build_runtime_inner(
         memory,
         dependent_join,
         mut extensions,
-        request_identity_resolver,
+        request_identity_selector,
+        request_identity_http_authenticator_factory,
     } = runtime;
     let request_authenticators = extensions.request_authenticators.clone();
     let source_input_resolver = extensions.source_input_resolver.clone();
+    let request_identity_http_authenticators = bind_request_identity_http_authenticators(
+        sources,
+        request_identity_selector,
+        request_identity_http_authenticator_factory,
+    )
+    .await?;
     // Resolver-row overflow can retry without the dependent-join optimizer only
     // when runtime registration is replayable. Source decorators are mutable
     // one-shot registration hooks today, so decorated runtimes keep resolver-row
@@ -123,7 +137,7 @@ async fn build_runtime_inner(
             memory: memory.clone(),
             request_authenticators: request_authenticators.clone(),
             source_input_resolver: source_input_resolver.clone(),
-            request_identity_resolver: request_identity_resolver.clone(),
+            request_identity_http_authenticators: request_identity_http_authenticators.clone(),
         })
     });
 
@@ -132,7 +146,7 @@ async fn build_runtime_inner(
         runtime_context: &runtime_context,
         request_authenticators: &request_authenticators,
         source_input_resolver,
-        request_identity_resolver,
+        request_identity_http_authenticators: &request_identity_http_authenticators,
         source_decorators: extensions.source_decorators.as_mut_slice(),
         dependent_join: &dependent_join,
         memory: &memory,
@@ -150,6 +164,108 @@ async fn build_runtime_inner(
     })
 }
 
+async fn bind_request_identity_http_authenticators(
+    sources: &[QuerySource],
+    request_identity_selector: Option<Arc<dyn RequestIdentitySelector>>,
+    request_identity_http_authenticator_factory: Option<RequestIdentityHttpAuthenticatorFactory>,
+) -> Result<BoundRequestIdentityHttpAuthenticators, CoreError> {
+    let mut authenticators = HashMap::new();
+    for source in sources {
+        for component in source.components() {
+            let crate::RuntimeSourceComponent::Http(component) = component else {
+                continue;
+            };
+            let Some(context) = component.identity_selection_context(source.source_name()) else {
+                continue;
+            };
+            let selector = request_identity_selector.as_ref().ok_or_else(|| {
+                CoreError::FailedPrecondition(format!(
+                    "source '{}' surface '{}' declares identity_requirements but no request identity selector is installed",
+                    context.source_name(),
+                    context.surface_id()
+                ))
+            })?;
+            let factory = request_identity_http_authenticator_factory
+                .as_ref()
+                .ok_or_else(|| {
+                    CoreError::FailedPrecondition(format!(
+                        "source '{}' surface '{}' declares identity_requirements but no request identity HTTP authenticator factory is installed",
+                        context.source_name(),
+                        context.surface_id()
+                    ))
+                })?;
+            let selected = selector
+                .select_identity(&context)
+                .await
+                .map_err(|error| request_identity_selection_error(&context, &error))?;
+            validate_selected_identity(&context, &selected)?;
+            let authenticator = factory(selected.clone()).map_err(|error| {
+                request_identity_http_authenticator_factory_error(&context, &selected, &error)
+            })?;
+            authenticators.insert(
+                (
+                    context.source_name().to_string(),
+                    context.surface_id().to_string(),
+                ),
+                authenticator,
+            );
+        }
+    }
+    Ok(authenticators)
+}
+
+fn validate_selected_identity(
+    context: &RequestIdentitySelectionContext,
+    selected: &SelectedRequestIdentity,
+) -> Result<(), CoreError> {
+    if context.accepts_identity(selected.identity_spec_id(), selected.audience()) {
+        return Ok(());
+    }
+    Err(CoreError::FailedPrecondition(format!(
+        "request identity selector selected identity '{}' with spec '{}' that does not satisfy identity_requirements for source '{}' surface '{}'",
+        selected.identity_id(),
+        selected.identity_spec_id(),
+        context.source_name(),
+        context.surface_id()
+    )))
+}
+
+fn request_identity_selection_error(
+    context: &RequestIdentitySelectionContext,
+    error: &RequestIdentitySelectionError,
+) -> CoreError {
+    let detail = format!(
+        "request identity selector failed for source '{}' surface '{}': {error}",
+        context.source_name(),
+        context.surface_id()
+    );
+    match error {
+        RequestIdentitySelectionError::InvalidInput(_) => CoreError::InvalidInput(detail),
+        RequestIdentitySelectionError::FailedPrecondition(_) => {
+            CoreError::FailedPrecondition(detail)
+        }
+    }
+}
+
+fn request_identity_http_authenticator_factory_error(
+    context: &RequestIdentitySelectionContext,
+    selected: &SelectedRequestIdentity,
+    error: &RequestIdentityHttpAuthenticatorError,
+) -> CoreError {
+    let detail = format!(
+        "request identity HTTP authenticator factory failed for selected identity '{}' on source '{}' surface '{}': {error}",
+        selected.identity_id(),
+        context.source_name(),
+        context.surface_id()
+    );
+    match error {
+        RequestIdentityHttpAuthenticatorError::InvalidInput(_) => CoreError::InvalidInput(detail),
+        RequestIdentityHttpAuthenticatorError::FailedPrecondition(_) => {
+            CoreError::FailedPrecondition(detail)
+        }
+    }
+}
+
 async fn build_registered_runtime(
     config: RegisteredRuntimeBuildConfig<'_>,
 ) -> Result<RegisteredRuntime, CoreError> {
@@ -160,7 +276,7 @@ async fn build_registered_runtime(
         config.runtime_context,
         config.request_authenticators,
         config.source_input_resolver,
-        config.request_identity_resolver,
+        config.request_identity_http_authenticators,
         config.source_decorators,
     )
     .await?;
@@ -249,7 +365,7 @@ async fn register_runtime_sources(
     runtime_context: &QueryRuntimeContext,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
+    request_identity_http_authenticators: &BoundRequestIdentityHttpAuthenticators,
     source_decorators: &mut [Box<dyn SourceDecorator>],
 ) -> Result<crate::runtime::registry::SourceRegistrationResult, CoreError> {
     let mut source_candidates = Vec::new();
@@ -259,7 +375,7 @@ async fn register_runtime_sources(
             runtime_context,
             request_authenticators,
             source_input_resolver.clone(),
-            request_identity_resolver.clone(),
+            request_identity_http_authenticators,
         ) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(
@@ -563,7 +679,7 @@ impl FallbackRuntimeConfig {
             runtime_context: &self.runtime_context,
             request_authenticators: &self.request_authenticators,
             source_input_resolver: self.source_input_resolver.clone(),
-            request_identity_resolver: self.request_identity_resolver.clone(),
+            request_identity_http_authenticators: &self.request_identity_http_authenticators,
             source_decorators: source_decorators.as_mut_slice(),
             dependent_join: &dependent_join,
             memory: &self.memory,
@@ -715,7 +831,7 @@ mod tests {
             },
             request_authenticators: HashMap::new(),
             source_input_resolver: None,
-            request_identity_resolver: None,
+            request_identity_http_authenticators: HashMap::new(),
         };
 
         let runtime = fallback

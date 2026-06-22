@@ -7,6 +7,7 @@ use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::datasource::TableProvider;
+use futures::future::BoxFuture;
 use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::Value;
 
@@ -179,17 +180,17 @@ impl SourceInputResolutionContext {
     }
 }
 
-/// Request-time identity-resolution context exposed to request identity resolvers.
+/// Runtime-build identity-selection context exposed to request identity selectors.
 #[derive(Debug, Clone)]
-pub struct RequestIdentityResolutionContext {
+pub struct RequestIdentitySelectionContext {
     source_name: Arc<str>,
     surface_id: Arc<str>,
     identity_requirements: Arc<IdentityRequirements>,
 }
 
-impl RequestIdentityResolutionContext {
+impl RequestIdentitySelectionContext {
     #[must_use]
-    /// Builds identity-resolution context for one executable source surface.
+    /// Builds identity-selection context for one executable source surface.
     pub fn new(
         source_name: impl Into<Arc<str>>,
         surface_id: impl Into<Arc<str>>,
@@ -254,6 +255,48 @@ impl RequestIdentityResolutionContext {
     }
 }
 
+/// App-selected request identity for one executable source surface.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedRequestIdentity {
+    identity_id: Arc<str>,
+    identity_spec_id: Arc<str>,
+    audience: Arc<BTreeMap<String, Value>>,
+}
+
+impl SelectedRequestIdentity {
+    #[must_use]
+    /// Builds one selected request identity.
+    pub fn new(
+        identity_id: impl Into<Arc<str>>,
+        identity_spec_id: impl Into<Arc<str>>,
+        audience: BTreeMap<String, Value>,
+    ) -> Self {
+        Self {
+            identity_id: identity_id.into(),
+            identity_spec_id: identity_spec_id.into(),
+            audience: Arc::new(audience),
+        }
+    }
+
+    #[must_use]
+    /// Returns the opaque app-owned identity handle.
+    pub fn identity_id(&self) -> &str {
+        &self.identity_id
+    }
+
+    #[must_use]
+    /// Returns the installed identity spec id for this selected identity.
+    pub fn identity_spec_id(&self) -> &str {
+        &self.identity_spec_id
+    }
+
+    #[must_use]
+    /// Returns the selected identity audience metadata.
+    pub fn audience(&self) -> &BTreeMap<String, Value> {
+        &self.audience
+    }
+}
+
 /// Request-time HTTP authenticator registered through engine extensions.
 pub trait RequestAuthenticator: Send + Sync + std::fmt::Debug {
     /// Stable authenticator name used in diagnostics and manifest dispatch.
@@ -288,28 +331,68 @@ pub trait RequestAuthenticator: Send + Sync + std::fmt::Debug {
 }
 
 extension_error!(
-    /// Neutral error type for request identity-resolution failures.
-    RequestIdentityResolverError
+    /// Neutral error type for request identity-selection failures.
+    RequestIdentitySelectionError
 );
 
-/// Request-time resolver for app-managed identities.
+extension_error!(
+    /// Neutral error type for request identity HTTP-authentication failures.
+    RequestIdentityHttpAuthenticatorError
+);
+
+/// Bound request-time HTTP authenticator for one selected identity.
+pub type BoundRequestIdentityHttpAuthenticator = Arc<
+    dyn for<'a> Fn(
+            &'a reqwest::Request,
+            &'a BTreeMap<String, String>,
+        ) -> BoxFuture<
+            'a,
+            Result<Vec<(HeaderName, HeaderValue)>, RequestIdentityHttpAuthenticatorError>,
+        > + Send
+        + Sync,
+>;
+
+/// Factory that binds a selected identity to a request-time HTTP authenticator.
+pub type RequestIdentityHttpAuthenticatorFactory = Arc<
+    dyn Fn(
+            SelectedRequestIdentity,
+        )
+            -> Result<BoundRequestIdentityHttpAuthenticator, RequestIdentityHttpAuthenticatorError>
+        + Send
+        + Sync,
+>;
+
+/// Runtime-build selector for app-managed identities.
 ///
-/// The engine calls this only when a DSL v4 surface declares identity
-/// requirements and an outbound request is about to be sent.
+/// The engine calls this once per selected DSL v4 surface that declares
+/// identity requirements while building the query runtime.
 #[async_trait]
-pub trait RequestIdentityResolver: Send + Sync + std::fmt::Debug {
+pub trait RequestIdentitySelector: Send + Sync + std::fmt::Debug {
+    /// Selects the app-owned identity to use for one source surface.
+    ///
+    /// # Errors
+    /// Returns [`RequestIdentitySelectionError`] when no suitable identity is
+    /// bound or the selected identity cannot be used.
+    async fn select_identity(
+        &self,
+        identity: &RequestIdentitySelectionContext,
+    ) -> Result<SelectedRequestIdentity, RequestIdentitySelectionError>;
+}
+
+/// HTTP request authenticator for one identity type.
+#[async_trait]
+pub trait RequestIdentityHttpAuthenticator: Send + Sync + std::fmt::Debug {
     /// Returns identity headers to append to the outbound request.
     ///
     /// # Errors
-    ///
-    /// Returns [`RequestIdentityResolverError`] when no suitable identity is
-    /// bound, the identity is unhealthy, or identity material cannot be minted.
-    async fn resolve_identity_headers(
+    /// Returns [`RequestIdentityHttpAuthenticatorError`] when identity material
+    /// cannot be minted or converted into HTTP headers.
+    async fn authenticate_identity_request(
         &self,
-        identity: &RequestIdentityResolutionContext,
+        identity: &SelectedRequestIdentity,
         request: &reqwest::Request,
         resolved_inputs: &BTreeMap<String, String>,
-    ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestIdentityResolverError>;
+    ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestIdentityHttpAuthenticatorError>;
 }
 
 /// Request-time resolver for source inputs owned by the app layer.
@@ -426,15 +509,15 @@ mod tests {
     use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
     use serde_json::{Value, json};
 
-    use crate::{QuerySource, RequestIdentityResolutionContext, SourceInputResolutionContext};
+    use crate::{QuerySource, RequestIdentitySelectionContext, SourceInputResolutionContext};
 
     /// One-requirement identity context accepting `identity_specs` for the
     /// `github-rest-read` requirement with the given audience constraints.
     fn identity_context(
         identity_specs: &[&str],
         audience: BTreeMap<String, Value>,
-    ) -> RequestIdentityResolutionContext {
-        RequestIdentityResolutionContext::new(
+    ) -> RequestIdentitySelectionContext {
+        RequestIdentitySelectionContext::new(
             "github",
             "github_rest",
             IdentityRequirements {
@@ -535,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn request_identity_context_matches_candidate_by_spec_id_and_audience() {
+    fn request_identity_selection_context_matches_candidate_by_spec_id_and_audience() {
         let audience = BTreeMap::from([("host".to_string(), json!("github.com"))]);
         let context = identity_context(&["github_oauth", "github_pat"], audience.clone());
 
@@ -545,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn request_identity_context_audience_is_subset_and_json_type_exact() {
+    fn request_identity_selection_context_audience_is_subset_and_json_type_exact() {
         let context = identity_context(
             &["github_oauth"],
             BTreeMap::from([("port".to_string(), json!(443))]),
@@ -573,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn request_identity_context_empty_audience_imposes_no_constraint() {
+    fn request_identity_selection_context_empty_audience_imposes_no_constraint() {
         let context = identity_context(&["github_oauth"], BTreeMap::new());
 
         // An accepted shape with no declared audience matches any candidate

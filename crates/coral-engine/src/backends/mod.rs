@@ -71,8 +71,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    CoreError, QuerySource, RequestAuthenticator, RequestIdentityResolver, RuntimeSourceComponent,
-    SourceInputResolutionContext, SourceInputResolver,
+    BoundRequestIdentityHttpAuthenticator, CoreError, QuerySource, RequestAuthenticator,
+    RuntimeSourceComponent, SourceInputResolutionContext, SourceInputResolver,
 };
 #[cfg(test)]
 use coral_spec::ValidatedSourceManifest;
@@ -98,7 +98,10 @@ pub(crate) fn compile_query_source(
     runtime_context: &crate::QueryRuntimeContext,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    request_identity_resolver: Option<Arc<dyn RequestIdentityResolver>>,
+    request_identity_http_authenticators: &HashMap<
+        (String, String),
+        BoundRequestIdentityHttpAuthenticator,
+    >,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     if source.components().is_empty() {
         return Err(CoreError::FailedPrecondition(format!(
@@ -113,13 +116,13 @@ pub(crate) fn compile_query_source(
         source_variables: source.variables().clone(),
         request_authenticators,
         source_input_resolver,
-        request_identity_resolver,
+        request_identity_http_authenticators,
     };
     let compiled_components = source
         .components()
         .iter()
         .map(|component| compile_component(component, &request))
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(composite::compile_source(
         source.source_name().to_string(),
         compiled_components,
@@ -129,30 +132,64 @@ pub(crate) fn compile_query_source(
 fn compile_component(
     component: &RuntimeSourceComponent,
     request: &BackendCompileRequest<'_>,
-) -> Box<dyn CompiledBackendSource> {
+) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     match component {
         RuntimeSourceComponent::Http(component) => {
-            let identity_context =
-                component.identity_resolution_context(request.source.source_name());
-            http::compile_source(
+            let request_identity_http_authenticator = component
+                .identity_requirements
+                .as_ref()
+                .map(|identity| {
+                    let key = (
+                        request.source.source_name().to_string(),
+                        identity.surface_id.clone(),
+                    );
+                    request
+                        .request_identity_http_authenticators
+                        .get(&key)
+                        .cloned()
+                        .ok_or_else(|| {
+                            CoreError::FailedPrecondition(format!(
+                                "source '{}' surface '{}' declares identity_requirements but no bound request identity HTTP authenticator is installed",
+                                request.source.source_name(),
+                                identity.surface_id
+                            ))
+                        })
+                })
+                .transpose()?;
+            Ok(http::compile_source(
                 component.manifest.clone(),
                 SourceInputResolutionContext::from_query_source_with_declared_inputs(
                     request.source,
                     &component.manifest.declared_inputs,
                 ),
-                request.request_authenticators.clone(),
+                request_authenticators_for_http_manifest(
+                    &component.manifest,
+                    request.request_authenticators,
+                ),
                 http::HttpCompileRuntime {
                     body_capture_max_bytes: request.runtime_context.body_capture_max_bytes,
                     trace_context: request.runtime_context.trace_context.clone(),
                     source_input_resolver: request.source_input_resolver.clone(),
-                    identity_context,
-                    request_identity_resolver: request.request_identity_resolver.clone(),
+                    request_identity_http_authenticator,
                 },
-            )
+            ))
         }
-        RuntimeSourceComponent::File(manifest) => file::compile_manifest(manifest, request),
-        RuntimeSourceComponent::Mcp(manifest) => mcp::compile_manifest(manifest, request),
+        RuntimeSourceComponent::File(manifest) => Ok(file::compile_manifest(manifest, request)),
+        RuntimeSourceComponent::Mcp(manifest) => Ok(mcp::compile_manifest(manifest, request)),
     }
+}
+
+fn request_authenticators_for_http_manifest(
+    manifest: &coral_spec::backends::http::HttpSourceManifest,
+    request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
+) -> HashMap<String, Arc<dyn RequestAuthenticator>> {
+    if manifest.common.dsl_version == 4 {
+        // DSL v4 must not use the engine-level CustomAuth extension registry.
+        // Identity-backed HTTP auth is already bound per surface before backend
+        // compilation, and declarative HeaderAuth needs no registry.
+        return HashMap::new();
+    }
+    request_authenticators.clone()
 }
 
 #[cfg(test)]
@@ -177,7 +214,7 @@ pub(crate) fn compile_source_manifest(
             source_variables,
             request_authenticators: &request_authenticators,
             source_input_resolver: None,
-            request_identity_resolver: None,
+            request_identity_http_authenticators: &HashMap::new(),
         },
     )
 }

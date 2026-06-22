@@ -160,8 +160,9 @@ pub(super) async fn fetch_rows(
                 auth: &client.auth,
                 request_headers: &client.request_headers,
                 request_authenticators: &client.request_authenticators,
-                identity_context: client.identity_context.as_ref(),
-                request_identity_resolver: client.request_identity_resolver.as_deref(),
+                request_identity_http_authenticator: client
+                    .request_identity_http_authenticator
+                    .as_ref(),
                 trace_context: client.trace_context.as_ref(),
                 table_headers: &active_request.headers,
                 table_name: target.name(),
