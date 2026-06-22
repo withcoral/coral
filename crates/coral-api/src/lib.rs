@@ -96,6 +96,10 @@ pub const CORAL_EPISODE_INTENT_MAX_CHARS: usize = 4096;
 /// Machine-readable reason for a configured source lookup miss.
 pub const CORAL_ERROR_REASON_SOURCE_NOT_FOUND: &str = "SOURCE_NOT_FOUND";
 
+/// Machine-readable reason for stale or missing DSL v4 materialized artifacts.
+pub const CORAL_ERROR_REASON_MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION: &str =
+    "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION";
+
 /// Reserved `ErrorInfo.metadata` key for a one-line error summary.
 pub const CORAL_ERROR_METADATA_SUMMARY: &str = "summary";
 

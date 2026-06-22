@@ -1,8 +1,11 @@
 //! Defines bootstrap and application-management errors for the local app.
 
+use std::collections::HashMap;
+
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
-    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION,
+    CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
 };
 use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
@@ -31,6 +34,16 @@ pub enum AppError {
     /// The request requires additional setup before it can succeed.
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
+    /// A DSL v4 source has missing or stale generated runtime artifacts.
+    #[error(
+        "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source to regenerate them."
+    )]
+    MissingOrIncompatibleV4Materialization {
+        /// Source name whose installed artifacts failed validation.
+        source_name: String,
+        /// Specific materialization mismatch or missing-artifact detail.
+        detail: String,
+    },
     /// A known, installed source or related setup cannot be served until the
     /// user takes an explicit action.
     #[error("failed precondition: {0}")]
@@ -110,24 +123,58 @@ fn truncate_status_detail(detail: String) -> String {
     reason = "used directly as a map_err adapter across tonic service handlers"
 )]
 pub(crate) fn app_status(error: AppError) -> Status {
-    if matches!(error, AppError::SourceNotFound(_)) {
-        // The `reason` alone discriminates `SOURCE_NOT_FOUND` from other
-        // `Code::NotFound` causes (e.g. `io::ErrorKind::NotFound` raised
-        // when a manifest file is missing). The qualified name already
-        // appears in the truncated status message; we deliberately do
-        // not duplicate it into structured metadata so unbounded
-        // identifiers cannot push the `grpc-status-details-bin` trailer
-        // past the h2 `MAX_HEADER_LIST_SIZE` budget.
-        let details = vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
-            CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
-            CORAL_ERROR_DOMAIN,
-            std::collections::HashMap::new(),
-        ))];
-        return Status::with_error_details_vec(
-            Code::NotFound,
-            truncate_status_detail(error.to_string()),
-            details,
-        );
+    match &error {
+        AppError::SourceNotFound(_) => {
+            // The `reason` alone discriminates `SOURCE_NOT_FOUND` from other
+            // `Code::NotFound` causes (e.g. `io::ErrorKind::NotFound` raised
+            // when a manifest file is missing). The qualified name already
+            // appears in the truncated status message; we deliberately do
+            // not duplicate it into structured metadata so unbounded
+            // identifiers cannot push the `grpc-status-details-bin` trailer
+            // past the h2 `MAX_HEADER_LIST_SIZE` budget.
+            let details = vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
+                CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+                CORAL_ERROR_DOMAIN,
+                HashMap::new(),
+            ))];
+            return Status::with_error_details_vec(
+                Code::NotFound,
+                truncate_status_detail(error.to_string()),
+                details,
+            );
+        }
+        AppError::MissingOrIncompatibleV4Materialization {
+            source_name,
+            detail,
+        } => {
+            let mut metadata = HashMap::new();
+            metadata.insert(
+                CORAL_ERROR_METADATA_SUMMARY.to_string(),
+                format!(
+                    "source '{source_name}' has missing or incompatible DSL v4 materialized artifacts"
+                ),
+            );
+            metadata.insert(
+                CORAL_ERROR_METADATA_DETAIL.to_string(),
+                truncate_status_detail(detail.clone()),
+            );
+            metadata.insert(
+                CORAL_ERROR_METADATA_HINT.to_string(),
+                "Re-add the source to regenerate them.".to_string(),
+            );
+            metadata.insert("source".to_string(), source_name.clone());
+            let details = vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
+                CORAL_ERROR_REASON_MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION,
+                CORAL_ERROR_DOMAIN,
+                metadata,
+            ))];
+            return Status::with_error_details_vec(
+                Code::FailedPrecondition,
+                truncate_status_detail(error.to_string()),
+                details,
+            );
+        }
+        _ => {}
     }
     Status::new(app_code(&error), truncate_status_detail(error.to_string()))
 }
@@ -203,6 +250,7 @@ fn app_code(error: &AppError) -> Code {
         | AppError::IdentityNotFound(_) => Code::NotFound,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
+        | AppError::MissingOrIncompatibleV4Materialization { .. }
         | AppError::SourceUnservable(_)
         | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
@@ -271,6 +319,51 @@ mod tests {
             info.metadata.is_empty(),
             "SOURCE_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
             info.metadata
+        );
+    }
+
+    #[test]
+    fn app_status_attaches_structured_reason_for_incompatible_materialization() {
+        let status = app_status(AppError::MissingOrIncompatibleV4Materialization {
+            source_name: "github_v4".to_string(),
+            detail: "semantic IR importer version mismatch for surface 'rest'".to_string(),
+        });
+        assert_eq!(status.code(), Code::FailedPrecondition);
+
+        let details = status.get_error_details_vec();
+        let info = details
+            .iter()
+            .find_map(|detail| match detail {
+                ErrorDetail::ErrorInfo(info) => Some(info),
+                _ => None,
+            })
+            .expect("materialization status must carry an ErrorInfo detail");
+        assert_eq!(
+            info.reason,
+            CORAL_ERROR_REASON_MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION
+        );
+        assert_eq!(info.domain, CORAL_ERROR_DOMAIN);
+        assert_eq!(
+            info.metadata.get("source").map(String::as_str),
+            Some("github_v4")
+        );
+        assert_eq!(
+            info.metadata
+                .get(CORAL_ERROR_METADATA_SUMMARY)
+                .map(String::as_str),
+            Some("source 'github_v4' has missing or incompatible DSL v4 materialized artifacts")
+        );
+        assert_eq!(
+            info.metadata
+                .get(CORAL_ERROR_METADATA_DETAIL)
+                .map(String::as_str),
+            Some("semantic IR importer version mismatch for surface 'rest'")
+        );
+        assert_eq!(
+            info.metadata
+                .get(CORAL_ERROR_METADATA_HINT)
+                .map(String::as_str),
+            Some("Re-add the source to regenerate them.")
         );
     }
 

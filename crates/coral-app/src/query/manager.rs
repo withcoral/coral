@@ -44,9 +44,7 @@ use crate::source_artifacts::SourceArtifactStore;
 use crate::source_registry::{SourceRegistry, installed_source_from_record};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
-use crate::sources::materialization::{
-    INCOMPATIBLE_MATERIALIZATION_MESSAGE_FRAGMENT, incompatible_materialization_error,
-};
+use crate::sources::materialization::incompatible_materialization_error;
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::{
     runtime_components_for_v4_source, runtime_relation_namespace,
@@ -1050,6 +1048,9 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::IdentityNotFound(_) => "IDENTITY_NOT_FOUND",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::MissingOrIncompatibleV4Materialization { .. } => {
+            "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
+        }
         AppError::SourceUnservable(_) => "SOURCE_UNSERVABLE",
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Unavailable(_) => "UNAVAILABLE",
@@ -1066,15 +1067,12 @@ fn app_error_type(error: &AppError) -> &'static str {
 }
 
 fn source_load_error_requires_fail_closed(error: &AppError) -> bool {
-    match error {
-        AppError::Credentials(CredentialsError::Unavailable(_)) | AppError::SourceUnservable(_) => {
-            true
-        }
-        AppError::FailedPrecondition(message) => {
-            message.contains(INCOMPATIBLE_MATERIALIZATION_MESSAGE_FRAGMENT)
-        }
-        _ => false,
-    }
+    matches!(
+        error,
+        AppError::Credentials(CredentialsError::Unavailable(_))
+            | AppError::MissingOrIncompatibleV4Materialization { .. }
+            | AppError::SourceUnservable(_)
+    )
 }
 
 fn core_error_type(error: &CoreError) -> String {
@@ -2197,7 +2195,10 @@ surfaces:
             .expect_err("missing materialization should fail closed");
 
         assert!(
-            matches!(&error, AppError::FailedPrecondition(message) if message.contains(INCOMPATIBLE_MATERIALIZATION_MESSAGE_FRAGMENT)),
+            matches!(
+                &error,
+                AppError::MissingOrIncompatibleV4Materialization { .. }
+            ),
             "unexpected error: {error:#}"
         );
     }
