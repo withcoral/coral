@@ -65,7 +65,7 @@ pub enum RuntimeSourceComponent {
 /// Backend-ready HTTP component shared by v3 manifests and app-assembled v4 surfaces.
 ///
 /// v3 sources normalize their validated HTTP manifest into this component
-/// without identity requirements. v4 OpenAPI surfaces synthesize an HTTP
+/// without identity requirements. v4 `OpenAPI` surfaces synthesize an HTTP
 /// runtime manifest and may attach the authored surface identity requirements.
 #[derive(Debug, Clone)]
 pub struct RuntimeHttpSourceComponent {
