@@ -169,10 +169,9 @@ impl Features {
 
     /// Errors unless the preview DSL v4 runtime feature is enabled.
     ///
-    /// DSL v4 sources and their identity specs cannot be installed or served
-    /// while `dsl_v4` is off, so the source-install, identity-spec-install, and
-    /// query-load paths share this single gate and its canonical remediation
-    /// message.
+    /// DSL v4 sources and their identity specs cannot be installed or managed
+    /// while `dsl_v4` is off, so source-install and identity-spec management paths
+    /// share this single gate and its canonical remediation message.
     pub(crate) fn ensure_dsl_v4_enabled(&self) -> Result<(), AppError> {
         if self.enabled(Feature::DslV4) {
             return Ok(());

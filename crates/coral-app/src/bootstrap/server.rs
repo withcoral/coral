@@ -410,7 +410,7 @@ impl ServerBuilder {
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
-            features.clone(),
+            features,
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
@@ -422,13 +422,12 @@ impl ServerBuilder {
             .query_runtime_context()
             .with_body_capture_max_bytes(body_capture_max_bytes);
 
-        let query_manager = QueryManager::new_with_features(
+        let query_manager = QueryManager::new(
             config_store,
             credential_manager,
             query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
-            features,
         );
         let trace_service = if telemetry_config.trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
