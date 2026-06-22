@@ -292,7 +292,7 @@ mod tests {
         prepared: &PreparedRuntimeIdentity,
         url: &str,
     ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestIdentityHttpAuthenticatorError> {
-        let context = SelectedRequestIdentity::new(
+        let identity = SelectedRequestIdentity::new(
             "demo".to_string(),
             prepared.identity.identity_spec_id().to_string(),
             prepared.identity.audience().clone(),
@@ -300,7 +300,7 @@ mod tests {
         let request = reqwest::Request::new(reqwest::Method::GET, url.parse().expect("url"));
         prepared
             .identity
-            .resolve_headers(&context, &request, &BTreeMap::new())
+            .resolve_headers(&identity, &request, &BTreeMap::new())
             .await
     }
 

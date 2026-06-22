@@ -227,16 +227,13 @@ impl SourceServiceApi for SourceService {
             let principal = RequestContext::from_request(&request)?.principal().clone();
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            management_authorizer
-                .authorize_management_mutation(
-                    &principal,
-                    ManagementMutation::WorkspaceSource {
-                        workspace_id: workspace_name.as_str(),
-                        kind: WorkspaceSourceMutationKind::CreateBundled,
-                    },
-                )
-                .await
-                .map_err(authorization_status)?;
+            authorize_source_mutation(
+                management_authorizer.as_ref(),
+                &principal,
+                &workspace_name,
+                WorkspaceSourceMutationKind::CreateBundled,
+            )
+            .await?;
             let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
             let command = CreateBundledSourceCommand {
                 name: bundled_name,
@@ -268,16 +265,13 @@ impl SourceServiceApi for SourceService {
             let principal = RequestContext::from_request(&request)?.principal().clone();
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            management_authorizer
-                .authorize_management_mutation(
-                    &principal,
-                    ManagementMutation::WorkspaceSource {
-                        workspace_id: workspace_name.as_str(),
-                        kind: WorkspaceSourceMutationKind::CreateBundledWithOAuth,
-                    },
-                )
-                .await
-                .map_err(authorization_status)?;
+            authorize_source_mutation(
+                management_authorizer.as_ref(),
+                &principal,
+                &workspace_name,
+                WorkspaceSourceMutationKind::CreateBundledWithOAuth,
+            )
+            .await?;
             let response_workspace_name = workspace_name.clone();
             let command = CreateBundledSourceWithOAuthCommand {
                 name: SourceName::parse(&request.name).map_err(app_status)?,
@@ -323,12 +317,18 @@ impl SourceServiceApi for SourceService {
             let principal = RequestContext::from_request(&request)?.principal().clone();
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_source_mutation(
+                management_authorizer.as_ref(),
+                &principal,
+                &workspace_name,
+                WorkspaceSourceMutationKind::CreateFromSourceSpec,
+            )
+            .await?;
             management_authorizer
                 .authorize_management_mutation(
                     &principal,
-                    ManagementMutation::WorkspaceSource {
-                        workspace_id: workspace_name.as_str(),
-                        kind: WorkspaceSourceMutationKind::CreateFromSourceSpec,
+                    ManagementMutation::SourceSpec {
+                        kind: ResourceMutationKind::Upsert,
                     },
                 )
                 .await
@@ -360,16 +360,13 @@ impl SourceServiceApi for SourceService {
             let principal = RequestContext::from_request(&request)?.principal().clone();
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            management_authorizer
-                .authorize_management_mutation(
-                    &principal,
-                    ManagementMutation::WorkspaceSource {
-                        workspace_id: workspace_name.as_str(),
-                        kind: WorkspaceSourceMutationKind::Delete,
-                    },
-                )
-                .await
-                .map_err(authorization_status)?;
+            authorize_source_mutation(
+                management_authorizer.as_ref(),
+                &principal,
+                &workspace_name,
+                WorkspaceSourceMutationKind::Delete,
+            )
+            .await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             run_blocking_source_operation(move || {
                 sources.delete_source(&workspace_name, &source_name)
@@ -609,6 +606,24 @@ type CreateBundledSourceWithOAuthResponseStreamBox =
 type ImportSourceResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 type ImportSourceFuture = Pin<Box<dyn Future<Output = Result<InstalledSource, Status>> + Send>>;
+
+async fn authorize_source_mutation(
+    authorizer: &dyn ManagementAuthorizer,
+    principal: &UserPrincipal,
+    workspace_name: &WorkspaceName,
+    kind: WorkspaceSourceMutationKind,
+) -> Result<(), Status> {
+    authorizer
+        .authorize_management_mutation(
+            principal,
+            ManagementMutation::WorkspaceSource {
+                workspace_id: workspace_name.as_str(),
+                kind,
+            },
+        )
+        .await
+        .map_err(authorization_status)
+}
 
 async fn authorize_workspace_read(
     authorizer: &dyn WorkspaceReadAuthorizer,

@@ -435,7 +435,6 @@ pub(crate) fn import_source_user_identity_bindings(
             surface_id: binding.surface_id.clone(),
             identity: String::new(),
             owner: SourceIdentityOwner::User as i32,
-            accepted_identity: String::new(),
         });
     }
 
@@ -460,7 +459,9 @@ fn parse_cli_identity_binding(
         .ok_or_else(|| anyhow::anyhow!("{flag_name} must use SURFACE=IDENTITY"))?;
     let surface_id = non_empty_cli_identity_part(surface_id, flag_name, "surface")?;
     if selection.contains(':') {
-        bail!("{flag_name} must use SURFACE=IDENTITY");
+        return Err(anyhow::anyhow!(
+            "{flag_name} no longer accepts accepted identity ids; use SURFACE=IDENTITY"
+        ));
     }
     let identity = non_empty_cli_identity_part(selection, flag_name, "identity")?;
     Ok(CliIdentityBinding {

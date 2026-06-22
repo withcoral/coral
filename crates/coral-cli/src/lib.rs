@@ -1376,7 +1376,6 @@ async fn prompt_user_identity_bindings_for_import(
         bindings.push(UserSourceIdentityBinding {
             surface_id: surface.id.clone(),
             identity,
-            accepted_identity: accepted.id,
         });
     }
 
