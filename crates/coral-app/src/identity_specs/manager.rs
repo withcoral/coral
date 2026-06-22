@@ -288,15 +288,26 @@ impl IdentitySpecManager {
             .map(|record| record.input_material.clone())
             .unwrap_or_default();
         if let Some(existing) = &existing {
-            let existing = parse_identity_spec_record(&existing.manifest_yaml)?;
-            if existing.manifest != record.manifest {
-                let referencing_identities = self.count_identities_for_spec_unlocked(&name)?;
-                if referencing_identities > 0 {
-                    return Err(AppError::FailedPrecondition(format!(
-                        "identity spec '{name}' is used by {referencing_identities} stored {} and cannot be replaced with a different manifest; remove it with --force only if you intend to recreate {} against a new spec",
-                        plural_identity(referencing_identities),
-                        plural_pronoun(referencing_identities)
-                    )));
+            match parse_identity_spec_record(&existing.manifest_yaml) {
+                Ok(existing) => {
+                    if existing.manifest != record.manifest {
+                        let referencing_identities =
+                            self.count_identities_for_spec_unlocked(&name)?;
+                        if referencing_identities > 0 {
+                            return Err(AppError::FailedPrecondition(format!(
+                                "identity spec '{name}' is used by {referencing_identities} stored {} and cannot be replaced with a different manifest; remove it with --force only if you intend to recreate {} against a new spec",
+                                plural_identity(referencing_identities),
+                                plural_pronoun(referencing_identities)
+                            )));
+                        }
+                    }
+                }
+                Err(error) => {
+                    warn!(
+                        identity_spec = %name,
+                        error = %error,
+                        "replacing malformed existing identity spec record with valid manifest"
+                    );
                 }
             }
         }
@@ -963,6 +974,8 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use coral_spec::ManifestInputKind;
+
     use super::{
         IDENTITY_SPEC_INPUT_MATERIAL_STATE_FILE_NAME, IdentitySpecInputValue, IdentitySpecManager,
         IdentitySpecRecord, IdentitySpecUsageProvider, identity_spec_fingerprint,
@@ -1170,6 +1183,60 @@ oauth:
         .replace("{{default_tenant}}", default_tenant)
     }
 
+    fn github_oauth_identity_yaml_with_defaulted_client_id_input() -> &'static str {
+        r"
+kind: identity
+spec_version: 1
+name: github_oauth
+version: 0.1.0
+description: GitHub OAuth access token.
+issuer: github
+type: oauth
+audience:
+  host: github.com
+inputs:
+  GITHUB_OAUTH_CLIENT_ID:
+    kind: variable
+    default: demo-client
+oauth:
+  method:
+    label: Connect with GitHub device code
+    flow:
+      type: device_code
+    endpoints:
+      device_authorization_url: https://github.com/login/device/code
+      token_url: https://github.com/login/oauth/access_token
+    client:
+      id:
+        default: demo-client
+        input: GITHUB_OAUTH_CLIENT_ID
+"
+    }
+
+    fn malformed_github_oauth_identity_yaml_missing_client_id_input() -> &'static str {
+        r"
+kind: identity
+spec_version: 1
+name: github_oauth
+version: 0.1.0
+description: Bad prior install.
+issuer: github
+type: oauth
+audience:
+  host: github.com
+oauth:
+  method:
+    flow:
+      type: device_code
+    endpoints:
+      device_authorization_url: https://github.com/login/device/code
+      token_url: https://github.com/login/oauth/access_token
+    client:
+      id:
+        input: GITHUB_OAUTH_CLIENT_ID
+"
+    }
+
     /// Merges the previous standalone replace test into the CRUD round-trip:
     /// the version 0.2.0 re-add runs over the same stored spec.
     #[test]
@@ -1206,6 +1273,43 @@ oauth:
                 .list_identity_specs()
                 .expect("list again")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn add_identity_spec_repairs_malformed_existing_record() {
+        let (_temp, manager, layout) = manager();
+        let manifest_path = layout.identity_spec_manifest_file("github_oauth");
+        fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create identity spec dir");
+        fs::write(
+            &manifest_path,
+            malformed_github_oauth_identity_yaml_missing_client_id_input(),
+        )
+        .expect("write malformed identity spec");
+        let error = manager
+            .get_identity_spec("github_oauth")
+            .expect_err("stored spec is malformed");
+        assert!(
+            error
+                .to_string()
+                .contains("must reference a declared variable input"),
+            "unexpected error: {error}"
+        );
+
+        let (record, replaced) = add_spec(
+            &manager,
+            github_oauth_identity_yaml_with_defaulted_client_id_input(),
+        );
+
+        assert!(replaced);
+        assert_eq!(record.manifest.name, "github_oauth");
+        assert!(record.manifest.inputs.iter().any(|input| {
+            input.key == "GITHUB_OAUTH_CLIENT_ID" && input.kind == ManifestInputKind::Variable
+        }));
+        assert_eq!(
+            stored_spec(&manager, "github_oauth").manifest.inputs.len(),
+            1
         );
     }
 
