@@ -56,7 +56,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
    - variables and secrets
    - credential retrieval methods for secrets, including OAuth when the provider supports browser-based setup
    - DSL v4 request identity requirements when the target runtime supplies request-scoped identities
-   - for bundled OAuth identity specs, identity setup inputs: client IDs use variable inputs or spec defaults, client secrets use secret inputs, OAuth endpoint URL templates reference only variable inputs, and input material belongs to the installed identity spec rather than identities created from it
+   - if the source file includes OAuth `kind: identity` documents, identity setup inputs: client IDs use variable inputs or spec defaults, client secrets use secret inputs, OAuth endpoint URL templates reference only variable inputs, and input material belongs to the installed identity spec rather than identities created from it
    - tables
    - table functions for source-scoped parameterized endpoints
    - filters
@@ -97,8 +97,9 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
   the source's case-insensitive relation namespace. Prefer plain `snake_case`
   table names. Table-function names must start with an ASCII letter or
   underscore and then use only ASCII letters, numbers, or underscores.
-- For DSL v4 OpenAPI surfaces, use `identity_requirements` only when installed source config will bind the surface to an existing user-owned or workspace-owned identity. `identity_requirements.accepts[]` may contain only `id`, `identity_specs`, and optional `audience`; it does not collect source credentials and does not replace `inputs`, `credential.methods`, or runtime `auth` for source-stored tokens.
-- Identity specs are global app state. Do not assume ordinary `coral source lint` or `coral source add --file` will install `kind: identity` documents bundled into a source YAML stream unless the target runtime explicitly documents that import path. Installing an identity spec alone does not create stored identity records or source bindings. Declared identity `inputs` are collected when the spec is installed and are stored as identity-spec material, not concrete identity material.
+- For DSL v4 OpenAPI surfaces, use `identity_requirements` instead of source-stored credentials when installed source config will bind the surface to an existing identity. `identity_requirements.accepts[]` may contain only `id`, `identity_specs`, and optional `audience`; it declares which identities are acceptable but does not collect or store credential material by itself.
+- Identity specs are global app state, not source credentials. `coral source lint` validates a manifest bundle but does not install anything. `coral source add --file` imports included `kind: identity` specs when the file is a manifest bundle.
+- Installing or importing an identity spec only installs the spec. It does not create stored identity records or source bindings. Its `inputs` are collected at spec install and stored with the installed spec, not with a concrete identity.
 - When authoring `identity_requirements`, keep `accepts` non-empty, give each accepted entry a stable `id`, list accepted identity spec names in `identity_specs`, and include an `audience` object when host/tenant/org/account scoping matters. Put provider `issuer`, identity `type`, setup, and capabilities on the corresponding `kind: identity` specs. Built-in HTTP identity specs need a string `audience.host`; Coral injects Authorization headers only for that exact host or its subdomains.
 - Mark filters as required only when the API truly requires them.
 - Use default table functions for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.

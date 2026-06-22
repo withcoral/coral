@@ -24,7 +24,7 @@ Use:
 - variables for non-secret configuration such as API base URLs
 - secrets for API keys, tokens, and client secrets
 - `credential.methods` on secret inputs when setup should offer OAuth or a manual token choice
-- DSL v4 surface `identity_requirements` only when installed source config will bind the surface to an existing user-owned or workspace-owned identity
+- DSL v4 surface `identity_requirements` only when installed source config will bind the surface to an existing identity
 
 ## Authentication Setup
 
@@ -40,8 +40,9 @@ Use:
 - For source OAuth credential methods, do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during source OAuth setup.
 - If the provider supports pasted tokens too, put the OAuth method first and add a `source_config` fallback.
 - For short-lived OAuth access tokens, document the scopes, consent prompts, or client settings required for refresh-token issuance. If the provider will not issue refresh tokens, call out that users must reconnect when access tokens expire.
-- For DSL v4 OpenAPI surfaces, keep `identity_requirements` separate from source credentials. Use it only when installed source config will bind the surface to an existing user-owned or workspace-owned identity; otherwise use source `inputs`, `credential.methods`, and `auth`.
-- Identity specs are global app state. Do not assume ordinary `coral source lint` or `coral source add --file` will install `kind: identity` documents bundled into a source YAML stream unless the target runtime explicitly documents that import path. Installing a spec does not create identity records or source bindings. Declared identity `inputs` are collected at spec install and stored as installed identity-spec material, not concrete identity material.
+- For DSL v4 OpenAPI surfaces, use `identity_requirements` instead of source-stored credentials when installed source config will bind the surface to an existing identity. If the source should collect credentials directly, use source `inputs`, `credential.methods`, and `auth`.
+- Identity specs are global app state, not source credentials. `coral source lint` validates a manifest bundle but does not install anything. `coral source add --file` imports included `kind: identity` specs when the file is a manifest bundle.
+- Installing or importing an identity spec only installs the spec. It does not create identity records or source bindings. Its `inputs` are collected at spec install and stored with the installed spec, not with a concrete identity.
 - Identity requirements should have a non-empty `accepts` list. Each accepted entry should contain a stable `id`, accepted identity spec names in `identity_specs`, and any audience scoping such as host or tenant. Provider `issuer`, identity `type`, setup, and capabilities belong on the matching `kind: identity` specs, not inside `identity_requirements`. Built-in HTTP identity specs require string `audience.host` and inject Authorization headers only for that exact host or its subdomains.
 
 ## Description and Input Hints
