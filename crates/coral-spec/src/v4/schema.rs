@@ -141,6 +141,7 @@ fn post_process_schema(schema: &mut Value) {
         return;
     };
     post_process_flattened_value_source_defs(defs);
+    post_process_identity_requirement_defs(defs);
     if let Some(surface_schema) = defs.get_mut("V4SurfaceSchema") {
         post_process_surface_variants(surface_schema);
         return;
@@ -332,6 +333,48 @@ fn compose_flattened_value_source_def(
     *definition = replacement;
 }
 
+fn post_process_identity_requirement_defs(defs: &mut serde_json::Map<String, Value>) {
+    if let Some(requirements) = defs
+        .get_mut("IdentityRequirementsSchema")
+        .and_then(Value::as_object_mut)
+        && let Some(properties) = requirements
+            .get_mut("properties")
+            .and_then(Value::as_object_mut)
+        && let Some(accepts) = properties.get_mut("accepts").and_then(Value::as_object_mut)
+    {
+        accepts.insert("minItems".to_string(), json!(1));
+    }
+
+    let Some(accepted) = defs
+        .get_mut("AcceptedIdentityRequirementSchema")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let Some(properties) = accepted
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+
+    if let Some(id) = properties.get_mut("id").and_then(Value::as_object_mut) {
+        id.insert("minLength".to_string(), json!(1));
+    }
+    if let Some(identity_specs) = properties
+        .get_mut("identity_specs")
+        .and_then(Value::as_object_mut)
+    {
+        identity_specs.insert("minItems".to_string(), json!(1));
+        if let Some(items) = identity_specs
+            .get_mut("items")
+            .and_then(Value::as_object_mut)
+        {
+            items.insert("minLength".to_string(), json!(1));
+        }
+    }
+}
+
 fn post_process_surface_id(properties: &mut serde_json::Map<String, Value>) {
     if let Some(id) = properties.get_mut("id").and_then(Value::as_object_mut) {
         id.insert("pattern".to_string(), json!("^[a-z][a-z0-9_]*$"));
@@ -500,6 +543,28 @@ surfaces:
             validator().validate(&manifest_json(raw)).is_err(),
             "invalid surface sha256 should be rejected"
         );
+    }
+
+    #[test]
+    fn generated_schema_rejects_empty_identity_requirement_fields_and_parser_agrees() {
+        let invalid_surfaces = [
+            "    identity_requirements:\n      accepts: []\n",
+            "    identity_requirements:\n      accepts:\n        - id: github-rest-read\n          identity_specs: []\n",
+            "    identity_requirements:\n      accepts:\n        - id: github-rest-read\n          identity_specs: [\"\"]\n",
+            "    identity_requirements:\n      accepts:\n        - id: \"\"\n          identity_specs: [github_oauth]\n",
+        ];
+
+        for surface_fields in invalid_surfaces {
+            let raw = format!(
+                "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n{surface_fields}"
+            );
+            assert!(
+                validator().validate(&manifest_json(&raw)).is_err(),
+                "empty identity requirement field should be rejected: {surface_fields}"
+            );
+            parse_source_manifest_yaml(&raw)
+                .expect_err("parser should reject empty identity requirement field");
+        }
     }
 
     #[test]

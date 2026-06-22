@@ -244,7 +244,8 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/AcceptedIdentityRequirementSchema"
-          }
+          },
+          "minItems": 1
         }
       },
       "additionalProperties": false,
@@ -256,13 +257,16 @@
       "type": "object",
       "properties": {
         "id": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "identity_specs": {
           "type": "array",
           "items": {
-            "type": "string"
-          }
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
         },
         "audience": {
           "type": "object",

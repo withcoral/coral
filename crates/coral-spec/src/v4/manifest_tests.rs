@@ -457,11 +457,13 @@ surfaces:
     )
     .expect_err("empty identity requirements should fail");
 
+    let message = error.to_string();
     assert!(
-        error
-            .to_string()
-            .contains("identity_requirements.accepts must contain at least one accepted identity")
+        message.starts_with("source manifest failed schema validation:"),
+        "{message}"
     );
+    assert!(message.contains("/surfaces/0:"), "{message}");
+    assert!(message.contains("oneOf"), "{message}");
 }
 
 #[test]
