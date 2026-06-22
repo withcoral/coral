@@ -4,16 +4,6 @@ package coral.v1;
 
 import "coral/v1/resources.proto";
 
-// Where a recipe came from.
-enum RecipeOrigin {
-  // Origin was not specified.
-  RECIPE_ORIGIN_UNSPECIFIED = 0;
-  // Recipe shipped with a bundled source.
-  RECIPE_ORIGIN_BUNDLED = 1;
-  // Recipe was installed by the user.
-  RECIPE_ORIGIN_USER = 2;
-}
-
 // One scalar recipe argument.
 message RecipeArgument {
   // Argument name.
@@ -48,13 +38,10 @@ message RecipeTableFunctionPublish {
   string description = 3;
 }
 
-// One public surface published by a recipe.
-message RecipePublishedSurface {
-  // Published target.
-  oneof target {
-    // SQL table-function publication.
-    RecipeTableFunctionPublish table_function = 1;
-  }
+// Public surfaces published by a recipe.
+message RecipePublish {
+  // SQL table-function publication.
+  RecipeTableFunctionPublish table_function = 1;
 }
 
 // Recipe definition exposed by recipe lifecycle APIs.
@@ -65,14 +52,10 @@ message Recipe {
   string description = 2;
   // Declared arguments.
   repeated RecipeArgument arguments = 3;
-  // Published surfaces.
-  repeated RecipePublishedSurface publish = 4;
+  // Published recipe surfaces.
+  RecipePublish publish = 4;
   // Inferred result columns.
   repeated RecipeResultColumn result_columns = 5;
-  // Where the installed recipe came from.
-  RecipeOrigin origin = 6;
-  // Whether this recipe participates in runtime publication.
-  bool enabled = 7;
 }
 
 // Installs or replaces one user recipe.
@@ -87,10 +70,6 @@ message AddRecipeRequest {
 message AddRecipeResponse {
   // Stable recipe name.
   string name = 1;
-  // Where the recipe came from.
-  RecipeOrigin origin = 2;
-  // Whether the recipe is enabled.
-  bool enabled = 3;
 }
 
 // Lists installed recipes in one workspace without runtime validation.
@@ -101,7 +80,7 @@ message ListRecipesRequest {
 
 // Installed recipes.
 message ListRecipesResponse {
-  // Installed recipe inventory, including disabled or stale recipes.
+  // Readable installed recipe inventory without runtime validation.
   repeated Recipe recipes = 1;
 }
 

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::bootstrap::AppError;
-use crate::recipes::model::{InstalledRecipe, RecipeName, RecipeOrigin};
+use crate::recipes::model::{InstalledRecipe, RecipeName};
 use crate::recipes::storage::{
     ConfigRecipeRegistry, FsRecipeArtifactStore, RecipeArtifactStore, RecipeRegistry,
 };
@@ -35,8 +35,6 @@ pub(crate) struct RecipeManager {
 
 struct RecipeArtifact {
     name: RecipeName,
-    origin: RecipeOrigin,
-    enabled: bool,
     raw_yaml: String,
 }
 
@@ -44,10 +42,6 @@ struct RecipeArtifact {
 pub(crate) struct RecipeListing {
     /// Runtime definition for the recipe.
     pub(crate) definition: RecipeRuntimeDefinition,
-    /// Where this installed recipe came from.
-    pub(crate) origin: RecipeOrigin,
-    /// Whether this recipe participates in runtime publication.
-    pub(crate) enabled: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -150,7 +144,7 @@ impl RecipeManager {
             workspace_name,
             &recipe_name,
             raw_yaml,
-            Some(runtime_recipe),
+            runtime_recipe,
             &validation_arguments,
         )
     }
@@ -160,13 +154,11 @@ impl RecipeManager {
         workspace_name: &WorkspaceName,
         recipe_name: &RecipeName,
         raw_yaml: &str,
-        runtime_recipe: Option<&RecipeRuntimeDefinition>,
+        runtime_recipe: &RecipeRuntimeDefinition,
         validation_arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
     ) -> Result<InstalledRecipe, AppError> {
         let installed = InstalledRecipe {
             name: recipe_name.clone(),
-            origin: RecipeOrigin::User,
-            enabled: true,
         };
 
         let runtime_metadata =
@@ -175,7 +167,7 @@ impl RecipeManager {
             workspace_name,
             recipe_name,
             raw_yaml,
-            runtime_metadata.as_deref(),
+            &runtime_metadata,
         )?;
         if let Err(error) = self
             .registry
@@ -225,7 +217,7 @@ impl RecipeManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<RecipeListing>, AppError> {
-        let artifacts = self.load_recipe_artifacts(workspace_name, RecipeArtifactFilter::All)?;
+        let artifacts = self.load_recipe_artifacts(workspace_name)?;
         let mut seen_names = HashSet::new();
         let mut recipes = Vec::new();
         for artifact in artifacts {
@@ -244,19 +236,13 @@ impl RecipeManager {
                 }
             };
             let mut recipe = runtime_recipe_without_columns(&spec);
-            if artifact.origin == RecipeOrigin::User {
-                recipe.result_columns = self.cached_recipe_result_columns(
-                    workspace_name,
-                    &artifact.name,
-                    &artifact.raw_yaml,
-                    &runtime_validation_arguments(&spec),
-                );
-            }
-            recipes.push(RecipeListing {
-                definition: recipe,
-                origin: artifact.origin,
-                enabled: artifact.enabled,
-            });
+            recipe.result_columns = self.cached_recipe_result_columns(
+                workspace_name,
+                &artifact.name,
+                &artifact.raw_yaml,
+                &runtime_validation_arguments(&spec),
+            );
+            recipes.push(RecipeListing { definition: recipe });
         }
         Ok(recipes)
     }
@@ -266,8 +252,7 @@ impl RecipeManager {
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
     ) -> Result<Vec<RecipeRuntimeDefinition>, AppError> {
-        let artifacts =
-            self.load_recipe_artifacts(workspace_name, RecipeArtifactFilter::EnabledOnly)?;
+        let artifacts = self.load_recipe_artifacts(workspace_name)?;
         if artifacts.is_empty() {
             return Ok(Vec::new());
         }
@@ -291,14 +276,12 @@ impl RecipeManager {
                 }
             };
             let mut runtime_recipe = runtime_recipe_without_columns(&spec);
-            if artifact.origin == RecipeOrigin::User {
-                runtime_recipe.result_columns = self.cached_recipe_result_columns(
-                    workspace_name,
-                    &artifact.name,
-                    &artifact.raw_yaml,
-                    &runtime_validation_arguments(&spec),
-                );
-            }
+            runtime_recipe.result_columns = self.cached_recipe_result_columns(
+                workspace_name,
+                &artifact.name,
+                &artifact.raw_yaml,
+                &runtime_validation_arguments(&spec),
+            );
             if runtime_recipe.result_columns.is_empty() {
                 skip_recipe(
                     &artifact,
@@ -320,12 +303,7 @@ impl RecipeManager {
         workspace_name: &WorkspaceName,
         recipe_name: &RecipeName,
     ) -> Result<(), AppError> {
-        let installed = self.registry.get_recipe(workspace_name, recipe_name)?;
-        if installed.origin != RecipeOrigin::User {
-            return Err(AppError::InvalidInput(format!(
-                "recipe '{recipe_name}' is bundled and cannot be removed from workspace config"
-            )));
-        }
+        self.registry.get_recipe(workspace_name, recipe_name)?;
         let removed_artifact = self
             .artifacts
             .remove_user_recipe_artifact(workspace_name, recipe_name)?;
@@ -347,13 +325,9 @@ impl RecipeManager {
     fn load_recipe_artifacts(
         &self,
         workspace_name: &WorkspaceName,
-        filter: RecipeArtifactFilter,
     ) -> Result<Vec<RecipeArtifact>, AppError> {
         let mut artifacts = Vec::new();
         for installed in self.registry.list_workspace_recipes(workspace_name)? {
-            if filter == RecipeArtifactFilter::EnabledOnly && !installed.enabled {
-                continue;
-            }
             let raw_yaml = match self
                 .artifacts
                 .read_recipe_yaml(workspace_name, &installed.name)
@@ -377,16 +351,11 @@ impl RecipeManager {
             };
             artifacts.push(RecipeArtifact {
                 name: installed.name,
-                origin: installed.origin,
-                enabled: installed.enabled,
                 raw_yaml,
             });
         }
 
-        artifacts.sort_by(|left, right| {
-            (origin_sort_key(left.origin), left.name.as_str())
-                .cmp(&(origin_sort_key(right.origin), right.name.as_str()))
-        });
+        artifacts.sort_by(|left, right| left.name.as_str().cmp(right.name.as_str()));
         Ok(artifacts)
     }
 
@@ -397,7 +366,7 @@ impl RecipeManager {
         publish_targets: &mut HashSet<PublishTarget>,
     ) -> Result<(), AppError> {
         let mut seen_names = HashSet::new();
-        for artifact in self.load_recipe_artifacts(workspace_name, RecipeArtifactFilter::All)? {
+        for artifact in self.load_recipe_artifacts(workspace_name)? {
             if artifact.name == *replacing_recipe {
                 continue;
             }
@@ -406,9 +375,6 @@ impl RecipeManager {
                     "recipe '{}' is installed more than once",
                     artifact.name
                 )));
-            }
-            if !artifact.enabled {
-                continue;
             }
             let spec = parse_recipe_yaml(&artifact.raw_yaml).map_err(|error| {
                 AppError::FailedPrecondition(format!(
@@ -489,16 +455,9 @@ impl RecipeManager {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RecipeArtifactFilter {
-    All,
-    EnabledOnly,
-}
-
 fn skip_recipe(artifact: &RecipeArtifact, detail: fmt::Arguments<'_>) {
     tracing::warn!(
         recipe = %artifact.name,
-        origin = ?artifact.origin,
         detail = %detail,
         "skipping recipe during runtime publication"
     );
@@ -667,18 +626,16 @@ fn record_publish_targets(
     recipe: &RecipeRuntimeDefinition,
     publish_targets: &mut HashSet<PublishTarget>,
 ) -> Result<(), AppError> {
-    let mut recipe_targets = HashSet::new();
     let target = PublishTarget::sql_relation(
         &recipe.publish.table_function.schema,
         &recipe.publish.table_function.name,
     );
-    if publish_targets.contains(&target) || !recipe_targets.insert(target.clone()) {
+    if !publish_targets.insert(target.clone()) {
         return Err(AppError::FailedPrecondition(format!(
             "recipe publish target '{}' is installed more than once",
             target.display_name()
         )));
     }
-    publish_targets.extend(recipe_targets);
     Ok(())
 }
 
@@ -702,34 +659,22 @@ impl PublishTarget {
     }
 }
 
-fn origin_sort_key(origin: RecipeOrigin) -> u8 {
-    match origin {
-        RecipeOrigin::Bundled => 0,
-        RecipeOrigin::User => 1,
-    }
-}
-
 fn encode_recipe_runtime_metadata(
-    runtime_recipe: Option<&RecipeRuntimeDefinition>,
+    runtime_recipe: &RecipeRuntimeDefinition,
     raw_yaml: &str,
     validation_arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
-) -> Result<Option<Vec<u8>>, AppError> {
-    if let Some(runtime_recipe) = runtime_recipe {
-        let metadata = RecipeRuntimeMetadata {
-            version: RECIPE_RUNTIME_METADATA_VERSION,
-            recipe_yaml_sha256: sha256_hex(raw_yaml.as_bytes()),
-            validation_args: cached_validation_arguments(validation_arguments),
-            result_columns: runtime_recipe
-                .result_columns
-                .iter()
-                .map(CachedRecipeResultColumn::from)
-                .collect(),
-        };
-        let raw = serde_json::to_vec_pretty(&metadata)?;
-        Ok(Some(raw))
-    } else {
-        Ok(None)
-    }
+) -> Result<Vec<u8>, AppError> {
+    let metadata = RecipeRuntimeMetadata {
+        version: RECIPE_RUNTIME_METADATA_VERSION,
+        recipe_yaml_sha256: sha256_hex(raw_yaml.as_bytes()),
+        validation_args: cached_validation_arguments(validation_arguments),
+        result_columns: runtime_recipe
+            .result_columns
+            .iter()
+            .map(CachedRecipeResultColumn::from)
+            .collect(),
+    };
+    serde_json::to_vec_pretty(&metadata).map_err(AppError::from)
 }
 
 fn cached_validation_arguments(
@@ -839,72 +784,6 @@ publish:
     }
 
     #[test]
-    fn install_validated_user_recipe_persists_yaml_and_config() {
-        let (_temp, layout, config_store, manager) = fixture();
-        let workspace = workspace();
-        let raw_yaml = recipe_yaml("review_queue");
-
-        let installed = install_fixture_recipe(&manager, &workspace, &raw_yaml);
-
-        assert_eq!(installed.name.as_str(), "review_queue");
-        assert_eq!(installed.origin, RecipeOrigin::User);
-        assert!(installed.enabled);
-
-        let recipe_name = RecipeName::parse("review_queue").expect("recipe name");
-        let raw = std::fs::read_to_string(layout.recipe_file(&workspace, &recipe_name))
-            .expect("recipe file");
-        assert!(raw.contains("name: review_queue"));
-        assert_eq!(
-            config_store
-                .list_workspace_recipes(&workspace)
-                .expect("list recipes")
-                .into_iter()
-                .filter(|recipe| recipe.origin == RecipeOrigin::User)
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn install_validated_user_recipe_caches_result_columns_for_list() {
-        let (_temp, layout, _config_store, manager) = fixture();
-        let workspace = workspace();
-        let raw_yaml = recipe_yaml("review_queue");
-        let runtime_recipe = manager
-            .validate_user_recipe_yaml(
-                &workspace,
-                &[],
-                || Ok(QueryRuntimeConfig::default()),
-                &raw_yaml,
-            )
-            .await
-            .expect("validate recipe");
-
-        manager
-            .install_validated_user_recipe(&workspace, &raw_yaml, &runtime_recipe)
-            .expect("install validated recipe");
-
-        let recipe_name = RecipeName::parse("review_queue").expect("recipe name");
-        assert!(
-            layout
-                .recipe_runtime_file(&workspace, &recipe_name)
-                .exists()
-        );
-        let listed = manager.list_recipes(&workspace).expect("list recipes");
-        assert_eq!(listed.len(), 1);
-        let listed_recipe = listed.first().expect("listed recipe");
-        assert_eq!(listed_recipe.origin, RecipeOrigin::User);
-        assert!(listed_recipe.enabled);
-        assert_eq!(listed_recipe.definition.result_columns.len(), 1);
-        let column = listed_recipe
-            .definition
-            .result_columns
-            .first()
-            .expect("id result column");
-        assert_eq!(column.name, "id");
-    }
-
-    #[test]
     fn list_recipes_ignores_cached_columns_when_validation_args_change() {
         let (_temp, layout, _config_store, manager) = fixture();
         let workspace = workspace();
@@ -981,49 +860,6 @@ publish:
         );
     }
 
-    #[test]
-    fn remove_user_recipe_removes_yaml_and_config() {
-        let (_temp, layout, config_store, manager) = fixture();
-        let workspace = workspace();
-        let raw_yaml = recipe_yaml("review_queue");
-        install_fixture_recipe(&manager, &workspace, &raw_yaml);
-        let recipe_name = RecipeName::parse("review_queue").expect("recipe name");
-
-        manager
-            .remove_user_recipe(&workspace, &recipe_name)
-            .expect("remove recipe");
-
-        assert!(!layout.recipe_dir(&workspace, &recipe_name).exists());
-        let user_recipe_count = config_store
-            .list_workspace_recipes(&workspace)
-            .expect("list recipes")
-            .into_iter()
-            .filter(|recipe| recipe.origin == RecipeOrigin::User)
-            .count();
-        assert_eq!(user_recipe_count, 0);
-    }
-
-    #[tokio::test]
-    async fn validate_user_recipe_yaml_infers_result_columns() {
-        let (_temp, _layout, _config_store, manager) = fixture();
-        let workspace = workspace();
-
-        let recipe = manager
-            .validate_user_recipe_yaml(
-                &workspace,
-                &[],
-                || Ok(QueryRuntimeConfig::default()),
-                &recipe_yaml("review_queue"),
-            )
-            .await
-            .expect("validate recipe");
-
-        assert_eq!(recipe.name, "review_queue");
-        assert_eq!(recipe.result_columns.len(), 1);
-        let column = recipe.result_columns.first().expect("id result column");
-        assert_eq!(column.name, "id");
-    }
-
     #[tokio::test]
     async fn validate_user_recipe_yaml_rejects_installed_publish_collision() {
         let (_temp, _layout, _config_store, manager) = fixture();
@@ -1053,38 +889,6 @@ publish:
         ));
     }
 
-    #[tokio::test]
-    async fn validate_user_recipe_yaml_ignores_disabled_publish_collision() {
-        let (_temp, layout, config_store, manager) = fixture();
-        let workspace = workspace();
-        let recipe_name = RecipeName::parse("existing_queue").expect("recipe name");
-        let existing_yaml = recipe_yaml_with_publish("existing_queue", "recipes.shared_queue");
-        let recipe_dir = layout.recipe_dir(&workspace, &recipe_name);
-        fs::ensure_private_dir(&recipe_dir).expect("recipe dir");
-        std::fs::write(layout.recipe_file(&workspace, &recipe_name), existing_yaml)
-            .expect("recipe yaml");
-        config_store
-            .upsert_recipe(
-                &workspace,
-                InstalledRecipe {
-                    name: recipe_name,
-                    origin: RecipeOrigin::User,
-                    enabled: false,
-                },
-            )
-            .expect("disabled installed recipe");
-
-        manager
-            .validate_user_recipe_yaml(
-                &workspace,
-                &[],
-                || Ok(QueryRuntimeConfig::default()),
-                &recipe_yaml_with_publish("new_queue", "recipes.shared_queue"),
-            )
-            .await
-            .expect("disabled recipe should not reserve publish target");
-    }
-
     #[test]
     fn artifact_restore_removes_new_yaml_when_only_runtime_metadata_existed() {
         let (_temp, layout, _config_store, _manager) = fixture();
@@ -1097,7 +901,7 @@ publish:
         std::fs::write(&recipe_runtime_file, b"previous runtime").expect("previous runtime");
         let store = FsRecipeArtifactStore::new(layout.clone());
         let previous = store
-            .write_user_recipe_artifact(&workspace, &recipe_name, "new yaml", None)
+            .write_user_recipe_artifact(&workspace, &recipe_name, "new yaml", b"new runtime")
             .expect("write new artifact");
 
         store

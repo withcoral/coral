@@ -700,7 +700,6 @@ mod tests {
 
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
-    use crate::recipes::model::RecipeOrigin;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
 
@@ -1233,8 +1232,6 @@ publish:
             .expect("recipes");
         assert_eq!(recipes.len(), 1);
         let recipe = recipes.first().expect("recipe");
-        assert_eq!(recipe.origin, RecipeOrigin::User);
-        assert!(recipe.enabled);
         let column = recipe
             .definition
             .result_columns
