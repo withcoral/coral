@@ -5,7 +5,7 @@ use coral_api::v1::{
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
     ListRecipeMcpToolsRequest, ListSourcesRequest, OpenEpisodeRequest, PaginationRequest, Recipe,
     RecipeArgument, SearchCatalogRequest, Source, SubmitFeedbackRequest,
-    TableSummary as ProtoTableSummary, catalog_item, recipe_published_surface,
+    TableSummary as ProtoTableSummary, catalog_item,
 };
 use coral_api::{RECIPE_MCP_TOOL_PREFIX, recipe_mcp_tool_name};
 use coral_client::{
@@ -577,31 +577,30 @@ impl CoralMcpServer {
 }
 
 fn recipe_mcp_tools(recipe: &Recipe) -> Vec<Tool> {
-    if recipe_table_function(recipe).is_none() {
+    let Some(publish) = recipe.publish.as_ref() else {
+        return Vec::new();
+    };
+    if publish.table_function.is_none() {
         return Vec::new();
     }
-    recipe
-        .publish
-        .iter()
-        .filter_map(|publish| match publish.target.as_ref()? {
-            recipe_published_surface::Target::McpTool(target) => Some(Tool::new(
-                recipe_mcp_tool_name(&target.name),
-                recipe_tool_description(recipe, &target.description),
-                recipe_input_schema(recipe),
-            )),
-            recipe_published_surface::Target::TableFunction(_) => None,
-        })
-        .map(|tool| {
-            tool.with_raw_output_schema(recipe_output_schema())
-                .with_annotations(
-                    ToolAnnotations::with_title("Run Recipe")
-                        .read_only(true)
-                        .destructive(false)
-                        .idempotent(true)
-                        .open_world(true),
-                )
-        })
-        .collect()
+    let Some(target) = publish.mcp.as_ref() else {
+        return Vec::new();
+    };
+    vec![
+        Tool::new(
+            recipe_mcp_tool_name(&target.name),
+            recipe_tool_description(recipe, &target.description),
+            recipe_input_schema(recipe),
+        )
+        .with_raw_output_schema(recipe_output_schema())
+        .with_annotations(
+            ToolAnnotations::with_title("Run Recipe")
+                .read_only(true)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(true),
+        ),
+    ]
 }
 
 fn recipe_has_mcp_tool(recipe: &Recipe, tool_name: &str) -> bool {
@@ -609,13 +608,11 @@ fn recipe_has_mcp_tool(recipe: &Recipe, tool_name: &str) -> bool {
         return false;
     };
     recipe_table_function(recipe).is_some()
-        && recipe.publish.iter().any(|publish| {
-            matches!(
-                publish.target.as_ref(),
-                Some(recipe_published_surface::Target::McpTool(target))
-                    if target.name == authored_name
-            )
-        })
+        && recipe
+            .publish
+            .as_ref()
+            .and_then(|publish| publish.mcp.as_ref())
+            .is_some_and(|target| target.name == authored_name)
 }
 
 fn recipe_tool_description(recipe: &Recipe, publish_description: &str) -> String {
@@ -676,13 +673,9 @@ fn recipe_output_schema() -> std::sync::Arc<Map<String, Value>> {
 fn recipe_table_function(recipe: &Recipe) -> Option<(&str, &str)> {
     recipe
         .publish
-        .iter()
-        .find_map(|publish| match publish.target.as_ref()? {
-            recipe_published_surface::Target::TableFunction(target) => {
-                Some((target.schema.as_str(), target.name.as_str()))
-            }
-            recipe_published_surface::Target::McpTool(_) => None,
-        })
+        .as_ref()
+        .and_then(|publish| publish.table_function.as_ref())
+        .map(|target| (target.schema.as_str(), target.name.as_str()))
 }
 
 fn recipe_tool_sql(
