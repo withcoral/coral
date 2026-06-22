@@ -8,14 +8,14 @@ use coral_api::v1::{
     RemoveRecipeResponse,
 };
 use coral_engine::{
-    RecipeRuntimeArgumentType, RecipeRuntimeDefinition, RecipeRuntimeMcpToolPublish,
-    RecipeRuntimePublish, RecipeRuntimeTableFunctionPublish,
+    RecipeRuntimeArgumentType, RecipeRuntimeDefinition, RecipeRuntimePublish,
+    RecipeRuntimeTableFunctionPublish,
 };
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::query::manager::QueryManager;
-use crate::recipes::manager::{RecipeListing, RecipeManager};
+use crate::recipes::manager::{RecipeListing, RecipeManager, RecipeMcpPresentation};
 use crate::recipes::model::RecipeName;
 use crate::transport::{grpc_span, instrument_grpc, query_status, workspace_name_from_proto};
 
@@ -120,10 +120,13 @@ impl RecipeServiceApi for RecipeService {
 }
 
 fn recipe_listing_to_proto(listing: RecipeListing) -> Recipe {
-    runtime_recipe_to_proto(listing.definition)
+    runtime_recipe_to_proto(listing.definition, listing.mcp)
 }
 
-fn runtime_recipe_to_proto(recipe: RecipeRuntimeDefinition) -> Recipe {
+fn runtime_recipe_to_proto(
+    recipe: RecipeRuntimeDefinition,
+    mcp: Option<RecipeMcpPresentation>,
+) -> Recipe {
     Recipe {
         name: recipe.name,
         description: recipe.description,
@@ -137,7 +140,7 @@ fn runtime_recipe_to_proto(recipe: RecipeRuntimeDefinition) -> Recipe {
                 description: argument.description,
             })
             .collect(),
-        publish: Some(recipe_publish_to_proto(recipe.publish)),
+        publish: Some(recipe_publish_to_proto(recipe.publish, mcp)),
         result_columns: recipe
             .result_columns
             .into_iter()
@@ -151,12 +154,15 @@ fn runtime_recipe_to_proto(recipe: RecipeRuntimeDefinition) -> Recipe {
     }
 }
 
-fn recipe_publish_to_proto(publish: RecipeRuntimePublish) -> RecipePublish {
+fn recipe_publish_to_proto(
+    publish: RecipeRuntimePublish,
+    mcp: Option<RecipeMcpPresentation>,
+) -> RecipePublish {
     RecipePublish {
         table_function: Some(recipe_table_function_publish_to_proto(
             publish.table_function,
         )),
-        mcp: publish.mcp.map(recipe_mcp_publish_to_proto),
+        mcp: mcp.map(recipe_mcp_publish_to_proto),
     }
 }
 
@@ -170,7 +176,7 @@ fn recipe_table_function_publish_to_proto(
     }
 }
 
-fn recipe_mcp_publish_to_proto(publish: RecipeRuntimeMcpToolPublish) -> RecipeMcpToolPublish {
+fn recipe_mcp_publish_to_proto(publish: RecipeMcpPresentation) -> RecipeMcpToolPublish {
     RecipeMcpToolPublish {
         name: publish.name,
         description: publish.description,
