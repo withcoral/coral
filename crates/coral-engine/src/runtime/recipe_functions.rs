@@ -84,12 +84,6 @@ impl RecipeFunctionRegistry {
     ) -> Result<()> {
         let publish = &recipe.publish.table_function;
         let key = FunctionLookupKey::from_parts(publish.schema.clone(), publish.name.clone());
-        if self.functions.contains_key(&key) {
-            return Err(DataFusionError::Plan(format!(
-                "duplicate recipe table function {}.{}",
-                key.schema, key.function
-            )));
-        }
         self.functions.insert(
             key.clone(),
             RecipeFunction::new(&publish.schema, &publish.name, recipe, body_plan)?,
@@ -189,11 +183,7 @@ impl RecipeFunction {
             .iter()
             .map(|argument| argument.name.clone())
             .collect::<Vec<_>>();
-        let arrow_schema = if recipe.result_columns.is_empty() {
-            Arc::new(body_plan.schema().as_arrow().clone())
-        } else {
-            recipe_arrow_schema(recipe)?
-        };
+        let arrow_schema = recipe_arrow_schema(recipe)?;
         let qualified_schema = Arc::new(DFSchema::try_from_qualified_schema(
             table_reference.clone(),
             arrow_schema.as_ref(),

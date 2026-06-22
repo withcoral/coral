@@ -15,7 +15,7 @@ use crate::runtime::catalog::{
 use crate::runtime::query::QueryRuntimeAdapter;
 use crate::runtime::query::parameter_scalar_value;
 use crate::{
-    CoreError, QueryExecution, QueryParameterValue, QueryParameters, RecipeRuntimeArgument,
+    CoreError, QueryParameterValue, QueryParameters, RecipeRuntimeArgument,
     RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue, RecipeRuntimeDefinition,
     RecipeRuntimeImplementation, RecipeRuntimeResultColumn,
 };
@@ -42,36 +42,16 @@ pub(crate) fn recipe_query_parameters(
         .collect()
 }
 
-pub(crate) async fn infer_recipe_schema(
-    query_runtime: &QueryRuntimeAdapter,
-    recipe: &RecipeRuntimeDefinition,
-    arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
-) -> Result<std::sync::Arc<Schema>, CoreError> {
-    let params = recipe_query_parameters(recipe, arguments)
-        .map_err(|error| CoreError::InvalidInput(error.to_string()))?;
-    query_runtime
-        .infer_sql_schema(recipe_sql(recipe), &params)
-        .await
-}
-
 pub(crate) async fn validate_recipe(
     query_runtime: &QueryRuntimeAdapter,
     recipe: &RecipeRuntimeDefinition,
     arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
-) -> Result<std::sync::Arc<Schema>, CoreError> {
-    let schema = infer_recipe_schema(query_runtime, recipe, arguments).await?;
-    execute_recipe_sql(query_runtime, recipe, arguments).await?;
-    Ok(schema)
-}
-
-pub(crate) async fn execute_recipe_sql(
-    query_runtime: &QueryRuntimeAdapter,
-    recipe: &RecipeRuntimeDefinition,
-    arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
-) -> Result<QueryExecution, CoreError> {
+) -> Result<Arc<Schema>, CoreError> {
     let params = recipe_query_parameters(recipe, arguments)
         .map_err(|error| CoreError::InvalidInput(error.to_string()))?;
-    query_runtime.execute_sql(recipe_sql(recipe), &params).await
+    query_runtime
+        .validate_sql(recipe_sql(recipe), &params)
+        .await
 }
 
 pub(crate) fn published_table_functions(
@@ -82,8 +62,8 @@ pub(crate) fn published_table_functions(
 
     for recipe in recipes {
         let publish = &recipe.publish.table_function;
-        let key = (publish.schema.clone(), publish.name.clone());
-        if !seen.insert(key.clone()) {
+        let key = (publish.schema.as_str(), publish.name.as_str());
+        if !seen.insert(key) {
             return Err(DataFusionError::Plan(format!(
                 "duplicate recipe table function {}.{}",
                 key.0, key.1
@@ -272,16 +252,12 @@ fn reject_unknown_arguments(
     recipe: &RecipeRuntimeDefinition,
     arguments: &BTreeMap<String, RecipeRuntimeArgumentValue>,
 ) -> Result<()> {
-    let declared_arguments = recipe
-        .arguments
-        .iter()
-        .map(|argument| argument.name.as_str())
-        .collect::<BTreeSet<_>>();
-
-    if let Some(argument_name) = arguments
-        .keys()
-        .find(|argument_name| !declared_arguments.contains(argument_name.as_str()))
-    {
+    if let Some(argument_name) = arguments.keys().find(|argument_name| {
+        recipe
+            .arguments
+            .iter()
+            .all(|argument| argument.name != **argument_name)
+    }) {
         return Err(DataFusionError::Plan(format!(
             "recipe '{}' received unknown argument '{}'",
             recipe.name, argument_name
@@ -356,29 +332,27 @@ fn argument_value_name(value: &RecipeRuntimeArgumentValue) -> &'static str {
 mod tests {
     use super::*;
 
+    fn argument(
+        name: &str,
+        data_type: RecipeRuntimeArgumentType,
+        required: bool,
+    ) -> RecipeRuntimeArgument {
+        RecipeRuntimeArgument {
+            name: name.to_string(),
+            data_type,
+            required,
+            description: String::new(),
+        }
+    }
+
     fn recipe() -> RecipeRuntimeDefinition {
         RecipeRuntimeDefinition {
             name: "open_pull_requests".to_string(),
             description: String::new(),
             arguments: vec![
-                RecipeRuntimeArgument {
-                    name: "author".to_string(),
-                    data_type: RecipeRuntimeArgumentType::String,
-                    required: true,
-                    description: String::new(),
-                },
-                RecipeRuntimeArgument {
-                    name: "limit".to_string(),
-                    data_type: RecipeRuntimeArgumentType::Integer,
-                    required: false,
-                    description: String::new(),
-                },
-                RecipeRuntimeArgument {
-                    name: "draft".to_string(),
-                    data_type: RecipeRuntimeArgumentType::Boolean,
-                    required: false,
-                    description: String::new(),
-                },
+                argument("author", RecipeRuntimeArgumentType::String, true),
+                argument("limit", RecipeRuntimeArgumentType::Integer, false),
+                argument("draft", RecipeRuntimeArgumentType::Boolean, false),
             ],
             implementation: RecipeRuntimeImplementation::CoralSql {
                 query: "select * from github.pull_requests where author = $author".to_string(),
@@ -394,40 +368,45 @@ mod tests {
         }
     }
 
-    #[test]
-    fn recipe_sql_returns_coral_sql_body() {
-        let recipe = recipe();
+    fn args(
+        values: impl IntoIterator<Item = (&'static str, RecipeRuntimeArgumentValue)>,
+    ) -> BTreeMap<String, RecipeRuntimeArgumentValue> {
+        values
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect()
+    }
 
-        assert_eq!(
-            recipe_sql(&recipe),
-            "select * from github.pull_requests where author = $author"
-        );
+    fn params(
+        values: impl IntoIterator<Item = (&'static str, QueryParameterValue)>,
+    ) -> QueryParameters {
+        values
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect()
     }
 
     #[test]
     fn recipe_query_parameters_binds_declared_arguments() {
         let recipe = recipe();
-        let arguments = BTreeMap::from([
+        let arguments = args([
             (
-                "author".to_string(),
+                "author",
                 RecipeRuntimeArgumentValue::String("Bradley-Butcher".to_string()),
             ),
-            ("limit".to_string(), RecipeRuntimeArgumentValue::Integer(25)),
-            (
-                "draft".to_string(),
-                RecipeRuntimeArgumentValue::Boolean(false),
-            ),
+            ("limit", RecipeRuntimeArgumentValue::Integer(25)),
+            ("draft", RecipeRuntimeArgumentValue::Boolean(false)),
         ]);
 
         assert_eq!(
             recipe_query_parameters(&recipe, &arguments).unwrap(),
-            QueryParameters::from([
+            params([
                 (
-                    "author".to_string(),
+                    "author",
                     QueryParameterValue::String("Bradley-Butcher".to_string()),
                 ),
-                ("limit".to_string(), QueryParameterValue::Integer(25)),
-                ("draft".to_string(), QueryParameterValue::Boolean(false)),
+                ("limit", QueryParameterValue::Integer(25)),
+                ("draft", QueryParameterValue::Boolean(false)),
             ])
         );
     }
@@ -435,20 +414,20 @@ mod tests {
     #[test]
     fn recipe_query_parameters_binds_missing_optional_arguments_as_nulls() {
         let recipe = recipe();
-        let arguments = BTreeMap::from([(
-            "author".to_string(),
+        let arguments = args([(
+            "author",
             RecipeRuntimeArgumentValue::String("Bradley-Butcher".to_string()),
         )]);
 
         assert_eq!(
             recipe_query_parameters(&recipe, &arguments).unwrap(),
-            QueryParameters::from([
+            params([
                 (
-                    "author".to_string(),
+                    "author",
                     QueryParameterValue::String("Bradley-Butcher".to_string()),
                 ),
-                ("limit".to_string(), QueryParameterValue::Null),
-                ("draft".to_string(), QueryParameterValue::Null),
+                ("limit", QueryParameterValue::Null),
+                ("draft", QueryParameterValue::Null),
             ])
         );
     }
@@ -456,109 +435,86 @@ mod tests {
     #[test]
     fn recipe_query_parameters_binds_explicit_optional_nulls_as_nulls() {
         let recipe = recipe();
-        let arguments = BTreeMap::from([
+        let arguments = args([
             (
-                "author".to_string(),
+                "author",
                 RecipeRuntimeArgumentValue::String("Bradley-Butcher".to_string()),
             ),
-            ("limit".to_string(), RecipeRuntimeArgumentValue::Null),
-            ("draft".to_string(), RecipeRuntimeArgumentValue::Null),
+            ("limit", RecipeRuntimeArgumentValue::Null),
+            ("draft", RecipeRuntimeArgumentValue::Null),
         ]);
 
         assert_eq!(
             recipe_query_parameters(&recipe, &arguments).unwrap(),
-            QueryParameters::from([
+            params([
                 (
-                    "author".to_string(),
+                    "author",
                     QueryParameterValue::String("Bradley-Butcher".to_string()),
                 ),
-                ("limit".to_string(), QueryParameterValue::Null),
-                ("draft".to_string(), QueryParameterValue::Null),
+                ("limit", QueryParameterValue::Null),
+                ("draft", QueryParameterValue::Null),
             ])
         );
     }
 
     #[test]
-    fn recipe_query_parameters_rejects_unknown_arguments() {
+    fn recipe_query_parameters_rejects_invalid_arguments() {
         let recipe = recipe();
-        let arguments = BTreeMap::from([
+        let cases = [
             (
-                "author".to_string(),
-                RecipeRuntimeArgumentValue::String("Bradley-Butcher".to_string()),
+                args([
+                    (
+                        "author",
+                        RecipeRuntimeArgumentValue::String("Bradley-Butcher".to_string()),
+                    ),
+                    (
+                        "repository",
+                        RecipeRuntimeArgumentValue::String("withcoral/coral".to_string()),
+                    ),
+                ]),
+                "Error during planning: recipe 'open_pull_requests' received unknown argument 'repository'",
             ),
             (
-                "repository".to_string(),
-                RecipeRuntimeArgumentValue::String("withcoral/coral".to_string()),
+                BTreeMap::new(),
+                "Error during planning: recipe 'open_pull_requests' is missing required argument 'author'",
             ),
-        ]);
+            (
+                args([("author", RecipeRuntimeArgumentValue::Null)]),
+                "Error during planning: recipe 'open_pull_requests' argument 'author' is required and cannot be null",
+            ),
+            (
+                args([("author", RecipeRuntimeArgumentValue::Integer(42))]),
+                "Error during planning: recipe 'open_pull_requests' argument 'author' expected string, got integer",
+            ),
+        ];
 
-        assert_eq!(
-            recipe_query_parameters(&recipe, &arguments)
-                .unwrap_err()
-                .strip_backtrace(),
-            "Error during planning: recipe 'open_pull_requests' received unknown argument 'repository'"
-        );
-    }
-
-    #[test]
-    fn recipe_query_parameters_rejects_missing_required_arguments() {
-        let recipe = recipe();
-        let arguments = BTreeMap::new();
-
-        assert_eq!(
-            recipe_query_parameters(&recipe, &arguments)
-                .unwrap_err()
-                .strip_backtrace(),
-            "Error during planning: recipe 'open_pull_requests' is missing required argument 'author'"
-        );
-    }
-
-    #[test]
-    fn recipe_query_parameters_rejects_required_nulls() {
-        let recipe = recipe();
-        let arguments = BTreeMap::from([("author".to_string(), RecipeRuntimeArgumentValue::Null)]);
-
-        assert_eq!(
-            recipe_query_parameters(&recipe, &arguments)
-                .unwrap_err()
-                .strip_backtrace(),
-            "Error during planning: recipe 'open_pull_requests' argument 'author' is required and cannot be null"
-        );
-    }
-
-    #[test]
-    fn recipe_query_parameters_rejects_type_mismatches() {
-        let recipe = recipe();
-        let arguments = BTreeMap::from([(
-            "author".to_string(),
-            RecipeRuntimeArgumentValue::Integer(42),
-        )]);
-
-        assert_eq!(
-            recipe_query_parameters(&recipe, &arguments)
-                .unwrap_err()
-                .strip_backtrace(),
-            "Error during planning: recipe 'open_pull_requests' argument 'author' expected string, got integer"
-        );
+        for (arguments, expected) in cases {
+            assert_eq!(
+                recipe_query_parameters(&recipe, &arguments)
+                    .unwrap_err()
+                    .strip_backtrace(),
+                expected
+            );
+        }
     }
 
     #[test]
     fn recipe_argument_values_accepts_utf8_view_literals() {
         let recipe = recipe();
-        let args = vec![Expr::Literal(
+        let exprs = vec![Expr::Literal(
             ScalarValue::Utf8View(Some("Bradley-Butcher".into())),
             None,
         )];
 
         assert_eq!(
-            recipe_argument_values(&recipe, &args).unwrap(),
-            BTreeMap::from([
+            recipe_argument_values(&recipe, &exprs).unwrap(),
+            args([
                 (
-                    "author".to_string(),
+                    "author",
                     RecipeRuntimeArgumentValue::String("Bradley-Butcher".to_string()),
                 ),
-                ("limit".to_string(), RecipeRuntimeArgumentValue::Null),
-                ("draft".to_string(), RecipeRuntimeArgumentValue::Null),
+                ("limit", RecipeRuntimeArgumentValue::Null),
+                ("draft", RecipeRuntimeArgumentValue::Null),
             ])
         );
     }

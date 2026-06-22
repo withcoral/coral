@@ -403,7 +403,30 @@ impl QueryRuntimeAdapter {
         sql: &str,
         params: &QueryParameters,
     ) -> Result<QueryExecution, CoreError> {
-        match self.execute_sql_once(&self.ctx, sql, params).await {
+        self.execute_sql_with_row_limit(sql, params, None).await
+    }
+
+    pub(crate) async fn validate_sql(
+        &self,
+        sql: &str,
+        params: &QueryParameters,
+    ) -> Result<Arc<arrow::datatypes::Schema>, CoreError> {
+        let execution = self
+            .execute_sql_with_row_limit(sql, params, Some(1))
+            .await?;
+        Ok(Arc::clone(execution.arrow_schema()))
+    }
+
+    async fn execute_sql_with_row_limit(
+        &self,
+        sql: &str,
+        params: &QueryParameters,
+        row_limit: Option<usize>,
+    ) -> Result<QueryExecution, CoreError> {
+        match self
+            .execute_sql_once(&self.ctx, sql, params, row_limit)
+            .await
+        {
             Ok(execution) => Ok(execution),
             Err(SqlExecutionFailure::Collection(error)) => {
                 // Resolver-row overflow is a dependent-join buffering limit, not
@@ -432,7 +455,10 @@ impl QueryRuntimeAdapter {
                     .get_or_build_without_dependent_join()
                     .await?;
 
-                match self.execute_sql_once(&fallback.ctx, sql, params).await {
+                match self
+                    .execute_sql_once(&fallback.ctx, sql, params, row_limit)
+                    .await
+                {
                     Ok(execution) => Ok(execution),
                     Err(error) => {
                         if is_missing_required_filter_failure(&error) {
@@ -452,6 +478,7 @@ impl QueryRuntimeAdapter {
         ctx: &SessionContext,
         sql: &str,
         params: &QueryParameters,
+        row_limit: Option<usize>,
     ) -> Result<QueryExecution, SqlExecutionFailure> {
         let df = ctx
             .sql_with_options(sql, read_only_sql_options())
@@ -459,6 +486,12 @@ impl QueryRuntimeAdapter {
             .map_err(SqlExecutionFailure::Planning)?;
         let df = apply_query_parameters(df, params).map_err(SqlExecutionFailure::Planning)?;
         let arrow_schema = Arc::new(df.schema().as_arrow().clone());
+        let df = match row_limit {
+            Some(limit) => df
+                .limit(0, Some(limit))
+                .map_err(SqlExecutionFailure::Planning)?,
+            None => df,
+        };
         let batches = df
             .collect()
             .await
@@ -506,12 +539,8 @@ impl QueryRuntimeAdapter {
         Ok(())
     }
 
-    pub(crate) async fn explain_sql(
-        &self,
-        sql: &str,
-        params: &QueryParameters,
-    ) -> Result<QueryPlan, CoreError> {
-        let df = self.sql_dataframe(sql, params).await?;
+    pub(crate) async fn explain_sql(&self, sql: &str) -> Result<QueryPlan, CoreError> {
+        let df = self.sql_dataframe(sql, &QueryParameters::new()).await?;
         let unoptimized_logical_plan = df.logical_plan().display_indent_schema().to_string();
         let (session_state, logical_plan) = df.into_parts();
         let optimized_logical_plan = session_state
@@ -534,15 +563,6 @@ impl QueryRuntimeAdapter {
             optimized_logical_plan_display,
             physical_plan,
         ))
-    }
-
-    pub(crate) async fn infer_sql_schema(
-        &self,
-        sql: &str,
-        params: &QueryParameters,
-    ) -> Result<Arc<arrow::datatypes::Schema>, CoreError> {
-        let df = self.sql_dataframe(sql, params).await?;
-        Ok(Arc::new(df.schema().as_arrow().clone()))
     }
 
     async fn sql_dataframe(

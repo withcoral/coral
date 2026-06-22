@@ -184,23 +184,6 @@ impl CoralQuery {
             .await
     }
 
-    /// Infers the Arrow schema for one recipe through parameter-bound read-only SQL.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoreError`] if source compilation fails, if recipe argument
-    /// values cannot be bound, or if the recipe SQL cannot plan against the
-    /// selected sources.
-    pub async fn infer_recipe_schema(
-        sources: &[QuerySource],
-        runtime: QueryRuntimeConfig,
-        recipe: RecipeRuntimeDefinition,
-        arguments: std::collections::BTreeMap<String, RecipeRuntimeArgumentValue>,
-    ) -> Result<std::sync::Arc<arrow::datatypes::Schema>, CoreError> {
-        let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
-        runtime::recipes::infer_recipe_schema(&query_runtime, &recipe, &arguments).await
-    }
-
     /// Validates one recipe against the selected sources using one concrete invocation.
     ///
     /// # Errors
@@ -232,30 +215,13 @@ impl CoralQuery {
         runtime: QueryRuntimeConfig,
         sql: &str,
     ) -> Result<QueryPlan, CoreError> {
-        Self::explain_sql_with_params(sources, runtime, sql, QueryParameters::new()).await
-    }
-
-    /// Explains one `SQL` statement with named query parameter values bound
-    /// into its `$name` placeholders before planning output is rendered.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoreError`] if the SQL is empty, if source compilation fails,
-    /// if a supplied parameter is not referenced by the statement, or if the
-    /// query engine cannot explain the statement.
-    pub async fn explain_sql_with_params(
-        sources: &[QuerySource],
-        runtime: QueryRuntimeConfig,
-        sql: &str,
-        params: QueryParameters,
-    ) -> Result<QueryPlan, CoreError> {
         if sql.trim().is_empty() {
             return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
         }
 
         runtime::query::build_runtime(sources, runtime)
             .await?
-            .explain_sql(sql, &params)
+            .explain_sql(sql)
             .await
     }
 
