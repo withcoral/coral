@@ -7,6 +7,7 @@ use coral_api::v1::{
     RecipeArgument, SearchCatalogRequest, Source, SubmitFeedbackRequest,
     TableSummary as ProtoTableSummary, catalog_item, recipe_published_surface,
 };
+use coral_api::{RECIPE_MCP_TOOL_PREFIX, recipe_mcp_tool_name};
 use coral_client::{
     AppClient, CatalogClient, EpisodeClient, FeedbackClient, QueryClient, RecipeClient,
     SourceClient, batches_to_json_rows_json_safe_numbers, decode_execute_sql_response,
@@ -29,7 +30,7 @@ use tonic::{
 };
 
 use crate::{
-    McpOptions, RECIPE_MCP_TOOL_PREFIX, recipe_mcp_tool_name,
+    McpOptions,
     surface::{
         CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
         describe_table_tool, describe_table_value, feedback_tool, guide_resource,
@@ -510,9 +511,13 @@ impl CoralMcpServer {
                     ));
                 };
                 let sql = recipe_tool_sql(&recipe, name, request.arguments.as_ref())?;
+                let request = Request::new(ExecuteSqlRequest {
+                    workspace: Some(default_workspace()),
+                    sql,
+                });
                 Ok(ToolCallOutcome::from_value_result(
                     "Recipe execution",
-                    self.execute_sql_value(&sql).await,
+                    self.execute_sql_value(request).await,
                 ))
             }
         }

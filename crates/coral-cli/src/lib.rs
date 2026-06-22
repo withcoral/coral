@@ -27,6 +27,7 @@ use clap::{
     Parser, Subcommand, ValueEnum,
 };
 use clap_complete::{Shell, generate};
+use coral_api::recipe_mcp_tool_name;
 use coral_api::v1::{
     AddRecipeRequest, ExecuteSqlRequest, ListRecipesRequest, Recipe, RemoveRecipeRequest,
 };
@@ -36,7 +37,6 @@ use coral_client::{
     AppClient, decode_execute_sql_response, default_workspace, format_batches_json,
     format_batches_table, manifest_input_from_proto,
 };
-use coral_mcp::recipe_mcp_tool_name;
 use dialoguer::console::measure_text_width;
 use tonic::Request;
 

@@ -76,6 +76,18 @@ pub const CORAL_ERROR_DOMAIN: &str = "coral.withcoral.com";
 /// Canonical default workspace name used across local Coral surfaces.
 pub const DEFAULT_WORKSPACE_ID: &str = "default";
 
+/// Prefix used for recipe-backed MCP tools.
+///
+/// Recipe artifacts author a local MCP publish name, while MCP clients see the
+/// name under this namespace to avoid collisions with built-in tools.
+pub const RECIPE_MCP_TOOL_PREFIX: &str = "recipe_";
+
+/// Returns the MCP tool name for a recipe-authored MCP publish target.
+#[must_use]
+pub fn recipe_mcp_tool_name(name: &str) -> String {
+    format!("{RECIPE_MCP_TOOL_PREFIX}{name}")
+}
+
 /// gRPC metadata key carrying the originating episode id on Coral calls after
 /// `EpisodeService.OpenEpisode`. The single source of truth for the wire
 /// contract; consumed by both the server (`coral-app`) and clients

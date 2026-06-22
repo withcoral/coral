@@ -72,10 +72,10 @@ pub use contracts::{
     QueryParameterValue, QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
     QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess, RecipeRuntimeArgument,
     RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue, RecipeRuntimeDefinition,
-    RecipeRuntimeImplementation, RecipeRuntimeMcpToolPublish, RecipeRuntimePublish,
-    RecipeRuntimeResultColumn, RecipeRuntimeTableFunctionPublish, RuntimeSourceComponent,
-    RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
-    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    RecipeRuntimeImplementation, RecipeRuntimePublish, RecipeRuntimeResultColumn,
+    RecipeRuntimeTableFunctionPublish, RuntimeSourceComponent, RuntimeSourcePackage,
+    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
+    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.

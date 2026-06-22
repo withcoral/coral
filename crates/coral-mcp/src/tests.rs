@@ -7,6 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use coral_api::recipe_mcp_tool_name;
 use coral_api::{
     CORAL_EPISODE_ID_MAX_LEN,
     v1::{AddRecipeRequest, ImportSourceRequest, import_source_response},
@@ -25,7 +26,7 @@ use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use tonic::Request;
 
-use crate::{CoralMcpServer, McpOptions, recipe_mcp_tool_name};
+use crate::{CoralMcpServer, McpOptions};
 
 fn write_fixture_manifest(root: &Path) -> PathBuf {
     let source_dir = root.join("fixture-source");
@@ -238,7 +239,7 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
         server.waiting().await?;
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     });
-    let client_handler = TestMcpClient::default();
+    let client_handler = TestMcpClient;
     let client = client_handler
         .clone()
         .serve(client_transport)

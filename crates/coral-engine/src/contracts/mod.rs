@@ -20,8 +20,8 @@ pub use query::{
 pub(crate) use query_error::{ColumnParts, TableRefParts};
 pub use recipes::{
     RecipeRuntimeArgument, RecipeRuntimeArgumentType, RecipeRuntimeArgumentValue,
-    RecipeRuntimeDefinition, RecipeRuntimeImplementation, RecipeRuntimeMcpToolPublish,
-    RecipeRuntimePublish, RecipeRuntimeResultColumn, RecipeRuntimeTableFunctionPublish,
+    RecipeRuntimeDefinition, RecipeRuntimeImplementation, RecipeRuntimePublish,
+    RecipeRuntimeResultColumn, RecipeRuntimeTableFunctionPublish,
 };
 
 #[cfg(test)]
