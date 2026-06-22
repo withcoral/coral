@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use coral_engine::{RequestIdentityResolutionContext, RequestIdentityResolverError};
+use coral_engine::{RequestIdentityHttpAuthenticatorError, SelectedRequestIdentity};
 use coral_spec::v4::IdentityRequirements;
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -26,16 +26,6 @@ pub(crate) fn parse_path_segment(kind: &str, value: &str) -> Result<String, AppE
         return Err(AppError::InvalidInput(format!(
             "{kind} name must not be '.' or '..'"
         )));
-    }
-    Ok(trimmed.to_string())
-}
-
-fn parse_accepted_identity_id(value: &str) -> Result<String, AppError> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(AppError::InvalidInput(
-            "missing accepted identity id".to_string(),
-        ));
     }
     Ok(trimmed.to_string())
 }
@@ -141,41 +131,6 @@ impl SourceIdentityOwner {
     }
 }
 
-/// Subject used to select provider-facing source identity material.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SourceIdentitySubject {
-    /// Identity material is owned by the request user principal.
-    User(String),
-    /// Identity material is owned by the workspace, not a user principal.
-    Workspace,
-}
-
-impl SourceIdentitySubject {
-    /// Selects the runtime subject for a configured source identity owner.
-    #[must_use]
-    pub fn for_binding_owner(owner: SourceIdentityOwner, user_principal: &UserPrincipal) -> Self {
-        match owner {
-            SourceIdentityOwner::User => Self::User(user_principal.user_id().to_string()),
-            SourceIdentityOwner::Workspace => Self::Workspace,
-        }
-    }
-
-    /// Returns the selected user id for user-owned identity material.
-    #[must_use]
-    pub fn user_id(&self) -> Option<&str> {
-        match self {
-            Self::User(user_id) => Some(user_id),
-            Self::Workspace => None,
-        }
-    }
-
-    /// Returns whether identity material is workspace-owned.
-    #[must_use]
-    pub const fn is_workspace(&self) -> bool {
-        matches!(self, Self::Workspace)
-    }
-}
-
 /// Workspace config binding from one source-local surface to an identity slot.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SourceIdentityBinding {
@@ -188,13 +143,6 @@ pub struct SourceIdentityBinding {
     /// identity selection is per Coral user principal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
-    /// Workspace-owned accepted identity id from the surface's
-    /// `identity_requirements`.
-    ///
-    /// User-owned bindings intentionally leave this empty because the concrete
-    /// accepted branch is per Coral user principal.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accepted_identity: Option<String>,
 }
 
 impl SourceIdentityBinding {
@@ -204,7 +152,6 @@ impl SourceIdentityBinding {
         Self {
             owner: SourceIdentityOwner::User,
             identity: None,
-            accepted_identity: None,
         }
     }
 
@@ -213,19 +160,12 @@ impl SourceIdentityBinding {
     /// # Errors
     ///
     /// Returns [`AppError`] if the identity reference is empty or contains a
-    /// path separator, or if the accepted identity id is empty.
-    pub fn workspace_owned(
-        identity: impl Into<String>,
-        accepted_identity: Option<String>,
-    ) -> Result<Self, AppError> {
+    /// path separator.
+    pub fn workspace_owned(identity: impl Into<String>) -> Result<Self, AppError> {
         let identity = parse_path_segment("identity", &identity.into())?;
-        let accepted_identity = accepted_identity
-            .map(|accepted_identity| parse_accepted_identity_id(&accepted_identity))
-            .transpose()?;
         Ok(Self {
             owner: SourceIdentityOwner::Workspace,
             identity: Some(identity),
-            accepted_identity,
         })
     }
 
@@ -234,13 +174,13 @@ impl SourceIdentityBinding {
     /// # Errors
     ///
     /// Returns [`AppError`] if the identity reference is empty or contains a
-    /// path separator, or if the accepted identity id is empty.
+    /// path separator.
     pub fn validate(&self) -> Result<(), AppError> {
         match self.owner {
             SourceIdentityOwner::User => {
-                if self.identity.is_some() || self.accepted_identity.is_some() {
+                if self.identity.is_some() {
                     return Err(AppError::InvalidInput(
-                        "user-owned source identity bindings store only owner; identity and accepted_identity are selected per user".to_string(),
+                        "user-owned source identity bindings store only owner; identity is selected per user".to_string(),
                     ));
                 }
             }
@@ -251,9 +191,6 @@ impl SourceIdentityBinding {
                     ));
                 };
                 parse_path_segment("identity", identity)?;
-                if let Some(accepted_identity) = &self.accepted_identity {
-                    parse_accepted_identity_id(accepted_identity)?;
-                }
             }
         }
         Ok(())
@@ -265,9 +202,6 @@ impl SourceIdentityBinding {
 pub struct SourceIdentitySelection {
     /// Stable identity reference understood by installed identity providers.
     pub identity: String,
-    /// Optional accepted identity id from the surface's `identity_requirements`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accepted_identity: Option<String>,
 }
 
 impl SourceIdentitySelection {
@@ -276,19 +210,10 @@ impl SourceIdentitySelection {
     /// # Errors
     ///
     /// Returns [`AppError`] if the identity reference is empty or contains a
-    /// path separator, or if the accepted identity id is empty.
-    pub fn new(
-        identity: impl Into<String>,
-        accepted_identity: Option<String>,
-    ) -> Result<Self, AppError> {
+    /// path separator.
+    pub fn new(identity: impl Into<String>) -> Result<Self, AppError> {
         let identity = parse_path_segment("identity", &identity.into())?;
-        let accepted_identity = accepted_identity
-            .map(|accepted_identity| parse_accepted_identity_id(&accepted_identity))
-            .transpose()?;
-        Ok(Self {
-            identity,
-            accepted_identity,
-        })
+        Ok(Self { identity })
     }
 
     /// Validates a selection loaded from storage.
@@ -296,13 +221,9 @@ impl SourceIdentitySelection {
     /// # Errors
     ///
     /// Returns [`AppError`] if the identity reference is empty or contains a
-    /// path separator, or if the accepted identity id is empty.
+    /// path separator.
     pub fn validate(&self) -> Result<(), AppError> {
-        parse_path_segment("identity", &self.identity)?;
-        if let Some(accepted_identity) = &self.accepted_identity {
-            parse_accepted_identity_id(accepted_identity)?;
-        }
-        Ok(())
+        parse_path_segment("identity", &self.identity).map(|_| ())
     }
 }
 
@@ -311,9 +232,8 @@ impl SourceIdentitySelection {
 pub struct SourceIdentitySelectionRequest {
     /// Workspace selected by the request.
     pub workspace_name: String,
-    /// Subject selected by Coral for this binding; user-owned bindings carry
-    /// the request user id (`subject.user_id()`).
-    pub subject: SourceIdentitySubject,
+    /// Request user id whose user-owned source identity selection is needed.
+    pub user_id: String,
     /// Source/schema name whose surface needs identity material.
     pub source_name: String,
     /// DSL v4 surface id.
@@ -327,12 +247,12 @@ pub struct SourceIdentitySelectionRequest {
 pub struct SourceIdentityResolutionRequest {
     /// Workspace selected by the request.
     pub workspace_name: String,
-    /// Subject selected by Coral for this binding.
+    /// Request user id selected by Coral for user-owned bindings.
     ///
-    /// User-owned bindings carry the request user id. Workspace-owned bindings
-    /// intentionally carry no request user id, so providers cannot accidentally
-    /// select user-scoped material for a workspace identity.
-    pub subject: SourceIdentitySubject,
+    /// Workspace-owned bindings intentionally carry no request user id, so
+    /// providers cannot accidentally select user-scoped material for a workspace
+    /// identity.
+    pub user_id: Option<String>,
     /// Source/schema name whose surface needs identity material.
     pub source_name: String,
     /// DSL v4 surface id.
@@ -394,21 +314,21 @@ pub trait RuntimeSourceIdentity: Send + Sync + fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`RequestIdentityResolverError`] when request-scoped input is
-    /// invalid or identity material cannot satisfy the request.
+    /// Returns [`RequestIdentityHttpAuthenticatorError`] when request-scoped
+    /// input is invalid or identity material cannot satisfy the request.
     async fn resolve_headers(
         &self,
-        identity: &RequestIdentityResolutionContext,
+        identity: &SelectedRequestIdentity,
         request: &reqwest::Request,
         resolved_inputs: &BTreeMap<String, String>,
-    ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestIdentityResolverError>;
+    ) -> Result<Vec<(HeaderName, HeaderValue)>, RequestIdentityHttpAuthenticatorError>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        LOCAL_MEMBER_ID, SourceIdentityBinding, SourceIdentityOwner, SourceIdentitySelection,
-        SourceIdentitySubject, UserPrincipal, parse_path_segment,
+        LOCAL_MEMBER_ID, SourceIdentityBinding, SourceIdentitySelection, UserPrincipal,
+        parse_path_segment,
     };
 
     #[test]
@@ -470,55 +390,20 @@ mod tests {
     }
 
     #[test]
-    fn source_identity_subject_carries_user_only_for_user_owned_bindings() {
-        let user_principal = UserPrincipal::for_user("saul").expect("named user");
-
-        assert_eq!(
-            SourceIdentitySubject::for_binding_owner(SourceIdentityOwner::User, &user_principal),
-            SourceIdentitySubject::User("saul".to_string())
-        );
-        assert_eq!(
-            SourceIdentitySubject::for_binding_owner(
-                SourceIdentityOwner::Workspace,
-                &user_principal,
-            ),
-            SourceIdentitySubject::Workspace
-        );
-    }
-
-    #[test]
-    fn source_identity_binding_allows_manifest_accepted_identity_ids() {
-        let binding =
-            SourceIdentityBinding::workspace_owned("github-workspace", Some("oauth/github".into()))
-                .expect("manifest accepted identity ids are not path segments");
+    fn source_identity_binding_accepts_workspace_identity_reference() {
+        let binding = SourceIdentityBinding::workspace_owned("github-workspace")
+            .expect("workspace identity reference should validate");
 
         assert_eq!(binding.identity.as_deref(), Some("github-workspace"));
-        assert_eq!(binding.accepted_identity.as_deref(), Some("oauth/github"));
-        binding
-            .validate()
-            .expect("accepted identity id should validate");
+        binding.validate().expect("binding should validate");
     }
 
     #[test]
-    fn source_identity_selection_allows_manifest_accepted_identity_ids() {
-        let selection = SourceIdentitySelection::new("github-user", Some("oauth/github".into()))
-            .expect("manifest accepted identity ids are not path segments");
+    fn source_identity_selection_accepts_identity_reference() {
+        let selection = SourceIdentitySelection::new("github-user")
+            .expect("identity reference should validate");
 
         assert_eq!(selection.identity, "github-user");
-        assert_eq!(selection.accepted_identity.as_deref(), Some("oauth/github"));
-        selection
-            .validate()
-            .expect("accepted identity id should validate");
-    }
-
-    #[test]
-    fn source_identity_binding_rejects_empty_accepted_identity_ids() {
-        let error = SourceIdentityBinding::workspace_owned("github-workspace", Some("   ".into()))
-            .expect_err("accepted identity id should be non-empty");
-
-        assert!(
-            error.to_string().contains("missing accepted identity id"),
-            "unexpected error: {error}"
-        );
+        selection.validate().expect("selection should validate");
     }
 }

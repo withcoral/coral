@@ -10,9 +10,6 @@ pub enum AuthorizationError {
     /// The authenticated principal is not allowed to perform the operation.
     #[error("{0}")]
     Forbidden(String),
-    /// Authorization failed unexpectedly.
-    #[error("{0}")]
-    Internal(String),
 }
 
 impl AuthorizationError {
@@ -21,57 +18,82 @@ impl AuthorizationError {
     pub fn forbidden(message: impl Into<String>) -> Self {
         Self::Forbidden(message.into())
     }
-
-    /// Builds an internal authorization error.
-    #[must_use]
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self::Internal(message.into())
-    }
 }
 
-/// Source mutation operation being authorized.
+/// Upsert/delete management-resource mutation operation being authorized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceMutationKind {
+pub enum ResourceMutationKind {
+    /// Install, create, or replace the resource.
+    Upsert,
+    /// Remove the resource.
+    Delete,
+}
+
+/// Workspace source mutation operation being authorized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceSourceMutationKind {
     /// Install a source from Coral's bundled source catalog.
     CreateBundled,
     /// Install a bundled source while retrieving OAuth credentials.
     CreateBundledWithOAuth,
-    /// Import a source spec.
-    Import,
+    /// Install a source from an authored or imported source spec.
+    CreateFromSourceSpec,
     /// Remove an installed source from a workspace.
     Delete,
+}
+
+/// Management-plane mutation exposed by Coral's shared service surface.
+///
+/// Source specs, workspace sources, and workspace identities are separate
+/// resources: importing or updating an authored manifest mutates a source spec,
+/// adding that spec to a workspace mutates the workspace's installed source
+/// catalog, and changing workspace-owned identity material mutates a workspace
+/// identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagementMutation<'a> {
+    /// Create, replace, or delete a global identity spec.
+    IdentitySpec {
+        /// Identity-spec operation being authorized.
+        kind: ResourceMutationKind,
+    },
+    /// Create, replace, or delete an authored source spec.
+    SourceSpec {
+        /// Source-spec operation being authorized.
+        kind: ResourceMutationKind,
+    },
+    /// Create, replace, or delete workspace-owned identity material.
+    WorkspaceIdentity {
+        /// Workspace whose identity catalog will change.
+        workspace_id: &'a str,
+        /// Workspace identity operation being authorized.
+        kind: ResourceMutationKind,
+    },
+    /// Create or delete a workspace source.
+    WorkspaceSource {
+        /// Workspace whose installed source catalog will change.
+        workspace_id: &'a str,
+        /// Workspace source operation being authorized.
+        kind: WorkspaceSourceMutationKind,
+    },
 }
 
 /// Product-provided authorization policy for management-plane mutations.
 ///
 /// OSS Coral installs [`AllowAllManagementAuthorizer`] by default to preserve
-/// local single-user behavior. Product runtimes can replace it to gate source
-/// and identity-spec mutations while reusing the shared gRPC service surface.
+/// local single-user behavior. Product runtimes can replace it to gate the
+/// management mutations exposed through the shared gRPC service surface.
 #[tonic::async_trait]
 pub trait ManagementAuthorizer: fmt::Debug + Send + Sync + 'static {
-    /// Authorizes creating or deleting global identity specs.
+    /// Authorizes one management-plane mutation.
     ///
     /// # Errors
     ///
     /// Returns [`AuthorizationError`] when the principal is not allowed to
-    /// mutate identity specs.
-    async fn authorize_identity_spec_mutation(
+    /// perform the mutation.
+    async fn authorize_management_mutation(
         &self,
         principal: &UserPrincipal,
-    ) -> Result<(), AuthorizationError>;
-
-    /// Authorizes creating, importing, or deleting a workspace source through
-    /// the shared OSS source mutation APIs.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AuthorizationError`] when the principal is not allowed to
-    /// mutate sources in the workspace.
-    async fn authorize_source_mutation(
-        &self,
-        principal: &UserPrincipal,
-        workspace_id: &str,
-        kind: SourceMutationKind,
+        mutation: ManagementMutation<'_>,
     ) -> Result<(), AuthorizationError>;
 }
 
@@ -81,18 +103,10 @@ pub struct AllowAllManagementAuthorizer;
 
 #[tonic::async_trait]
 impl ManagementAuthorizer for AllowAllManagementAuthorizer {
-    async fn authorize_identity_spec_mutation(
+    async fn authorize_management_mutation(
         &self,
         _principal: &UserPrincipal,
-    ) -> Result<(), AuthorizationError> {
-        Ok(())
-    }
-
-    async fn authorize_source_mutation(
-        &self,
-        _principal: &UserPrincipal,
-        _workspace_id: &str,
-        _kind: SourceMutationKind,
+        _mutation: ManagementMutation<'_>,
     ) -> Result<(), AuthorizationError> {
         Ok(())
     }

@@ -61,14 +61,17 @@ mod transport;
 mod workspaces;
 
 pub use authorization::{
-    AllowAllManagementAuthorizer, AuthorizationError, ManagementAuthorizer, SourceMutationKind,
+    AllowAllManagementAuthorizer, AuthorizationError, ManagementAuthorizer, ManagementMutation,
+    ResourceMutationKind, WorkspaceSourceMutationKind,
 };
 pub use bootstrap::{
     AppError, RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
 };
 pub use coral_engine::{
-    EngineExtensions, QuerySource, RequestIdentityResolutionContext, RequestIdentityResolver,
-    RequestIdentityResolverError,
+    EngineExtensions, QuerySource, RequestIdentityHttpAuthenticator,
+    RequestIdentityHttpAuthenticatorError, RequestIdentityHttpAuthenticatorFactory,
+    RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
+    SelectedRequestIdentity,
 };
 pub use identities::{
     IdentityOwnerKey, UserOwnedIdentityMaterialGuard, UserOwnedIdentityName,
@@ -77,7 +80,7 @@ pub use identities::{
 pub use identity::{
     RuntimeSourceIdentity, SingleUserPrincipalProvider, SourceIdentityBinding, SourceIdentityOwner,
     SourceIdentityProvider, SourceIdentityResolutionRequest, SourceIdentitySelection,
-    SourceIdentitySelectionRequest, SourceIdentitySubject, UserPrincipal, UserPrincipalProvider,
+    SourceIdentitySelectionRequest, UserPrincipal, UserPrincipalProvider,
 };
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
