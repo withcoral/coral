@@ -186,6 +186,7 @@ impl QuerySource {
                     package.source_name
                 )));
             }
+            validate_runtime_component_identity_requirements(&package.source_name, component)?;
         }
         Ok(Self {
             source_name: package.source_name,
@@ -274,6 +275,38 @@ impl RuntimeSourceComponent {
             Self::Mcp(manifest) => &manifest.common.name,
         }
     }
+}
+
+fn validate_runtime_component_identity_requirements(
+    package_source_name: &str,
+    component: &RuntimeSourceComponent,
+) -> Result<(), crate::CoreError> {
+    let RuntimeSourceComponent::Http(http) = component else {
+        return Ok(());
+    };
+    let Some(identity_requirements) = &http.identity_requirements else {
+        return Ok(());
+    };
+
+    let component_name = http.manifest.common.name.as_str();
+    if http.manifest.common.dsl_version != 4 {
+        return Err(crate::CoreError::InvalidInput(format!(
+            "runtime source package '{package_source_name}' component '{component_name}' declares identity_requirements, but identity_requirements are supported only for DSL v4 HTTP components"
+        )));
+    }
+    if !is_valid_runtime_surface_id(&identity_requirements.surface_id) {
+        return Err(crate::CoreError::InvalidInput(format!(
+            "runtime source package '{package_source_name}' component '{component_name}' identity_requirements surface_id '{}' must match [a-z][a-z0-9_]*",
+            identity_requirements.surface_id
+        )));
+    }
+    Ok(())
+}
+
+fn is_valid_runtime_surface_id(surface_id: &str) -> bool {
+    let mut chars = surface_id.chars();
+    matches!(chars.next(), Some(ch) if ch.is_ascii_lowercase())
+        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
 }
 
 fn components_from_manifest(source_spec: &ValidatedSourceManifest) -> Vec<RuntimeSourceComponent> {
@@ -834,9 +867,17 @@ impl QueryExecution {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::str::FromStr as _;
 
-    use super::MemorySize;
+    use coral_spec::parse_source_manifest_value;
+    use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
+    use serde_json::json;
+
+    use super::{
+        MemorySize, QuerySource, RuntimeHttpSourceComponent, RuntimeSourceComponent,
+        RuntimeSourcePackage,
+    };
 
     #[test]
     fn memory_size_parses_binary_units() {
@@ -862,6 +903,106 @@ mod tests {
                 MemorySize::from_str(raw).is_err(),
                 "{raw:?} should be rejected"
             );
+        }
+    }
+
+    #[test]
+    fn runtime_source_package_rejects_empty_identity_surface_id() {
+        let mut manifest = http_manifest();
+        manifest.common.dsl_version = 4;
+
+        let error = QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "github_v4".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                components: vec![RuntimeSourceComponent::Http(
+                    RuntimeHttpSourceComponent::with_identity_requirements(
+                        manifest,
+                        "",
+                        identity_requirements(),
+                    ),
+                )],
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect_err("empty identity surface id should fail runtime package validation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("identity_requirements surface_id '' must match [a-z][a-z0-9_]*"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn runtime_source_package_rejects_identity_requirements_on_non_v4_http_component() {
+        let error = QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "github".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                components: vec![RuntimeSourceComponent::Http(
+                    RuntimeHttpSourceComponent::with_identity_requirements(
+                        http_manifest(),
+                        "rest",
+                        identity_requirements(),
+                    ),
+                )],
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect_err("v3 HTTP component should not accept identity requirements");
+
+        assert!(
+            error.to_string().contains(
+                "declares identity_requirements, but identity_requirements are supported only for DSL v4 HTTP components"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    fn http_manifest() -> coral_spec::backends::http::HttpSourceManifest {
+        parse_source_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "github",
+            "version": "1.0.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
+            "tables": [{
+                "name": "issues",
+                "description": "Issues",
+                "request": {
+                    "method": "GET",
+                    "path": "/issues"
+                },
+                "response": {},
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }]
+        }))
+        .expect("manifest")
+        .as_http()
+        .expect("http manifest")
+        .clone()
+    }
+
+    fn identity_requirements() -> IdentityRequirements {
+        IdentityRequirements {
+            accepts: vec![AcceptedIdentityRequirement {
+                id: "github-rest-read".to_string(),
+                identity_specs: vec!["github_oauth".to_string()],
+                audience: BTreeMap::new(),
+            }],
         }
     }
 }
