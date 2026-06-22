@@ -283,10 +283,14 @@ impl QueryManager {
         for source in config.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
-                Err(
-                    error @ (AppError::Credentials(CredentialsError::Unavailable(_))
-                    | AppError::MissingOrIncompatibleV4Materialization { .. }),
-                ) => {
+                Err(error @ AppError::MissingOrIncompatibleV4Materialization { .. }) => {
+                    tracing::warn!(
+                        source = %source.name,
+                        detail = %error,
+                        "skipping source with incompatible DSL v4 materialization"
+                    );
+                }
+                Err(error @ AppError::Credentials(CredentialsError::Unavailable(_))) => {
                     return Err(error);
                 }
                 Err(error) => {
@@ -657,6 +661,37 @@ mod tests {
             _temp: temp,
             manager,
         }
+    }
+
+    fn persist_imported_source_manifest(
+        fixture: &QueryManagerFixture,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        manifest_yaml: &str,
+        version: Option<&str>,
+    ) {
+        let manifest_path = fixture
+            .manager
+            .layout
+            .manifest_file(workspace_name, source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(&manifest_path, manifest_yaml).expect("write manifest");
+        fixture
+            .manager
+            .config_store
+            .upsert_source(
+                workspace_name,
+                InstalledSource {
+                    name: source_name.clone(),
+                    version: version.map(ToString::to_string),
+                    variables: BTreeMap::new(),
+                    secrets: Vec::new(),
+                    credential_storage: None,
+                    origin: SourceOrigin::Imported,
+                },
+            )
+            .expect("persist source");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1050,19 +1085,15 @@ surfaces:
     }
 
     #[test]
-    fn load_query_sources_fails_closed_for_missing_v4_materialization() {
+    fn load_query_sources_skips_missing_v4_materialization() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
         fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = WorkspaceName::default();
         let source_name = SourceName::parse("github_v4_missing_artifacts").expect("source name");
-        let manifest_path = fixture
-            .manager
-            .layout
-            .manifest_file(&workspace_name, &source_name);
-        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
-            .expect("create source dir");
-        std::fs::write(
-            &manifest_path,
+        persist_imported_source_manifest(
+            &fixture,
+            &workspace_name,
+            &source_name,
             r"
 name: github_v4_missing_artifacts
 dsl_version: 4
@@ -1071,40 +1102,59 @@ surfaces:
     type: openapi
     url: https://example.com/openapi.yaml
 ",
-        )
-        .expect("write manifest");
-        fixture
-            .manager
-            .config_store
-            .upsert_source(
-                &workspace_name,
-                InstalledSource {
-                    name: source_name.clone(),
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: Vec::new(),
-                    credential_storage: None,
-                    origin: SourceOrigin::Imported,
-                },
-            )
-            .expect("persist source");
+            None,
+        );
+        let healthy_source_name = SourceName::parse("healthy_messages").expect("source name");
+        persist_imported_source_manifest(
+            &fixture,
+            &workspace_name,
+            &healthy_source_name,
+            r"
+name: healthy_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://api.example.com
+tables:
+  - name: messages
+    description: Messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+            Some("0.1.0"),
+        );
 
         let config = fixture
             .manager
             .config_store
             .load_config()
             .expect("load config");
+        let poisoned_source = config
+            .get_source(&workspace_name, &source_name)
+            .expect("poisoned source should be persisted");
         let error = fixture
             .manager
-            .load_query_sources(&workspace_name, &config)
-            .expect_err("missing materialization should fail closed");
-
+            .load_query_source(&workspace_name, &poisoned_source)
+            .expect_err("targeted poisoned source load should still fail");
         assert!(
             matches!(
                 error,
                 AppError::MissingOrIncompatibleV4Materialization { .. }
             ),
             "unexpected error: {error:#}"
+        );
+        let sources = fixture
+            .manager
+            .load_query_sources(&workspace_name, &config)
+            .expect("missing materialization should not poison healthy sources");
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(
+            sources.first().map(coral_engine::QuerySource::source_name),
+            Some("healthy_messages")
         );
     }
 
