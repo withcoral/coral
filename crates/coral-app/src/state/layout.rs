@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, choose_native_strategy};
 
 use crate::bootstrap::AppError;
+use crate::identities::{IdentityInstanceName, IdentityOwnerKey};
 use crate::identity_specs::IdentitySpecName;
 use crate::sources::SourceName;
 use crate::storage::fs::ensure_dir;
@@ -125,43 +126,48 @@ impl AppStateLayout {
         self.config_dir.join("identities")
     }
 
-    pub(crate) fn user_owned_identities_root(&self, user_id: &str) -> PathBuf {
-        self.identities_root().join("users").join(user_id)
+    pub(crate) fn user_owned_identities_root(&self, owner: &IdentityOwnerKey) -> PathBuf {
+        self.identities_root().join("users").join(owner.as_str())
     }
 
-    pub(crate) fn user_owned_identity_dir(&self, user_id: &str, identity_name: &str) -> PathBuf {
-        self.user_owned_identities_root(user_id).join(identity_name)
+    pub(crate) fn user_owned_identity_dir(
+        &self,
+        owner: &IdentityOwnerKey,
+        identity_name: &IdentityInstanceName,
+    ) -> PathBuf {
+        self.user_owned_identities_root(owner)
+            .join(identity_name.as_str())
     }
 
     pub(crate) fn user_owned_identity_manifest_file(
         &self,
-        user_id: &str,
-        identity_name: &str,
+        owner: &IdentityOwnerKey,
+        identity_name: &IdentityInstanceName,
     ) -> PathBuf {
-        self.user_owned_identity_dir(user_id, identity_name)
+        self.user_owned_identity_dir(owner, identity_name)
             .join(INSTALLED_IDENTITY_FILE_NAME)
     }
 
     pub(crate) fn user_owned_identity_material_file(
         &self,
-        user_id: &str,
-        identity_name: &str,
+        owner: &IdentityOwnerKey,
+        identity_name: &IdentityInstanceName,
     ) -> PathBuf {
-        self.user_owned_identity_dir(user_id, identity_name)
+        self.user_owned_identity_dir(owner, identity_name)
             .join(INSTALLED_SECRETS_FILE_NAME)
     }
 
     pub(crate) fn user_owned_identity_refresh_lock_file(
         &self,
-        user_id: &str,
-        identity_name: &str,
+        owner: &IdentityOwnerKey,
+        identity_name: &IdentityInstanceName,
     ) -> PathBuf {
         self.config_dir
             .join("locks")
             .join("identities")
             .join("users")
-            .join(user_id)
-            .join(format!("{identity_name}.refresh.lock"))
+            .join(owner.as_str())
+            .join(format!("{}.refresh.lock", identity_name.as_str()))
     }
 
     pub(crate) fn source_dir(

@@ -388,7 +388,8 @@ impl IdentitySpecManager {
         &self,
         name: &str,
     ) -> Result<IdentitySpecRecord, AppError> {
-        self.load_identity_spec_manifest_unlocked(name)
+        let name = validate_identity_spec_name(name)?;
+        self.load_identity_spec_manifest_unlocked(&name)
     }
 
     #[cfg(test)]
@@ -1024,9 +1025,11 @@ mod tests {
         IdentitySpecName, IdentitySpecRecord, IdentitySpecUsageProvider, identity_spec_fingerprint,
     };
     use crate::bootstrap::AppError;
-    use crate::credentials::{CredentialStoragePreference, CredentialStore, parse_env_file};
+    use crate::credentials::{CredentialStoragePreference, CredentialStore};
     use crate::features::{Features, dsl_v4_features};
+    use crate::identities::{IdentityInstanceName, IdentityOwnerKey};
     use crate::state::AppStateLayout;
+    use crate::storage::env_file::parse_env_file;
 
     fn manager() -> (TempDir, IdentitySpecManager, AppStateLayout) {
         manager_with(dsl_v4_features(), Vec::new())
@@ -1757,7 +1760,9 @@ type: oauth
         identity_name: &str,
         identity_spec: &str,
     ) {
-        let path = layout.user_owned_identity_manifest_file(user_id, identity_name);
+        let owner = IdentityOwnerKey::new(user_id).expect("identity owner");
+        let identity_name = IdentityInstanceName::new(identity_name).expect("identity name");
+        let path = layout.user_owned_identity_manifest_file(&owner, &identity_name);
         fs::create_dir_all(path.parent().expect("identity dir")).expect("identity dir");
         fs::write(
             path,

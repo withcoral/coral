@@ -11,6 +11,7 @@ use sha2::{Digest as _, Sha256};
 use crate::bootstrap::AppError;
 use crate::identity_specs::IdentitySpecName;
 use crate::state::AppStateLayout;
+use crate::storage::env_file::{parse_env_file, render_env_file};
 use crate::storage::fs as storage_fs;
 use crate::storage::fs::FileLock;
 use crate::workspaces::WorkspaceName;
@@ -33,6 +34,12 @@ pub enum CredentialsError {
         snapshot: &'static str,
         requested: &'static str,
     },
+}
+
+impl From<crate::storage::env_file::EnvFileError> for CredentialsError {
+    fn from(error: crate::storage::env_file::EnvFileError) -> Self {
+        Self::Parse(error.to_string())
+    }
 }
 
 #[derive(Clone)]
@@ -968,7 +975,7 @@ fn decode_values(
         CredentialStorageKind::File => {
             let raw = std::str::from_utf8(bytes)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-            parse_env_file(raw)
+            parse_env_file(raw).map_err(Into::into)
         }
         CredentialStorageKind::Keychain => {
             let document: KeychainMaterialDocument = serde_json::from_slice(bytes)
@@ -990,7 +997,7 @@ fn load_file(path: &Path) -> Result<BTreeMap<String, String>, CredentialsError> 
         return Ok(BTreeMap::new());
     }
 
-    parse_env_file(&std::fs::read_to_string(path)?)
+    parse_env_file(&std::fs::read_to_string(path)?).map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -1023,17 +1030,6 @@ pub(crate) fn write_file_unlocked(path: &Path, bytes: &[u8]) -> Result<(), Crede
     Ok(())
 }
 
-pub(crate) fn render_env_file(values: &BTreeMap<String, String>) -> String {
-    let mut output = String::new();
-    for (env_var, value) in values {
-        output.push_str(env_var);
-        output.push('=');
-        output.push_str(&encode_env_value(value));
-        output.push('\n');
-    }
-    output
-}
-
 pub(crate) fn remove_file_if_exists_unlocked(path: &Path) -> Result<(), io::Error> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -1042,128 +1038,18 @@ pub(crate) fn remove_file_if_exists_unlocked(path: &Path) -> Result<(), io::Erro
     }
 }
 
-pub(crate) fn parse_env_file(raw: &str) -> Result<BTreeMap<String, String>, CredentialsError> {
-    let mut values = BTreeMap::new();
-    for (index, line) in raw.lines().enumerate() {
-        let line_number = index + 1;
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        let Some((env_var, raw_value)) = line.split_once('=') else {
-            return Err(CredentialsError::Parse(format!(
-                "line {line_number} is missing '='"
-            )));
-        };
-        let env_var = env_var.trim();
-        if env_var.is_empty() {
-            return Err(CredentialsError::Parse(format!(
-                "line {line_number} has an empty variable name"
-            )));
-        }
-        if values.contains_key(env_var) {
-            return Err(CredentialsError::Parse(format!(
-                "line {line_number} redefines '{env_var}'"
-            )));
-        }
-
-        let value = decode_env_value(raw_value.trim(), line_number)?;
-        values.insert(env_var.to_string(), value);
-    }
-    Ok(values)
-}
-
-fn decode_env_value(raw: &str, line_number: usize) -> Result<String, CredentialsError> {
-    if let Some(inner) = raw.strip_prefix('"') {
-        let Some(inner) = inner.strip_suffix('"') else {
-            return Err(CredentialsError::Parse(format!(
-                "line {line_number} has an unterminated quoted value"
-            )));
-        };
-        return decode_quoted_env_value(inner, line_number);
-    }
-
-    if let Some(inner) = raw.strip_prefix('\'') {
-        let Some(inner) = inner.strip_suffix('\'') else {
-            return Err(CredentialsError::Parse(format!(
-                "line {line_number} has an unterminated single-quoted value"
-            )));
-        };
-        return Ok(inner.to_string());
-    }
-
-    Ok(raw.to_string())
-}
-
-fn decode_quoted_env_value(raw: &str, line_number: usize) -> Result<String, CredentialsError> {
-    let mut decoded = String::with_capacity(raw.len());
-    let mut chars = raw.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            decoded.push(ch);
-            continue;
-        }
-
-        let Some(escaped) = chars.next() else {
-            return Err(CredentialsError::Parse(format!(
-                "line {line_number} ends with a dangling escape"
-            )));
-        };
-        match escaped {
-            '\\' => decoded.push('\\'),
-            '"' => decoded.push('"'),
-            'n' => decoded.push('\n'),
-            'r' => decoded.push('\r'),
-            't' => decoded.push('\t'),
-            other => {
-                return Err(CredentialsError::Parse(format!(
-                    "line {line_number} uses unsupported escape '\\{other}'"
-                )));
-            }
-        }
-    }
-    Ok(decoded)
-}
-
-fn encode_env_value(value: &str) -> String {
-    if value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '@'))
-    {
-        return value.to_string();
-    }
-
-    let mut encoded = String::with_capacity(value.len() + 2);
-    encoded.push('"');
-    for ch in value.chars() {
-        match ch {
-            '\\' => encoded.push_str("\\\\"),
-            '"' => encoded.push_str("\\\""),
-            '\n' => encoded.push_str("\\n"),
-            '\r' => encoded.push_str("\\r"),
-            '\t' => encoded.push_str("\\t"),
-            other => encoded.push(other),
-        }
-    }
-    encoded.push('"');
-    encoded
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    use super::{
-        CredentialSetRef, CredentialStore, TestKeychainBackend, decode_env_value, encode_env_value,
-        load_file, save_file,
-    };
+    use super::{CredentialSetRef, CredentialStore, TestKeychainBackend, load_file, save_file};
     use crate::bootstrap::AppError;
     use crate::credentials::{CredentialSetId, CredentialStorageKind, CredentialStoragePreference};
     use crate::sources::SourceName;
     use crate::state::AppStateLayout;
+    use crate::storage::env_file::{decode_env_value, encode_env_value};
     use crate::workspaces::WorkspaceName;
     use tempfile::TempDir;
 

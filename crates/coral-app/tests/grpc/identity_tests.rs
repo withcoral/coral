@@ -38,7 +38,7 @@ async fn identity_service_creates_and_lists_user_fixed_token_identity() {
             identity_spec: "github_pat".to_string(),
             setup: Some(create_user_owned_identity_request::Setup::FixedToken(
                 FixedTokenUserOwnedIdentitySetup {
-                    token: "ghp_secret".to_string(),
+                    token: "  ghp_secret  ".to_string(),
                 },
             )),
         }))
@@ -85,6 +85,11 @@ async fn identity_service_creates_and_lists_user_fixed_token_identity() {
         fs::read_to_string(&material_file)
             .expect("identity material")
             .contains("TOKEN=ghp_secret")
+    );
+    assert!(
+        !fs::read_to_string(&material_file)
+            .expect("identity material")
+            .contains("  ghp_secret  ")
     );
 }
 

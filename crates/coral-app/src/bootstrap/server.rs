@@ -420,25 +420,32 @@ impl ServerBuilder {
         let credential_manager = CredentialManager::new(credential_store.clone());
         let features = crate::features::FeatureStore::new(layout.clone())
             .load_with_overrides(&self.config.feature_overrides)?;
+        let identity_instance_store = self.config.identity_instance_store;
+        let mut identity_spec_usage_providers = self.config.identity_spec_usage_providers;
+        if let Some(store) = identity_instance_store.as_ref() {
+            identity_spec_usage_providers.push(Arc::new(IdentityInstanceStoreUsageProvider {
+                store: Arc::clone(store),
+            }));
+        }
         let identity_spec_manager = if let Some(registry) = self.config.identity_spec_registry {
             IdentitySpecManager::new_with_registry(
                 layout.clone(),
                 registry,
                 features.clone(),
-                self.config.identity_spec_usage_providers,
+                identity_spec_usage_providers,
             )
         } else {
             IdentitySpecManager::new_with_credential_store(
                 layout.clone(),
                 credential_store,
                 features.clone(),
-                self.config.identity_spec_usage_providers,
+                identity_spec_usage_providers,
             )
         };
         let identity_instance_manager = identity_instance_manager_for_server(
             layout.clone(),
             identity_spec_manager.clone(),
-            self.config.identity_instance_store,
+            identity_instance_store,
         );
         let source_manager = SourceManager::new_with_features(
             config_store.clone(),
@@ -494,6 +501,17 @@ fn identity_instance_manager_for_server(
     match store {
         Some(store) => IdentityInstanceManager::new_with_store(identity_spec_manager, store),
         None => IdentityInstanceManager::new(layout, identity_spec_manager),
+    }
+}
+
+#[derive(Debug)]
+struct IdentityInstanceStoreUsageProvider {
+    store: Arc<dyn IdentityInstanceStore>,
+}
+
+impl IdentitySpecUsageProvider for IdentityInstanceStoreUsageProvider {
+    fn count_identities_for_spec(&self, identity_spec_name: &str) -> Result<u32, AppError> {
+        self.store.count_identities_for_spec(identity_spec_name)
     }
 }
 
@@ -868,6 +886,7 @@ mod tests {
     )]
 
     use std::borrow::Cow;
+    use std::collections::BTreeMap;
     use std::net::{Ipv4Addr, TcpListener};
     use std::path::Path;
     use std::sync::Arc;
@@ -880,8 +899,8 @@ mod tests {
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
         AddIdentitySpecRequest, CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
-        DeleteSourceRequest, ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse,
-        ListSourcesRequest, ListTracesRequest, OpenEpisodeRequest, Workspace,
+        DeleteIdentitySpecRequest, DeleteSourceRequest, ExecuteSqlRequest, ImportSourceRequest,
+        ImportSourceResponse, ListSourcesRequest, ListTracesRequest, OpenEpisodeRequest, Workspace,
         import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
@@ -898,7 +917,10 @@ mod tests {
     use crate::episode::store::EpisodeStore;
     use crate::features::{Feature, FeatureOverrides};
     use crate::feedback::manager::FeedbackManager;
-    use crate::identities::IdentityInstanceManager;
+    use crate::identities::{
+        IdentityInstanceManager, IdentityInstanceMaterialGuard, IdentityInstanceName,
+        IdentityInstanceRecord, IdentityInstanceStore, IdentityOwnerKey,
+    };
     use crate::identity_specs::IdentitySpecManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
@@ -971,6 +993,67 @@ enabled = false
                     Err(AuthorizationError::forbidden("source mutation denied"))
                 }
                 _ => Ok(()),
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct CountingIdentityInstanceStore {
+        identity_spec_name: String,
+        count: u32,
+    }
+
+    #[tonic::async_trait]
+    impl IdentityInstanceStore for CountingIdentityInstanceStore {
+        async fn list_identities(
+            &self,
+            _owner: &IdentityOwnerKey,
+        ) -> Result<Vec<IdentityInstanceRecord>, AppError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_identity(
+            &self,
+            _owner: &IdentityOwnerKey,
+            _identity_name: &IdentityInstanceName,
+        ) -> Result<Option<IdentityInstanceRecord>, AppError> {
+            Ok(None)
+        }
+
+        async fn replace_identity(
+            &self,
+            _owner: &IdentityOwnerKey,
+            _record: &IdentityInstanceRecord,
+            _material: &BTreeMap<String, String>,
+        ) -> Result<(), AppError> {
+            Err(AppError::FailedPrecondition(
+                "test identity store is read-only".to_string(),
+            ))
+        }
+
+        async fn delete_identity(
+            &self,
+            _owner: &IdentityOwnerKey,
+            _identity_name: &IdentityInstanceName,
+        ) -> Result<bool, AppError> {
+            Ok(false)
+        }
+
+        async fn material_guard(
+            &self,
+            _owner: &IdentityOwnerKey,
+            _identity_name: &IdentityInstanceName,
+        ) -> Result<Box<dyn IdentityInstanceMaterialGuard>, AppError> {
+            Err(AppError::FailedPrecondition(
+                "test identity store has no material".to_string(),
+            ))
+        }
+
+        fn count_identities_for_spec(&self, identity_spec_name: &str) -> Result<u32, AppError> {
+            if identity_spec_name == self.identity_spec_name {
+                Ok(self.count)
+            } else {
+                Ok(0)
             }
         }
     }
@@ -1123,6 +1206,60 @@ type: fixed_token
             .await
             .expect("process-local dsl_v4 override should enable identity spec API");
 
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn identity_instance_store_reports_identity_spec_usage() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut feature_overrides = FeatureOverrides::default();
+        feature_overrides.set(Feature::DslV4, true);
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path().join("coral-config"))
+            .with_feature_overrides(feature_overrides)
+            .with_identity_instance_store(Arc::new(CountingIdentityInstanceStore {
+                identity_spec_name: "github_pat".to_string(),
+                count: 1,
+            }))
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut identity_spec_client = IdentitySpecServiceClient::new(channel);
+
+        identity_spec_client
+            .add_identity_spec(Request::new(AddIdentitySpecRequest {
+                manifest_yaml: r"
+kind: identity
+spec_version: 1
+name: github_pat
+version: 0.1.0
+issuer: github
+type: fixed_token
+"
+                .to_string(),
+                input_values: Vec::new(),
+            }))
+            .await
+            .expect("add identity spec");
+
+        let status = identity_spec_client
+            .delete_identity_spec(Request::new(DeleteIdentitySpecRequest {
+                name: "github_pat".to_string(),
+                force: false,
+            }))
+            .await
+            .expect_err("delete should respect injected identity store usage");
+
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert!(
+            status.message().contains("1 stored identity"),
+            "unexpected status: {status:?}"
+        );
         server.shutdown().await.expect("shutdown");
     }
 

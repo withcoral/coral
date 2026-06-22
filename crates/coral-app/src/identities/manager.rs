@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -11,14 +12,12 @@ use serde::{Deserialize, Serialize};
 use tracing::info_span;
 
 use crate::bootstrap::AppError;
-use crate::credentials::{
-    parse_env_file, remove_file_if_exists_unlocked, render_env_file, write_file_unlocked,
-};
 use crate::identity::{UserPrincipal, parse_path_segment};
 use crate::identity_specs::{
     IdentitySpecManager, IdentitySpecRecord, identity_spec_fingerprint, validate_identity_spec_name,
 };
 use crate::state::AppStateLayout;
+use crate::storage::env_file::{parse_env_file, render_env_file};
 use crate::storage::fs::{self as storage_fs, FileLock};
 
 const IDENTITY_INSTANCE_DOCUMENT_VERSION: u32 = 1;
@@ -221,6 +220,13 @@ pub trait IdentityInstanceStore: Send + Sync + std::fmt::Debug + 'static {
         owner: &IdentityOwnerKey,
         identity_name: &IdentityInstanceName,
     ) -> Result<Box<dyn IdentityInstanceMaterialGuard>, AppError>;
+
+    /// Counts identities that reference `identity_spec_name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the store cannot inspect its records.
+    fn count_identities_for_spec(&self, identity_spec_name: &str) -> Result<u32, AppError>;
 }
 
 /// Manages provider-facing identity instances keyed by an opaque owner.
@@ -316,7 +322,9 @@ impl IdentityInstanceManager {
         self.identity_specs.ensure_dsl_v4_enabled()?;
         let name = validate_identity_name(name)?;
         let identity_spec_name = validate_identity_spec_name(identity_spec)?;
-        let spec = self.identity_specs.get_identity_spec(&identity_spec_name)?;
+        let spec = self
+            .identity_specs
+            .get_identity_spec(identity_spec_name.as_str())?;
         if spec.manifest.identity_type != expected {
             return Err(AppError::InvalidInput(format!(
                 "identity spec '{identity_spec_name}' has type '{}'; expected {}",
@@ -340,7 +348,8 @@ impl IdentityInstanceManager {
             &command.identity_spec,
             IdentitySpecType::FixedToken,
         )?;
-        if command.token.is_empty() {
+        let token = command.token.trim().to_string();
+        if token.is_empty() {
             return Err(AppError::InvalidInput(
                 "fixed token identity token must not be empty".to_string(),
             ));
@@ -353,7 +362,7 @@ impl IdentityInstanceManager {
             identity_type: spec.manifest.identity_type.label().to_string(),
             metadata: BTreeMap::new(),
         };
-        let material = BTreeMap::from([(FIXED_TOKEN_MATERIAL_KEY.to_string(), command.token)]);
+        let material = BTreeMap::from([(FIXED_TOKEN_MATERIAL_KEY.to_string(), token)]);
         self.store
             .replace_identity(&owner, &record, &material)
             .await?;
@@ -412,31 +421,60 @@ impl FileIdentityInstanceStore {
 
     fn load_identity_unlocked(
         &self,
-        owner_key: &str,
-        name: &str,
+        owner: &IdentityOwnerKey,
+        name: &IdentityInstanceName,
     ) -> Result<IdentityInstanceRecord, AppError> {
-        let owner_key = validate_identity_owner_key(owner_key)?;
-        let name = validate_identity_name(name)?;
-        let path = self
-            .layout
-            .user_owned_identity_manifest_file(&owner_key, name.as_str());
+        let path = self.layout.user_owned_identity_manifest_file(owner, name);
         if !path.exists() {
             return Err(AppError::IdentityNotFound(name.to_string()));
         }
         let raw = fs::read_to_string(&path)?;
         let document: IdentityInstanceDocument = serde_yaml::from_str(&raw)?;
-        document.into_record(&name)
+        document.into_record(name)
     }
 
     fn material_lock_for_layout(
         layout: &AppStateLayout,
-        owner_key: &str,
+        owner: &IdentityOwnerKey,
         identity_name: &IdentityInstanceName,
     ) -> Result<FileLock, AppError> {
-        FileLock::exclusive(
-            &layout.user_owned_identity_refresh_lock_file(owner_key, identity_name.as_str()),
-        )
-        .map_err(Into::into)
+        FileLock::exclusive(&layout.user_owned_identity_refresh_lock_file(owner, identity_name))
+            .map_err(Into::into)
+    }
+
+    fn count_identity_spec_references_unlocked(
+        layout: &AppStateLayout,
+        identity_spec_name: &str,
+    ) -> Result<u32, AppError> {
+        let users_root = layout.identities_root().join("users");
+        if !users_root.exists() {
+            return Ok(0);
+        }
+        let mut count = 0u32;
+        for user_entry in fs::read_dir(users_root)? {
+            let user_entry = user_entry?;
+            if !user_entry.file_type()?.is_dir() {
+                continue;
+            }
+            for identity_entry in fs::read_dir(user_entry.path())? {
+                let identity_entry = identity_entry?;
+                if !identity_entry.file_type()?.is_dir() {
+                    continue;
+                }
+                let manifest_path = identity_entry
+                    .path()
+                    .join(crate::state::INSTALLED_IDENTITY_FILE_NAME);
+                if !manifest_path.exists() {
+                    continue;
+                }
+                let raw = fs::read_to_string(&manifest_path)?;
+                let reference: IdentitySpecReference = serde_yaml::from_str(&raw)?;
+                if reference.identity_spec == identity_spec_name {
+                    count = checked_add_identity_count(count, 1, identity_spec_name)?;
+                }
+            }
+        }
+        Ok(count)
     }
 }
 
@@ -447,11 +485,10 @@ impl IdentityInstanceStore for FileIdentityInstanceStore {
         owner: &IdentityOwnerKey,
     ) -> Result<Vec<IdentityInstanceRecord>, AppError> {
         let store = self.clone();
-        let owner_key = owner.as_str().to_string();
+        let owner = owner.clone();
         tokio::task::spawn_blocking(move || {
-            let owner_key = validate_identity_owner_key(&owner_key)?;
             let _lock = FileLock::shared(store.layout.state_lock())?;
-            let root = store.layout.user_owned_identities_root(&owner_key);
+            let root = store.layout.user_owned_identities_root(&owner);
             if !root.exists() {
                 return Ok(Vec::new());
             }
@@ -464,7 +501,8 @@ impl IdentityInstanceStore for FileIdentityInstanceStore {
                 let Some(name) = entry.file_name().to_str().map(ToString::to_string) else {
                     continue;
                 };
-                records.push(store.load_identity_unlocked(&owner_key, &name)?);
+                let name = validate_identity_name(&name)?;
+                records.push(store.load_identity_unlocked(&owner, &name)?);
             }
             records.sort_by(|left, right| left.name.cmp(&right.name));
             Ok(records)
@@ -478,11 +516,11 @@ impl IdentityInstanceStore for FileIdentityInstanceStore {
         identity_name: &IdentityInstanceName,
     ) -> Result<Option<IdentityInstanceRecord>, AppError> {
         let store = self.clone();
-        let owner_key = owner.as_str().to_string();
+        let owner = owner.clone();
         let identity_name = identity_name.clone();
         tokio::task::spawn_blocking(move || {
             let _lock = FileLock::shared(store.layout.state_lock())?;
-            match store.load_identity_unlocked(&owner_key, identity_name.as_str()) {
+            match store.load_identity_unlocked(&owner, &identity_name) {
                 Ok(record) => Ok(Some(record)),
                 Err(AppError::IdentityNotFound(_)) => Ok(None),
                 Err(error) => Err(error),
@@ -498,20 +536,19 @@ impl IdentityInstanceStore for FileIdentityInstanceStore {
         material: &BTreeMap<String, String>,
     ) -> Result<(), AppError> {
         let store = self.clone();
-        let owner_key = owner.as_str().to_string();
+        let owner = owner.clone();
         let record = record.clone();
         let material = material.clone();
         tokio::task::spawn_blocking(move || {
-            let owner_key = validate_identity_owner_key(&owner_key)?;
             let _material_lock =
-                Self::material_lock_for_layout(&store.layout, &owner_key, &record.name)?;
+                Self::material_lock_for_layout(&store.layout, &owner, &record.name)?;
             let _state_lock = FileLock::exclusive(store.layout.state_lock())?;
             let manifest_path = store
                 .layout
-                .user_owned_identity_manifest_file(&owner_key, record.name.as_str());
+                .user_owned_identity_manifest_file(&owner, &record.name);
             let material_path = store
                 .layout
-                .user_owned_identity_material_file(&owner_key, record.name.as_str());
+                .user_owned_identity_material_file(&owner, &record.name);
             if let Some(parent) = manifest_path.parent() {
                 storage_fs::ensure_private_dir(parent)?;
             }
@@ -532,27 +569,24 @@ impl IdentityInstanceStore for FileIdentityInstanceStore {
         identity_name: &IdentityInstanceName,
     ) -> Result<bool, AppError> {
         let store = self.clone();
-        let owner_key = owner.as_str().to_string();
+        let owner = owner.clone();
         let identity_name = identity_name.clone();
         tokio::task::spawn_blocking(move || {
-            let owner_key = validate_identity_owner_key(&owner_key)?;
             let _material_lock =
-                Self::material_lock_for_layout(&store.layout, &owner_key, &identity_name)?;
+                Self::material_lock_for_layout(&store.layout, &owner, &identity_name)?;
             let _state_lock = FileLock::exclusive(store.layout.state_lock())?;
             let manifest_path = store
                 .layout
-                .user_owned_identity_manifest_file(&owner_key, identity_name.as_str());
+                .user_owned_identity_manifest_file(&owner, &identity_name);
             let material_path = store
                 .layout
-                .user_owned_identity_material_file(&owner_key, identity_name.as_str());
+                .user_owned_identity_material_file(&owner, &identity_name);
             if !manifest_path.exists() {
                 return Ok(false);
             }
             remove_file_if_exists_unlocked(&material_path)?;
             remove_file_if_exists_unlocked(&manifest_path)?;
-            let identity_dir = store
-                .layout
-                .user_owned_identity_dir(&owner_key, identity_name.as_str());
+            let identity_dir = store.layout.user_owned_identity_dir(&owner, &identity_name);
             if identity_dir.exists() {
                 match fs::remove_dir(&identity_dir) {
                     Ok(()) => {}
@@ -572,25 +606,29 @@ impl IdentityInstanceStore for FileIdentityInstanceStore {
         identity_name: &IdentityInstanceName,
     ) -> Result<Box<dyn IdentityInstanceMaterialGuard>, AppError> {
         let layout = self.layout.clone();
-        let owner_key = owner.as_str().to_string();
+        let owner = owner.clone();
         let identity_name = identity_name.clone();
         tokio::task::spawn_blocking(move || {
-            let owner_key = validate_identity_owner_key(&owner_key)?;
-            let lock = Self::material_lock_for_layout(&layout, &owner_key, &identity_name)?;
+            let lock = Self::material_lock_for_layout(&layout, &owner, &identity_name)?;
             Ok(Box::new(FileIdentityInstanceMaterialGuard {
                 layout,
-                owner_key,
+                owner,
                 identity_name,
                 _lock: lock,
             }) as Box<dyn IdentityInstanceMaterialGuard>)
         })
         .await?
     }
+
+    fn count_identities_for_spec(&self, identity_spec_name: &str) -> Result<u32, AppError> {
+        let identity_spec_name = validate_identity_spec_name(identity_spec_name)?;
+        Self::count_identity_spec_references_unlocked(&self.layout, identity_spec_name.as_str())
+    }
 }
 
 struct FileIdentityInstanceMaterialGuard {
     layout: AppStateLayout,
-    owner_key: String,
+    owner: IdentityOwnerKey,
     identity_name: IdentityInstanceName,
     _lock: FileLock,
 }
@@ -600,10 +638,12 @@ impl IdentityInstanceMaterialGuard for FileIdentityInstanceMaterialGuard {
     async fn read_material(&self) -> Result<BTreeMap<String, String>, AppError> {
         let path = self
             .layout
-            .user_owned_identity_material_file(&self.owner_key, self.identity_name.as_str());
+            .user_owned_identity_material_file(&self.owner, &self.identity_name);
         let identity_name = self.identity_name.to_string();
         tokio::task::spawn_blocking(move || match fs::read_to_string(path) {
-            Ok(raw) => parse_env_file(&raw).map_err(Into::into),
+            Ok(raw) => parse_env_file(&raw).map_err(|error| {
+                AppError::Credentials(crate::credentials::CredentialsError::from(error))
+            }),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Err(AppError::FailedPrecondition(format!(
                     "identity '{identity_name}' is missing credential material"
@@ -616,18 +656,17 @@ impl IdentityInstanceMaterialGuard for FileIdentityInstanceMaterialGuard {
 
     async fn write_material(&self, material: &BTreeMap<String, String>) -> Result<(), AppError> {
         let layout = self.layout.clone();
-        let owner_key = self.owner_key.clone();
+        let owner = self.owner.clone();
         let identity_name = self.identity_name.clone();
         let material = material.clone();
         tokio::task::spawn_blocking(move || {
-            let path = layout.user_owned_identity_material_file(&owner_key, identity_name.as_str());
+            let path = layout.user_owned_identity_material_file(&owner, &identity_name);
             let _state_lock = FileLock::exclusive(layout.state_lock())?;
-            let manifest_path =
-                layout.user_owned_identity_manifest_file(&owner_key, identity_name.as_str());
+            let manifest_path = layout.user_owned_identity_manifest_file(&owner, &identity_name);
             if !manifest_path.exists() {
                 return Err(AppError::IdentityNotFound(identity_name.to_string()));
             }
-            write_file_unlocked(&path, render_env_file(&material).as_bytes()).map_err(Into::into)
+            write_file_unlocked(&path, render_env_file(&material).as_bytes())
         })
         .await?
     }
@@ -678,7 +717,7 @@ impl IdentityInstanceDocument {
         }
         Ok(IdentityInstanceRecord {
             name,
-            identity_spec: validate_identity_spec_name(&self.identity_spec)?,
+            identity_spec: validate_identity_spec_name(&self.identity_spec)?.to_string(),
             identity_spec_fingerprint: self.identity_spec_fingerprint,
             issuer: self.issuer,
             identity_type: self.identity_type,
@@ -687,8 +726,9 @@ impl IdentityInstanceDocument {
     }
 }
 
-fn validate_identity_owner_key(owner: &str) -> Result<String, AppError> {
-    parse_path_segment("identity owner", owner)
+#[derive(Debug, Deserialize)]
+struct IdentitySpecReference {
+    identity_spec: String,
 }
 
 fn validate_identity_name(name: &str) -> Result<IdentityInstanceName, AppError> {
@@ -712,6 +752,18 @@ fn validate_identity_spec_reference_unlocked(
         )));
     }
     Ok(())
+}
+
+fn checked_add_identity_count(
+    current: u32,
+    additional: u32,
+    identity_spec_name: &str,
+) -> Result<u32, AppError> {
+    current.checked_add(additional).ok_or_else(|| {
+        AppError::FailedPrecondition(format!(
+            "too many stored identities reference identity spec '{identity_spec_name}'"
+        ))
+    })
 }
 
 /// Snapshots `paths`, runs `write`, and restores every file to its prior
@@ -746,8 +798,23 @@ fn restore_file_unlocked(
     snapshot: Option<Vec<u8>>,
 ) -> Result<(), AppError> {
     match snapshot {
-        Some(bytes) => write_file_unlocked(path, &bytes).map_err(Into::into),
+        Some(bytes) => write_file_unlocked(path, &bytes),
         None => remove_file_if_exists_unlocked(path).map_err(Into::into),
+    }
+}
+
+fn write_file_unlocked(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    storage_fs::ensure_dir(parent)?;
+    storage_fs::write_atomic(path, bytes)?;
+    Ok(())
+}
+
+fn remove_file_if_exists_unlocked(path: &Path) -> Result<(), std::io::Error> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -896,7 +963,7 @@ audience:
         let record = manager
             .create_user_owned_fixed_token_identity(
                 &UserPrincipal::local(),
-                github_local_command("ghp_token"),
+                github_local_command("  ghp_token  "),
             )
             .await
             .expect("create identity");
@@ -912,14 +979,35 @@ audience:
         assert!(record.metadata.is_empty());
 
         let layout = test_layout(&temp);
-        let raw =
-            fs::read_to_string(layout.user_owned_identity_manifest_file("local", "github_local"))
-                .expect("identity manifest");
+        let raw = fs::read_to_string(
+            layout.user_owned_identity_manifest_file(&local_owner(), &github_local_name()),
+        )
+        .expect("identity manifest");
         assert!(raw.contains("identity_spec: github_pat"));
-        let material =
-            fs::read_to_string(layout.user_owned_identity_material_file("local", "github_local"))
-                .expect("identity material");
+        let material = fs::read_to_string(
+            layout.user_owned_identity_material_file(&local_owner(), &github_local_name()),
+        )
+        .expect("identity material");
         assert!(material.contains("TOKEN=ghp_token"));
+        assert!(!material.contains("  ghp_token  "));
+    }
+
+    #[tokio::test]
+    async fn create_user_owned_fixed_token_identity_rejects_whitespace_token() {
+        let (_temp, manager, _identity_specs) = manager_with_github_pat_spec();
+
+        let error = manager
+            .create_user_owned_fixed_token_identity(
+                &UserPrincipal::local(),
+                github_local_command("   "),
+            )
+            .await
+            .expect_err("whitespace-only token should be rejected");
+
+        assert!(
+            matches!(error, AppError::InvalidInput(ref message) if message.contains("must not be empty")),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[tokio::test]
@@ -995,13 +1083,13 @@ audience:
         let layout = test_layout(&temp);
         assert!(
             !layout
-                .user_owned_identity_manifest_file("local", "github_local")
+                .user_owned_identity_manifest_file(&local_owner(), &github_local_name())
                 .exists(),
             "rejected stale identity should not create a manifest"
         );
         assert!(
             !layout
-                .user_owned_identity_material_file("local", "github_local")
+                .user_owned_identity_material_file(&local_owner(), &github_local_name())
                 .exists(),
             "rejected stale identity should not create material"
         );
@@ -1098,7 +1186,7 @@ audience:
             .await
             .expect("create identity");
         let layout = test_layout(&temp);
-        fs::remove_dir_all(layout.user_owned_identity_dir("local", "github_local"))
+        fs::remove_dir_all(layout.user_owned_identity_dir(&local_owner(), &github_local_name()))
             .expect("delete identity");
 
         let error = manager
@@ -1113,7 +1201,7 @@ audience:
         assert!(matches!(error, AppError::IdentityNotFound(name) if name == "github_local"));
         assert!(
             !layout
-                .user_owned_identity_material_file("local", "github_local")
+                .user_owned_identity_material_file(&local_owner(), &github_local_name())
                 .exists(),
             "deleted identity material should stay deleted"
         );
