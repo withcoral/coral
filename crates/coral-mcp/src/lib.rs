@@ -45,6 +45,8 @@ pub struct McpOptions {
     pub episodes_enabled: bool,
     /// Optional W3C traceparent used to parent each MCP request span.
     pub trace_parent: Option<String>,
+    /// Installed source names to include in MCP initialize instructions.
+    pub source_names: Vec<String>,
 }
 
 /// Runs the `MCP` stdio server using an existing Coral client.

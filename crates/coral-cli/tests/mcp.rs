@@ -195,6 +195,16 @@ fn assert_raw_tools_list_contract(response: &Value) {
 async fn mcp_stdio_raw_tools_list_advertises_client_compatible_schemas()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
+    write_config(
+        &server,
+        r#"
+[workspaces.default.sources.jira]
+origin = "bundled"
+
+[workspaces.default.sources.github]
+origin = "bundled"
+"#,
+    )?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
         .arg("mcp-stdio")
         .env("CORAL_ENDPOINT", server.endpoint_uri())
@@ -229,6 +239,14 @@ async fn mcp_stdio_raw_tools_list_advertises_client_compatible_schemas()
     assert!(
         initialize.pointer("/result/protocolVersion").is_some(),
         "initialize response should include protocolVersion: {initialize}"
+    );
+    let instructions = initialize
+        .pointer("/result/instructions")
+        .and_then(Value::as_str)
+        .expect("initialize response should include instructions");
+    assert!(
+        instructions.contains("Connected Coral sources: github, jira."),
+        "initialize instructions should include connected source names: {instructions}"
     );
 
     write_jsonrpc_message(
