@@ -2,7 +2,7 @@ import classNames from 'classnames'
 
 import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
-import type { TraceSummary } from '@/generated/coral/v1/traces_pb'
+import type { TraceSummaryView } from '@/lib/trace-view-models'
 
 import * as s from '../traces-page.css'
 import { SqlCode } from './sql-code'
@@ -22,7 +22,7 @@ function TraceRow({
 }: {
   active: boolean
   onSelect: () => void
-  trace: TraceSummary
+  trace: TraceSummaryView
 }) {
   return (
     <button
@@ -62,7 +62,7 @@ export function TraceList({
   onSelect,
 }: {
   activeTraceId?: string | null
-  traces: TraceSummary[]
+  traces: TraceSummaryView[]
   onSelect: (traceId: string) => void
 }) {
   return (

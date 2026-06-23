@@ -5,13 +5,12 @@ import * as Button from '@/wax/components/button'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import * as ScrollArea from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
-import type { TraceSpan } from '@/generated/coral/v1/traces_pb'
+import type { TraceSpanView } from '@/lib/trace-view-models'
 
 import * as s from '../traces-page.css'
 import {
   formatDuration,
   formatDurationFromNanos,
-  parseJsonObject,
   spanRequestEndpoint,
   spanRequestLine,
   spanRequestOperation,
@@ -343,7 +342,7 @@ function attrText(value: unknown): string | undefined {
 }
 
 function bodySpanAttributes(
-  bodySpans: TraceSpan[],
+  bodySpans: TraceSpanView[],
   parentSpanId: string,
   kind: BodyKind,
 ): Record<string, unknown> | undefined {
@@ -351,7 +350,7 @@ function bodySpanAttributes(
   const bodySpanName = `coral.http.${kind}.body`
   for (const candidate of bodySpans) {
     if (candidate.parentSpanId !== parentSpanId) continue
-    const candidateAttrs = parseJsonObject(candidate.attributesJson)
+    const candidateAttrs = candidate.attributes
     const isBodySpan =
       candidate.name === bodySpanName ||
       candidateAttrs.target === BODY_SPAN_TARGET ||
@@ -421,16 +420,16 @@ export function HttpSpanDetail({
 }: {
   canSelectNextSpan: boolean
   canSelectPreviousSpan: boolean
-  bodySpans?: TraceSpan[]
+  bodySpans?: TraceSpanView[]
   onClose: () => void
   onSelectNextSpan: () => void
   onSelectPreviousSpan: () => void
-  span: TraceSpan
+  span: TraceSpanView
   traceStart: bigint
 }) {
   const [activeTab, setActiveTab] = useState<HttpDetailTab>(TAB_IDS[0])
   const [copyState, setCopyState] = useState<CopyState>('idle')
-  const attrs = parseJsonObject(span.attributesJson)
+  const attrs = span.attributes
   const requestBodyAttrs = bodySpanAttributes(bodySpans, span.spanId, 'request')
   const responseBodyAttrs = bodySpanAttributes(bodySpans, span.spanId, 'response')
   const url = spanUrl(span)

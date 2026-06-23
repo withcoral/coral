@@ -1,9 +1,20 @@
-import { style } from '@vanilla-extract/css'
+import { keyframes, style } from '@vanilla-extract/css'
 
 import { breakpoints } from '@/styles/theme'
-import { theme } from '@/wax/theme/theme.css'
+import { theme, zIndex } from '@/wax/theme/theme.css'
 
 const CONTENT_MARGIN = 12
+const navigationProgressSweep = keyframes({
+  '0%': {
+    transform: 'translateX(-70%) scaleX(0.35)',
+  },
+  '55%': {
+    transform: 'translateX(12%) scaleX(0.9)',
+  },
+  '100%': {
+    transform: 'translateX(115%) scaleX(0.45)',
+  },
+})
 
 export const root = style({
   backgroundColor: theme.surface.main,
@@ -40,4 +51,41 @@ export const content = style({
   maxHeight: `calc(100dvh - ${CONTENT_MARGIN * 2}px)`,
   minWidth: 0,
   overflow: 'hidden',
+  position: 'relative',
+})
+
+export const navigationProgress = style({
+  background: theme.surface.skeleton,
+  height: 3,
+  insetBlockStart: 0,
+  insetInline: 0,
+  overflow: 'hidden',
+  pointerEvents: 'none',
+  position: 'absolute',
+  selectors: {
+    '&::before': {
+      animation: `${navigationProgressSweep} 900ms ease-in-out infinite`,
+      background: theme.content.info,
+      content: '""',
+      height: '100%',
+      insetBlockStart: 0,
+      insetInlineStart: 0,
+      position: 'absolute',
+      transformOrigin: 'left center',
+      width: '65%',
+    },
+  },
+  width: '100%',
+  zIndex: zIndex.raised,
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      selectors: {
+        '&::before': {
+          animation: 'none',
+          transform: 'none',
+          width: '100%',
+        },
+      },
+    },
+  },
 })

@@ -1,70 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import * as Button from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { Typography } from '@/wax/components/typography'
-import { listTraces } from '@/lib/coral-traces-client'
-import type { TraceSummary } from '@/generated/coral/v1/traces_pb'
+import type { TraceSummaryView } from '@/lib/trace-view-models'
 
 import * as s from './traces-page.css'
 import { EmptyState } from './traces/empty-state'
 import { PageHeader } from './traces/page-header'
 import { StatusBar } from './traces/status-bar'
-import { TraceDetail } from './traces/trace-detail'
 import { TraceList } from './traces/trace-list'
-import { formatTraceError, isQueryTrace } from './traces/trace-utils'
-
-const MAX_QUERY_TRACES = 80
-const TRACE_LIST_PAGE_SIZE = 100
-const MAX_TRACE_LIST_PAGES = 2
-const TRACE_LIST_REFRESH_MS = 30_000
-
-function useTraceList(enabled: boolean) {
-  const [traces, setTraces] = useState<TraceSummary[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const refreshInFlight = useRef(false)
-
-  const refresh = useCallback(async (quiet = false) => {
-    if (refreshInFlight.current) return
-    refreshInFlight.current = true
-    if (!quiet) setLoading(true)
-    try {
-      const queryTraces: TraceSummary[] = []
-      let pageToken = ''
-
-      for (
-        let page = 0;
-        page < MAX_TRACE_LIST_PAGES && queryTraces.length < MAX_QUERY_TRACES;
-        page += 1
-      ) {
-        const response = await listTraces(TRACE_LIST_PAGE_SIZE, pageToken)
-        queryTraces.push(...response.traces.filter(isQueryTrace))
-        pageToken = response.nextPageToken
-        if (!pageToken) break
-      }
-
-      setError(null)
-      setTraces(queryTraces.slice(0, MAX_QUERY_TRACES))
-    } catch (err) {
-      setError(formatTraceError(err instanceof Error ? err.message : String(err)))
-    } finally {
-      refreshInFlight.current = false
-      if (!quiet) setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!enabled) return
-    void refresh()
-    const interval = window.setInterval(() => void refresh(true), TRACE_LIST_REFRESH_MS)
-    return () => window.clearInterval(interval)
-  }, [enabled, refresh])
-
-  return { error, loading, traces }
-}
 
 function HeaderActions({
   searchOpen,
@@ -135,10 +82,21 @@ function DisconnectedBanner({ message }: { message: string }) {
   )
 }
 
-export function TracesPage() {
-  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
-  const { error, loading, traces } = useTraceList(selectedTraceId === null)
-  const [searchText, setSearchText] = useState('')
+export function TracesPage({
+  error,
+  loading,
+  onSelectTrace,
+  searchText,
+  setSearchText,
+  traces,
+}: {
+  error: string | null
+  loading: boolean
+  onSelectTrace: (traceId: string) => void
+  searchText: string
+  setSearchText: (value: string) => void
+  traces: TraceSummaryView[]
+}) {
   const [searchOpen, setSearchOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState<number | null>(null)
   const searchVisible = searchOpen || searchText.trim().length > 0
@@ -152,7 +110,6 @@ export function TracesPage() {
   useEffect(() => setActiveIndex(null), [searchText])
 
   useEffect(() => {
-    if (selectedTraceId !== null) return
     const handler = (event: KeyboardEvent) => {
       const target = event.target
       const inEditable =
@@ -176,12 +133,12 @@ export function TracesPage() {
         )
           return
         event.preventDefault()
-        setSelectedTraceId(filtered[activeIndex].traceId)
+        onSelectTrace(filtered[activeIndex].traceId)
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [activeIndex, filtered, selectedTraceId])
+  }, [activeIndex, filtered, onSelectTrace])
 
   useEffect(() => {
     if (activeIndex === null) return
@@ -190,30 +147,6 @@ export function TracesPage() {
     const escaped = trace.traceId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
     document.querySelector(`[data-trace-row-id="${escaped}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [activeIndex, filtered])
-
-  if (selectedTraceId) {
-    const selectedIndex = filtered.findIndex((trace) => trace.traceId === selectedTraceId)
-    const newerTraceId = selectedIndex > 0 ? filtered[selectedIndex - 1].traceId : null
-    const olderTraceId =
-      selectedIndex >= 0 && selectedIndex < filtered.length - 1
-        ? filtered[selectedIndex + 1].traceId
-        : null
-    const initialSummary =
-      selectedIndex >= 0
-        ? filtered[selectedIndex]
-        : traces.find((trace) => trace.traceId === selectedTraceId)
-
-    return (
-      <TraceDetail
-        initialSummary={initialSummary}
-        newerTraceId={newerTraceId}
-        olderTraceId={olderTraceId}
-        onClose={() => setSelectedTraceId(null)}
-        onSelectTrace={setSelectedTraceId}
-        traceId={selectedTraceId}
-      />
-    )
-  }
 
   const connected = !error
   return (
@@ -247,7 +180,7 @@ export function TracesPage() {
           <TraceList
             activeTraceId={activeIndex !== null ? filtered[activeIndex]?.traceId : null}
             traces={filtered}
-            onSelect={setSelectedTraceId}
+            onSelect={onSelectTrace}
           />
         </div>
       )}

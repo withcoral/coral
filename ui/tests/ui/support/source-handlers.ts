@@ -45,6 +45,10 @@ const createBundledUrl = '*/coral.v1.SourceService/CreateBundledSource'
 const createBundledWithOAuthUrl = '*/coral.v1.SourceService/CreateBundledSourceWithOAuth'
 const deleteUrl = '*/coral.v1.SourceService/DeleteSource'
 
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 function sourceInfoResponse(name: string) {
   if (name === 'cloudwatch_logs') return getInfoCloudwatchLogsResponse
   if (name === 'github') return getInfoGithubResponse
@@ -69,13 +73,16 @@ function expectLinearSecret(value: string, expected: string, action: string) {
 // with `github` installed, install `linear` (paste), edit github's variable,
 // remove linear. List and Discover responses advance one step at a time as
 // the UI calls Create/Delete.
-export function sourceLifecycleHandlers() {
+export function sourceLifecycleHandlers(options: { discoverDelayMs?: number } = {}) {
   let listResponse = listInitialResponse
   let discoverResponse = discoverInitialResponse
   let createCalls = 0
 
   return [
-    http.post(discoverUrl, () => grpcWebResponse(DiscoverSourcesResponseSchema, discoverResponse)),
+    http.post(discoverUrl, async () => {
+      if (options.discoverDelayMs) await delay(options.discoverDelayMs)
+      return grpcWebResponse(DiscoverSourcesResponseSchema, discoverResponse)
+    }),
     http.post(listUrl, () => grpcWebResponse(ListSourcesResponseSchema, listResponse)),
     http.post(getInfoUrl, async ({ request }) => {
       const message = await grpcWebRequest(GetSourceInfoRequestSchema, request)

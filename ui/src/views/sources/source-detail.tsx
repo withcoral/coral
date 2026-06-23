@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import type { Source, SourceInfo, SourceInputSpec } from '@/generated/coral/v1/sources_pb'
-
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { Icon as ButtonIcon } from '@/wax/components/button/icon'
 import { Text as ButtonText } from '@/wax/components/button/text'
@@ -17,9 +15,11 @@ import {
   deleteSource,
   getInstalledSource,
   getSourceInfo,
-  originLabel,
   type InstallInput,
+  type SourceInfoView,
+  type SourceInputView,
   type SourceOriginLabel,
+  type SourceView,
 } from '@/lib/sources'
 
 import * as styles from './source-detail.css'
@@ -68,8 +68,8 @@ function SourceDetailDialogContent({
   onClose: () => void
   onRemoved: (name: string) => void
 }) {
-  const [source, setSource] = useState<Source | null>(null)
-  const [sourceInfo, setSourceInfo] = useState<SourceInfo | null>(null)
+  const [source, setSource] = useState<SourceView | null>(null)
+  const [sourceInfo, setSourceInfo] = useState<SourceInfoView | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [confirmingRemove, setConfirmingRemove] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -115,7 +115,7 @@ function SourceDetailDialogContent({
     }
   }, [name, onRemoved])
 
-  const editable = source ? originLabel(source.origin) === 'bundled' : false
+  const editable = source ? source.origin === 'bundled' : false
 
   const hasChanges = useMemo(() => {
     if (!source) return false
@@ -198,7 +198,7 @@ function SourceDetailDialogContent({
   }
 
   const icon = providerIcon(name)
-  const origin = source ? originLabel(source.origin) : null
+  const origin = source?.origin ?? null
 
   return (
     <>
@@ -368,7 +368,7 @@ function FallbackBindings({
   drafts: Record<string, string>
   editable: boolean
   onValueChange: (draftKey: string, value: string) => void
-  source: Source
+  source: SourceView
 }) {
   return (
     <section className={styles.section}>
@@ -427,8 +427,8 @@ function SourceInfoBindings({
   onSecretBlur: (key: string) => void
   onSecretFocus: (key: string) => void
   onValueChange: (key: string, value: string, secret: boolean) => void
-  source: Source
-  sourceInfo: SourceInfo
+  source: SourceView
+  sourceInfo: SourceInfoView
 }) {
   const variables = useMemo(() => new Map(source.variables.map((v) => [v.key, v.value])), [source])
   const configuredSecrets = useMemo(() => new Set(source.secrets.map((s) => s.key)), [source])
@@ -480,7 +480,7 @@ function SourceInfoInputRow({
   configuredSecret: boolean
   disabled: boolean
   draft: string | undefined
-  input: SourceInputSpec
+  input: SourceInputView
   onSecretBlur: (key: string) => void
   onSecretFocus: (key: string) => void
   onValueChange: (key: string, value: string, secret: boolean) => void
@@ -517,7 +517,7 @@ function SourceInfoInputRow({
   )
 }
 
-function Field({ input, children }: { input: SourceInputSpec; children: React.ReactNode }) {
+function Field({ input, children }: { input: SourceInputView; children: React.ReactNode }) {
   return (
     <div className={styles.fieldItem}>
       <Typography.Body className={styles.fieldLabel}>{input.key}</Typography.Body>

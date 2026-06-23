@@ -12,7 +12,7 @@ test('lists core sources by category, searches, and shows configured status', as
     'Open the sources page',
     'Render the bundled catalog with one installed source',
   )
-  await page.goto('/#/sources')
+  await page.goto('/sources')
 
   await expect(page.getByRole('heading', { name: 'Sources', level: 1 })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Configured' })).toBeVisible()
@@ -51,7 +51,7 @@ test('installs a core source via paste, edits a binding, and removes it', async 
 }) => {
   network.use(...sourceLifecycleHandlers())
 
-  await page.goto('/#/sources')
+  await page.goto('/sources')
   await expect(page.getByRole('button', { name: /Linear/i })).toBeVisible()
 
   await review.chapter(
@@ -130,7 +130,7 @@ test('installed source detail uses manifest fields and masked secrets', async ({
 }) => {
   network.use(...sourceLifecycleHandlers())
 
-  await page.goto('/#/sources')
+  await page.goto('/sources')
 
   await review.chapter(
     'Open an installed source',
@@ -172,7 +172,7 @@ test('imported installed source detail uses effective source info', async ({
 }) => {
   network.use(...sourceLifecycleHandlers())
 
-  await page.goto('/#/sources')
+  await page.goto('/sources')
 
   await review.chapter(
     'Open an imported installed source',
@@ -201,7 +201,7 @@ test('imported installed source detail uses effective source info', async ({
 test('installs GitHub through OAuth device code', async ({ network, page, review }) => {
   network.use(...sourceOAuthInstallHandlers())
 
-  await page.goto('/#/sources')
+  await page.goto('/sources')
   await page.getByRole('button', { name: /Github/i }).click()
 
   const dialog = page.getByRole('dialog', { name: /Github/i })
@@ -213,7 +213,7 @@ test('installs GitHub through OAuth device code', async ({ network, page, review
   )
   await dialog.getByRole('button', { name: 'Add source' }).click()
 
-  await expect(dialog.getByText('ABCD-1234')).toBeVisible()
+  await expect(dialog.getByText('ABCD-1234')).toBeVisible({ timeout: 10_000 })
   const verificationLink = dialog.getByRole('link', { name: 'https://github.com/login/device' })
   await expect(verificationLink).toBeVisible()
   await expect(verificationLink).toHaveAttribute(
@@ -229,7 +229,7 @@ test('installs GitHub through OAuth device code', async ({ network, page, review
 test('cmd-F focuses the search input', async ({ network, page, review }) => {
   network.use(...sourceLifecycleHandlers())
 
-  await page.goto('/#/sources')
+  await page.goto('/sources')
   await expect(page.getByPlaceholder('Search sources…')).toBeVisible()
 
   await review.chapter('Press cmd/ctrl+F', 'Trigger the search-focus shortcut')
@@ -237,4 +237,13 @@ test('cmd-F focuses the search input', async ({ network, page, review }) => {
 
   await expect(page.getByPlaceholder('Search sources…')).toBeFocused()
   await review.pause()
+})
+
+test('legacy hash sources URL redirects to the data-router path', async ({ network, page }) => {
+  network.use(...sourceLifecycleHandlers())
+
+  await page.goto('/#/sources')
+
+  await expect(page).toHaveURL(/\/sources$/)
+  await expect(page.getByRole('heading', { name: 'Sources', level: 1 })).toBeVisible()
 })

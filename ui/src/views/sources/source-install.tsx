@@ -1,13 +1,5 @@
-import { create } from '@bufbuild/protobuf'
 import classNames from 'classnames'
 import { useEffect, useMemo, useState } from 'react'
-
-import {
-  OAuthCredentialRetrievalSchema,
-  type OAuthCredentialMethod,
-  type SourceCredentialMethod,
-  type SourceInputSpec,
-} from '@/generated/coral/v1/sources_pb'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { Icon as ButtonIcon } from '@/wax/components/button/icon'
@@ -25,7 +17,11 @@ import {
   createBundledSourceWithOAuth,
   getSourceInfo,
   type InstallInput,
+  type OAuthCredentialMethodView,
+  type OAuthCredentialRetrievalInput,
   type ResolvedSourceInfo,
+  type SourceCredentialMethodView,
+  type SourceInputView,
 } from '@/lib/sources'
 import { toSentenceCase } from '@/utils/to-sentence-case'
 
@@ -103,11 +99,11 @@ function SourceInstallDialogContent({
     }
   }, [name])
 
-  const inputs: SourceInputSpec[] = resolved?.info.inputs ?? []
+  const inputs: SourceInputView[] = resolved?.info.inputs ?? []
   const icon = providerIcon(name)
   const busy = progress.kind !== 'idle'
 
-  const effectiveChoice = (input: SourceInputSpec): number => methodChoices[input.key] ?? 0
+  const effectiveChoice = (input: SourceInputView): number => methodChoices[input.key] ?? 0
 
   const canSubmit = useMemo(() => {
     if (!resolved) return false
@@ -138,7 +134,7 @@ function SourceInstallDialogContent({
 
     try {
       const bindings: InstallInput[] = []
-      const retrievalProtos = []
+      const retrievalInputs: OAuthCredentialRetrievalInput[] = []
 
       for (const input of inputs) {
         if (input.input.case === 'variable') {
@@ -155,13 +151,11 @@ function SourceInstallDialogContent({
           continue
         }
         if (method.method.case === 'oauth') {
-          retrievalProtos.push(
-            create(OAuthCredentialRetrievalSchema, {
-              inputKey: input.key,
-              methodIndex: effectiveChoice(input),
-              credentialInputs: oauthCredentialInputs(method.method.value, values),
-            }),
-          )
+          retrievalInputs.push({
+            inputKey: input.key,
+            methodIndex: effectiveChoice(input),
+            credentialInputs: oauthCredentialInputs(method.method.value, values),
+          })
         }
       }
 
@@ -188,10 +182,10 @@ function SourceInstallDialogContent({
         },
       }
 
-      if (retrievalProtos.length === 0) {
+      if (retrievalInputs.length === 0) {
         await createBundledSource(name, bindings)
       } else {
-        await createBundledSourceWithOAuth(name, bindings, retrievalProtos, callbacks)
+        await createBundledSourceWithOAuth(name, bindings, retrievalInputs, callbacks)
       }
 
       addToast('neutral', {
@@ -312,7 +306,7 @@ function InputRow({
   onValueChange,
   onMethodChange,
 }: {
-  input: SourceInputSpec
+  input: SourceInputView
   methodIndex: number
   values: Record<string, string>
   disabled: boolean
@@ -383,7 +377,7 @@ function Field({
   children,
   fullWidth,
 }: {
-  input: SourceInputSpec
+  input: SourceInputView
   children: React.ReactNode
   fullWidth?: boolean
 }) {
@@ -402,7 +396,7 @@ function OAuthFields({
   disabled,
   onValueChange,
 }: {
-  oauth: OAuthCredentialMethod
+  oauth: OAuthCredentialMethodView
   values: Record<string, string>
   disabled: boolean
   onValueChange: (key: string, value: string) => void
@@ -483,14 +477,14 @@ function OAuthProgress({
   )
 }
 
-function methodLabel(method: SourceCredentialMethod, index: number): string {
+function methodLabel(method: SourceCredentialMethodView, index: number): string {
   if (method.label) return method.label
   if (method.method.case === 'sourceConfig') return 'Paste token'
   if (method.method.case === 'oauth') return 'OAuth'
   return `Method ${index + 1}`
 }
 
-function isOAuth(method: SourceCredentialMethod | undefined): boolean {
+function isOAuth(method: SourceCredentialMethodView | undefined): boolean {
   return method?.method.case === 'oauth'
 }
 
@@ -501,7 +495,7 @@ interface OAuthInput {
   required: boolean
 }
 
-function oauthInputs(oauth: OAuthCredentialMethod): OAuthInput[] {
+function oauthInputs(oauth: OAuthCredentialMethodView): OAuthInput[] {
   const out: OAuthInput[] = []
   const id = oauth.client?.id
   if (id?.input) {
@@ -519,14 +513,17 @@ function oauthInputs(oauth: OAuthCredentialMethod): OAuthInput[] {
   return out
 }
 
-function oauthMethodReady(oauth: OAuthCredentialMethod, values: Record<string, string>): boolean {
+function oauthMethodReady(
+  oauth: OAuthCredentialMethodView,
+  values: Record<string, string>,
+): boolean {
   return oauthInputs(oauth)
     .filter((input) => input.required)
     .every(({ key }) => (values[key] ?? '').trim().length > 0)
 }
 
 function oauthCredentialInputs(
-  oauth: OAuthCredentialMethod,
+  oauth: OAuthCredentialMethodView,
   values: Record<string, string>,
 ): { key: string; value: string }[] {
   return oauthInputs(oauth)

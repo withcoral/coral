@@ -7,7 +7,7 @@ import { Typography } from '@/wax/components/typography'
 import { ErrorBanner } from '@/components/error-banner'
 import { providerIcon } from '@/lib/provider-icons'
 import { SOURCE_CATEGORY_ORDER, getCategoryForSource } from '@/lib/source-categories'
-import { discoverBundled, type CatalogEntry } from '@/lib/sources'
+import type { CatalogEntry } from '@/lib/sources'
 
 import { SourceDetailDialog } from './source-detail'
 import { SourceInstallDialog } from './source-install'
@@ -15,9 +15,19 @@ import * as styles from './sources-index.css'
 
 type IndexEntry = CatalogEntry
 
-export function SourcesIndex() {
-  const [bundled, setBundled] = useState<CatalogEntry[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
+export function SourcesIndex({
+  catalog,
+  error,
+  loading,
+  onCatalogChanged,
+  onRetry,
+}: {
+  catalog: CatalogEntry[]
+  error: string | null
+  loading: boolean
+  onCatalogChanged: () => void
+  onRetry: () => void
+}) {
   const [search, setSearch] = useState('')
   const [installingName, setInstallingName] = useState<string | null>(null)
   const [detailName, setDetailName] = useState<string | null>(null)
@@ -37,24 +47,9 @@ export function SourcesIndex() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  const refresh = useCallback(async () => {
-    try {
-      setBundled(await discoverBundled())
-      setError(null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }, [])
-
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
-
-  const loading = bundled === null && !error
-
   const allEntries = useMemo<IndexEntry[]>(
-    () => (bundled ?? []).toSorted((a, b) => a.name.localeCompare(b.name)),
-    [bundled],
+    () => catalog.toSorted((a, b) => a.name.localeCompare(b.name)),
+    [catalog],
   )
 
   const filtered = useMemo(() => {
@@ -100,13 +95,13 @@ export function SourcesIndex() {
 
   const onInstalled = useCallback(() => {
     setInstallingName(null)
-    void refresh()
-  }, [refresh])
+    onCatalogChanged()
+  }, [onCatalogChanged])
 
   const onRemoved = useCallback(() => {
     setDetailName(null)
-    void refresh()
-  }, [refresh])
+    onCatalogChanged()
+  }, [onCatalogChanged])
 
   return (
     <div className={styles.root}>
@@ -130,11 +125,7 @@ export function SourcesIndex() {
         </div>
 
         {error ? (
-          <ErrorBanner
-            title="Couldn't load sources"
-            message={error}
-            onRetry={() => window.location.reload()}
-          />
+          <ErrorBanner title="Couldn't load sources" message={error} onRetry={onRetry} />
         ) : null}
 
         {loading ? (

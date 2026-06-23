@@ -6,8 +6,7 @@ import { Icon } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import * as ScrollArea from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
-import { getTrace } from '@/lib/coral-traces-client'
-import { TraceStatus, type GetTraceResponse, type TraceSpan } from '@/generated/coral/v1/traces_pb'
+import type { TraceDetailView, TraceSpanView, TraceSummaryView } from '@/lib/trace-view-models'
 
 import * as s from '../traces-page.css'
 import { EmptyState } from './empty-state'
@@ -19,7 +18,6 @@ import {
   formatDuration,
   formatDurationFromNanos,
   formatRows,
-  formatTraceError,
   isHttpSpan,
   nanosToMs,
   spanDisplayLabel,
@@ -59,41 +57,6 @@ export interface ExtraDetailTab {
   label: string
   content: React.ReactNode
   show?: boolean
-}
-
-function useTraceDetail(traceId: string | null) {
-  const [detail, setDetail] = useState<GetTraceResponse | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!traceId) {
-      setDetail(null)
-      setError(null)
-      return
-    }
-    let stale = false
-    setLoading(true)
-    setError(null)
-    getTrace(traceId)
-      .then((response) => {
-        if (stale) return
-        setDetail(response)
-      })
-      .catch((err) => {
-        if (stale) return
-        setDetail(null)
-        setError(formatTraceError(err instanceof Error ? err.message : String(err)))
-      })
-      .finally(() => {
-        if (!stale) setLoading(false)
-      })
-    return () => {
-      stale = true
-    }
-  }, [traceId])
-
-  return { detail, error, loading }
 }
 
 function useProMode() {
@@ -164,7 +127,7 @@ function WaterfallBar({
   )
 }
 
-function spanTiming(span: TraceSpan, traceStart: bigint, durationMs: number) {
+function spanTiming(span: TraceSpanView, traceStart: bigint, durationMs: number) {
   const offsetMs = Number((BigInt(span.startTimeUnixNanos || 0) - traceStart) / 1_000_000n)
   return {
     left: (Math.max(0, offsetMs) / durationMs) * 100,
@@ -178,7 +141,7 @@ function SpanTimingBar({
   traceStart,
 }: {
   durationMs: number
-  span: TraceSpan
+  span: TraceSpanView
   traceStart: bigint
 }) {
   const timing = spanTiming(span, traceStart, durationMs)
@@ -221,8 +184,8 @@ function WaterfallTickRow({ durationMs }: { durationMs: number }) {
   )
 }
 
-function spanTone(span: TraceSpan): WaterfallTone {
-  if (span.status === TraceStatus.ERROR) return 'error'
+function spanTone(span: TraceSpanView): WaterfallTone {
+  if (span.status === 'error') return 'error'
   if (isHttpSpan(span)) return 'http'
   if (span.name === 'coral.query') return 'query'
   return 'span'
@@ -419,8 +382,8 @@ function TimelineWaterfall({
     spanId: string | null | ((current: string | null) => string | null),
   ) => void
   onNavigableSpanIdsChange: (spanIds: string[]) => void
-  spans: TraceSpan[]
-  summary?: GetTraceResponse['summary']
+  spans: TraceSpanView[]
+  summary?: TraceSummaryView
 }) {
   const proMode = useProMode()
   const timelineSpans = useMemo(
@@ -705,23 +668,28 @@ function DetailTabs({
 }
 
 export function TraceDetail({
+  detail,
+  error,
   extraTabs,
   initialSummary,
+  loading,
   newerTraceId,
   olderTraceId,
   onClose,
   onSelectTrace,
   traceId,
 }: {
-  extraTabs?: (detail: GetTraceResponse) => ExtraDetailTab[]
-  initialSummary?: GetTraceResponse['summary']
+  detail: TraceDetailView | null
+  error: string | null
+  extraTabs?: (detail: TraceDetailView) => ExtraDetailTab[]
+  initialSummary?: TraceSummaryView
+  loading: boolean
   newerTraceId?: string | null
   olderTraceId?: string | null
   onClose: () => void
   onSelectTrace?: (traceId: string) => void
   traceId: string
 }) {
-  const { detail, error, loading } = useTraceDetail(traceId)
   const [activeTab, setActiveTab] = useState<string>('timeline')
   const [expandedHttpSpanId, setExpandedHttpSpanId] = useState<string | null>(null)
   const [navigableSpanIds, setNavigableSpanIds] = useState<string[]>([])

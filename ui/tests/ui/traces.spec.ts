@@ -54,6 +54,7 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   await page
     .getByText(/linear\.issues WHERE team_key = 'CORAL' AND title ILIKE '%playwright%'/)
     .click()
+  await expect(page).toHaveURL(/\/traces\/[^?]+\?q=playwright$/)
 
   await expect(page.getByText('Query details')).toBeVisible()
   await expect(
@@ -82,6 +83,39 @@ test('lists 10 traces, searches one, opens its details, and opens a span inspect
   await expect(page.getByText('Span attributes')).toBeVisible()
   await page.screenshot({ path: 'test-results/AOL-6-review.png', fullPage: true })
   await review.pause()
+
+  await review.chapter(
+    'Return to the filtered query stream',
+    'Close details and confirm the search filter remains encoded in the URL',
+  )
+  await page.getByRole('button', { name: 'Query stream' }).click()
+  await expect(page).toHaveURL(/\/\?q=playwright$/)
+  await expect(page.getByPlaceholder('Search queries...')).toHaveValue('playwright')
+  await expect(page.getByText('1 of 10 queries')).toBeVisible()
+})
+
+test('keeps the last trace list visible when background refresh fails', async ({
+  network,
+  page,
+}) => {
+  await page.clock.install()
+  network.use(...traceHandlers.tracesThenUnavailable)
+
+  await page.goto('/')
+  await expect(page.getByText('10 queries')).toBeVisible()
+  await expect(page.getByText(/github\.pull_requests/)).toBeVisible()
+
+  await page.clock.fastForward(30_000)
+
+  await expect(
+    page
+      .getByText(
+        'Trace storage is not enabled for this Coral server. Enable [local_traces].enabled = true, restart the Coral server, then run a query.',
+      )
+      .first(),
+  ).toBeVisible()
+  await expect(page.getByText(/github\.pull_requests/)).toBeVisible()
+  await expect(page.getByText('10 queries')).toBeVisible()
 })
 
 test('renders trace request and response bodies with JSON, GraphQL, and fallback states', async ({
