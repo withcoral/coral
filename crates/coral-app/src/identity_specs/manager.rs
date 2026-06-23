@@ -409,7 +409,7 @@ impl IdentitySpecManager {
         let Some(stored) = self.registry.get_identity_spec(name.as_str())? else {
             return Ok(None);
         };
-        let record = parse_identity_spec_record(&stored.manifest_yaml)?;
+        let record = parse_identity_spec_record_for_name(&name, &stored.manifest_yaml)?;
         Ok(Some(IdentitySpecSnapshot {
             record,
             input_material: stored.input_material,
@@ -489,14 +489,7 @@ impl IdentitySpecManager {
         let Some(manifest_yaml) = self.registry.get_identity_spec_manifest(name.as_str())? else {
             return Err(AppError::IdentitySpecNotFound(name.as_str().to_string()));
         };
-        let record = parse_identity_spec_record(&manifest_yaml)?;
-        if record.manifest.name != name.as_str() {
-            return Err(AppError::FailedPrecondition(format!(
-                "identity spec registry record '{name}' contains identity spec '{}'",
-                record.manifest.name
-            )));
-        }
-        Ok(record)
+        parse_identity_spec_record_for_name(name, &manifest_yaml)
     }
 
     fn count_identities_for_spec_unlocked(
@@ -1066,6 +1059,20 @@ fn normalized_manifest_yaml(manifest_yaml: &str) -> String {
 
 pub(crate) fn validate_identity_spec_name(name: &str) -> Result<IdentitySpecName, AppError> {
     IdentitySpecName::parse(name)
+}
+
+fn parse_identity_spec_record_for_name(
+    name: &IdentitySpecName,
+    manifest_yaml: &str,
+) -> Result<IdentitySpecRecord, AppError> {
+    let record = parse_identity_spec_record(manifest_yaml)?;
+    if record.manifest.name != name.as_str() {
+        return Err(AppError::FailedPrecondition(format!(
+            "identity spec registry record '{name}' contains identity spec '{}'",
+            record.manifest.name
+        )));
+    }
+    Ok(record)
 }
 
 #[cfg(test)]
@@ -1779,6 +1786,21 @@ oauth:
                 .and_then(serde_json::Value::as_str),
             Some("api.github.com")
         );
+    }
+
+    #[test]
+    fn identity_spec_snapshot_rejects_mismatched_registry_record_name() {
+        let (_temp, manager, layout) = manager();
+        add_spec(&manager, &identity_yaml("github_oauth", "0.1.0"));
+        let manifest_file = layout.identity_spec_manifest_file(&identity_spec_name("github_oauth"));
+        fs::write(&manifest_file, identity_yaml("stripe_oauth", "0.1.0"))
+            .expect("corrupt stored identity spec manifest");
+
+        let error = manager
+            .snapshot_identity_spec("github_oauth")
+            .expect_err("snapshot should reject mismatched registry record");
+
+        assert_failed_precondition(&error, ["github_oauth", "stripe_oauth"]);
     }
 
     #[test]
