@@ -5,21 +5,23 @@
 
 use coral_api::v1::search_result::Payload;
 use coral_api::v1::{
-    DeleteSourceRequest, SearchFieldRole, SearchProvider, SearchProviderState, SearchRequest,
-    SearchResult, SearchSurfaceKind, SourceSecret, TableFunctionKind, catalog_item,
+    ClearObservedValuesRequest, DeleteSourceRequest, SearchFieldRole, SearchProvider,
+    SearchProviderState, SearchRequest, SearchResult, SearchSurfaceKind, SourceSecret,
+    TableFunctionKind, catalog_item,
 };
 use coral_client::default_workspace;
 use tantivy::collector::Count;
 use tantivy::query::{BooleanQuery, Occur, TermQuery};
 use tantivy::schema::IndexRecordOption;
 use tantivy::{Index, Term};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tonic::Request;
 
 use super::harness::{
     GrpcHarness, fixture_manifest_with_canonical_table_ranking_yaml,
     fixture_manifest_with_column_preview_yaml, fixture_manifest_with_functions_yaml,
     fixture_manifest_with_inputs_yaml, fixture_manifest_with_many_matching_columns_yaml,
-    fixture_manifest_with_test_queries_yaml, source_dir,
+    source_dir,
 };
 
 #[tokio::test]
@@ -330,26 +332,22 @@ async fn search_rejects_empty_and_too_large_queries() {
 }
 
 #[tokio::test]
-async fn search_returns_observed_values_after_successful_sql() {
+async fn search_returns_source_scan_observed_values_after_successful_http_sql() {
     let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            fixture_manifest_with_test_queries_yaml(harness.temp_path(), &[]),
-            Vec::new(),
-            Vec::new(),
-        )
-        .await;
+    let fixture = ObservedHttpFixture::new().await;
+    import_observed_people_source(&harness, &fixture).await;
 
     let rows = harness
-        .execute_sql_rows("SELECT text FROM local_messages.messages WHERE text = 'hello'")
+        .execute_sql_rows("SELECT name FROM observed_people.people WHERE id = '2'")
         .await;
     assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], "Grace Hopper");
 
     let response = harness
         .search_client()
         .search(Request::new(SearchRequest {
             workspace: Some(default_workspace()),
-            query: "hello".to_string(),
+            query: "grace@example.test".to_string(),
             limit: 10,
         }))
         .await
@@ -366,38 +364,31 @@ async fn search_returns_observed_values_after_successful_sql() {
         && matches!(
             result.payload.as_ref(),
             Some(Payload::ObservedValue(value))
-                if value.schema_name == "local_messages"
-                    && value.surface_name == "messages"
+                if value.schema_name == "observed_people"
+                    && value.surface_name == "people"
                     && value.surface_kind == SearchSurfaceKind::Table as i32
-                    && value.column_name == "text"
-                    && value.field_path == "text"
-                    && value.value == "hello"
-                    && value.observed_count == 1
-                    && !value.last_observed_at.is_empty()
+                    && value.column_name == "email"
+                    && value.field_path == "email"
+                    && value.value == "grace@example.test"
         )));
 }
 
 #[tokio::test]
-async fn search_does_not_mark_observed_values_partial_for_pending_queue_work() {
+async fn observed_values_can_be_disabled_by_config() {
     let temp = tempfile::tempdir().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
     std::fs::create_dir_all(&config_dir).expect("create config dir");
     std::fs::write(
         config_dir.join("config.toml"),
-        "[search]\nobserved_queue_foreground_drain_ms = 0\n",
+        "[search]\nobserved_values_enabled = false\n",
     )
     .expect("write config");
     let harness = GrpcHarness::start_with_config_dir(config_dir).await;
-    harness
-        .import_source(
-            fixture_manifest_with_test_queries_yaml(harness.temp_path(), &[]),
-            Vec::new(),
-            Vec::new(),
-        )
-        .await;
+    let fixture = ObservedHttpFixture::new().await;
+    import_observed_people_source(&harness, &fixture).await;
 
     let rows = harness
-        .execute_sql_rows("SELECT text FROM local_messages.messages WHERE text = 'hello'")
+        .execute_sql_rows("SELECT name FROM observed_people.people WHERE id = '2'")
         .await;
     assert_eq!(rows.len(), 1);
 
@@ -405,7 +396,7 @@ async fn search_does_not_mark_observed_values_partial_for_pending_queue_work() {
         .search_client()
         .search(Request::new(SearchRequest {
             workspace: Some(default_workspace()),
-            query: "hello".to_string(),
+            query: "grace@example.test".to_string(),
             limit: 10,
         }))
         .await
@@ -415,20 +406,91 @@ async fn search_does_not_mark_observed_values_partial_for_pending_queue_work() {
     assert_provider_state(
         &response,
         SearchProvider::ObservedValues,
+        SearchProviderState::NotEnabled,
+    );
+    assert!(!contains_observed_value(
+        &response,
+        "observed_people",
+        "grace@example.test"
+    ));
+}
+
+#[tokio::test]
+async fn clear_observed_values_clears_workspace_values() {
+    let harness = GrpcHarness::new().await;
+    let fixture = ObservedHttpFixture::new().await;
+    import_observed_people_source(&harness, &fixture).await;
+    let rows = harness
+        .execute_sql_rows("SELECT name FROM observed_people.people WHERE id = '2'")
+        .await;
+    assert_eq!(rows.len(), 1);
+
+    let before = search_response(&harness, "grace@example.test").await;
+    assert!(contains_observed_value(
+        &before,
+        "observed_people",
+        "grace@example.test"
+    ));
+
+    harness
+        .search_client()
+        .clear_observed_values(Request::new(ClearObservedValuesRequest {
+            workspace: Some(default_workspace()),
+            source_name: None,
+        }))
+        .await
+        .expect("clear observed values");
+
+    let after = search_response(&harness, "grace@example.test").await;
+    assert_provider_state(
+        &after,
+        SearchProvider::ObservedValues,
         SearchProviderState::Empty,
     );
-    let observed_status = response
-        .provider_statuses
-        .iter()
-        .find(|status| status.provider == SearchProvider::ObservedValues as i32)
-        .expect("observed values provider status");
-    assert!(observed_status.note.contains("queued indexing jobs remain"));
-    assert!(
-        !response
-            .results
-            .iter()
-            .any(|result| result.provider == SearchProvider::ObservedValues as i32)
+    assert!(!contains_observed_value(
+        &after,
+        "observed_people",
+        "grace@example.test"
+    ));
+}
+
+#[tokio::test]
+async fn clear_observed_values_clears_one_source() {
+    let harness = GrpcHarness::new().await;
+    let fixture = ObservedHttpFixture::new().await;
+    import_observed_people_source(&harness, &fixture).await;
+    let rows = harness
+        .execute_sql_rows("SELECT name FROM observed_people.people WHERE id = '2'")
+        .await;
+    assert_eq!(rows.len(), 1);
+
+    let before = search_response(&harness, "grace@example.test").await;
+    assert!(contains_observed_value(
+        &before,
+        "observed_people",
+        "grace@example.test"
+    ));
+
+    harness
+        .search_client()
+        .clear_observed_values(Request::new(ClearObservedValuesRequest {
+            workspace: Some(default_workspace()),
+            source_name: Some("observed_people".to_string()),
+        }))
+        .await
+        .expect("clear observed values for source");
+
+    let after = search_response(&harness, "grace@example.test").await;
+    assert_provider_state(
+        &after,
+        SearchProvider::ObservedValues,
+        SearchProviderState::Empty,
     );
+    assert!(!contains_observed_value(
+        &after,
+        "observed_people",
+        "grace@example.test"
+    ));
 }
 
 #[tokio::test]
@@ -442,19 +504,18 @@ async fn search_reports_observed_storage_budget_exhaustion() {
     )
     .expect("write config");
     let harness = GrpcHarness::start_with_config_dir(config_dir).await;
-    harness
-        .import_source(
-            fixture_manifest_with_test_queries_yaml(harness.temp_path(), &[]),
-            Vec::new(),
-            Vec::new(),
-        )
+    let fixture = ObservedHttpFixture::new().await;
+    import_observed_people_source(&harness, &fixture).await;
+    let rows = harness
+        .execute_sql_rows("SELECT name FROM observed_people.people WHERE id = '2'")
         .await;
+    assert_eq!(rows.len(), 1);
 
     let response = harness
         .search_client()
         .search(Request::new(SearchRequest {
             workspace: Some(default_workspace()),
-            query: "hello".to_string(),
+            query: "grace@example.test".to_string(),
             limit: 10,
         }))
         .await
@@ -601,6 +662,122 @@ async fn search(harness: &GrpcHarness, query: &str) {
         }))
         .await
         .expect("search");
+}
+
+struct ObservedHttpFixture {
+    base_url: String,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl ObservedHttpFixture {
+    async fn new() -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind observed HTTP fixture");
+        let addr = listener.local_addr().expect("fixture local addr");
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _peer)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut request = vec![0_u8; 2048];
+                    let Ok(read) = socket.read(&mut request).await else {
+                        return;
+                    };
+                    let request = String::from_utf8_lossy(&request[..read]);
+                    let body = if request.starts_with("GET /people ") {
+                        r#"[{"id":"1","name":"Ada Lovelace","email":"ada@example.test"},{"id":"2","name":"Grace Hopper","email":"grace@example.test"}]"#
+                    } else {
+                        r#"{"error":"not found"}"#
+                    };
+                    let status = if request.starts_with("GET /people ") {
+                        "200 OK"
+                    } else {
+                        "404 Not Found"
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    if socket.write_all(response.as_bytes()).await.is_err() {}
+                });
+            }
+        });
+
+        Self {
+            base_url: format!("http://{addr}"),
+            task,
+        }
+    }
+
+    fn manifest_yaml(&self) -> String {
+        format!(
+            r#"
+name: observed_people
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: "{base_url}"
+tables:
+  - name: people
+    description: Observed people
+    request:
+      method: GET
+      path: /people
+    response:
+      rows_path: []
+    columns:
+      - name: id
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: email
+        type: Utf8
+"#,
+            base_url = self.base_url
+        )
+    }
+}
+
+impl Drop for ObservedHttpFixture {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn import_observed_people_source(harness: &GrpcHarness, fixture: &ObservedHttpFixture) {
+    harness
+        .import_source(fixture.manifest_yaml(), Vec::new(), Vec::new())
+        .await;
+}
+
+async fn search_response(harness: &GrpcHarness, query: &str) -> coral_api::v1::SearchResponse {
+    harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: query.to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search")
+        .into_inner()
+}
+
+fn contains_observed_value(
+    response: &coral_api::v1::SearchResponse,
+    schema_name: &str,
+    value: &str,
+) -> bool {
+    response.results.iter().any(|result| {
+        result.provider == SearchProvider::ObservedValues as i32
+            && matches!(
+                result.payload.as_ref(),
+                Some(Payload::ObservedValue(observed))
+                    if observed.schema_name == schema_name && observed.value == value
+            )
+    })
 }
 
 fn assert_provider_state(

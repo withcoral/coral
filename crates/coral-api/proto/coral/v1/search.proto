@@ -25,6 +25,18 @@ message SearchResponse {
   SearchResultTruncation truncation = 3;
 }
 
+// Clears local observed-value memory for a workspace or one source.
+message ClearObservedValuesRequest {
+  // Workspace whose observed-value memory should be cleared.
+  Workspace workspace = 1;
+  // Source schema name to clear. Omit to clear observed values for the whole
+  // workspace.
+  optional string source_name = 2;
+}
+
+// Response for observed-value clear/delete requests.
+message ClearObservedValuesResponse {}
+
 // Result truncation metadata.
 message SearchResultTruncation {
   // Whether more results were available than returned.
@@ -176,6 +188,8 @@ message ColumnHint {
 
 // Local observed-value result.
 message ObservedValue {
+  reserved 7, 8;
+
   // Matched value or redacted display value.
   string value = 1;
   // Source schema where the value was observed.
@@ -190,10 +204,6 @@ message ObservedValue {
   // values and uses child paths such as "payload.error" for extracted JSON or
   // key/value bag values.
   string field_path = 6;
-  // Number of times this field/value pair has been observed.
-  uint64 observed_count = 7;
-  // RFC3339 timestamp when this field/value pair was most recently observed.
-  string last_observed_at = 8;
 }
 
 // A registered provider-native search path that can search upstream data explicitly.
@@ -210,4 +220,6 @@ message NativeSearchPath {
 service SearchService {
   // Routes a clue to typed Coral search hints.
   rpc Search(SearchRequest) returns (SearchResponse);
+  // Clears local observed-value memory.
+  rpc ClearObservedValues(ClearObservedValuesRequest) returns (ClearObservedValuesResponse);
 }

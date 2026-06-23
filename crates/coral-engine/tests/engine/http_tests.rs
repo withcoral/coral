@@ -6,11 +6,15 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use arrow::array::StringArray;
+use arrow::record_batch::RecordBatch;
 use coral_engine::{
     CoralQuery, CoreError, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext,
-    RequestAuthenticator, RequestAuthenticatorError, StatusCode,
+    RequestAuthenticator, RequestAuthenticatorError, SourceObservationPublisher,
+    SourceObservationScope, SourceObservationSurfaceKind, SourceScanObservation, StatusCode,
 };
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde_json::{Value, json};
@@ -276,6 +280,55 @@ fn test_auth_runtime() -> QueryRuntimeConfig {
     QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions)
 }
 
+#[derive(Default)]
+struct RecordingSourceObservationPublisher {
+    observations: Mutex<Vec<RecordedSourceObservation>>,
+}
+
+#[derive(Debug)]
+struct RecordedSourceObservation {
+    source_name: String,
+    surface_kind: SourceObservationSurfaceKind,
+    surface_name: String,
+    observation_scope: SourceObservationScope,
+    column_names: Vec<String>,
+    row_count: usize,
+    batch: RecordBatch,
+}
+
+impl SourceObservationPublisher for RecordingSourceObservationPublisher {
+    fn publish_source_scan(&self, observation: SourceScanObservation<'_>) {
+        self.observations
+            .lock()
+            .expect("observations lock")
+            .push(RecordedSourceObservation {
+                source_name: observation.source_name.to_string(),
+                surface_kind: observation.surface_kind,
+                surface_name: observation.surface_name.to_string(),
+                observation_scope: observation.observation_scope,
+                column_names: observation
+                    .batch
+                    .schema()
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().clone())
+                    .collect(),
+                row_count: observation.batch.num_rows(),
+                batch: observation.batch.clone(),
+            });
+    }
+}
+
+fn test_runtime_with_source_observation(
+    publisher: Arc<RecordingSourceObservationPublisher>,
+) -> QueryRuntimeConfig {
+    let mut extensions = EngineExtensions::default();
+    extensions
+        .source_observation_publishers
+        .push(publisher as Arc<dyn SourceObservationPublisher>);
+    QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions)
+}
+
 #[tokio::test]
 async fn select_all_from_http_source() {
     let server = MockServer::start().await;
@@ -327,6 +380,80 @@ async fn select_with_column_projection() {
             json!({"name": "Ada", "email": "ada@example.com"}),
             json!({"name": "Grace", "email": "grace@example.com"}),
             json!({"name": "Linus", "email": "linus@example.com"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn source_scan_observation_for_http_projection_sees_full_batch_before_projection() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .mount(&server)
+        .await;
+
+    let source = build_source(base_http_manifest(
+        "http_projection_observation",
+        &server.uri(),
+    ));
+    let publisher = Arc::new(RecordingSourceObservationPublisher::default());
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime_with_source_observation(Arc::clone(&publisher)),
+            "SELECT name FROM http_projection_observation.users ORDER BY name",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"name": "Ada"}),
+            json!({"name": "Grace"}),
+            json!({"name": "Linus"}),
+        ]
+    );
+
+    let observations = publisher.observations.lock().expect("observations lock");
+    let users_scan = observations
+        .iter()
+        .find(|observation| {
+            observation.source_name == "http_projection_observation"
+                && observation.surface_name == "users"
+        })
+        .expect("HTTP users table source scan should be observed");
+
+    assert_eq!(users_scan.surface_kind, SourceObservationSurfaceKind::Table);
+    assert_eq!(
+        users_scan.observation_scope,
+        SourceObservationScope::MappedRowsBeforeProjection
+    );
+    assert_eq!(users_scan.row_count, 3);
+    assert_eq!(
+        users_scan.column_names,
+        vec!["id".to_string(), "name".to_string(), "email".to_string()]
+    );
+
+    let email_column = users_scan
+        .batch
+        .column_by_name("email")
+        .expect("observed source scan should include email values");
+    let email_values = email_column
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("email should be a Utf8 column")
+        .iter()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        email_values,
+        vec![
+            Some("ada@example.com"),
+            Some("grace@example.com"),
+            Some("linus@example.com"),
         ]
     );
 }
@@ -579,6 +706,105 @@ async fn local_route_filter_is_applied_before_limit() {
     );
 
     assert_eq!(rows, vec![json!({ "id": 1, "name": "Grace" })]);
+}
+
+#[tokio::test]
+async fn source_scan_observation_for_http_local_filter_is_after_local_filter_before_projection() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "id": 1, "name": "Ada", "state": "closed" },
+                { "id": 1, "name": "Grace", "state": "open" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_route_filter_observation",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "state" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "state", "from": "filter", "key": "state" }
+                ]
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+    let publisher = Arc::new(RecordingSourceObservationPublisher::default());
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime_with_source_observation(Arc::clone(&publisher)),
+            "SELECT name FROM http_route_filter_observation.users \
+             WHERE id = 1 AND state = 'open' LIMIT 1",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({ "name": "Grace" })]);
+
+    let observations = publisher.observations.lock().expect("observations lock");
+    let users_scan = observations
+        .iter()
+        .find(|observation| {
+            observation.source_name == "http_route_filter_observation"
+                && observation.surface_name == "users"
+        })
+        .expect("HTTP users table source scan should be observed");
+
+    assert_eq!(users_scan.surface_kind, SourceObservationSurfaceKind::Table);
+    assert_eq!(
+        users_scan.observation_scope,
+        SourceObservationScope::MappedRowsAfterLocalFilterBeforeProjection
+    );
+    assert_eq!(users_scan.row_count, 1);
+    assert_eq!(
+        users_scan.column_names,
+        vec!["id".to_string(), "name".to_string(), "state".to_string()]
+    );
+
+    let state_column = users_scan
+        .batch
+        .column_by_name("state")
+        .expect("observed source scan should include state values");
+    let state_values = state_column
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("state should be a Utf8 column")
+        .iter()
+        .collect::<Vec<_>>();
+    assert_eq!(state_values, vec![Some("open")]);
 }
 
 #[tokio::test]
@@ -1000,6 +1226,132 @@ async fn exact_local_filter_does_not_apply_limit_before_residual_filter() {
     );
 
     assert_eq!(rows, vec![json!({ "id": 1, "name": "Linus" })]);
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Scenario test sets up pushed and residual filter fixtures in one place."
+)]
+async fn source_scan_observation_for_http_residual_filter_is_before_residual_filter_and_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users/1"))
+        .and(query_param_is_missing("q"))
+        .and(query_param_is_missing("state"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                { "id": 1, "name": "Ada", "state": "closed", "q": "needle item" },
+                { "id": 1, "name": "Grace", "state": "open", "q": "closed item" },
+                { "id": 1, "name": "Linus", "state": "open", "q": "needle item" }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_route_residual_observation",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": &server.uri(),
+        "tables": [{
+            "name": "users",
+            "description": "HTTP users",
+            "filters": [
+                { "name": "id" },
+                { "name": "state" },
+                { "name": "q", "mode": "search" }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "state", "from": "filter", "key": "state" },
+                    { "name": "q", "from": "filter", "key": "q" }
+                ]
+            },
+            "requests": [{
+                "when_filters": ["id"],
+                "method": "GET",
+                "path": "/api/users/{{filter.id}}"
+            }],
+            "response": {
+                "rows_path": ["data"]
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" },
+                { "name": "q", "type": "Utf8" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+    let publisher = Arc::new(RecordingSourceObservationPublisher::default());
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime_with_source_observation(Arc::clone(&publisher)),
+            "SELECT id, name FROM http_route_residual_observation.users \
+             WHERE id = 1 AND state = 'open' AND q LIKE '%needle%' LIMIT 1",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({ "id": 1, "name": "Linus" })]);
+
+    let observations = publisher.observations.lock().expect("observations lock");
+    let users_scan = observations
+        .iter()
+        .find(|observation| {
+            observation.source_name == "http_route_residual_observation"
+                && observation.surface_name == "users"
+        })
+        .expect("HTTP users table source scan should be observed");
+
+    assert_eq!(users_scan.surface_kind, SourceObservationSurfaceKind::Table);
+    assert_eq!(
+        users_scan.observation_scope,
+        SourceObservationScope::MappedRowsAfterLocalFilterBeforeProjection
+    );
+    assert_eq!(users_scan.row_count, 2);
+    assert_eq!(
+        users_scan.column_names,
+        vec![
+            "id".to_string(),
+            "name".to_string(),
+            "state".to_string(),
+            "q".to_string()
+        ]
+    );
+
+    let name_column = users_scan
+        .batch
+        .column_by_name("name")
+        .expect("observed source scan should include name values");
+    let name_values = name_column
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("name should be a Utf8 column")
+        .iter()
+        .collect::<Vec<_>>();
+    assert_eq!(name_values, vec![Some("Grace"), Some("Linus")]);
+
+    let q_column = users_scan
+        .batch
+        .column_by_name("q")
+        .expect("observed source scan should include residual-filter column values");
+    let q_values = q_column
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("q should be a Utf8 column")
+        .iter()
+        .collect::<Vec<_>>();
+    assert_eq!(q_values, vec![Some("closed item"), Some("needle item")]);
 }
 
 #[tokio::test]

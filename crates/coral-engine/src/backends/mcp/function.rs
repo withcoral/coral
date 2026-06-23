@@ -20,6 +20,7 @@ use super::fetch::McpFetchPlan;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::json_exec::JsonExec;
 use crate::backends::shared::mapping::convert_items;
+use crate::{SourceObservationPublisher, SourceObservationScope, SourceObservationSurfaceKind};
 
 #[derive(Clone)]
 pub(super) struct McpSourceTableFunction {
@@ -37,6 +38,7 @@ struct McpFunctionState {
     pagination: Option<McpPaginationSpec>,
     columns: Arc<[coral_spec::ColumnSpec]>,
     fetch_limit_default: Option<usize>,
+    source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
 }
 
 impl std::fmt::Debug for McpSourceTableFunction {
@@ -64,6 +66,7 @@ impl McpSourceTableFunction {
         backend: McpSourceClient,
         source_schema: String,
         function: McpTableFunctionSpec,
+        source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
     ) -> Result<Self> {
         let schema = schema_from_columns(function.columns(), &source_schema, function.name())?;
         let function_name = function.name().to_string();
@@ -84,6 +87,7 @@ impl McpSourceTableFunction {
                 pagination,
                 columns: Arc::from(columns),
                 fetch_limit_default,
+                source_observation_publishers,
             }),
         })
     }
@@ -179,7 +183,12 @@ impl TableProvider for McpFunctionCallTableProvider {
             fetcher,
             converter,
             projection.cloned(),
-        )?;
+        )?
+        .with_source_observation(
+            SourceObservationSurfaceKind::Function,
+            SourceObservationScope::MappedRowsBeforeProjection,
+            self.state.source_observation_publishers.clone(),
+        );
         Ok(Arc::new(exec))
     }
 }

@@ -43,6 +43,13 @@ pub(crate) struct InstalledSource {
     /// storage until the source is removed and re-added.
     #[serde(default)]
     pub(crate) credential_storage: Option<CredentialStorageKind>,
+    /// App-generated generation for credentialed installs.
+    ///
+    /// Rotated when a credentialed source is persisted through the app
+    /// lifecycle so observed values collected under older credentials do not
+    /// match the live source scope after reconnect/reinstall.
+    #[serde(default)]
+    pub(crate) credential_generation_id: Option<String>,
     /// Where this installed source came from.
     pub(crate) origin: SourceOrigin,
 }

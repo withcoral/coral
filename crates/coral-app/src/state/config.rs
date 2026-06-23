@@ -175,6 +175,8 @@ struct PersistedInstalledSource {
     secrets: Vec<String>,
     #[serde(default)]
     credential_storage: Option<CredentialStorageKind>,
+    #[serde(default)]
+    credential_generation_id: Option<String>,
     origin: SourceOrigin,
 }
 
@@ -186,6 +188,7 @@ impl PersistedInstalledSource {
             variables: self.variables,
             secrets: self.secrets,
             credential_storage: self.credential_storage,
+            credential_generation_id: self.credential_generation_id,
             origin: self.origin,
         }
     }
@@ -198,6 +201,7 @@ impl From<&InstalledSource> for PersistedInstalledSource {
             variables: value.variables.clone(),
             secrets: value.secrets.clone(),
             credential_storage: value.credential_storage,
+            credential_generation_id: value.credential_generation_id.clone(),
             origin: value.origin,
         }
     }
@@ -494,6 +498,14 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
                     .expect("source config entry should be a table after initialization");
                 source_table.remove("credential_storage");
             }
+            if let Some(credential_generation_id) = &source.credential_generation_id {
+                source_item["credential_generation_id"] = value(credential_generation_id.clone());
+            } else {
+                let source_table = source_item
+                    .as_table_mut()
+                    .expect("source config entry should be a table after initialization");
+                source_table.remove("credential_generation_id");
+            }
             source_item["origin"] = value(source.origin.as_config_value());
         }
     }
@@ -711,6 +723,7 @@ mod tests {
             )]),
             secrets: vec!["GITHUB_TOKEN".to_string()],
             credential_storage: None,
+            credential_generation_id: None,
             origin: SourceOrigin::Imported,
         }
     }
@@ -970,6 +983,7 @@ max_concurrency = 0
         let workspace_name = default_workspace();
         let mut source = installed_source("github");
         source.credential_storage = Some(CredentialStorageKind::Keychain);
+        source.credential_generation_id = Some("credential-generation-1".to_string());
         let mut catalog = SourceCatalog::default();
         catalog.upsert_source(&workspace_name, source);
         let config = AppConfig {
@@ -980,6 +994,7 @@ max_concurrency = 0
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
         assert!(raw.contains("credential_storage = \"keychain\""));
+        assert!(raw.contains("credential_generation_id = \"credential-generation-1\""));
 
         let loaded = AppConfig::try_from(
             toml::from_str::<PersistedAppConfig>(&raw).expect("config should parse"),
@@ -989,6 +1004,10 @@ max_concurrency = 0
         assert_eq!(
             sources[0].credential_storage,
             Some(CredentialStorageKind::Keychain)
+        );
+        assert_eq!(
+            sources[0].credential_generation_id.as_deref(),
+            Some("credential-generation-1")
         );
     }
 

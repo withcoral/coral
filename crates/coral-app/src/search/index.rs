@@ -1,6 +1,6 @@
 //! Workspace-scoped Tantivy storage for Universal Search retrieval.
 
-use std::collections::{BTreeMap as StdBTreeMap, BTreeSet};
+use std::collections::BTreeMap as StdBTreeMap;
 use std::fs;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
@@ -135,6 +135,29 @@ impl SearchIndexStore {
         };
         let store = Self::from_index(&path, index)?;
         store.delete_observed_projection_records(&removed)
+    }
+
+    pub(crate) fn discard_observed_values(
+        layout: &AppStateLayout,
+        workspace_name: &WorkspaceName,
+    ) -> Result<(), SearchIndexError> {
+        let path = layout.search_index_dir(workspace_name);
+        let mutation_lock = index_mutation_lock(&path);
+        let _guard = mutation_lock
+            .lock()
+            .map_err(|_poisoned| SearchIndexError::MutationLockPoisoned)?;
+
+        match fs::remove_file(observed_state_file_for_index(&path)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+
+        let Some(index) = open_existing_index(&path)? else {
+            return Ok(());
+        };
+        let store = Self::from_index(&path, index)?;
+        store.delete_observed_projection_documents()
     }
 
     pub(crate) fn open(path: impl Into<PathBuf>) -> Result<Self, SearchIndexError> {
@@ -443,30 +466,29 @@ impl SearchIndexStore {
 
     pub(crate) fn search_observed_values_filtered(
         &self,
-        _workspace_name: &WorkspaceName,
         terms: &[String],
         limit: usize,
-        live_sources: &BTreeSet<String>,
-        retention_cutoff: &str,
+        live_source_scopes: &StdBTreeMap<String, String>,
+        staleness_cutoff: &str,
     ) -> Result<Vec<ObservedValueSearchHit>, SearchIndexError> {
-        if live_sources.is_empty() {
+        if live_source_scopes.is_empty() {
             return Ok(Vec::new());
         }
         let Some(query) = self.scoped_query("observed_value", terms) else {
             return Ok(Vec::new());
         };
-        let source_query = self.observed_live_source_query(live_sources);
-        let retention_query = Box::new(RangeQuery::new(
+        let source_query = self.observed_live_source_query(live_source_scopes);
+        let staleness_query = Box::new(RangeQuery::new(
             Bound::Included(Term::from_field_text(
                 self.fields.last_observed_at,
-                retention_cutoff,
+                staleness_cutoff,
             )),
             Bound::Unbounded,
         ));
         let query = BooleanQuery::new(vec![
             (Occur::Must, query),
             (Occur::Must, source_query),
-            (Occur::Must, retention_query),
+            (Occur::Must, staleness_query),
         ]);
         let docs = self.search_documents(&query, limit)?;
         let mut hits = self.observed_hits_from_documents(docs);
@@ -474,16 +496,31 @@ impl SearchIndexStore {
         Ok(hits)
     }
 
-    fn observed_live_source_query(&self, live_sources: &BTreeSet<String>) -> Box<dyn Query> {
-        let mut clauses = live_sources
+    fn observed_live_source_query(
+        &self,
+        live_source_scopes: &StdBTreeMap<String, String>,
+    ) -> Box<dyn Query> {
+        let mut clauses = live_source_scopes
             .iter()
-            .map(|source_name| {
+            .map(|(source_name, source_scope_id)| {
                 (
                     Occur::Should,
-                    Box::new(TermQuery::new(
-                        Term::from_field_text(self.fields.source_name, source_name),
-                        IndexRecordOption::Basic,
-                    )) as Box<dyn Query>,
+                    Box::new(BooleanQuery::new(vec![
+                        (
+                            Occur::Must,
+                            Box::new(TermQuery::new(
+                                Term::from_field_text(self.fields.source_name, source_name),
+                                IndexRecordOption::Basic,
+                            )) as Box<dyn Query>,
+                        ),
+                        (
+                            Occur::Must,
+                            Box::new(TermQuery::new(
+                                Term::from_field_text(self.fields.source_scope_id, source_scope_id),
+                                IndexRecordOption::Basic,
+                            )) as Box<dyn Query>,
+                        ),
+                    ])) as Box<dyn Query>,
                 )
             })
             .collect::<Vec<_>>();
@@ -511,9 +548,6 @@ impl SearchIndexStore {
                 normalized_value_key: doc_text(&doc, self.fields.normalized_value_key),
                 display_value: doc_text(&doc, self.fields.display_value),
                 last_observed_at: doc_text(&doc, self.fields.last_observed_at),
-                observed_count: doc_text(&doc, self.fields.observed_count)
-                    .parse()
-                    .unwrap_or(0),
                 score: 0,
             })
             .collect::<Vec<_>>()
@@ -534,10 +568,8 @@ impl SearchIndexStore {
         self.delete_observed_projection_records(&removed)
     }
 
-    #[cfg(test)]
     pub(crate) fn purge_observed_values_before(
         &self,
-        _workspace_name: &WorkspaceName,
         cutoff: &str,
     ) -> Result<(), SearchIndexError> {
         let _guard = self
@@ -545,29 +577,6 @@ impl SearchIndexStore {
             .lock()
             .map_err(|_poisoned| SearchIndexError::MutationLockPoisoned)?;
         let removed = self.remove_observed_records_before(cutoff)?;
-        self.delete_observed_projection_records(&removed)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn reconcile_observed_values(
-        &self,
-        live_sources: &BTreeSet<String>,
-        retention_cutoff: &str,
-    ) -> Result<(), SearchIndexError> {
-        let _guard = self
-            .mutation_lock
-            .lock()
-            .map_err(|_poisoned| SearchIndexError::MutationLockPoisoned)?;
-        self.remove_observed_queue_records_not_in_sources(live_sources)?;
-
-        let mut removed = self.remove_observed_records_before(retention_cutoff)?;
-        let source_names = self.observed_source_names()?;
-        for source_name in source_names {
-            if live_sources.contains(&source_name) {
-                continue;
-            }
-            removed.extend(self.remove_observed_records_for_source(&source_name)?);
-        }
         self.delete_observed_projection_records(&removed)
     }
 
@@ -585,6 +594,16 @@ impl SearchIndexStore {
                 &record.doc_key(),
             ));
         }
+        writer.commit()?;
+        Ok(())
+    }
+
+    fn delete_observed_projection_documents(&self) -> Result<(), SearchIndexError> {
+        let mut writer = self.writer()?;
+        writer.delete_query(Box::new(TermQuery::new(
+            Term::from_field_text(self.fields.entity_kind, "observed_value"),
+            IndexRecordOption::Basic,
+        )))?;
         writer.commit()?;
         Ok(())
     }
@@ -739,6 +758,7 @@ impl SearchIndexStore {
         let mut doc = TantivyDocument::default();
         doc.add_text(self.fields.doc_key, record.doc_key());
         doc.add_text(self.fields.entity_kind, "observed_value");
+        doc.add_text(self.fields.source_scope_id, &record.source_scope_id);
         doc.add_text(self.fields.source_name, &record.source_name);
         doc.add_text(self.fields.schema_name, &record.source_name);
         doc.add_text(self.fields.surface_kind, &record.surface_kind);
@@ -889,49 +909,6 @@ impl SearchIndexStore {
     }
 
     #[cfg(test)]
-    fn remove_observed_queue_records_not_in_sources(
-        &self,
-        live_sources: &BTreeSet<String>,
-    ) -> Result<(), SearchIndexError> {
-        let database = self.observed_database()?;
-        let write_txn = database.begin_write()?;
-        let jobs = {
-            let queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
-            queue
-                .iter()?
-                .map(|entry| {
-                    entry.map(|(key, value)| (key.value().to_string(), value.value().to_vec()))
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        };
-
-        if jobs.is_empty() {
-            write_txn.commit()?;
-            return Ok(());
-        }
-
-        {
-            let mut queue = write_txn.open_table(OBSERVED_QUEUE_TABLE)?;
-            for (key, value) in jobs {
-                let Ok(job) = decode_observed_queue_job(&value) else {
-                    queue.remove(key.as_str())?;
-                    continue;
-                };
-                let filtered = job.only_sources(live_sources);
-                if filtered.is_empty() {
-                    queue.remove(key.as_str())?;
-                } else {
-                    let encoded = encode_observed_queue_job(&filtered)?;
-                    queue.insert(key.as_str(), encoded.as_slice())?;
-                }
-            }
-        }
-
-        write_txn.commit()?;
-        Ok(())
-    }
-
-    #[cfg(test)]
     fn upsert_observed_records(
         &self,
         records: Vec<ObservedValueRecord>,
@@ -956,6 +933,7 @@ impl SearchIndexStore {
             for record in records {
                 let key = observed_doc_key(
                     &record.source_name,
+                    &record.source_scope_id,
                     record.surface_kind,
                     &record.surface_name,
                     &record.column_name,
@@ -1028,27 +1006,11 @@ impl SearchIndexStore {
         remove_observed_records_for_source_at(&self.path, source_name)
     }
 
-    #[cfg(test)]
     fn remove_observed_records_before(
         &self,
         cutoff: &str,
     ) -> Result<Vec<ObservedValueStoredRecord>, SearchIndexError> {
         remove_observed_records_before_at(&self.path, cutoff)
-    }
-
-    #[cfg(test)]
-    fn observed_source_names(&self) -> Result<BTreeSet<String>, SearchIndexError> {
-        let database = self.observed_database()?;
-        let read_txn = database.begin_read()?;
-        let source_index = read_txn.open_table(OBSERVED_SOURCE_INDEX_TABLE)?;
-        let mut source_names = BTreeSet::new();
-        for entry in source_index.iter()? {
-            let (key, _doc_key) = entry?;
-            if let Some((source_name, _doc_key)) = key.value().split_once('\0') {
-                source_names.insert(source_name.to_string());
-            }
-        }
-        Ok(source_names)
     }
 }
 
@@ -1102,7 +1064,6 @@ fn remove_observed_records_for_source_at(
     remove_observed_records_from_index_range_at(path, OBSERVED_SOURCE_INDEX_TABLE, &prefix, true)
 }
 
-#[cfg(test)]
 fn remove_observed_records_before_at(
     path: &Path,
     cutoff: &str,
@@ -1436,6 +1397,7 @@ impl CatalogSearchFieldRole {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ObservedValueRecord {
+    pub(crate) source_scope_id: String,
     pub(crate) source_name: String,
     pub(crate) surface_kind: ObservedValueSurfaceKind,
     pub(crate) surface_name: String,
@@ -1449,6 +1411,8 @@ pub(crate) struct ObservedValueRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ObservedValueQueuedRecord {
+    #[serde(default)]
+    source_scope_id: String,
     source_name: String,
     surface_kind: String,
     surface_name: String,
@@ -1463,6 +1427,7 @@ struct ObservedValueQueuedRecord {
 impl From<ObservedValueRecord> for ObservedValueQueuedRecord {
     fn from(record: ObservedValueRecord) -> Self {
         Self {
+            source_scope_id: record.source_scope_id,
             source_name: record.source_name,
             surface_kind: record.surface_kind.as_str().to_string(),
             surface_name: record.surface_name,
@@ -1479,6 +1444,7 @@ impl From<ObservedValueRecord> for ObservedValueQueuedRecord {
 impl From<ObservedValueQueuedRecord> for ObservedValueRecord {
     fn from(record: ObservedValueQueuedRecord) -> Self {
         Self {
+            source_scope_id: record.source_scope_id,
             source_name: record.source_name,
             surface_kind: ObservedValueSurfaceKind::from_str(&record.surface_kind)
                 .unwrap_or(ObservedValueSurfaceKind::Table),
@@ -1505,7 +1471,6 @@ pub(crate) struct ObservedValueSearchHit {
     pub(crate) normalized_value_key: String,
     pub(crate) display_value: String,
     pub(crate) last_observed_at: String,
-    pub(crate) observed_count: u64,
     pub(crate) score: u32,
 }
 
@@ -1554,6 +1519,8 @@ impl ObservedValueSuggestedOperator {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ObservedValueStoredRecord {
+    #[serde(default)]
+    source_scope_id: String,
     source_name: String,
     surface_kind: String,
     surface_name: String,
@@ -1588,19 +1555,6 @@ impl ObservedValueQueueJob {
         self
     }
 
-    #[cfg(test)]
-    fn only_sources(mut self, live_sources: &BTreeSet<String>) -> Self {
-        match &mut self.state {
-            ObservedValueQueueJobState::Pending { records } => {
-                records.retain(|record| live_sources.contains(&record.source_name));
-            }
-            ObservedValueQueueJobState::ProjectionPending { records } => {
-                records.retain(|record| live_sources.contains(&record.source_name));
-            }
-        }
-        self
-    }
-
     fn is_empty(&self) -> bool {
         match &self.state {
             ObservedValueQueueJobState::Pending { records } => records.is_empty(),
@@ -1628,6 +1582,7 @@ impl ObservedValueStoredRecord {
     fn doc_key(&self) -> String {
         observed_doc_key(
             &self.source_name,
+            &self.source_scope_id,
             match self.surface_kind.as_str() {
                 "table_function" => ObservedValueSurfaceKind::TableFunction,
                 _ => ObservedValueSurfaceKind::Table,
@@ -1642,6 +1597,7 @@ impl ObservedValueStoredRecord {
 fn new_observed_stored_record(record: ObservedValueRecord, now: &str) -> ObservedValueStoredRecord {
     ObservedValueStoredRecord {
         source_name: record.source_name,
+        source_scope_id: record.source_scope_id,
         surface_kind: record.surface_kind.as_str().to_string(),
         surface_name: record.surface_name,
         column_name: record.column_name,
@@ -1804,6 +1760,7 @@ struct SearchIndexFields {
     result_type: Field,
     surface_kind: Field,
     field_role: Field,
+    source_scope_id: Field,
     source_name: Field,
     schema_name: Field,
     surface_name: Field,
@@ -1834,6 +1791,7 @@ impl SearchIndexFields {
             result_type: required_field(schema, "result_type")?,
             surface_kind: required_field(schema, "surface_kind")?,
             field_role: required_field(schema, "field_role")?,
+            source_scope_id: required_field(schema, "source_scope_id")?,
             source_name: required_field(schema, "source_name")?,
             schema_name: required_field(schema, "schema_name")?,
             surface_name: required_field(schema, "surface_name")?,
@@ -2219,6 +2177,7 @@ fn search_schema() -> Schema {
     builder.add_text_field("result_type", STRING | STORED);
     builder.add_text_field("surface_kind", STRING | STORED);
     builder.add_text_field("field_role", STRING | STORED);
+    builder.add_text_field("source_scope_id", STRING | STORED);
     builder.add_text_field("source_name", STRING | STORED);
     builder.add_text_field("schema_name", STRING | STORED);
     builder.add_text_field("surface_name", STRING | STORED);
@@ -2269,6 +2228,7 @@ fn schema_has_required_fields(schema: &Schema) -> bool {
         "result_type",
         "surface_kind",
         "field_role",
+        "source_scope_id",
         "source_name",
         "schema_name",
         "surface_name",
@@ -2590,14 +2550,16 @@ fn table_function_result_column_record(
 
 fn observed_doc_key(
     source_name: &str,
+    source_scope_id: &str,
     surface_kind: ObservedValueSurfaceKind,
     surface_name: &str,
     column_name: &str,
     normalized_value_key: &str,
 ) -> String {
     format!(
-        "observed:{}:{}:{}:{}:{}",
+        "observed:{}:{}:{}:{}:{}:{}",
         source_name,
+        source_scope_id,
         surface_kind.as_str(),
         surface_name,
         column_name,
@@ -2713,7 +2675,7 @@ fn normalized_rank_score(position: u32, hit_count: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::BTreeMap as StdBTreeMap;
     use std::fmt::Write as _;
     use std::time::Duration as StdDuration;
 
@@ -3223,6 +3185,57 @@ mod tests {
     }
 
     #[test]
+    fn workspace_discard_deletes_all_observed_state_and_projection_docs() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        store
+            .upsert_observed_values(
+                &workspace,
+                vec![
+                    ObservedValueRecord {
+                        source_name: "notion".to_string(),
+                        display_value: "notion-value".to_string(),
+                        searchable_text: "notion page notion-value".to_string(),
+                        ..observed_record("notion-value", 1)
+                    },
+                    ObservedValueRecord {
+                        source_name: "linear".to_string(),
+                        display_value: "linear-value".to_string(),
+                        searchable_text: "linear issue linear-value".to_string(),
+                        ..observed_record("linear-value", 1)
+                    },
+                ],
+            )
+            .expect("upsert observed");
+        store
+            .enqueue_observed_values(&workspace, vec![observed_record("queued-value", 1)])
+            .expect("enqueue observed");
+        let drain = store
+            .drain_observed_value_queue_for(StdDuration::from_secs(1))
+            .expect("drain observed queue");
+        assert_eq!(drain.pending_jobs, 0);
+        drop(store);
+
+        SearchIndexStore::discard_observed_values(&layout, &workspace)
+            .expect("discard observed values");
+        assert!(!observed_state_file_for_index(&layout.search_index_dir(&workspace)).exists());
+
+        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        for value in ["notion-value", "linear-value", "queued-value"] {
+            assert!(
+                store
+                    .search_observed_values(&workspace, &[value.to_string()], 10)
+                    .expect("search observed")
+                    .is_empty(),
+                "{value} should be cleared"
+            );
+        }
+    }
+
+    #[test]
     fn observed_values_support_short_exact_value_matches() {
         let temp = tempdir().expect("tempdir");
         let workspace = WorkspaceName::parse("default").expect("workspace");
@@ -3266,7 +3279,7 @@ mod tests {
             .expect("age observed state");
 
         store
-            .purge_observed_values_before(&workspace, "2001-01-01T00:00:00.000Z")
+            .purge_observed_values_before("2001-01-01T00:00:00.000Z")
             .expect("purge stale");
         assert!(
             store
@@ -3293,7 +3306,40 @@ mod tests {
     }
 
     #[test]
-    fn observed_reconcile_removes_stale_and_removed_sources_before_searching() {
+    fn observed_staleness_purge_keeps_reobserved_values() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let store = SearchIndexStore::open(temp.path().join("tantivy")).expect("store");
+
+        store
+            .upsert_observed_values(&workspace, vec![observed_record("stable-value", 1)])
+            .expect("upsert observed");
+        store
+            .set_last_observed_at_for_test("stable-value", "2000-01-01T00:00:00.000Z")
+            .expect("age observed state");
+        store
+            .upsert_observed_values(&workspace, vec![observed_record("stable-value", 1)])
+            .expect("reobserve value");
+        store
+            .purge_observed_values_before("2001-01-01T00:00:00.000Z")
+            .expect("purge stale");
+
+        assert!(
+            !store
+                .search_observed_values(&workspace, &["stable-value".to_string()], 10)
+                .expect("search stable")
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .observed_count_for_test("stable-value")
+                .expect("observed count"),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn observed_search_filters_by_live_source_scope() {
         let temp = tempdir().expect("tempdir");
         let workspace = WorkspaceName::parse("default").expect("workspace");
         let store = SearchIndexStore::open(temp.path().join("tantivy")).expect("store");
@@ -3301,65 +3347,39 @@ mod tests {
             .upsert_observed_values(
                 &workspace,
                 vec![
-                    observed_record("fresh-match", 1),
-                    observed_record("stale-match", 1),
                     ObservedValueRecord {
-                        source_name: "notion".to_string(),
-                        display_value: "removed-source-match".to_string(),
-                        searchable_text: "notion page removed-source-match".to_string(),
-                        ..observed_record("removed-source-match", 1)
+                        source_scope_id: "old-github-scope".to_string(),
+                        display_value: "old-scope-match".to_string(),
+                        searchable_text: "github deployments service old-scope-match".to_string(),
+                        ..observed_record("old-scope-match", 1)
                     },
+                    observed_record("live-scope-match", 1),
                 ],
             )
             .expect("upsert observed");
-        store
-            .set_last_observed_at_for_test("stale-match", "2000-01-01T00:00:00.000Z")
-            .expect("age observed state");
-        let live_sources = BTreeSet::from(["github".to_string()]);
+        let live_source_scopes =
+            StdBTreeMap::from([("github".to_string(), "github-scope".to_string())]);
 
         assert!(
             store
                 .search_observed_values_filtered(
-                    &workspace,
-                    &["stale-match".to_string()],
-                    1,
-                    &live_sources,
+                    &["old-scope-match".to_string()],
+                    10,
+                    &live_source_scopes,
                     "2001-01-01T00:00:00.000Z",
                 )
-                .expect("search stale with filters")
+                .expect("search old scope")
                 .is_empty()
         );
         assert!(
-            store
+            !store
                 .search_observed_values_filtered(
-                    &workspace,
-                    &["removed-source-match".to_string()],
-                    1,
-                    &live_sources,
+                    &["live-scope-match".to_string()],
+                    10,
+                    &live_source_scopes,
                     "2001-01-01T00:00:00.000Z",
                 )
-                .expect("search removed source with filters")
-                .is_empty()
-        );
-        store
-            .reconcile_observed_values(&live_sources, "2001-01-01T00:00:00.000Z")
-            .expect("reconcile observed state");
-
-        let hits = store
-            .search_observed_values(&workspace, &["match".to_string()], 1)
-            .expect("search observed");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits.first().expect("hit").display_value, "fresh-match");
-        assert!(
-            store
-                .search_observed_values(&workspace, &["stale-match".to_string()], 10)
-                .expect("search stale")
-                .is_empty()
-        );
-        assert!(
-            store
-                .search_observed_values(&workspace, &["removed-source-match".to_string()], 10)
-                .expect("search removed source")
+                .expect("search live scope")
                 .is_empty()
         );
     }
@@ -3583,6 +3603,7 @@ mod tests {
 
     fn observed_record(value: &str, observed_count: u64) -> ObservedValueRecord {
         ObservedValueRecord {
+            source_scope_id: "github-scope".to_string(),
             source_name: "github".to_string(),
             surface_kind: ObservedValueSurfaceKind::Table,
             surface_name: "deployments".to_string(),

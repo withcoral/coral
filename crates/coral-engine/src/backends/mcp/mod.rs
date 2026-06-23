@@ -31,14 +31,18 @@ use crate::backends::{
     build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
     required_filter_names, validate_lookup_key_filter_backend_support,
 };
-use crate::{SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError};
+use crate::{
+    SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
+    SourceObservationPublisher,
+};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct McpCompiledSource {
     manifest: McpSourceManifest,
     source_input_resolution: SourceInputResolutionContext,
     source_inputs: Arc<McpSourceInputs>,
     caller: McpSourceClient,
+    source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +124,7 @@ pub(crate) fn compile_manifest(
         source_input_resolution,
         source_inputs,
         caller,
+        request.source_observation_publishers.to_vec(),
     )
 }
 
@@ -128,12 +133,14 @@ fn compile_source_with_caller(
     source_input_resolution: SourceInputResolutionContext,
     source_inputs: Arc<McpSourceInputs>,
     caller: Arc<dyn McpToolCaller>,
+    source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(McpCompiledSource {
         manifest,
         source_input_resolution,
         source_inputs,
         caller: McpSourceClient::new(caller),
+        source_observation_publishers,
     })
 }
 
@@ -175,6 +182,7 @@ impl CompiledBackendSource for McpCompiledSource {
                 self.caller.clone(),
                 self.manifest.common.name.clone(),
                 function.clone(),
+                self.source_observation_publishers.clone(),
             )?);
             table_functions.insert(internal_name.clone(), function_impl);
             table_function_infos.push(build_registered_table_function(
@@ -192,6 +200,7 @@ impl CompiledBackendSource for McpCompiledSource {
                 self.manifest.common.name.clone(),
                 Arc::clone(&self.source_inputs),
                 table.clone(),
+                self.source_observation_publishers.clone(),
             )?);
             tables.insert(table.name().to_string(), provider);
             let required_filters = required_filter_names(table.filters());

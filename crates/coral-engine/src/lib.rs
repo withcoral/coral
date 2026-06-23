@@ -63,7 +63,9 @@ mod runtime;
 pub use composition::{
     EngineExtensions, QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
     RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
-    SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
+    SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
+    SourceObservationPublisher, SourceObservationScope, SourceObservationSurfaceKind,
+    SourceScanObservation, SourceTables,
 };
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,

@@ -43,6 +43,27 @@ Feature values must be booleans. Unknown feature keys are preserved in `config.t
 | ------- | ------- | ----------- |
 | `feedback` | `false` | Experimental. Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral. |
 
+## Search
+
+Universal Search observed-value memory is configured under `[search]`. When enabled, Coral indexes mapped source rows from observed HTTP/MCP source scans before SQL projection so later searches can suggest values that were returned by a source but not necessarily selected in the final SQL output.
+
+```toml
+[search]
+observed_values_enabled = true
+observed_value_stale_after_days = 90
+observed_value_excluded_sources = ["github"]
+observed_value_excluded_surfaces = ["linear.issues"]
+observed_value_excluded_columns = ["messages.payload.secret", "slack.messages.user.token"]
+```
+
+| Setting | Default | Description |
+| ------- | ------- | ----------- |
+| `observed_values_enabled` | `true` | Enables observed-value memory for source-scan indexing and Universal Search suggestions. |
+| `observed_value_stale_after_days` | `90` | Excludes values whose `last_observed_at` is older than this many days. Re-observed values refresh their timestamp and stay eligible. Stale records are purged during write-side observed-value drains. |
+| `observed_value_excluded_sources` | `[]` | Source names to exclude from observed-value indexing. |
+| `observed_value_excluded_surfaces` | `[]` | Surface names to exclude. Use `surface` or `source.surface`. |
+| `observed_value_excluded_columns` | `[]` | Column or nested field paths to exclude. Use `column`, `surface.column`, or `source.surface.column`. Nested JSON and key-value paths are supported. |
+
 ## OpenTelemetry
 
 External OpenTelemetry export is configured under `[otel]`.

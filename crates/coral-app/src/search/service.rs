@@ -4,15 +4,15 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::sync::Arc;
+use std::time::Instant;
 
-use chrono::{Duration, SecondsFormat, Utc};
 use coral_api::v1::search_result::Payload;
 use coral_api::v1::search_service_server::SearchService as SearchServiceApi;
 use coral_api::v1::{
-    CatalogMetadata, ColumnHint, NativeSearchPath, ObservedValue, SearchFieldRole, SearchProvider,
-    SearchProviderState, SearchProviderStatus, SearchRequest, SearchResponse, SearchResult,
-    SearchResultTruncation, SearchSurfaceKind, SearchTableColumnPreview,
-    SearchTableColumnPreviewColumn,
+    CatalogMetadata, ClearObservedValuesRequest, ClearObservedValuesResponse, ColumnHint,
+    NativeSearchPath, ObservedValue, SearchFieldRole, SearchProvider, SearchProviderState,
+    SearchProviderStatus, SearchRequest, SearchResponse, SearchResult, SearchResultTruncation,
+    SearchSurfaceKind, SearchTableColumnPreview, SearchTableColumnPreviewColumn,
 };
 use coral_engine::{
     CatalogInfo, ColumnInfo, TableFilterInfo, TableFunctionArgumentInfo, TableFunctionInfo,
@@ -31,7 +31,7 @@ use crate::search::index::{
 };
 use crate::search::observed::{
     mark_observed_source_generation, observed_queue_foreground_drain_budget,
-    observed_storage_budget_bytes,
+    observed_storage_budget_bytes, observed_value_staleness_cutoff, observed_values_enabled,
 };
 use crate::sources::SourceName;
 use crate::state::AppStateLayout;
@@ -63,7 +63,6 @@ const OBSERVED_CHILD_PATH_BOOST: u32 = 1_000;
 const OBSERVED_VALUES_PER_FIELD_LIMIT: usize = 3;
 const CATALOG_FINGERPRINT_FILE_NAME: &str = "catalog.sha256";
 const CATALOG_DIRTY_FILE_NAME: &str = "catalog.dirty";
-const OBSERVED_VALUE_RETENTION_DAYS: i64 = 90;
 
 #[derive(Clone)]
 pub(crate) struct SearchService {
@@ -225,21 +224,7 @@ impl SearchIndexRefresher {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) {
-        if let Err(error) =
-            mark_observed_source_generation(&self.layout, workspace_name, source_name)
-        {
-            tracing::warn!(
-                workspace = %workspace_name,
-                source = %source_name,
-                error = %error,
-                "failed to mark observed-value source generation"
-            );
-        }
-        if let Err(error) = SearchIndexStore::discard_observed_values_for_source(
-            &self.layout,
-            workspace_name,
-            source_name,
-        ) {
+        if let Err(error) = self.clear_source_observed_values(workspace_name, source_name) {
             tracing::warn!(
                 workspace = %workspace_name,
                 source = %source_name,
@@ -247,6 +232,30 @@ impl SearchIndexRefresher {
                 "failed to discard observed values for mutated source"
             );
         }
+    }
+
+    pub(crate) fn clear_source_observed_values(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(), SearchIndexError> {
+        mark_observed_source_generation(&self.layout, workspace_name, source_name)?;
+        SearchIndexStore::discard_observed_values_for_source(
+            &self.layout,
+            workspace_name,
+            source_name,
+        )
+    }
+
+    pub(crate) fn clear_observed_values(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_names: &[SourceName],
+    ) -> Result<(), SearchIndexError> {
+        for source_name in source_names {
+            mark_observed_source_generation(&self.layout, workspace_name, source_name)?;
+        }
+        SearchIndexStore::discard_observed_values(&self.layout, workspace_name)
     }
 }
 
@@ -267,6 +276,30 @@ impl SearchServiceApi for SearchService {
                 .await
                 .map_err(query_status)?;
             Ok(Response::new(response))
+        })
+        .await
+    }
+
+    async fn clear_observed_values(
+        &self,
+        request: Request<ClearObservedValuesRequest>,
+    ) -> Result<Response<ClearObservedValuesResponse>, Status> {
+        let span = grpc_span(&request);
+        let search = self.search.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let source_name = request
+                .source_name
+                .as_deref()
+                .filter(|source_name| !source_name.trim().is_empty())
+                .map(SourceName::parse)
+                .transpose()
+                .map_err(app_status)?;
+            search
+                .clear_observed_values(&workspace_name, source_name)
+                .await?;
+            Ok(Response::new(ClearObservedValuesResponse {}))
         })
         .await
     }
@@ -302,12 +335,13 @@ impl UniversalSearch {
             .await;
         let observed_queue_drain =
             self.drain_observed_value_queue_with_foreground_budget(workspace_name);
+        let observed_source_scopes = self.queries.observed_source_scopes(workspace_name)?;
         let (observed_candidates, observed_status) = self.observed_value_candidates(
             workspace_name,
-            &catalog,
             &terms,
             limit,
             observed_queue_drain,
+            &observed_source_scopes,
         );
         candidates.extend(observed_candidates);
         candidates.sort();
@@ -342,6 +376,32 @@ impl UniversalSearch {
                 note: truncation_note(truncated, total_count, max_results),
             }),
         })
+    }
+
+    async fn clear_observed_values(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: Option<SourceName>,
+    ) -> Result<(), Status> {
+        if let Some(source_name) = source_name {
+            return self
+                .indexes
+                .clear_source_observed_values(workspace_name, &source_name)
+                .map_err(|error| clear_observed_values_status(&error));
+        }
+
+        let catalog = self
+            .queries
+            .list_stored_catalog(workspace_name, None)
+            .await
+            .map_err(query_status)?;
+        let source_names = catalog_source_names(&catalog)
+            .into_iter()
+            .map(|source_name| SourceName::parse(&source_name).map_err(app_status))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.indexes
+            .clear_observed_values(workspace_name, &source_names)
+            .map_err(|error| clear_observed_values_status(&error))
     }
 
     async fn catalog_metadata_candidates(
@@ -394,11 +454,20 @@ impl UniversalSearch {
     fn observed_value_candidates(
         &self,
         workspace_name: &WorkspaceName,
-        catalog: &CatalogInfo,
         terms: &QueryTerms,
         limit: u32,
         queue_drain: Option<ObservedQueueDrain>,
+        observed_source_scopes: &BTreeMap<String, String>,
     ) -> (Vec<Candidate>, ObservedProviderStatus) {
+        if !observed_values_enabled(&self.indexes.layout) {
+            return (
+                Vec::new(),
+                ObservedProviderStatus {
+                    state: SearchProviderState::NotEnabled,
+                    note: observed_provider_note(SearchProviderState::NotEnabled, 0, None),
+                },
+            );
+        }
         let index =
             match SearchIndexStore::open_existing_workspace(&self.indexes.layout, workspace_name) {
                 Ok(Some(index)) => index,
@@ -417,29 +486,21 @@ impl UniversalSearch {
                 }
                 Err(error) => return (Vec::new(), observed_index_error_status(&error)),
             };
-        let retention_cutoff = observed_value_retention_cutoff();
-        let live_sources = catalog_source_names(catalog);
+        let staleness_cutoff = observed_value_staleness_cutoff(&self.indexes.layout);
         let search_limit = usize::try_from(limit)
             .unwrap_or(usize::MAX)
             .saturating_mul(3)
             .max(25);
         let hits = match index.search_observed_values_filtered(
-            workspace_name,
             &terms.terms,
             search_limit,
-            &live_sources,
-            &retention_cutoff,
+            observed_source_scopes,
+            &staleness_cutoff,
         ) {
             Ok(hits) => hits,
             Err(error) => return (Vec::new(), observed_index_error_status(&error)),
         };
-        let candidates = observed_value_candidates_from_hits(
-            workspace_name,
-            terms,
-            hits.into_iter()
-                .filter(|hit| hit.last_observed_at.as_str() >= retention_cutoff.as_str())
-                .filter(|hit| live_sources.contains(&hit.source_name)),
-        );
+        let candidates = observed_value_candidates_from_hits(workspace_name, terms, hits);
         let state = if candidates.is_empty() {
             SearchProviderState::Empty
         } else {
@@ -453,7 +514,14 @@ impl UniversalSearch {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Option<ObservedQueueDrain> {
+        if !observed_values_enabled(&self.indexes.layout) {
+            return None;
+        }
         let budget = observed_queue_foreground_drain_budget(&self.indexes.layout);
+        let started_at = Instant::now();
+        self.queries
+            .drain_observed_source_scan_queue_for(workspace_name, budget);
+        let queue_budget = budget.saturating_sub(started_at.elapsed());
         let storage_budget_bytes = observed_storage_budget_bytes(&self.indexes.layout);
         match SearchIndexStore::open_existing_workspace(&self.indexes.layout, workspace_name) {
             Ok(Some(index)) => {
@@ -469,7 +537,7 @@ impl UniversalSearch {
                             return None;
                         }
                     };
-                let mut drain = match index.drain_observed_value_queue_for(budget) {
+                let mut drain = match index.drain_observed_value_queue_for(queue_budget) {
                     Ok(drain) => drain,
                     Err(error) => {
                         tracing::warn!(
@@ -1366,8 +1434,6 @@ fn observed_value_candidate(
                 column_name,
                 surface_kind: hit.surface_kind.to_proto() as i32,
                 field_path,
-                observed_count: hit.observed_count,
-                last_observed_at: hit.last_observed_at,
             })),
         },
     }
@@ -1595,6 +1661,7 @@ fn observed_provider_note(
             "Observed values returned no search hints".to_string(),
             queue_drain,
         ),
+        SearchProviderState::NotEnabled => "Observed values are disabled".to_string(),
         _ => String::new(),
     }
 }
@@ -1646,6 +1713,10 @@ fn observed_index_error_status(error: &SearchIndexError) -> ObservedProviderStat
     }
 }
 
+fn clear_observed_values_status(error: &SearchIndexError) -> Status {
+    Status::internal(format!("failed to clear observed values: {error}"))
+}
+
 fn catalog_source_names(catalog: &CatalogInfo) -> BTreeSet<String> {
     catalog
         .tables
@@ -1658,11 +1729,6 @@ fn catalog_source_names(catalog: &CatalogInfo) -> BTreeSet<String> {
                 .map(|function| function.schema_name.clone()),
         )
         .collect()
-}
-
-fn observed_value_retention_cutoff() -> String {
-    (Utc::now() - Duration::days(OBSERVED_VALUE_RETENTION_DAYS))
-        .to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
 fn truncation_note(truncated: bool, total_count: usize, max_results: usize) -> String {
@@ -1907,7 +1973,6 @@ mod tests {
             normalized_value_key: display_value.to_ascii_lowercase(),
             display_value: display_value.to_string(),
             last_observed_at: "2026-06-04T10:00:00.000Z".to_string(),
-            observed_count: 1,
             score,
         }
     }

@@ -16,7 +16,10 @@ use crate::backends::{
     registered_columns_from_specs, required_filter_names,
     validate_lookup_key_filter_backend_support,
 };
-use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
+use crate::{
+    RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver,
+    SourceObservationPublisher,
+};
 use coral_spec::SourceBackend;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
@@ -42,7 +45,7 @@ pub(crate) use client::{HttpSourceClient, HttpSourceClientRuntime};
 pub(crate) use error::ProviderQueryError;
 pub(crate) use provider::HttpSourceTableProvider;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct HttpCompiledSource {
     manifest: HttpSourceManifest,
     source_input_resolution: SourceInputResolutionContext,
@@ -50,6 +53,7 @@ struct HttpCompiledSource {
     body_capture_max_bytes: Option<usize>,
     trace_context: Option<opentelemetry::Context>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
 }
 
 pub(crate) fn compile_source(
@@ -59,6 +63,7 @@ pub(crate) fn compile_source(
     body_capture_max_bytes: Option<usize>,
     trace_context: Option<opentelemetry::Context>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
         manifest,
@@ -67,6 +72,7 @@ pub(crate) fn compile_source(
         body_capture_max_bytes,
         trace_context,
         source_input_resolver,
+        source_observation_publishers,
     })
 }
 
@@ -81,6 +87,7 @@ pub(crate) fn compile_manifest(
         request.runtime_context.body_capture_max_bytes,
         request.runtime_context.trace_context.clone(),
         request.source_input_resolver.clone(),
+        request.source_observation_publishers.to_vec(),
     )
 }
 
@@ -134,6 +141,7 @@ impl CompiledBackendSource for HttpCompiledSource {
                 backend.clone(),
                 self.manifest.common.name.clone(),
                 table.clone(),
+                self.source_observation_publishers.clone(),
             )?);
             tables.insert(table.name().to_string(), provider);
             table_infos.push(registered_table(table));
@@ -149,6 +157,7 @@ impl CompiledBackendSource for HttpCompiledSource {
                     backend.clone(),
                     self.manifest.common.name.clone(),
                     function.clone(),
+                    self.source_observation_publishers.clone(),
                 )?);
             table_functions.insert(internal_name.clone(), function_impl);
             table_function_infos.push(build_registered_table_function(

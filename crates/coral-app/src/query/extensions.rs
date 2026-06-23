@@ -174,11 +174,15 @@ pub(crate) fn engine_extensions_for_providers(
         let EngineExtensions {
             source_decorators,
             query_result_observers,
+            source_observation_publishers,
             request_authenticators,
             source_input_resolver,
         } = extra;
         merged.source_decorators.extend(source_decorators);
         merged.query_result_observers.extend(query_result_observers);
+        merged
+            .source_observation_publishers
+            .extend(source_observation_publishers);
         merged.request_authenticators.extend(request_authenticators);
         if source_input_resolver.is_some() {
             merged.source_input_resolver = source_input_resolver;
@@ -210,7 +214,7 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use coral_engine::{
         QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
-        RequestAuthenticatorError,
+        RequestAuthenticatorError, SourceObservationPublisher, SourceScanObservation,
     };
     use reqwest::header::{HeaderName, HeaderValue};
 
@@ -255,6 +259,12 @@ mod tests {
         }
     }
 
+    struct TestSourceObservationPublisher;
+
+    impl SourceObservationPublisher for TestSourceObservationPublisher {
+        fn publish_source_scan(&self, _observation: SourceScanObservation<'_>) {}
+    }
+
     struct TestEngineExtensionsProvider {
         key: &'static str,
         name: &'static str,
@@ -285,12 +295,27 @@ mod tests {
         }
     }
 
+    struct TestSourceObservationPublisherProvider {
+        publisher: Arc<dyn SourceObservationPublisher>,
+    }
+
+    impl EngineExtensionsProvider for TestSourceObservationPublisherProvider {
+        fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+            let mut extensions = EngineExtensions::default();
+            extensions
+                .source_observation_publishers
+                .push(Arc::clone(&self.publisher));
+            extensions
+        }
+    }
+
     #[test]
     fn noop_provider_installs_no_extensions() {
         let extensions = NoopEngineExtensionsProvider.extensions_for(&[]);
 
         assert!(extensions.source_decorators.is_empty());
         assert!(extensions.query_result_observers.is_empty());
+        assert!(extensions.source_observation_publishers.is_empty());
         assert!(extensions.request_authenticators.is_empty());
     }
 
@@ -348,5 +373,36 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(observer_names, ["base", "extra"]);
+    }
+
+    #[test]
+    fn provider_lists_merge_source_observation_publishers_in_call_order() {
+        let base = Arc::new(TestSourceObservationPublisher) as Arc<dyn SourceObservationPublisher>;
+        let extra = Arc::new(TestSourceObservationPublisher) as Arc<dyn SourceObservationPublisher>;
+        let providers = vec![
+            Arc::new(TestSourceObservationPublisherProvider {
+                publisher: Arc::clone(&base),
+            }) as Arc<dyn EngineExtensionsProvider>,
+            Arc::new(TestSourceObservationPublisherProvider {
+                publisher: Arc::clone(&extra),
+            }),
+        ];
+
+        let extensions = engine_extensions_for_providers(&providers, &[]);
+        assert_eq!(extensions.source_observation_publishers.len(), 2);
+        assert!(Arc::ptr_eq(
+            extensions
+                .source_observation_publishers
+                .first()
+                .expect("first publisher"),
+            &base
+        ));
+        assert!(Arc::ptr_eq(
+            extensions
+                .source_observation_publishers
+                .get(1)
+                .expect("second publisher"),
+            &extra
+        ));
     }
 }

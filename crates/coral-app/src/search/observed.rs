@@ -1,24 +1,27 @@
-//! Passive observed-value indexing for successful SQL results.
+//! Passive observed-value indexing for source-scan observations.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::thread;
 use std::time::Duration as StdDuration;
+use std::time::Instant as StdInstant;
 
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
+use chrono::{Duration, SecondsFormat, Utc};
 use coral_engine::{
-    QueryResultObserver, QueryResultObserverError, QuerySource, RuntimeSourceComponent,
+    QuerySource, RuntimeSourceComponent, SourceObservationPublisher, SourceObservationScope,
+    SourceObservationSurfaceKind, SourceScanObservation,
 };
-use coral_spec::ColumnSpec;
+use coral_spec::{ColumnSpec, ManifestInputKind};
 use serde_json::{Map, Value};
 use sha2::{Digest as _, Sha256};
-use sqlparser::ast::{
-    Expr, Ident, ObjectName, Select, SelectItem, Statement, TableFactor, TableWithJoins,
-};
-use sqlparser::dialect::GenericDialect;
-use sqlparser::parser::Parser;
 use uuid::Uuid;
 
+use crate::credentials::{OAUTH_INTERNAL_KEY_PREFIX, is_internal_material_key};
 use crate::search::index::{
     ObservedValueRecord, ObservedValueSuggestedOperator, ObservedValueSurfaceKind,
     SearchIndexError, SearchIndexStore,
@@ -33,6 +36,11 @@ const DEFAULT_OBSERVED_MAX_STORAGE_MB: u64 = 256;
 const DEFAULT_OBSERVED_COLLECTION_MAX_CANDIDATES: usize = 10_000;
 const DEFAULT_OBSERVED_COLLECTION_MAX_CANDIDATE_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_OBSERVED_COLLECTION_MAX_JSON_DEPTH: usize = 8;
+const DEFAULT_OBSERVED_VALUE_STALE_AFTER_DAYS: u64 = 90;
+const DEFAULT_OBSERVED_VALUES_ENABLED: bool = true;
+const OBSERVED_SOURCE_SCAN_QUEUE_CAPACITY: usize = 128;
+const OBSERVED_SOURCE_SCAN_INDEX_ATTEMPTS: usize = 8;
+const OBSERVED_SOURCE_SCAN_INDEX_RETRY_MS: u64 = 25;
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 const SOURCE_GENERATION_DIR_NAME: &str = "source-generations";
 
@@ -44,6 +52,17 @@ struct ObservedSearchConfigFile {
 
 #[derive(Debug, Default, serde::Deserialize)]
 struct ObservedSearchConfig {
+    #[serde(rename = "observed_values_enabled")]
+    values_enabled: Option<bool>,
+    #[serde(default)]
+    #[serde(rename = "observed_value_excluded_sources")]
+    excluded_sources: Vec<String>,
+    #[serde(default)]
+    #[serde(rename = "observed_value_excluded_surfaces")]
+    excluded_surfaces: Vec<String>,
+    #[serde(default)]
+    #[serde(rename = "observed_value_excluded_columns")]
+    excluded_columns: Vec<String>,
     #[serde(rename = "observed_queue_foreground_drain_ms")]
     queue_foreground_drain_ms: Option<u64>,
     #[serde(rename = "observed_max_storage_mb")]
@@ -54,10 +73,12 @@ struct ObservedSearchConfig {
     collection_candidate_bytes: Option<usize>,
     #[serde(rename = "observed_collection_max_json_depth")]
     collection_json_depth: Option<usize>,
+    #[serde(rename = "observed_value_stale_after_days")]
+    value_stale_after_days: Option<u64>,
 }
 
-/// Query-result observer that writes direct-provenance cell values into search index storage.
-pub(crate) struct ObservedValueIndexer {
+/// Writes source-scan values into search index storage.
+struct ObservedValueIndexer {
     layout: AppStateLayout,
     workspace_name: WorkspaceName,
     surfaces: Vec<ObservedSurface>,
@@ -66,15 +87,35 @@ pub(crate) struct ObservedValueIndexer {
     storage_budget_bytes: u64,
 }
 
+#[derive(Clone)]
+pub(crate) struct ObservedSourceScanIndexer {
+    layout: AppStateLayout,
+    sender: SyncSender<ObservedSourceScanWorkerMessage>,
+    dropped_observations: Arc<AtomicU64>,
+}
+
 impl ObservedValueIndexer {
-    pub(crate) fn new(
+    #[cfg(test)]
+    fn new(
         layout: AppStateLayout,
         workspace_name: WorkspaceName,
         selected_sources: &[QuerySource],
     ) -> Self {
-        let surfaces = observed_surfaces(selected_sources);
-        let source_generations = observed_source_generations(&layout, &workspace_name, &surfaces);
+        let source_scope_ids =
+            observed_source_scopes_from_query_sources(selected_sources, &BTreeMap::new());
+        Self::new_with_source_scopes(layout, workspace_name, selected_sources, &source_scope_ids)
+    }
+
+    fn new_with_source_scopes(
+        layout: AppStateLayout,
+        workspace_name: WorkspaceName,
+        selected_sources: &[QuerySource],
+        source_scope_ids: &BTreeMap<String, String>,
+    ) -> Self {
         let config = observed_search_config_or_default(&layout);
+        let policy = ObservedValuePolicy::from_config(&config.search);
+        let surfaces = observed_surfaces(selected_sources, source_scope_ids, &policy);
+        let source_generations = observed_source_generations(&layout, &workspace_name, &surfaces);
         Self {
             layout,
             workspace_name,
@@ -85,38 +126,80 @@ impl ObservedValueIndexer {
         }
     }
 
-    fn observe_result_inner(
+    fn index_source_scan_observation_inner(
         &self,
-        sql: &str,
-        schema: &Schema,
-        batches: &[RecordBatch],
+        observation: &OwnedSourceScanObservation,
     ) -> Result<(), ObservedValueIndexError> {
-        let provenance = resolve_projection_provenance(sql, schema, &self.surfaces);
-        if provenance.iter().all(Option::is_none) {
+        let Some(surface) = self.source_scan_surface(observation) else {
             tracing::debug!(
-                "skipping observed-value indexing because result provenance is unknown"
+                workspace = %self.workspace_name,
+                source = %observation.source_name,
+                surface = %observation.surface_name,
+                "skipping source-scan observed-value indexing because the observed surface is not selected"
             );
+            return Ok(());
+        };
+        let schema = observation.batch.schema();
+        let provenance = schema
+            .fields()
+            .iter()
+            .map(|field| direct_field_provenance(surface, field.name(), field.name()))
+            .collect::<Vec<_>>();
+        if provenance.iter().all(Option::is_none) {
             return Ok(());
         }
         if self.source_generations_changed(&provenance)? {
             tracing::debug!(
                 workspace = %self.workspace_name,
-                "skipping observed-value indexing because a source changed while the query was running"
+                source = %observation.source_name,
+                "skipping source-scan observed-value indexing because a source changed while the query was running"
             );
             return Ok(());
         }
 
-        let collection =
-            observed_records_from_batches(schema, batches, &provenance, self.collection_budget)?;
+        let collection = observed_records_from_batches(
+            schema.as_ref(),
+            std::slice::from_ref(&observation.batch),
+            &provenance,
+            self.collection_budget,
+        )?;
         if collection.budget_exhausted {
             tracing::debug!(
                 workspace = %self.workspace_name,
+                source = %observation.source_name,
+                surface = %observation.surface_name,
+                scope = ?observation.observation_scope,
                 accepted_candidates = collection.accepted_candidates,
                 accepted_candidate_bytes = collection.accepted_candidate_bytes,
                 skipped_oversize_candidates = collection.skipped_oversize_candidates,
-                "observed-value collection budget exhausted; enqueueing bounded chunks"
+                "source-scan observed-value collection budget exhausted; enqueueing bounded chunks"
             );
         }
+        self.enqueue_record_collection(collection)
+    }
+
+    fn source_scan_surface(
+        &self,
+        observation: &OwnedSourceScanObservation,
+    ) -> Option<&ObservedSurface> {
+        let surface_kind = observed_value_surface_kind(observation.surface_kind);
+        let matches = self
+            .surfaces
+            .iter()
+            .filter(|surface| surface.surface_kind == surface_kind)
+            .filter(|surface| same_identifier(&surface.source_name, &observation.source_name))
+            .filter(|surface| same_identifier(&surface.surface_name, &observation.surface_name))
+            .collect::<Vec<_>>();
+        let [surface] = matches.as_slice() else {
+            return None;
+        };
+        Some(*surface)
+    }
+
+    fn enqueue_record_collection(
+        &self,
+        collection: ObservedRecordCollection,
+    ) -> Result<(), ObservedValueIndexError> {
         if collection.is_empty() {
             return Ok(());
         }
@@ -177,25 +260,237 @@ impl ObservedValueIndexer {
     }
 }
 
-impl QueryResultObserver for ObservedValueIndexer {
-    fn name(&self) -> &'static str {
-        "observed_value_indexer"
-    }
-
-    fn observe_result(
-        &self,
-        sql: &str,
-        schema: &Schema,
-        batches: &[RecordBatch],
-    ) -> Result<(), QueryResultObserverError> {
-        if let Err(error) = self.observe_result_inner(sql, schema, batches) {
+impl ObservedSourceScanIndexer {
+    pub(crate) fn spawn(layout: AppStateLayout) -> Self {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(OBSERVED_SOURCE_SCAN_QUEUE_CAPACITY);
+        let worker = ObservedSourceScanWorker { receiver };
+        if let Err(error) = thread::Builder::new()
+            .name("coral-observed-source-scan-indexer".to_string())
+            .spawn(move || worker.run())
+        {
             tracing::warn!(
                 error = %error,
-                "observed-value indexing failed; returning SQL result without indexed values"
+                "failed to spawn observed source-scan indexer; source observations will be dropped"
             );
         }
-        Ok(())
+        Self {
+            layout,
+            sender,
+            dropped_observations: Arc::new(AtomicU64::new(0)),
+        }
     }
+
+    #[cfg(test)]
+    fn publisher(
+        &self,
+        workspace_name: WorkspaceName,
+        selected_sources: &[QuerySource],
+    ) -> Arc<dyn SourceObservationPublisher> {
+        let source_scope_ids =
+            observed_source_scopes_from_query_sources(selected_sources, &BTreeMap::new());
+        self.publisher_with_source_scopes(workspace_name, selected_sources, &source_scope_ids)
+    }
+
+    pub(crate) fn publisher_with_source_scopes(
+        &self,
+        workspace_name: WorkspaceName,
+        selected_sources: &[QuerySource],
+        source_scope_ids: &BTreeMap<String, String>,
+    ) -> Arc<dyn SourceObservationPublisher> {
+        let indexer = Arc::new(ObservedValueIndexer::new_with_source_scopes(
+            self.layout.clone(),
+            workspace_name,
+            selected_sources,
+            source_scope_ids,
+        ));
+        Arc::new(ObservedSourceScanPublisher {
+            sender: self.sender.clone(),
+            indexer,
+            dropped_observations: Arc::clone(&self.dropped_observations),
+        })
+    }
+
+    pub(crate) fn drain_for(&self, budget: StdDuration) -> bool {
+        if budget.is_zero() {
+            return false;
+        }
+        let started_at = StdInstant::now();
+        let (ack_sender, ack_receiver) = std::sync::mpsc::sync_channel(1);
+        let mut message = ObservedSourceScanWorkerMessage::Flush(ack_sender);
+        loop {
+            match self.sender.try_send(message) {
+                Ok(()) => break,
+                Err(TrySendError::Full(returned_message)) => {
+                    let elapsed = started_at.elapsed();
+                    if elapsed >= budget {
+                        tracing::debug!(
+                            "source-scan observed-value worker did not accept drain marker before foreground budget expired"
+                        );
+                        return false;
+                    }
+                    message = returned_message;
+                    thread::sleep(
+                        budget
+                            .saturating_sub(elapsed)
+                            .min(StdDuration::from_millis(5)),
+                    );
+                }
+                Err(TrySendError::Disconnected(_message)) => {
+                    tracing::debug!(
+                        "source-scan observed-value worker stopped before foreground drain"
+                    );
+                    return false;
+                }
+            }
+        }
+
+        match ack_receiver.recv_timeout(budget.saturating_sub(started_at.elapsed())) {
+            Ok(()) => true,
+            Err(RecvTimeoutError::Timeout) => {
+                tracing::debug!(
+                    "source-scan observed-value worker did not finish foreground drain before budget expired"
+                );
+                false
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                tracing::debug!(
+                    "source-scan observed-value worker stopped during foreground drain"
+                );
+                false
+            }
+        }
+    }
+}
+
+struct ObservedSourceScanPublisher {
+    sender: SyncSender<ObservedSourceScanWorkerMessage>,
+    indexer: Arc<ObservedValueIndexer>,
+    dropped_observations: Arc<AtomicU64>,
+}
+
+impl SourceObservationPublisher for ObservedSourceScanPublisher {
+    fn publish_source_scan(&self, observation: SourceScanObservation<'_>) {
+        let job = ObservedSourceScanJob {
+            indexer: Arc::clone(&self.indexer),
+            observation: OwnedSourceScanObservation {
+                source_name: observation.source_name.to_string(),
+                surface_kind: observation.surface_kind,
+                surface_name: observation.surface_name.to_string(),
+                observation_scope: observation.observation_scope,
+                batch: observation.batch.clone(),
+            },
+        };
+        let source_name = job.observation.source_name.clone();
+        let surface_name = job.observation.surface_name.clone();
+        match self
+            .sender
+            .try_send(ObservedSourceScanWorkerMessage::Observation(job))
+        {
+            Ok(()) => {}
+            Err(TrySendError::Full(_message)) => {
+                let dropped = self
+                    .dropped_observations
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1);
+                if dropped == 1 || dropped.is_power_of_two() {
+                    tracing::debug!(
+                        dropped_observations = dropped,
+                        source = %source_name,
+                        surface = %surface_name,
+                        "dropping source-scan observation because observed-value indexing is behind"
+                    );
+                }
+            }
+            Err(TrySendError::Disconnected(_message)) => {
+                tracing::debug!(
+                    source = %source_name,
+                    surface = %surface_name,
+                    "dropping source-scan observation because observed-value indexer is stopped"
+                );
+            }
+        }
+    }
+}
+
+struct ObservedSourceScanWorker {
+    receiver: Receiver<ObservedSourceScanWorkerMessage>,
+}
+
+impl ObservedSourceScanWorker {
+    fn run(self) {
+        while let Ok(message) = self.receiver.recv() {
+            match message {
+                ObservedSourceScanWorkerMessage::Observation(job) => {
+                    index_source_scan_job(&job);
+                }
+                ObservedSourceScanWorkerMessage::Flush(ack_sender) => {
+                    if ack_sender.send(()).is_err() {}
+                }
+            }
+        }
+    }
+}
+
+fn index_source_scan_job(job: &ObservedSourceScanJob) {
+    for attempt in 1..=OBSERVED_SOURCE_SCAN_INDEX_ATTEMPTS {
+        match job
+            .indexer
+            .index_source_scan_observation_inner(&job.observation)
+        {
+            Ok(()) => return,
+            Err(error) if observed_index_is_temporarily_busy(&error) => {
+                if attempt == OBSERVED_SOURCE_SCAN_INDEX_ATTEMPTS {
+                    tracing::debug!(
+                        source = %job.observation.source_name,
+                        surface = %job.observation.surface_name,
+                        error = %error,
+                        attempts = attempt,
+                        "source-scan observed-value indexing remained busy; dropping observation"
+                    );
+                    return;
+                }
+                thread::sleep(StdDuration::from_millis(
+                    OBSERVED_SOURCE_SCAN_INDEX_RETRY_MS,
+                ));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    source = %job.observation.source_name,
+                    surface = %job.observation.surface_name,
+                    error = %error,
+                    "source-scan observed-value indexing failed; dropping observation"
+                );
+                return;
+            }
+        }
+    }
+}
+
+fn observed_index_is_temporarily_busy(error: &ObservedValueIndexError) -> bool {
+    matches!(
+        error,
+        ObservedValueIndexError::SearchIndex(SearchIndexError::RedbDatabase(
+            redb::DatabaseError::DatabaseAlreadyOpen
+        ))
+    )
+}
+
+struct ObservedSourceScanJob {
+    indexer: Arc<ObservedValueIndexer>,
+    observation: OwnedSourceScanObservation,
+}
+
+enum ObservedSourceScanWorkerMessage {
+    Observation(ObservedSourceScanJob),
+    Flush(SyncSender<()>),
+}
+
+struct OwnedSourceScanObservation {
+    source_name: String,
+    surface_kind: SourceObservationSurfaceKind,
+    surface_name: String,
+    observation_scope: SourceObservationScope,
+    batch: RecordBatch,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -304,6 +599,202 @@ pub(crate) fn observed_storage_budget_bytes(layout: &AppStateLayout) -> u64 {
     observed_storage_budget_bytes_from_config(&config.search)
 }
 
+pub(crate) fn observed_value_staleness_cutoff(layout: &AppStateLayout) -> String {
+    let config = observed_search_config_or_default(layout);
+    let days = config
+        .search
+        .value_stale_after_days
+        .unwrap_or(DEFAULT_OBSERVED_VALUE_STALE_AFTER_DAYS)
+        .max(1);
+    let days = i64::try_from(days).unwrap_or(i64::MAX);
+    (Utc::now() - Duration::days(days)).to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+pub(crate) fn observed_values_enabled(layout: &AppStateLayout) -> bool {
+    let config = observed_search_config_or_default(layout);
+    config
+        .search
+        .values_enabled
+        .unwrap_or(DEFAULT_OBSERVED_VALUES_ENABLED)
+}
+
+fn observed_source_scope_id(source: &QuerySource) -> String {
+    observed_source_scope_id_with_credential_generation(source, None)
+}
+
+fn observed_source_scope_id_with_credential_generation(
+    source: &QuerySource,
+    credential_generation_id: Option<&str>,
+) -> String {
+    let mut hasher = Sha256::new();
+    update_scope_hash(&mut hasher, "scope_version", "1");
+    update_scope_hash(&mut hasher, "source_name", source.source_name());
+    update_scope_hash(&mut hasher, "version", source.version().unwrap_or(""));
+    update_scope_hash(
+        &mut hasher,
+        "credential_generation_id",
+        credential_generation_id.unwrap_or(""),
+    );
+    update_declared_input_scope_hashes(&mut hasher, source);
+    update_runtime_input_scope_hashes(&mut hasher, source);
+    update_component_scope_hashes(&mut hasher, source);
+    format!("{:x}", hasher.finalize())
+}
+
+fn update_declared_input_scope_hashes(hasher: &mut Sha256, source: &QuerySource) {
+    for input in source.declared_inputs() {
+        update_scope_hash(hasher, "input.key", &input.key);
+        update_scope_hash(
+            hasher,
+            "input.kind",
+            match input.kind {
+                ManifestInputKind::Variable => "variable",
+                ManifestInputKind::Secret => "secret",
+            },
+        );
+        update_scope_hash(
+            hasher,
+            "input.required",
+            if input.required { "true" } else { "false" },
+        );
+        update_scope_hash(hasher, "input.default", &input.default_value);
+        update_scope_hash(hasher, "input.hint", input.hint.as_deref().unwrap_or(""));
+        if let Some(credential) = input.credential.as_ref() {
+            for method in &credential.methods {
+                update_scope_hash(
+                    hasher,
+                    "input.credential.method.kind",
+                    match method.kind {
+                        coral_spec::ManifestCredentialMethodKind::SourceConfig => "source_config",
+                        coral_spec::ManifestCredentialMethodKind::OAuth => "oauth",
+                    },
+                );
+                update_scope_hash(
+                    hasher,
+                    "input.credential.method.hint",
+                    method.hint.as_deref().unwrap_or(""),
+                );
+            }
+        }
+    }
+}
+
+fn update_runtime_input_scope_hashes(hasher: &mut Sha256, source: &QuerySource) {
+    for (key, value) in source.variables() {
+        update_scope_hash(hasher, "variable.key", key);
+        update_scope_hash(hasher, "variable.value", value);
+    }
+    for (key, value) in source.secrets() {
+        if !is_internal_material_key(key) {
+            update_scope_hash(hasher, "secret.key", key);
+            continue;
+        }
+        if is_safe_oauth_scope_metadata_key(key) {
+            update_scope_hash(hasher, "oauth.metadata.key", key);
+            update_scope_hash(hasher, "oauth.metadata.value", value);
+        }
+    }
+}
+
+fn update_component_scope_hashes(hasher: &mut Sha256, source: &QuerySource) {
+    for component in source.components() {
+        match component {
+            RuntimeSourceComponent::Http(http) => {
+                update_scope_hash(hasher, "component.kind", "http");
+                for table in &http.tables {
+                    update_surface_scope_hash(hasher, "table", table.name(), table.columns());
+                }
+                for function in &http.functions {
+                    update_surface_scope_hash(
+                        hasher,
+                        "table_function",
+                        &function.name,
+                        &function.columns,
+                    );
+                }
+            }
+            RuntimeSourceComponent::File(file) => {
+                update_scope_hash(hasher, "component.kind", "file");
+                for table in &file.tables {
+                    update_surface_scope_hash(hasher, "table", table.name(), table.columns());
+                }
+            }
+            RuntimeSourceComponent::Mcp(mcp) => {
+                update_scope_hash(hasher, "component.kind", "mcp");
+                for table in &mcp.tables {
+                    update_surface_scope_hash(hasher, "table", table.name(), table.columns());
+                }
+                for function in &mcp.functions {
+                    update_surface_scope_hash(
+                        hasher,
+                        "table_function",
+                        function.name(),
+                        function.columns(),
+                    );
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn observed_source_scopes_from_query_sources(
+    selected_sources: &[QuerySource],
+    credential_generation_ids: &BTreeMap<String, Option<String>>,
+) -> BTreeMap<String, String> {
+    selected_sources
+        .iter()
+        .map(|source| {
+            let credential_generation_id = credential_generation_ids
+                .get(source.source_name())
+                .and_then(Option::as_deref);
+            (
+                source.source_name().to_string(),
+                observed_source_scope_id_with_credential_generation(
+                    source,
+                    credential_generation_id,
+                ),
+            )
+        })
+        .collect()
+}
+
+fn update_surface_scope_hash(
+    hasher: &mut Sha256,
+    surface_kind: &str,
+    surface_name: &str,
+    columns: &[ColumnSpec],
+) {
+    update_scope_hash(hasher, "surface.kind", surface_kind);
+    update_scope_hash(hasher, "surface.name", surface_name);
+    for column in columns {
+        update_scope_hash(hasher, "surface.column.name", &column.name);
+        update_scope_hash(hasher, "surface.column.type", &column.data_type);
+    }
+}
+
+fn update_scope_hash(hasher: &mut Sha256, label: &str, value: &str) {
+    hasher.update(label.len().to_le_bytes());
+    hasher.update(label.as_bytes());
+    hasher.update(value.len().to_le_bytes());
+    hasher.update(value.as_bytes());
+}
+
+fn is_safe_oauth_scope_metadata_key(key: &str) -> bool {
+    let Some(rest) = key.strip_prefix(OAUTH_INTERNAL_KEY_PREFIX) else {
+        return false;
+    };
+    [
+        ".method",
+        ".token_type",
+        ".scope",
+        ".client_id",
+        ".token_url",
+        ".client_secret_transport",
+    ]
+    .into_iter()
+    .any(|suffix| rest.ends_with(suffix))
+}
+
 fn observed_search_config_or_default(layout: &AppStateLayout) -> ObservedSearchConfigFile {
     match load_observed_search_config(layout) {
         Ok(config) => config,
@@ -353,93 +844,211 @@ fn load_observed_search_config(
 
 #[derive(Debug, Clone)]
 struct ObservedSurface {
+    source_scope_id: String,
     source_name: String,
     surface_kind: ObservedValueSurfaceKind,
     surface_name: String,
     column_names: BTreeSet<String>,
+    column_policy: ObservedSurfaceColumnPolicy,
 }
 
 impl ObservedSurface {
     fn allows_column(&self, column_name: &str) -> bool {
-        self.column_names.is_empty()
+        (self.column_names.is_empty()
             || self
                 .column_names
-                .contains(&normalize_identifier(column_name))
+                .contains(&normalize_identifier(column_name)))
+            && !self.column_policy.denies_column(column_name)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone)]
 struct FieldProvenance {
+    source_scope_id: String,
     source_name: String,
     surface_kind: ObservedValueSurfaceKind,
     surface_name: String,
     column_name: String,
+    column_policy: ObservedSurfaceColumnPolicy,
 }
 
-struct SelectedObservedSurface<'a> {
-    surface: &'a ObservedSurface,
-    aliases: Vec<String>,
+#[derive(Debug, Clone, Default)]
+struct ObservedValuePolicy {
+    sources: BTreeSet<String>,
+    surfaces: BTreeSet<String>,
+    columns: BTreeSet<String>,
 }
 
-impl SelectedObservedSurface<'_> {
-    fn qualifiers(&self) -> Vec<String> {
-        let mut qualifiers = surface_qualifiers(self.surface);
-        qualifiers.extend(self.aliases.iter().map(|alias| normalize_identifier(alias)));
-        qualifiers.sort();
-        qualifiers.dedup();
-        qualifiers
+impl ObservedValuePolicy {
+    fn from_config(config: &ObservedSearchConfig) -> Self {
+        Self {
+            sources: config
+                .excluded_sources
+                .iter()
+                .map(|source| normalize_identifier(source))
+                .filter(|source| !source.is_empty())
+                .collect(),
+            surfaces: config
+                .excluded_surfaces
+                .iter()
+                .map(|surface| normalize_policy_path(surface))
+                .filter(|surface| !surface.is_empty())
+                .collect(),
+            columns: config
+                .excluded_columns
+                .iter()
+                .map(|column| normalize_policy_path(column))
+                .filter(|column| !column.is_empty())
+                .collect(),
+        }
+    }
+
+    fn allows_source(&self, source_name: &str) -> bool {
+        !self.sources.contains(&normalize_identifier(source_name))
+    }
+
+    fn allows_surface(&self, source_name: &str, surface_name: &str) -> bool {
+        let surface = policy_path([surface_name]);
+        let qualified_surface = policy_path([source_name, surface_name]);
+        !self.surfaces.contains(&surface) && !self.surfaces.contains(&qualified_surface)
+    }
+
+    fn surface_column_policy(
+        &self,
+        source_name: &str,
+        surface_name: &str,
+    ) -> ObservedSurfaceColumnPolicy {
+        ObservedSurfaceColumnPolicy {
+            source_name: normalize_identifier(source_name),
+            surface_name: normalize_identifier(surface_name),
+            excluded_columns: self.columns.clone(),
+        }
     }
 }
 
-fn observed_surfaces(selected_sources: &[QuerySource]) -> Vec<ObservedSurface> {
+#[derive(Debug, Clone, Default)]
+struct ObservedSurfaceColumnPolicy {
+    source_name: String,
+    surface_name: String,
+    excluded_columns: BTreeSet<String>,
+}
+
+impl ObservedSurfaceColumnPolicy {
+    fn denies_column(&self, field_path: &str) -> bool {
+        if self.excluded_columns.is_empty() {
+            return false;
+        }
+        let field_path = normalize_policy_path(field_path);
+        if field_path.is_empty() {
+            return false;
+        }
+        let surface_field_path = policy_path([self.surface_name.as_str(), field_path.as_str()]);
+        let qualified_field_path = policy_path([
+            self.source_name.as_str(),
+            self.surface_name.as_str(),
+            field_path.as_str(),
+        ]);
+        [&field_path, &surface_field_path, &qualified_field_path]
+            .into_iter()
+            .any(|candidate| self.excluded_columns.contains(candidate))
+    }
+}
+
+fn observed_surfaces(
+    selected_sources: &[QuerySource],
+    source_scope_ids: &BTreeMap<String, String>,
+    policy: &ObservedValuePolicy,
+) -> Vec<ObservedSurface> {
     let mut surfaces = Vec::new();
     for source in selected_sources {
         let source_name = source.source_name().to_string();
+        if !policy.allows_source(&source_name) {
+            tracing::debug!(
+                source = %source_name,
+                "skipping observed-value indexing for source because policy excludes it"
+            );
+            continue;
+        }
+        let source_scope_id = source_scope_ids
+            .get(source.source_name())
+            .cloned()
+            .unwrap_or_else(|| observed_source_scope_id(source));
         for component in source.components() {
             match component {
                 RuntimeSourceComponent::Http(http) => {
                     for table in &http.tables {
+                        if !policy.allows_surface(&source_name, table.name()) {
+                            tracing::debug!(
+                                source = %source_name,
+                                surface = %table.name(),
+                                "skipping observed-value indexing for surface because policy excludes it"
+                            );
+                            continue;
+                        }
                         surfaces.push(observed_surface(
+                            &source_scope_id,
                             &source_name,
                             ObservedValueSurfaceKind::Table,
                             table.name(),
                             table.columns(),
+                            policy,
                         ));
                     }
                     for function in &http.functions {
+                        if !policy.allows_surface(&source_name, &function.name) {
+                            tracing::debug!(
+                                source = %source_name,
+                                surface = %function.name,
+                                "skipping observed-value indexing for surface because policy excludes it"
+                            );
+                            continue;
+                        }
                         surfaces.push(observed_surface(
+                            &source_scope_id,
                             &source_name,
                             ObservedValueSurfaceKind::TableFunction,
                             &function.name,
                             &function.columns,
+                            policy,
                         ));
                     }
                 }
-                RuntimeSourceComponent::File(file) => {
-                    for table in &file.tables {
-                        surfaces.push(observed_surface(
-                            &source_name,
-                            ObservedValueSurfaceKind::Table,
-                            table.name(),
-                            table.columns(),
-                        ));
-                    }
-                }
+                RuntimeSourceComponent::File(_) => {}
                 RuntimeSourceComponent::Mcp(mcp) => {
                     for table in &mcp.tables {
+                        if !policy.allows_surface(&source_name, table.name()) {
+                            tracing::debug!(
+                                source = %source_name,
+                                surface = %table.name(),
+                                "skipping observed-value indexing for surface because policy excludes it"
+                            );
+                            continue;
+                        }
                         surfaces.push(observed_surface(
+                            &source_scope_id,
                             &source_name,
                             ObservedValueSurfaceKind::Table,
                             table.name(),
                             table.columns(),
+                            policy,
                         ));
                     }
                     for function in &mcp.functions {
+                        if !policy.allows_surface(&source_name, function.name()) {
+                            tracing::debug!(
+                                source = %source_name,
+                                surface = %function.name(),
+                                "skipping observed-value indexing for surface because policy excludes it"
+                            );
+                            continue;
+                        }
                         surfaces.push(observed_surface(
+                            &source_scope_id,
                             &source_name,
                             ObservedValueSurfaceKind::TableFunction,
                             function.name(),
                             function.columns(),
+                            policy,
                         ));
                     }
                 }
@@ -450,15 +1059,19 @@ fn observed_surfaces(selected_sources: &[QuerySource]) -> Vec<ObservedSurface> {
 }
 
 fn observed_surface(
+    source_scope_id: &str,
     source_name: &str,
     surface_kind: ObservedValueSurfaceKind,
     surface_name: &str,
     columns: &[ColumnSpec],
+    policy: &ObservedValuePolicy,
 ) -> ObservedSurface {
     ObservedSurface {
+        source_scope_id: source_scope_id.to_string(),
         source_name: source_name.to_string(),
         surface_kind,
         surface_name: surface_name.to_string(),
+        column_policy: policy.surface_column_policy(source_name, surface_name),
         column_names: columns
             .iter()
             .map(|column| normalize_identifier(&column.name))
@@ -466,181 +1079,12 @@ fn observed_surface(
     }
 }
 
-fn resolve_projection_provenance(
-    sql: &str,
-    schema: &Schema,
-    surfaces: &[ObservedSurface],
-) -> Vec<Option<FieldProvenance>> {
-    let empty = vec![None; schema.fields().len()];
-    let Ok(statements) = Parser::parse_sql(&GenericDialect {}, sql) else {
-        return empty;
-    };
-    let [Statement::Query(query)] = statements.as_slice() else {
-        return empty;
-    };
-    if query.with.is_some() {
-        return empty;
-    }
-    let Some(select) = query.body.as_select() else {
-        return empty;
-    };
-    let Some(selected_surface) = select_from_surface(select, surfaces) else {
-        return empty;
-    };
-    let surface = selected_surface.surface;
-
-    if let [item] = select.projection.as_slice()
-        && projection_is_wildcard(item)
-    {
-        return schema
-            .fields()
-            .iter()
-            .map(|field| {
-                direct_field_provenance(
-                    surface,
-                    field.name(),
-                    field.name(),
-                    std::slice::from_ref(&surface.surface_name),
-                )
-            })
-            .collect();
-    }
-
-    if select.projection.len() != schema.fields().len() {
-        return empty;
-    }
-
-    let qualifiers = selected_surface.qualifiers();
-    select
-        .projection
-        .iter()
-        .zip(schema.fields().iter())
-        .map(|(item, field)| {
-            projection_column_name(item, &qualifiers).and_then(|column_name| {
-                direct_field_provenance(surface, &column_name, field.name(), &qualifiers)
-            })
-        })
-        .collect()
-}
-
-fn select_from_surface<'a>(
-    select: &Select,
-    surfaces: &'a [ObservedSurface],
-) -> Option<SelectedObservedSurface<'a>> {
-    let [from] = select.from.as_slice() else {
-        return None;
-    };
-    if !from.joins.is_empty() {
-        return None;
-    }
-    table_with_joins_surface(from, surfaces)
-}
-
-fn table_with_joins_surface<'a>(
-    from: &TableWithJoins,
-    surfaces: &'a [ObservedSurface],
-) -> Option<SelectedObservedSurface<'a>> {
-    match &from.relation {
-        TableFactor::Table {
-            name, args, alias, ..
-        } => {
-            let expected_kind = if args.is_some() {
-                Some(ObservedValueSurfaceKind::TableFunction)
-            } else {
-                Some(ObservedValueSurfaceKind::Table)
-            };
-            resolve_surface_name(name, expected_kind, surfaces).map(|surface| {
-                SelectedObservedSurface {
-                    surface,
-                    aliases: table_alias_names(alias.as_ref()),
-                }
-            })
-        }
-        TableFactor::Function { name, alias, .. } => resolve_surface_name(
-            name,
-            Some(ObservedValueSurfaceKind::TableFunction),
-            surfaces,
-        )
-        .map(|surface| SelectedObservedSurface {
-            surface,
-            aliases: table_alias_names(alias.as_ref()),
-        }),
-        _ => None,
-    }
-}
-
-fn table_alias_names(alias: Option<&sqlparser::ast::TableAlias>) -> Vec<String> {
-    alias
-        .map(|alias| vec![alias.name.value.clone()])
-        .unwrap_or_default()
-}
-
-fn resolve_surface_name<'a>(
-    name: &ObjectName,
-    expected_kind: Option<ObservedValueSurfaceKind>,
-    surfaces: &'a [ObservedSurface],
-) -> Option<&'a ObservedSurface> {
-    let parts = object_name_parts(name)?;
-    let matches = surfaces
-        .iter()
-        .filter(|surface| expected_kind.is_none_or(|kind| surface.surface_kind == kind))
-        .filter(|surface| surface_matches_parts(surface, &parts))
-        .collect::<Vec<_>>();
-    let [surface] = matches.as_slice() else {
-        return None;
-    };
-    Some(*surface)
-}
-
-fn surface_matches_parts(surface: &ObservedSurface, parts: &[String]) -> bool {
-    if let [surface_name] = parts {
-        return same_identifier(surface_name, &surface.surface_name);
-    }
-    if parts.len() < 2 {
-        return false;
-    }
-    for split in 1..parts.len() {
-        let Some(source_parts) = parts.get(..split) else {
-            continue;
-        };
-        let Some(surface_parts) = parts.get(split..) else {
-            continue;
-        };
-        let source = source_parts.join(".");
-        let surface_name = surface_parts.join(".");
-        if same_identifier(&source, &surface.source_name)
-            && same_identifier(&surface_name, &surface.surface_name)
-        {
-            return true;
-        }
-    }
-    false
-}
-
-fn projection_is_wildcard(item: &SelectItem) -> bool {
-    matches!(
-        item,
-        SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _)
-    )
-}
-
-fn projection_column_name(item: &SelectItem, qualifiers: &[String]) -> Option<String> {
-    match item {
-        SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
-            expr_column_name(expr, qualifiers)
-        }
-        SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => None,
-    }
-}
-
-fn expr_column_name(expr: &Expr, qualifiers: &[String]) -> Option<String> {
-    match expr {
-        Expr::Identifier(ident) => Some(ident.value.clone()),
-        Expr::CompoundIdentifier(idents) => {
-            let (column, qualifier_parts) = idents.split_last()?;
-            qualifier_matches(qualifier_parts, qualifiers).then(|| column.value.clone())
-        }
-        _ => None,
+fn observed_value_surface_kind(
+    surface_kind: SourceObservationSurfaceKind,
+) -> ObservedValueSurfaceKind {
+    match surface_kind {
+        SourceObservationSurfaceKind::Table => ObservedValueSurfaceKind::Table,
+        SourceObservationSurfaceKind::Function => ObservedValueSurfaceKind::TableFunction,
     }
 }
 
@@ -648,49 +1092,21 @@ fn direct_field_provenance(
     surface: &ObservedSurface,
     column_name: &str,
     output_field_name: &str,
-    _qualifiers: &[String],
 ) -> Option<FieldProvenance> {
-    if !surface.allows_column(column_name) || is_sensitive_column(column_name) {
+    if !surface.allows_column(column_name) || is_sensitive_field_path(column_name) {
         return None;
     }
     if output_field_name.trim().is_empty() {
         return None;
     }
     Some(FieldProvenance {
+        source_scope_id: surface.source_scope_id.clone(),
         source_name: surface.source_name.clone(),
         surface_kind: surface.surface_kind,
         surface_name: surface.surface_name.clone(),
         column_name: column_name.to_string(),
+        column_policy: surface.column_policy.clone(),
     })
-}
-
-fn surface_qualifiers(surface: &ObservedSurface) -> Vec<String> {
-    let qualified = format!("{}.{}", surface.source_name, surface.surface_name);
-    vec![
-        normalize_identifier(&surface.source_name),
-        normalize_identifier(&surface.surface_name),
-        normalize_identifier(&qualified),
-    ]
-}
-
-fn qualifier_matches(idents: &[Ident], qualifiers: &[String]) -> bool {
-    let parts = idents
-        .iter()
-        .map(|ident| ident.value.clone())
-        .collect::<Vec<_>>();
-    qualifier_matches_parts(&parts, qualifiers)
-}
-
-fn qualifier_matches_parts(parts: &[String], qualifiers: &[String]) -> bool {
-    let qualifier = normalize_identifier(&parts.join("."));
-    qualifiers.iter().any(|known| known == &qualifier)
-}
-
-fn object_name_parts(name: &ObjectName) -> Option<Vec<String>> {
-    name.0
-        .iter()
-        .map(|part| part.as_ident().map(|ident| ident.value.clone()))
-        .collect()
 }
 
 fn observed_records_from_batches(
@@ -846,6 +1262,7 @@ impl ObservedRecordAccumulator {
 
     fn insert(&mut self, provenance: &FieldProvenance, candidate: &ObservedCandidateValue) {
         let key = ObservedValueRecordKey {
+            source_scope_id: provenance.source_scope_id.clone(),
             source_name: provenance.source_name.clone(),
             surface_kind: provenance.surface_kind,
             surface_name: provenance.surface_name.clone(),
@@ -858,6 +1275,7 @@ impl ObservedRecordAccumulator {
                 record.observed_count = record.observed_count.saturating_add(1);
             })
             .or_insert_with(|| ObservedValueRecord {
+                source_scope_id: provenance.source_scope_id.clone(),
                 source_name: provenance.source_name.clone(),
                 surface_kind: provenance.surface_kind,
                 surface_name: provenance.surface_name.clone(),
@@ -959,6 +1377,7 @@ fn collect_observed_candidates(
         }
         Value::Array(items) => {
             if !contains_sensitive_observed_path(field_path, value)
+                && !contains_denied_observed_path(&provenance.column_policy, field_path, value)
                 && !json_depth_exceeds(value, depth, max_json_depth)
                 && let Ok(display_value) = serde_json::to_string(value)
             {
@@ -978,6 +1397,7 @@ fn collect_observed_candidates(
         }
         Value::Object(object) => {
             if !contains_sensitive_observed_path(field_path, value)
+                && !contains_denied_observed_path(&provenance.column_policy, field_path, value)
                 && !json_depth_exceeds(value, depth, max_json_depth)
                 && let Ok(display_value) = serde_json::to_string(value)
             {
@@ -1023,12 +1443,19 @@ fn collect_string_candidates(
         || contains_sensitive_raw_value(trimmed)
         || key_value_pairs
             .iter()
-            .any(|pair| is_sensitive_column(&observed_field_path(field_path, &pair.key)));
+            .any(|pair| is_sensitive_field_path(&observed_field_path(field_path, &pair.key)));
+    let raw_contains_denied_child = parsed_json.as_ref().is_some_and(|value| {
+        contains_denied_observed_path(&provenance.column_policy, field_path, value)
+    }) || key_value_pairs.iter().any(|pair| {
+        provenance
+            .column_policy
+            .denies_column(&observed_field_path(field_path, &pair.key))
+    });
     let raw_exceeds_json_depth = parsed_json
         .as_ref()
         .is_some_and(|value| json_depth_exceeds(value, depth, max_json_depth));
 
-    if !raw_contains_sensitive_child && !raw_exceeds_json_depth {
+    if !raw_contains_sensitive_child && !raw_contains_denied_child && !raw_exceeds_json_depth {
         push_observed_candidate(provenance, field_path, trimmed, candidates);
     }
 
@@ -1064,7 +1491,9 @@ fn push_observed_candidate(
     if field_path.is_empty()
         || display_value.is_empty()
         || !display_value.chars().any(char::is_alphanumeric)
-        || is_sensitive_column(field_path)
+        || provenance.column_policy.denies_column(field_path)
+        || is_sensitive_field_path(field_path)
+        || is_sensitive_value(display_value)
     {
         return;
     }
@@ -1117,11 +1546,30 @@ fn contains_sensitive_observed_path(field_path: &str, value: &Value) -> bool {
     match value {
         Value::Object(object) => object.iter().any(|(key, value)| {
             let child_path = observed_field_path(field_path, key);
-            is_sensitive_column(&child_path) || contains_sensitive_observed_path(&child_path, value)
+            is_sensitive_field_path(&child_path)
+                || contains_sensitive_observed_path(&child_path, value)
         }),
         Value::Array(items) => items
             .iter()
             .any(|item| contains_sensitive_observed_path(field_path, item)),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+    }
+}
+
+fn contains_denied_observed_path(
+    policy: &ObservedSurfaceColumnPolicy,
+    field_path: &str,
+    value: &Value,
+) -> bool {
+    match value {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            let child_path = observed_field_path(field_path, key);
+            policy.denies_column(&child_path)
+                || contains_denied_observed_path(policy, &child_path, value)
+        }),
+        Value::Array(items) => items
+            .iter()
+            .any(|item| contains_denied_observed_path(policy, field_path, item)),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
     }
 }
@@ -1142,7 +1590,7 @@ fn json_depth_exceeds(value: &Value, depth: usize, max_depth: usize) -> bool {
 }
 
 fn contains_sensitive_raw_value(value: &str) -> bool {
-    contains_sensitive_assignment_key(value) || starts_with_credential_scheme(value)
+    contains_sensitive_assignment_key(value) || is_sensitive_value(value)
 }
 
 fn contains_sensitive_assignment_key(value: &str) -> bool {
@@ -1152,7 +1600,7 @@ fn contains_sensitive_assignment_key(value: &str) -> bool {
         .filter_map(|(separator_index, _separator)| {
             sensitive_key_before_separator(value, separator_index)
         })
-        .any(is_sensitive_column)
+        .any(is_sensitive_field_path)
 }
 
 fn sensitive_key_before_separator(value: &str, separator_index: usize) -> Option<&str> {
@@ -1297,6 +1745,7 @@ fn normalized_value_key(display_value: &str) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ObservedValueRecordKey {
+    source_scope_id: String,
     source_name: String,
     surface_kind: ObservedValueSurfaceKind,
     surface_name: String,
@@ -1304,51 +1753,254 @@ struct ObservedValueRecordKey {
     normalized_value_key: String,
 }
 
-fn is_sensitive_column(column_name: &str) -> bool {
-    let normalized = normalize_identifier(column_name);
-    let compact = normalized.replace('_', "");
+fn is_sensitive_field_path(field_path: &str) -> bool {
+    let tokens = field_path_tokens(field_path);
+    if tokens.is_empty() {
+        return false;
+    }
+    let token_refs = tokens.iter().map(String::as_str).collect::<Vec<_>>();
+    if token_refs.iter().any(|token| {
+        matches!(
+            *token,
+            "authorization"
+                | "cookie"
+                | "cookies"
+                | "credentials"
+                | "credential"
+                | "jwt"
+                | "passkey"
+                | "password"
+                | "passwd"
+                | "pat"
+                | "pem"
+                | "pwd"
+                | "signature"
+                | "ssn"
+                | "totp"
+                | "cvc"
+                | "cvv"
+        )
+    }) {
+        return true;
+    }
+    if sensitive_marker_token(&token_refs, "token")
+        || sensitive_marker_token(&token_refs, "secret")
+        || token_refs == ["auth"]
+    {
+        return true;
+    }
     [
-        "api_key",
-        "apikey",
-        "access_key",
-        "accesskey",
-        "auth",
-        "authorization",
-        "card_number",
-        "card_num",
-        "client_secret",
-        "cookie",
-        "credit_card",
-        "cvc",
-        "cvv",
-        "debit_card",
-        "credential",
-        "credentials",
-        "drivers_license",
-        "id_token",
-        "password",
-        "passport_number",
-        "private_key",
-        "refresh_token",
-        "secret",
-        "session",
-        "set_cookie",
-        "social_security",
-        "social_security_number",
-        "ssn",
-        "tax_id",
-        "tax_identification_number",
-        "taxpayer_id",
-        "tin_number",
-        "token",
-        "x_api_key",
+        &["api", "key"][..],
+        &["x", "api", "key"][..],
+        &["access", "key"][..],
+        &["access", "token"][..],
+        &["auth", "token"][..],
+        &["backup", "code"][..],
+        &["bearer", "token"][..],
+        &["card", "number"][..],
+        &["card", "num"][..],
+        &["client", "secret"][..],
+        &["credit", "card"][..],
+        &["csrf", "token"][..],
+        &["debit", "card"][..],
+        &["drivers", "license"][..],
+        &["driver", "license"][..],
+        &["id", "token"][..],
+        &["mfa", "code"][..],
+        &["oauth", "token"][..],
+        &["one", "time", "password"][..],
+        &["passport", "number"][..],
+        &["personal", "access", "token"][..],
+        &["private", "key"][..],
+        &["refresh", "token"][..],
+        &["recovery", "code"][..],
+        &["recovery", "codes"][..],
+        &["secret", "key"][..],
+        &["signing", "secret"][..],
+        &["session", "id"][..],
+        &["session", "token"][..],
+        &["ssh", "key"][..],
+        &["ssh", "private", "key"][..],
+        &["set", "cookie"][..],
+        &["social", "security"][..],
+        &["social", "security", "number"][..],
+        &["tax", "id"][..],
+        &["tax", "identification", "number"][..],
+        &["taxpayer", "id"][..],
+        &["tin", "number"][..],
+        &["totp", "secret"][..],
+        &["webhook", "secret"][..],
     ]
     .into_iter()
-    .any(|needle| normalized.contains(needle) || compact.contains(&needle.replace('_', "")))
+    .any(|phrase| contains_token_phrase(&token_refs, phrase))
+}
+
+fn is_sensitive_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    starts_with_credential_scheme(trimmed)
+        || contains_private_key_block(trimmed)
+        || contains_url_credentials(trimmed)
+        || credential_tokens(trimmed).any(|token| {
+            looks_like_jwt(token)
+                || has_known_secret_prefix(token)
+                || looks_like_long_credential_token(token)
+        })
+}
+
+fn sensitive_marker_token(tokens: &[&str], marker: &str) -> bool {
+    tokens.iter().enumerate().any(|(index, token)| {
+        *token == marker
+            && tokens
+                .get(index.saturating_add(1))
+                .is_none_or(|next| !matches!(*next, "count" | "name" | "type"))
+    })
+}
+
+fn field_path_tokens(field_path: &str) -> Vec<String> {
+    normalize_identifier(field_path)
+        .split('_')
+        .filter(|token| !token.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn contains_token_phrase(tokens: &[&str], phrase: &[&str]) -> bool {
+    phrase.len() <= tokens.len() && tokens.windows(phrase.len()).any(|window| window == phrase)
+}
+
+fn contains_private_key_block(value: &str) -> bool {
+    let upper = value.to_ascii_uppercase();
+    upper.contains("-----BEGIN ") && upper.contains(" PRIVATE KEY-----")
+}
+
+fn contains_url_credentials(value: &str) -> bool {
+    value
+        .split_whitespace()
+        .filter(|part| part.contains("://"))
+        .filter_map(|part| part.split_once("://").map(|(_scheme, rest)| rest))
+        .any(|rest| {
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+            authority.contains('@')
+                && authority.split('@').next().is_some_and(|userinfo| {
+                    userinfo.contains(':') && userinfo.chars().any(char::is_alphanumeric)
+                })
+        })
+}
+
+fn credential_tokens(value: &str) -> impl Iterator<Item = &str> {
+    value
+        .split(|character: char| {
+            !(character.is_ascii_alphanumeric()
+                || matches!(character, '_' | '-' | '.' | '=' | '+' | '/' | ':'))
+        })
+        .map(|token| token.trim_matches(|character: char| matches!(character, ':' | '"' | '\'')))
+        .filter(|token| !token.is_empty())
+}
+
+fn looks_like_jwt(token: &str) -> bool {
+    let mut parts = token.split('.');
+    let Some(header) = parts.next() else {
+        return false;
+    };
+    let Some(payload) = parts.next() else {
+        return false;
+    };
+    let Some(signature) = parts.next() else {
+        return false;
+    };
+    parts.next().is_none()
+        && header.len() >= 8
+        && payload.len() >= 8
+        && signature.len() >= 8
+        && [header, payload, signature]
+            .into_iter()
+            .all(|part| part.chars().all(is_base64url_char))
+}
+
+fn is_base64url_char(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+}
+
+fn has_known_secret_prefix(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    (lower.starts_with("ghp_") && token.len() >= 20)
+        || (lower.starts_with("gho_") && token.len() >= 20)
+        || (lower.starts_with("ghu_") && token.len() >= 20)
+        || (lower.starts_with("ghs_") && token.len() >= 20)
+        || (lower.starts_with("ghr_") && token.len() >= 20)
+        || (lower.starts_with("github_pat_") && token.len() >= 30)
+        || (lower.starts_with("glpat-") && token.len() >= 20)
+        || (lower.starts_with("gloas-") && token.len() >= 20)
+        || (lower.starts_with("gldt-") && token.len() >= 20)
+        || (lower.starts_with("npm_") && token.len() >= 20)
+        || (lower.starts_with("hf_") && token.len() >= 20)
+        || (lower.starts_with("sk_live_") && token.len() >= 20)
+        || (lower.starts_with("sk_test_") && token.len() >= 20)
+        || (lower.starts_with("sk-proj-") && token.len() >= 32)
+        || (lower.starts_with("rk_live_") && token.len() >= 20)
+        || (lower.starts_with("rk_test_") && token.len() >= 20)
+        || (lower.starts_with("whsec_") && token.len() >= 20)
+        || (lower.starts_with("xoxb-") && token.len() >= 20)
+        || (lower.starts_with("xoxp-") && token.len() >= 20)
+        || (lower.starts_with("xoxa-") && token.len() >= 20)
+        || (lower.starts_with("ya29.") && token.len() >= 20)
+        || (token.starts_with("AIza") && token.len() >= 30)
+        || (token.starts_with("SG.") && token.len() >= 20)
+        || (token.starts_with("AKIA")
+            && token.len() == 20
+            && token
+                .chars()
+                .all(|character| character.is_ascii_uppercase() || character.is_ascii_digit()))
+}
+
+fn looks_like_long_credential_token(token: &str) -> bool {
+    if token.len() < 32
+        || looks_like_url(token)
+        || token.chars().any(char::is_whitespace)
+        || !token.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '=' | '+' | '/')
+        })
+        || token.chars().all(|character| character.is_ascii_hexdigit())
+    {
+        return false;
+    }
+    let has_upper = token
+        .chars()
+        .any(|character| character.is_ascii_uppercase());
+    let has_lower = token
+        .chars()
+        .any(|character| character.is_ascii_lowercase());
+    let has_digit = token.chars().any(|character| character.is_ascii_digit());
+    let has_symbol = token
+        .chars()
+        .any(|character| matches!(character, '_' | '-' | '=' | '+' | '/'));
+    let class_count = [has_upper, has_lower, has_digit, has_symbol]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+    let unique_chars = token.chars().collect::<BTreeSet<_>>().len();
+    class_count >= 3 && unique_chars >= 16
 }
 
 fn same_identifier(left: &str, right: &str) -> bool {
     normalize_identifier(left) == normalize_identifier(right)
+}
+
+fn policy_path<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
+    parts
+        .into_iter()
+        .flat_map(|part| part.split('.'))
+        .map(normalize_identifier)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn normalize_policy_path(value: &str) -> String {
+    policy_path([value])
 }
 
 fn normalize_identifier(value: &str) -> String {
@@ -1388,12 +2040,228 @@ mod tests {
 
     use arrow::array::StringArray;
     use arrow::datatypes::{DataType, Field};
-    use coral_engine::QuerySource;
+    use chrono::{DateTime, Duration, Utc};
+    use coral_engine::{
+        QuerySource, SourceObservationScope, SourceObservationSurfaceKind, SourceScanObservation,
+    };
     use coral_spec::parse_source_manifest_value;
     use serde_json::json;
     use tempfile::tempdir;
 
+    use crate::search::index::ObservedValueSearchHit;
+
     use super::*;
+
+    #[test]
+    fn observed_value_staleness_cutoff_loads_search_config() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        std::fs::write(
+            layout.config_file(),
+            r"
+version = 1
+
+[search]
+observed_value_stale_after_days = 7
+",
+        )
+        .expect("write config");
+        let before = Utc::now() - Duration::days(7) - Duration::seconds(1);
+
+        let cutoff = DateTime::parse_from_rfc3339(&observed_value_staleness_cutoff(&layout))
+            .expect("cutoff timestamp")
+            .with_timezone(&Utc);
+
+        let after = Utc::now() - Duration::days(7) + Duration::seconds(1);
+        assert!(cutoff >= before, "cutoff {cutoff} before {before}");
+        assert!(cutoff <= after, "cutoff {cutoff} after {after}");
+    }
+
+    #[test]
+    fn observed_source_scope_changes_with_credential_generation() {
+        let source = http_query_source("fixture");
+
+        let first = observed_source_scope_id_with_credential_generation(
+            &source,
+            Some("credential-generation-1"),
+        );
+        let second = observed_source_scope_id_with_credential_generation(
+            &source,
+            Some("credential-generation-2"),
+        );
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn observed_policy_excludes_sources_surfaces_and_columns() {
+        let config = ObservedSearchConfig {
+            excluded_sources: vec!["github".to_string()],
+            excluded_surfaces: vec!["linear.issues".to_string(), "users".to_string()],
+            excluded_columns: vec![
+                "payload.sha".to_string(),
+                "fixture.messages.tags.kube_deployment".to_string(),
+            ],
+            ..ObservedSearchConfig::default()
+        };
+        let policy = ObservedValuePolicy::from_config(&config);
+
+        assert!(!policy.allows_source("github"));
+        assert!(policy.allows_source("linear"));
+        assert!(!policy.allows_surface("linear", "issues"));
+        assert!(!policy.allows_surface("github", "users"));
+        assert!(policy.allows_surface("github", "issues"));
+
+        let column_policy = policy.surface_column_policy("fixture", "messages");
+        assert!(column_policy.denies_column("payload.sha"));
+        assert!(column_policy.denies_column("tags.kube_deployment"));
+        assert!(!column_policy.denies_column("payload.event"));
+        assert!(!column_policy.denies_column("tags.service"));
+    }
+
+    #[test]
+    fn observed_policy_filters_surface_discovery() {
+        let source_policy = ObservedValuePolicy::from_config(&ObservedSearchConfig {
+            excluded_sources: vec!["fixture".to_string()],
+            ..ObservedSearchConfig::default()
+        });
+        assert!(
+            observed_surfaces(
+                &[http_query_source("fixture")],
+                &BTreeMap::new(),
+                &source_policy
+            )
+            .is_empty()
+        );
+
+        let surface_policy = ObservedValuePolicy::from_config(&ObservedSearchConfig {
+            excluded_surfaces: vec!["fixture.messages".to_string()],
+            ..ObservedSearchConfig::default()
+        });
+        assert!(
+            observed_surfaces(
+                &[http_query_source("fixture")],
+                &BTreeMap::new(),
+                &surface_policy,
+            )
+            .is_empty()
+        );
+
+        let allowed_policy = ObservedValuePolicy::default();
+        let surfaces = observed_surfaces(
+            &[http_query_source("fixture")],
+            &BTreeMap::new(),
+            &allowed_policy,
+        );
+        assert_eq!(surfaces.len(), 1);
+        let surface = surfaces.first().expect("allowed observed surface");
+        assert_eq!(surface.source_name, "fixture");
+        assert_eq!(surface.surface_name, "messages");
+    }
+
+    #[test]
+    fn sensitivity_classifier_is_token_aware() {
+        for benign_field in ["author", "token_count", "session_name", "auth_status"] {
+            assert!(
+                !is_sensitive_field_path(benign_field),
+                "{benign_field} should not be classified as sensitive"
+            );
+        }
+        for sensitive_field in [
+            "access_token",
+            "user.token",
+            "privateKey",
+            "headers.Authorization",
+            "session_id",
+            "credentials.password",
+        ] {
+            assert!(
+                is_sensitive_field_path(sensitive_field),
+                "{sensitive_field} should be classified as sensitive"
+            );
+        }
+    }
+
+    #[test]
+    fn sensitivity_classifier_covers_common_provider_tokens() {
+        for sensitive_field in [
+            "x_api_key",
+            "apiKey",
+            "clientSecret",
+            "csrf_token",
+            "personal_access_token",
+            "webhook_secret",
+            "signing_secret",
+            "ssh_private_key",
+            "totp_secret",
+            "mfa_code",
+            "recovery_codes",
+            "oauth.id_token",
+            "cookies.session",
+            "jwt",
+            "pat",
+        ] {
+            assert!(
+                is_sensitive_field_path(sensitive_field),
+                "{sensitive_field} should be classified as sensitive"
+            );
+        }
+
+        for benign_field in [
+            "author_name",
+            "authentication_status",
+            "session_title",
+            "token_count",
+            "secretary",
+            "github_path",
+        ] {
+            assert!(
+                !is_sensitive_field_path(benign_field),
+                "{benign_field} should not be classified as sensitive"
+            );
+        }
+
+        let sensitive_values = [
+            [
+                "github",
+                "_pat_",
+                "11AA222bb333CC444dd555EE666ff777GG888hh999II",
+            ]
+            .concat(),
+            ["gl", "pat-", "1234567890abcdefghijkl"].concat(),
+            ["npm", "_", "abCdEfGhIjKlMnOpQrStUvWxYz123456"].concat(),
+            ["h", "f_", "abcdefghijklmnopqrstuvwxyz1234567890"].concat(),
+            ["rk", "_live_", "1234567890abcdefghijklmnop"].concat(),
+            ["wh", "sec_", "1234567890abcdefghijklmnop"].concat(),
+            ["ya", "29.", "a0AfH6SMBabcdefghijklmnop"].concat(),
+            ["AI", "zaSyA1234567890abcdefghijklmnopqrstu"].concat(),
+            [
+                "S",
+                "G.abcdefghijklmnopqrstuvwxyz.1234567890abcdefghijklmnop",
+            ]
+            .concat(),
+        ];
+        for sensitive_value in &sensitive_values {
+            assert!(
+                is_sensitive_value(sensitive_value),
+                "{sensitive_value} should be classified as sensitive"
+            );
+        }
+
+        for benign_value in [
+            "abc123",
+            "0123456789abcdef0123456789abcdef",
+            "https://example.com/path/to/resource",
+            "release-v2026-06-23",
+        ] {
+            assert!(
+                !is_sensitive_value(benign_value),
+                "{benign_value} should not be classified as sensitive"
+            );
+        }
+    }
 
     #[test]
     fn indexes_direct_table_values_including_long_text_and_json_strings() {
@@ -1401,8 +2269,7 @@ mod tests {
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = query_source("fixture");
-        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let source = http_query_source("fixture");
         let schema = Arc::new(Schema::new(vec![
             Field::new("service", DataType::Utf8, true),
             Field::new("body", DataType::Utf8, true),
@@ -1412,7 +2279,7 @@ mod tests {
             Field::new("privateKey", DataType::Utf8, true),
         ]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            schema,
             vec![
                 Arc::new(StringArray::from(vec!["payments-api", "billing-worker"])),
                 Arc::new(StringArray::from(vec![
@@ -1436,13 +2303,7 @@ mod tests {
         )
         .expect("batch");
 
-        indexer
-            .observe_result(
-                "SELECT service, body, payload, tags, api_token, privateKey FROM fixture.messages",
-                &schema,
-                &[batch],
-            )
-            .expect("observer does not fail SQL");
+        index_fixture_source_scan(&layout, &workspace, source, batch);
 
         let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
         drain_observed_queue(&store);
@@ -1499,13 +2360,282 @@ mod tests {
     }
 
     #[test]
+    fn source_scan_publisher_indexes_full_source_batch_values() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = http_query_source("fixture");
+        let source_scan_indexer = ObservedSourceScanIndexer::spawn(layout.clone());
+        let publisher = source_scan_indexer.publisher(workspace.clone(), &[source]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service", DataType::Utf8, true),
+            Field::new("payload", DataType::Utf8, true),
+            Field::new("api_token", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["projection-visible"])),
+                Arc::new(StringArray::from(vec![
+                    r#"{"event":"source-only-json","sha":"source-only-sha"}"#,
+                ])),
+                Arc::new(StringArray::from(vec!["source-secret-token"])),
+            ],
+        )
+        .expect("batch");
+
+        publisher.publish_source_scan(SourceScanObservation {
+            source_name: "fixture",
+            surface_kind: SourceObservationSurfaceKind::Table,
+            surface_name: "messages",
+            observation_scope: SourceObservationScope::MappedRowsBeforeProjection,
+            batch: &batch,
+        });
+
+        eventually_observed_hit(&layout, &workspace, "source-only-json", |hit| {
+            hit.column_name == "payload.event" && hit.source_name == "fixture"
+        });
+        eventually_observed_hit(&layout, &workspace, "source-only-sha", |hit| {
+            hit.column_name == "payload.sha" && hit.source_name == "fixture"
+        });
+
+        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        drain_observed_queue(&store);
+        let hits = store
+            .search_observed_values(&workspace, &["source-secret-token".to_string()], 10)
+            .expect("search sensitive source value");
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn observed_policy_excludes_configured_columns_and_parent_containers() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        std::fs::write(
+            layout.config_file(),
+            r#"
+version = 1
+
+[search]
+observed_value_excluded_columns = [
+  "fixture.messages.payload.sha",
+  "tags.kube_deployment",
+]
+"#,
+        )
+        .expect("write config");
+        let config = observed_search_config_or_default(&layout);
+        assert_eq!(
+            config.search.excluded_columns,
+            vec![
+                "fixture.messages.payload.sha".to_string(),
+                "tags.kube_deployment".to_string(),
+            ]
+        );
+        let policy = ObservedValuePolicy::from_config(&config.search);
+        let column_policy = policy.surface_column_policy("fixture", "messages");
+        assert!(column_policy.denies_column("payload.sha"));
+        assert!(column_policy.denies_column("tags.kube_deployment"));
+
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = http_query_source("fixture");
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("payload", DataType::Utf8, true),
+            Field::new("tags", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![
+                    r#"{"event":"deploy_ready","sha":"blocked-sha"}"#,
+                ])),
+                Arc::new(StringArray::from(vec![
+                    "service=billing-worker kube_deployment=kube-worker",
+                ])),
+            ],
+        )
+        .expect("batch");
+
+        index_fixture_source_scan(&layout, &workspace, source, batch);
+
+        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        drain_observed_queue(&store);
+        assert!(
+            !store
+                .search_observed_values(&workspace, &["deploy_ready".to_string()], 10)
+                .expect("search allowed payload field")
+                .is_empty()
+        );
+        assert!(
+            !store
+                .search_observed_values(&workspace, &["billing-worker".to_string()], 10)
+                .expect("search allowed tags field")
+                .is_empty()
+        );
+        for excluded_value in ["blocked-sha", "kube-worker"] {
+            assert!(
+                store
+                    .search_observed_values(&workspace, &[excluded_value.to_string()], 10)
+                    .expect("search excluded value")
+                    .is_empty(),
+                "{excluded_value} should not be indexed directly or through a parent container"
+            );
+        }
+    }
+
+    #[test]
+    fn source_scan_drain_waits_for_worker_observations() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = http_query_source("fixture");
+        let source_scan_indexer = ObservedSourceScanIndexer::spawn(layout.clone());
+        let publisher = source_scan_indexer.publisher(workspace.clone(), &[source]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service",
+            DataType::Utf8,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec!["drained-source-scan"]))],
+        )
+        .expect("batch");
+
+        publisher.publish_source_scan(SourceScanObservation {
+            source_name: "fixture",
+            surface_kind: SourceObservationSurfaceKind::Table,
+            surface_name: "messages",
+            observation_scope: SourceObservationScope::MappedRowsBeforeProjection,
+            batch: &batch,
+        });
+
+        assert!(source_scan_indexer.drain_for(StdDuration::from_secs(5)));
+        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        let drain = store
+            .drain_observed_value_queue_for(StdDuration::from_secs(1))
+            .expect("drain observed queue");
+        assert_eq!(drain.pending_jobs, 0);
+        assert!(
+            !store
+                .search_observed_values(&workspace, &["drained-source-scan".to_string()], 10)
+                .expect("search drained source value")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn source_scan_publisher_drops_when_bounded_channel_is_full() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = http_query_source("fixture");
+        let (sender, _paused_receiver) = std::sync::mpsc::sync_channel(1);
+        let source_scan_indexer = ObservedSourceScanIndexer {
+            layout,
+            sender,
+            dropped_observations: Arc::new(AtomicU64::new(0)),
+        };
+        let publisher = source_scan_indexer.publisher(workspace.clone(), &[source]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service",
+            DataType::Utf8,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec!["backpressure-value"]))],
+        )
+        .expect("batch");
+        let observation = SourceScanObservation {
+            source_name: "fixture",
+            surface_kind: SourceObservationSurfaceKind::Table,
+            surface_name: "messages",
+            observation_scope: SourceObservationScope::MappedRowsBeforeProjection,
+            batch: &batch,
+        };
+
+        publisher.publish_source_scan(observation);
+        assert_eq!(
+            source_scan_indexer
+                .dropped_observations
+                .load(Ordering::Relaxed),
+            0
+        );
+        for _ in 0..8 {
+            publisher.publish_source_scan(observation);
+        }
+
+        assert_eq!(
+            source_scan_indexer
+                .dropped_observations
+                .load(Ordering::Relaxed),
+            8
+        );
+        assert!(!source_scan_indexer.drain_for(StdDuration::from_millis(10)));
+    }
+
+    #[test]
+    fn source_scan_publisher_skips_stale_source_generation() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = http_query_source("fixture");
+        let source_scan_indexer = ObservedSourceScanIndexer::spawn(layout.clone());
+        let publisher = source_scan_indexer.publisher(workspace.clone(), &[source]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service",
+            DataType::Utf8,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec!["stale-source-value"]))],
+        )
+        .expect("batch");
+        mark_observed_source_generation(
+            &layout,
+            &workspace,
+            &SourceName::parse("fixture").expect("source"),
+        )
+        .expect("mark source generation");
+        publisher.publish_source_scan(SourceScanObservation {
+            source_name: "fixture",
+            surface_kind: SourceObservationSurfaceKind::Table,
+            surface_name: "messages",
+            observation_scope: SourceObservationScope::MappedRowsBeforeProjection,
+            batch: &batch,
+        });
+
+        for _attempt in 0..16 {
+            if let Some(store) =
+                SearchIndexStore::open_existing_workspace(&layout, &workspace).expect("open store")
+            {
+                drain_observed_queue(&store);
+                assert!(
+                    store
+                        .search_observed_values(&workspace, &["stale-source-value".to_string()], 10)
+                        .expect("search stale source value")
+                        .is_empty()
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+    }
+
+    #[test]
     fn skips_obvious_pii_and_payment_columns() {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = query_source("fixture");
-        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let source = http_query_source("fixture");
         let schema = Arc::new(Schema::new(vec![
             Field::new("ssn", DataType::Utf8, true),
             Field::new("social_security_number", DataType::Utf8, true),
@@ -1513,7 +2643,7 @@ mod tests {
             Field::new("card_number", DataType::Utf8, true),
         ]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            schema,
             vec![
                 Arc::new(StringArray::from(vec!["123-45-6789"])),
                 Arc::new(StringArray::from(vec!["987-65-4321"])),
@@ -1523,13 +2653,7 @@ mod tests {
         )
         .expect("batch");
 
-        indexer
-            .observe_result(
-                "SELECT ssn, social_security_number, credit_card, card_number FROM fixture.messages",
-                &schema,
-                &[batch],
-            )
-            .expect("observer does not fail SQL");
+        index_fixture_source_scan(&layout, &workspace, source, batch);
 
         let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
         drain_observed_queue(&store);
@@ -1554,14 +2678,13 @@ mod tests {
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = query_source("fixture");
-        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let source = http_query_source("fixture");
         let schema = Arc::new(Schema::new(vec![
             Field::new("http_response", DataType::Utf8, true),
             Field::new("params", DataType::Utf8, true),
         ]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            schema,
             vec![
                 Arc::new(StringArray::from(vec![
                     "Authorization: Bearer header-secret-token",
@@ -1575,13 +2698,7 @@ mod tests {
         )
         .expect("batch");
 
-        indexer
-            .observe_result(
-                "SELECT http_response, params FROM fixture.messages",
-                &schema,
-                &[batch],
-            )
-            .expect("observer does not fail SQL");
+        index_fixture_source_scan(&layout, &workspace, source, batch);
 
         let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
         drain_observed_queue(&store);
@@ -1597,38 +2714,69 @@ mod tests {
     }
 
     #[test]
-    fn indexes_aliased_direct_projection_values() {
+    fn skips_credential_shaped_values_in_non_sensitive_columns() {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = query_source("fixture");
-        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "service",
-            DataType::Utf8,
-            true,
-        )]));
+        let source = http_query_source("fixture");
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("author", DataType::Utf8, true),
+            Field::new("token_count", DataType::Utf8, true),
+            Field::new("session_name", DataType::Utf8, true),
+            Field::new("notes", DataType::Utf8, true),
+            Field::new("reference", DataType::Utf8, true),
+        ]));
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+        let long_token = "aB3dE5fG7hI9jK1lM2nO4pQ6rS8tU0vW";
+        let private_key =
+            "-----BEGIN PRIVATE KEY-----\nPRIVATEKEYPAYLOAD\n-----END PRIVATE KEY-----";
         let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(StringArray::from(vec!["payments-api"]))],
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["Grace Hopper", "Ada Lovelace"])),
+                Arc::new(StringArray::from(vec!["42", "17"])),
+                Arc::new(StringArray::from(vec![
+                    "planning-session",
+                    "review-session",
+                ])),
+                Arc::new(StringArray::from(vec![jwt, "benign release note"])),
+                Arc::new(StringArray::from(vec![long_token, private_key])),
+            ],
         )
         .expect("batch");
 
-        indexer
-            .observe_result(
-                "SELECT msg.service FROM fixture.messages AS msg",
-                &schema,
-                &[batch],
-            )
-            .expect("observer does not fail SQL");
+        index_fixture_source_scan(&layout, &workspace, source, batch);
 
         let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
         drain_observed_queue(&store);
-        let hits = store
-            .search_observed_values(&workspace, &["payments-api".to_string()], 10)
-            .expect("search observed");
-        assert!(hits.iter().any(|hit| hit.column_name == "service"));
+        for benign_value in [
+            "Grace Hopper",
+            "42",
+            "planning-session",
+            "benign release note",
+        ] {
+            assert!(
+                !store
+                    .search_observed_values(&workspace, &[benign_value.to_string()], 10)
+                    .expect("search benign value")
+                    .is_empty(),
+                "{benign_value} should be indexed"
+            );
+        }
+        for sensitive_value in [
+            "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+            long_token,
+            "PRIVATEKEYPAYLOAD",
+        ] {
+            assert!(
+                store
+                    .search_observed_values(&workspace, &[sensitive_value.to_string()], 10)
+                    .expect("search sensitive value")
+                    .is_empty(),
+                "{sensitive_value} should not be indexed"
+            );
+        }
     }
 
     #[test]
@@ -1637,18 +2785,18 @@ mod tests {
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = query_source("fixture");
-        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let source = http_query_source("fixture");
         let schema = Arc::new(Schema::new(vec![Field::new(
             "service",
             DataType::Utf8,
             true,
         )]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            schema,
             vec![Arc::new(StringArray::from(vec!["payments-api"]))],
         )
         .expect("batch");
+        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
 
         mark_observed_source_generation(
             &layout,
@@ -1656,78 +2804,16 @@ mod tests {
             &SourceName::parse("fixture").expect("source"),
         )
         .expect("mark source generation");
+        let observation = OwnedSourceScanObservation {
+            source_name: "fixture".to_string(),
+            surface_kind: SourceObservationSurfaceKind::Table,
+            surface_name: "messages".to_string(),
+            observation_scope: SourceObservationScope::MappedRowsBeforeProjection,
+            batch,
+        };
         indexer
-            .observe_result("SELECT service FROM fixture.messages", &schema, &[batch])
-            .expect("observer does not fail SQL");
-
-        assert!(
-            SearchIndexStore::open_existing_workspace(&layout, &workspace)
-                .expect("open existing search index")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn skips_queries_without_direct_single_surface_provenance() {
-        let temp = tempdir().expect("tempdir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = query_source("fixture");
-        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "service",
-            DataType::Utf8,
-            true,
-        )]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(StringArray::from(vec!["payments-api"]))],
-        )
-        .expect("batch");
-
-        indexer
-            .observe_result(
-                "SELECT upper(service) AS service FROM fixture.messages",
-                &schema,
-                &[batch],
-            )
-            .expect("observer does not fail SQL");
-
-        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
-        drain_observed_queue(&store);
-        let hits = store
-            .search_observed_values(&workspace, &["payments-api".to_string()], 10)
-            .expect("search observed");
-        assert!(hits.is_empty());
-    }
-
-    #[test]
-    fn skips_cte_queries_to_avoid_derived_value_misattribution() {
-        let temp = tempdir().expect("tempdir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = query_source("fixture");
-        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "service",
-            DataType::Utf8,
-            true,
-        )]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(StringArray::from(vec!["payments-api"]))],
-        )
-        .expect("batch");
-
-        indexer
-            .observe_result(
-                "WITH messages AS (SELECT 'payments-api' AS service) SELECT service FROM messages",
-                &schema,
-                &[batch],
-            )
-            .expect("observer does not fail SQL");
+            .index_source_scan_observation_inner(&observation)
+            .expect("stale source-scan observation is skipped without failing");
 
         let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
         drain_observed_queue(&store);
@@ -1743,15 +2829,14 @@ mod tests {
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = query_source("fixture");
-        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let source = http_query_source("fixture");
         let schema = Arc::new(Schema::new(vec![Field::new(
             "service",
             DataType::Utf8,
             true,
         )]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            schema,
             vec![Arc::new(StringArray::from(vec![
                 "payments-api",
                 "payments-api",
@@ -1760,9 +2845,7 @@ mod tests {
         )
         .expect("batch");
 
-        indexer
-            .observe_result("SELECT service FROM fixture.messages", &schema, &[batch])
-            .expect("observer does not fail SQL");
+        index_fixture_source_scan(&layout, &workspace, source, batch);
 
         let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
         drain_observed_queue(&store);
@@ -1785,15 +2868,14 @@ mod tests {
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = query_source("fixture");
-        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let source = http_query_source("fixture");
         let schema = Arc::new(Schema::new(vec![Field::new(
             "service",
             DataType::Utf8,
             true,
         )]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            schema,
             vec![Arc::new(StringArray::from(vec!["payments-api"]))],
         )
         .expect("batch");
@@ -1804,9 +2886,7 @@ mod tests {
             .expect("search dir");
         fs::write(&fingerprint_path, "stale-fingerprint\n").expect("fingerprint");
 
-        indexer
-            .observe_result("SELECT service FROM fixture.messages", &schema, &[batch])
-            .expect("observer does not fail SQL");
+        index_fixture_source_scan(&layout, &workspace, source, batch);
 
         assert!(!fingerprint_path.exists());
         let store = SearchIndexStore::open_existing_workspace(&layout, &workspace)
@@ -1845,6 +2925,7 @@ observed_collection_max_json_depth = 2
             StdDuration::from_millis(250)
         );
         assert_eq!(observed_storage_budget_bytes(&layout), 12 * BYTES_PER_MIB);
+        assert!(observed_values_enabled(&layout));
 
         let config = observed_search_config_or_default(&layout);
         assert_eq!(
@@ -1855,6 +2936,29 @@ observed_collection_max_json_depth = 2
                 json_depth: 2
             }
         );
+    }
+
+    #[test]
+    fn observed_values_enabled_defaults_on_and_loads_search_config() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+
+        assert!(observed_values_enabled(&layout));
+
+        std::fs::write(
+            layout.config_file(),
+            r"
+version = 1
+
+[search]
+observed_values_enabled = false
+",
+        )
+        .expect("write config");
+
+        assert!(!observed_values_enabled(&layout));
     }
 
     #[test]
@@ -1874,15 +2978,14 @@ observed_collection_max_candidates = 1
         )
         .expect("write config");
         let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = query_source("fixture");
-        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let source = http_query_source("fixture");
         let schema = Arc::new(Schema::new(vec![Field::new(
             "service",
             DataType::Utf8,
             true,
         )]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            schema,
             vec![Arc::new(StringArray::from(vec![
                 "budget-first",
                 "budget-second",
@@ -1890,9 +2993,7 @@ observed_collection_max_candidates = 1
         )
         .expect("batch");
 
-        indexer
-            .observe_result("SELECT service FROM fixture.messages", &schema, &[batch])
-            .expect("observer does not fail SQL");
+        index_fixture_source_scan(&layout, &workspace, source, batch);
 
         let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
         drain_observed_queue(&store);
@@ -1927,24 +3028,21 @@ observed_collection_max_json_depth = 1
         )
         .expect("write config");
         let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = query_source("fixture");
-        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let source = http_query_source("fixture");
         let schema = Arc::new(Schema::new(vec![Field::new(
             "payload",
             DataType::Utf8,
             true,
         )]));
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            schema,
             vec![Arc::new(StringArray::from(vec![
                 r#"{"top":"budget-top","outer":{"inner":"budget-deep"}}"#,
             ]))],
         )
         .expect("batch");
 
-        indexer
-            .observe_result("SELECT payload FROM fixture.messages", &schema, &[batch])
-            .expect("observer does not fail SQL");
+        index_fixture_source_scan(&layout, &workspace, source, batch);
 
         let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
         drain_observed_queue(&store);
@@ -1963,30 +3061,80 @@ observed_collection_max_json_depth = 1
     }
 
     fn drain_observed_queue(store: &SearchIndexStore) {
-        for _attempt in 0..16 {
-            let drain = store
-                .drain_observed_value_queue_for(StdDuration::from_secs(1))
-                .expect("drain observed queue");
+        for _attempt in 0..64 {
+            let drain = match store.drain_observed_value_queue_for(StdDuration::from_secs(1)) {
+                Ok(drain) => drain,
+                Err(SearchIndexError::RedbDatabase(redb::DatabaseError::DatabaseAlreadyOpen)) => {
+                    std::thread::sleep(StdDuration::from_millis(10));
+                    continue;
+                }
+                Err(error) => panic!("drain observed queue: {error}"),
+            };
             if drain.pending_jobs == 0 {
                 return;
             }
+            std::thread::sleep(StdDuration::from_millis(10));
         }
         panic!("observed queue still has pending jobs after test drain attempts");
     }
 
-    fn query_source(name: &str) -> QuerySource {
+    fn index_fixture_source_scan(
+        layout: &AppStateLayout,
+        workspace: &WorkspaceName,
+        source: QuerySource,
+        batch: RecordBatch,
+    ) {
+        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let observation = OwnedSourceScanObservation {
+            source_name: "fixture".to_string(),
+            surface_kind: SourceObservationSurfaceKind::Table,
+            surface_name: "messages".to_string(),
+            observation_scope: SourceObservationScope::MappedRowsBeforeProjection,
+            batch,
+        };
+        indexer
+            .index_source_scan_observation_inner(&observation)
+            .expect("source-scan observed-value indexing succeeds");
+    }
+
+    fn eventually_observed_hit(
+        layout: &AppStateLayout,
+        workspace: &WorkspaceName,
+        term: &str,
+        predicate: impl Fn(&ObservedValueSearchHit) -> bool,
+    ) {
+        for _attempt in 0..64 {
+            if let Some(store) =
+                SearchIndexStore::open_existing_workspace(layout, workspace).expect("open store")
+            {
+                drain_observed_queue(&store);
+                let hits = store
+                    .search_observed_values(workspace, &[term.to_string()], 10)
+                    .expect("search observed values");
+                if hits.iter().any(&predicate) {
+                    return;
+                }
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+        panic!("expected observed hit for {term}");
+    }
+
+    fn http_query_source(name: &str) -> QuerySource {
         let manifest = parse_source_manifest_value(json!({
             "name": name,
             "version": "0.1.0",
             "dsl_version": 3,
-            "backend": "file",
+            "backend": "http",
+            "base_url": "https://example.com",
             "tables": [{
                 "name": "messages",
                 "description": "Messages fixture",
-                "format": "jsonl",
-                "source": {
-                    "location": "file:///tmp",
-                    "glob": "**/*.jsonl"
+                "request": {
+                    "path": "/messages"
+                },
+                "response": {
+                    "rows_path": []
                 },
                 "columns": [
                     {"name": "service", "type": "Utf8"},
@@ -1995,6 +3143,11 @@ observed_collection_max_json_depth = 1
                     {"name": "tags", "type": "Utf8"},
                     {"name": "http_response", "type": "Utf8"},
                     {"name": "params", "type": "Utf8"},
+                    {"name": "author", "type": "Utf8"},
+                    {"name": "token_count", "type": "Utf8"},
+                    {"name": "session_name", "type": "Utf8"},
+                    {"name": "notes", "type": "Utf8"},
+                    {"name": "reference", "type": "Utf8"},
                     {"name": "api_token", "type": "Utf8"},
                     {"name": "privateKey", "type": "Utf8"},
                     {"name": "ssn", "type": "Utf8"},

@@ -651,6 +651,7 @@ impl SourceManager {
             variables,
             secrets: visible_secret_keys,
             credential_storage,
+            credential_generation_id: credential_storage.map(|_| Uuid::new_v4().to_string()),
             origin: request.origin,
         };
         if let Err(error) = self
@@ -2013,6 +2014,53 @@ tables:
     }
 
     #[test]
+    fn credentialed_source_import_rotates_credential_generation() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::with_unavailable_keychain_for_test(
+            layout.clone(),
+            CredentialStoragePreference::File,
+        );
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store.clone(), credential_manager, layout);
+        let command = || ImportSourceCommand {
+            manifest_yaml: manifest_with_secret(),
+            bindings: SourceBindings {
+                variables: vec![],
+                secrets: vec![SourceBinding {
+                    key: "API_TOKEN".to_string(),
+                    value: "secret-token".to_string(),
+                }],
+            },
+        };
+
+        let first = manager
+            .import_source(&default_workspace(), &command())
+            .expect("first import");
+        let second = manager
+            .import_source(&default_workspace(), &command())
+            .expect("second import");
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let stored = config_store
+            .get_source(&default_workspace(), &source_name)
+            .expect("stored source");
+
+        assert!(first.credential_generation_id.is_some());
+        assert!(second.credential_generation_id.is_some());
+        assert_ne!(
+            first.credential_generation_id.as_deref(),
+            second.credential_generation_id.as_deref()
+        );
+        assert_eq!(
+            stored.credential_generation_id.as_deref(),
+            second.credential_generation_id.as_deref()
+        );
+    }
+
+    #[test]
     fn import_new_source_uses_keychain_when_auto_probe_succeeds() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
@@ -2109,6 +2157,7 @@ tables:
 
         assert!(source.secrets.is_empty());
         assert_eq!(source.credential_storage, None);
+        assert_eq!(source.credential_generation_id, None);
         assert!(
             !layout
                 .secret_file(&default_workspace(), &source_name)
@@ -2120,6 +2169,10 @@ tables:
         assert!(
             !config_raw.contains("credential_storage"),
             "source without credential material should not persist a storage route"
+        );
+        assert!(
+            !config_raw.contains("credential_generation_id"),
+            "source without credential material should not persist a credential generation"
         );
     }
 

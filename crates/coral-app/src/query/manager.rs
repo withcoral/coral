@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration as StdDuration, Instant};
 
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
@@ -24,7 +24,9 @@ use crate::query::extensions::{
 };
 use crate::search::index::SearchIndexStore;
 use crate::search::observed::{
-    ObservedValueIndexer, observed_queue_foreground_drain_budget, observed_storage_budget_bytes,
+    ObservedSourceScanIndexer, observed_queue_foreground_drain_budget,
+    observed_source_scopes_from_query_sources, observed_storage_budget_bytes,
+    observed_value_staleness_cutoff, observed_values_enabled,
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
@@ -54,6 +56,7 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    observed_source_scan_indexer: ObservedSourceScanIndexer,
 }
 
 impl QueryManager {
@@ -68,6 +71,7 @@ impl QueryManager {
             config_store,
             credential_manager,
             runtime_context,
+            observed_source_scan_indexer: ObservedSourceScanIndexer::spawn(layout.clone()),
             layout,
             engine_extensions_providers,
         }
@@ -147,6 +151,33 @@ impl QueryManager {
         CoralQuery::list_catalog(&sources, runtime, schema_filter)
             .await
             .map_err(QueryManagerError::Core)
+    }
+
+    pub(crate) fn observed_source_scopes(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<BTreeMap<String, String>, QueryManagerError> {
+        let catalog = self
+            .config_store
+            .load_catalog()
+            .map_err(QueryManagerError::App)?;
+        let installed_sources = catalog.workspace_sources(workspace_name);
+        let mut query_sources = Vec::new();
+        let mut credential_generation_ids = BTreeMap::new();
+        for source in installed_sources {
+            let query_source = self
+                .load_stored_query_source(workspace_name, &source)
+                .map_err(QueryManagerError::App)?;
+            credential_generation_ids.insert(
+                source.name.as_str().to_string(),
+                source.credential_generation_id.clone(),
+            );
+            query_sources.push(query_source);
+        }
+        Ok(observed_source_scopes_from_query_sources(
+            &query_sources,
+            &credential_generation_ids,
+        ))
     }
 
     pub(crate) async fn execute_sql(
@@ -426,19 +457,30 @@ impl QueryManager {
         config: &AppConfig,
     ) -> Result<QueryRuntimeConfig, AppError> {
         let mut runtime = self.runtime_config(workspace_name, selected_sources, config)?;
-        runtime
-            .extensions
-            .query_result_observers
-            .push(Arc::new(ObservedValueIndexer::new(
-                self.layout.clone(),
-                workspace_name.clone(),
-                selected_sources,
-            )));
+        if !observed_values_enabled(&self.layout) {
+            return Ok(runtime);
+        }
+        let observed_source_scopes =
+            observed_source_scopes_for_selected_sources(workspace_name, selected_sources, config)?;
+        runtime.extensions.source_observation_publishers.push(
+            self.observed_source_scan_indexer
+                .publisher_with_source_scopes(
+                    workspace_name.clone(),
+                    selected_sources,
+                    &observed_source_scopes,
+                ),
+        );
         Ok(runtime)
     }
 
     fn drain_observed_value_queue_with_foreground_budget(&self, workspace_name: &WorkspaceName) {
+        if !observed_values_enabled(&self.layout) {
+            return;
+        }
         let budget = observed_queue_foreground_drain_budget(&self.layout);
+        let started_at = Instant::now();
+        self.drain_observed_source_scan_queue_for(workspace_name, budget);
+        let queue_budget = budget.saturating_sub(started_at.elapsed());
         let storage_budget_bytes = observed_storage_budget_bytes(&self.layout);
         match SearchIndexStore::open_existing_workspace(&self.layout, workspace_name) {
             Ok(Some(index)) => {
@@ -449,7 +491,7 @@ impl QueryManager {
                         "failed to enforce observed-value storage budget before SQL foreground drain"
                     );
                 }
-                match index.drain_observed_value_queue_for(budget) {
+                match index.drain_observed_value_queue_for(queue_budget) {
                     Ok(drain) if drain.has_pending() => {
                         tracing::debug!(
                             workspace = %workspace_name,
@@ -469,6 +511,14 @@ impl QueryManager {
                         );
                     }
                 }
+                let staleness_cutoff = observed_value_staleness_cutoff(&self.layout);
+                if let Err(error) = index.purge_observed_values_before(&staleness_cutoff) {
+                    tracing::warn!(
+                        workspace = %workspace_name,
+                        error = %error,
+                        "failed to purge stale observed values after SQL foreground drain"
+                    );
+                }
                 if let Err(error) = index.enforce_observed_storage_budget(storage_budget_bytes) {
                     tracing::warn!(
                         workspace = %workspace_name,
@@ -487,6 +537,48 @@ impl QueryManager {
             }
         }
     }
+
+    pub(crate) fn drain_observed_source_scan_queue_for(
+        &self,
+        workspace_name: &WorkspaceName,
+        budget: StdDuration,
+    ) -> bool {
+        if !observed_values_enabled(&self.layout) {
+            return true;
+        }
+        let drained = self.observed_source_scan_indexer.drain_for(budget);
+        if !drained {
+            tracing::debug!(
+                workspace = %workspace_name,
+                "source-scan observed-value queue may still have pending jobs after foreground drain"
+            );
+        }
+        drained
+    }
+}
+
+fn observed_source_scopes_for_selected_sources(
+    workspace_name: &WorkspaceName,
+    selected_sources: &[QuerySource],
+    config: &AppConfig,
+) -> Result<BTreeMap<String, String>, AppError> {
+    let mut credential_generation_ids = BTreeMap::new();
+    for source in selected_sources {
+        let source_name = SourceName::parse(source.source_name())?;
+        let Some(installed_source) = config.get_source(workspace_name, &source_name) else {
+            return Err(AppError::SourceNotFound(format!(
+                "{workspace_name}:{source_name}"
+            )));
+        };
+        credential_generation_ids.insert(
+            source.source_name().to_string(),
+            installed_source.credential_generation_id.clone(),
+        );
+    }
+    Ok(observed_source_scopes_from_query_sources(
+        selected_sources,
+        &credential_generation_ids,
+    ))
 }
 
 #[derive(Clone, Copy)]
@@ -799,6 +891,43 @@ mod tests {
     }
 
     #[test]
+    fn execute_runtime_config_installs_observed_value_source_publisher() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+
+        let runtime = fixture
+            .manager
+            .runtime_config_for_execute(&WorkspaceName::default(), &[], &AppConfig::default())
+            .expect("runtime config");
+
+        assert!(runtime.extensions.query_result_observers.is_empty());
+        assert_eq!(runtime.extensions.source_observation_publishers.len(), 1);
+    }
+
+    #[test]
+    fn execute_runtime_config_skips_observed_value_extensions_when_disabled() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        std::fs::write(
+            fixture.manager.layout.config_file(),
+            r"
+version = 1
+
+[search]
+observed_values_enabled = false
+",
+        )
+        .expect("write config");
+
+        let runtime = fixture
+            .manager
+            .runtime_config_for_execute(&WorkspaceName::default(), &[], &AppConfig::default())
+            .expect("runtime config");
+
+        assert!(runtime.extensions.query_result_observers.is_empty());
+        assert!(runtime.extensions.source_observation_publishers.is_empty());
+    }
+
+    #[test]
     fn load_query_source_passes_present_optional_secrets_to_runtime() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
         fixture.manager.layout.ensure().expect("ensure layout");
@@ -852,6 +981,7 @@ tables:
             variables: BTreeMap::new(),
             secrets: vec!["API_KEY".to_string(), "OAUTH_TOKEN".to_string()],
             credential_storage: Some(CredentialStorageKind::File),
+            credential_generation_id: Some("credential-generation-1".to_string()),
             origin: SourceOrigin::Imported,
         };
         fixture
@@ -1003,6 +1133,7 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: Vec::new(),
                     credential_storage: None,
+                    credential_generation_id: None,
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -1045,6 +1176,7 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: vec!["GITHUB_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::Keychain),
+                    credential_generation_id: Some("credential-generation-1".to_string()),
                     origin: SourceOrigin::Bundled,
                 },
             )
@@ -1121,6 +1253,10 @@ surfaces:
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Fixture setup pins resolver refresh behavior across config, secrets, and runtime."
+    )]
     async fn runtime_config_composes_provider_input_resolver_with_refreshed_inputs() {
         let calls = Arc::new(AtomicUsize::new(0));
         let observed_token = Arc::new(Mutex::new(None));
@@ -1145,6 +1281,7 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: vec!["API_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::File),
+                    credential_generation_id: Some("credential-generation-1".to_string()),
                     origin: SourceOrigin::Bundled,
                 },
             )
