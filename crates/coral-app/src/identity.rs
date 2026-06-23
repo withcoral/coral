@@ -378,6 +378,7 @@ impl IdentityManager {
         }
         for provider in self.providers.iter() {
             if let Some(selection) = provider.resolve_source_identity_selection(&request).await? {
+                selection.validate()?;
                 return Ok(selection);
             }
         }
@@ -413,9 +414,14 @@ impl fmt::Debug for IdentityManager {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use crate::bootstrap::AppError;
+
     use super::{
-        LOCAL_MEMBER_ID, SourceIdentityBinding, SourceIdentitySelection, UserPrincipal,
-        parse_path_segment,
+        IdentityManager, LOCAL_MEMBER_ID, RuntimeSourceIdentity, SourceIdentityBinding,
+        SourceIdentityProvider, SourceIdentityResolutionRequest, SourceIdentitySelection,
+        SourceIdentitySelectionRequest, UserPrincipal, parse_path_segment,
     };
 
     #[test]
@@ -492,5 +498,50 @@ mod tests {
 
         assert_eq!(selection.identity, "github-user");
         selection.validate().expect("selection should validate");
+    }
+
+    #[derive(Debug)]
+    struct InvalidSelectionProvider;
+
+    #[tonic::async_trait]
+    impl SourceIdentityProvider for InvalidSelectionProvider {
+        async fn resolve_source_identity_selection(
+            &self,
+            _request: &SourceIdentitySelectionRequest,
+        ) -> Result<Option<SourceIdentitySelection>, AppError> {
+            Ok(Some(SourceIdentitySelection {
+                identity: "../github".to_string(),
+            }))
+        }
+
+        async fn resolve_source_identity(
+            &self,
+            _request: &SourceIdentityResolutionRequest,
+        ) -> Result<Option<Arc<dyn RuntimeSourceIdentity>>, AppError> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn identity_manager_rejects_invalid_provider_selection() {
+        let manager = IdentityManager::new(vec![Arc::new(InvalidSelectionProvider)]);
+
+        let error = manager
+            .resolve_source_identity_selection(SourceIdentitySelectionRequest {
+                workspace_name: "default".to_string(),
+                user_id: "saul".to_string(),
+                source_name: "github_v4".to_string(),
+                surface_id: "rest".to_string(),
+                binding: SourceIdentityBinding::user_owned(),
+            })
+            .await
+            .expect_err("invalid provider selection should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("identity name must not contain '/' or '\\\\'"),
+            "unexpected error: {error}"
+        );
     }
 }

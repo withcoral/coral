@@ -637,7 +637,11 @@ impl LazyRuntimeIdentitySelector {
         let runtime_identity = self
             .selected_identities
             .lock()
-            .expect("selected identity cache lock")
+            .map_err(|_error| {
+                RequestIdentityHttpAuthenticatorError::failed_precondition(
+                    "selected identity cache lock was poisoned",
+                )
+            })?
             .get(selected.identity_id())
             .cloned()
             .ok_or_else(|| {
@@ -678,7 +682,11 @@ impl RequestIdentitySelector for LazyRuntimeIdentitySelector {
         );
         self.selected_identities
             .lock()
-            .expect("selected identity cache lock")
+            .map_err(|_error| {
+                RequestIdentitySelectionError::failed_precondition(
+                    "selected identity cache lock was poisoned",
+                )
+            })?
             .insert(
                 selected.identity_id().to_string(),
                 Arc::clone(&runtime_identity),

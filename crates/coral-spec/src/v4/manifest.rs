@@ -240,7 +240,7 @@ impl V4SourceManifest {
             let surface_value = surface_values.get(index).ok_or_else(|| {
                 ManifestError::validation(format!("source '{name}' surface[{index}] is missing"))
             })?;
-            validate_surface_id(&name, &raw_surface.id)?;
+            validate_manifest_surface_id(&name, &raw_surface.id)?;
             if !seen_surface_ids.insert(raw_surface.id.clone()) {
                 return Err(ManifestError::validation(format!(
                     "source '{name}' has duplicate surface id '{}'",
@@ -518,7 +518,7 @@ fn mcp_server_location(server: &McpServerSpec) -> String {
     }
 }
 
-fn validate_surface_id(source_name: &str, id: &str) -> Result<()> {
+pub fn validate_surface_id(id: &str) -> Result<()> {
     let mut chars = id.chars();
     let valid = matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
@@ -526,9 +526,17 @@ fn validate_surface_id(source_name: &str, id: &str) -> Result<()> {
         Ok(())
     } else {
         Err(ManifestError::validation(format!(
-            "source '{source_name}' surface id '{id}' must match [a-z][a-z0-9_]*"
+            "surface id '{id}' must match [a-z][a-z0-9_]*"
         )))
     }
+}
+
+fn validate_manifest_surface_id(source_name: &str, id: &str) -> Result<()> {
+    validate_surface_id(id).map_err(|_error| {
+        ManifestError::validation(format!(
+            "source '{source_name}' surface id '{id}' must match [a-z][a-z0-9_]*"
+        ))
+    })
 }
 
 fn surface_relation_namespace(

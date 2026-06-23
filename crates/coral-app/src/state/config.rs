@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig, MemorySize, QueryMemoryConfig};
+use coral_spec::v4::validate_surface_id;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
 use tracing::{info_span, warn};
@@ -811,27 +812,6 @@ fn validate_identity_bindings(
     Ok(())
 }
 
-fn validate_surface_id(surface_id: &str) -> Result<(), AppError> {
-    if surface_id.is_empty() {
-        return Err(AppError::InvalidInput("missing surface id".to_string()));
-    }
-    let mut chars = surface_id.chars();
-    let Some(first) = chars.next() else {
-        return Err(AppError::InvalidInput("missing surface id".to_string()));
-    };
-    if !first.is_ascii_lowercase() {
-        return Err(AppError::InvalidInput(
-            "surface id must start with a lowercase ASCII letter".to_string(),
-        ));
-    }
-    if chars.any(|ch| !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')) {
-        return Err(AppError::InvalidInput(
-            "surface id must contain only lowercase ASCII letters, digits, or '_'".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 fn render_inline_table(values: &BTreeMap<String, String>) -> Value {
     let mut table = InlineTable::new();
     for (key, value) in values {
@@ -1009,6 +989,29 @@ origin = "bundled"
         assert_eq!(
             sources[0].effective_credential_storage(),
             CredentialStorageKind::File
+        );
+    }
+
+    #[test]
+    fn rejects_identity_binding_surface_ids_using_spec_rule() {
+        let raw = r#"
+version = 1
+
+[workspaces.default.sources.github_v4]
+origin = "imported"
+identity_bindings = { Rest = { owner = "user" } }
+"#;
+
+        let error = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(raw).expect("config should parse"),
+        )
+        .expect_err("invalid identity binding surface id should fail");
+
+        assert!(
+            error.to_string().contains(
+                "source 'github_v4' identity binding surface 'Rest' is invalid: surface id 'Rest' must match [a-z][a-z0-9_]*"
+            ),
+            "unexpected error: {error}"
         );
     }
 
