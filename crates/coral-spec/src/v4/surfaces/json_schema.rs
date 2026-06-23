@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::v4::ir::IrScalarType;
 
-const ANNOTATION_KEYS: &[&str] = &["$comment", "description", "examples", "title"];
+const ANNOTATION_KEYS: &[&str] = &["$comment", "default", "description", "examples", "title"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RefError<'a> {
@@ -103,6 +103,145 @@ pub(crate) fn resolve_json_schema_refs<'a>(
             resolve_json_schema_child_refs(root, resolved, resolving_refs, next_depth, max_depth)
         },
     )
+}
+
+pub(crate) fn resolve_json_schema_ref_with_siblings<'a>(
+    root: &'a Value,
+    schema: &'a Value,
+    resolving_refs: &mut BTreeSet<String>,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Value, JsonSchemaWalkError<'a>> {
+    with_resolved_json_schema(
+        root,
+        schema,
+        resolving_refs,
+        depth,
+        max_depth,
+        |resolved, resolving_refs, next_depth| {
+            let mut resolved = resolve_json_schema_child_refs_allow_cycles(
+                root,
+                resolved,
+                resolving_refs,
+                next_depth,
+                max_depth,
+            )?;
+            if let (Some(referrer), Some(resolved)) = (schema.as_object(), resolved.as_object_mut())
+            {
+                for (key, value) in referrer {
+                    if is_ref_site_metadata_key(key) {
+                        resolved.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+            Ok(resolved)
+        },
+    )
+}
+
+fn is_ref_site_metadata_key(key: &str) -> bool {
+    ANNOTATION_KEYS.contains(&key)
+}
+
+fn resolve_json_schema_refs_allow_cycles<'a>(
+    root: &'a Value,
+    schema: &'a Value,
+    resolving_refs: &mut BTreeSet<String>,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Value, JsonSchemaWalkError<'a>> {
+    match with_resolved_json_schema(
+        root,
+        schema,
+        resolving_refs,
+        depth,
+        max_depth,
+        |resolved, resolving_refs, next_depth| {
+            resolve_json_schema_child_refs_allow_cycles(
+                root,
+                resolved,
+                resolving_refs,
+                next_depth,
+                max_depth,
+            )
+        },
+    ) {
+        Ok(resolved) => Ok(resolved),
+        Err(JsonSchemaWalkError::RefCycle(_reference)) => Ok(schema.clone()),
+        Err(error) => Err(error),
+    }
+}
+
+fn resolve_json_schema_child_refs_allow_cycles<'a>(
+    root: &'a Value,
+    schema: &'a Value,
+    resolving_refs: &mut BTreeSet<String>,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Value, JsonSchemaWalkError<'a>> {
+    let Some(object) = schema.as_object() else {
+        return Ok(schema.clone());
+    };
+
+    let mut resolved = object.clone();
+    for key in ["items", "additionalProperties", "not"] {
+        if let Some(value) = object.get(key).filter(|value| value.is_object()) {
+            resolved.insert(
+                key.to_string(),
+                resolve_json_schema_refs_allow_cycles(
+                    root,
+                    value,
+                    resolving_refs,
+                    depth,
+                    max_depth,
+                )?,
+            );
+        }
+    }
+    for key in ["allOf", "anyOf", "oneOf"] {
+        if let Some(values) = object.get(key).and_then(Value::as_array) {
+            resolved.insert(
+                key.to_string(),
+                Value::Array(
+                    values
+                        .iter()
+                        .map(|value| {
+                            resolve_json_schema_refs_allow_cycles(
+                                root,
+                                value,
+                                resolving_refs,
+                                depth,
+                                max_depth,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
+            );
+        }
+    }
+    for key in ["$defs", "definitions", "patternProperties", "properties"] {
+        if let Some(schemas) = object.get(key).and_then(Value::as_object) {
+            resolved.insert(
+                key.to_string(),
+                Value::Object(
+                    schemas
+                        .iter()
+                        .map(|(name, schema)| {
+                            resolve_json_schema_refs_allow_cycles(
+                                root,
+                                schema,
+                                resolving_refs,
+                                depth,
+                                max_depth,
+                            )
+                            .map(|schema| (name.clone(), schema))
+                        })
+                        .collect::<Result<serde_json::Map<_, _>, _>>()?,
+                ),
+            );
+        }
+    }
+    Ok(Value::Object(resolved))
 }
 
 fn resolve_json_schema_child_refs<'a>(

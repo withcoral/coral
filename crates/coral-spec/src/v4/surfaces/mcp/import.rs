@@ -383,6 +383,121 @@ surfaces:
     }
 
     #[test]
+    fn imports_recursive_object_property_refs_as_json_inputs() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "$defs": {
+                        "Node": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "children": {
+                                    "type": "array",
+                                    "items": {"$ref": "#/$defs/Node"}
+                                }
+                            }
+                        }
+                    },
+                    "type": "object",
+                    "properties": {
+                        "tree": {"$ref": "#/$defs/Node"}
+                    },
+                    "required": ["tree"]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "search_items");
+        assert!(operation.diagnostics.is_empty());
+
+        let tree = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "tree")
+            .expect("tree input");
+        assert_eq!(tree.data_type, IrScalarType::Json);
+        assert!(tree.required);
+    }
+
+    #[test]
+    fn property_level_input_schema_refs_keep_ref_site_metadata() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "$defs": {
+                        "Limit": {"type": "integer"}
+                    },
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "$ref": "#/$defs/Limit",
+                            "default": 10,
+                            "description": "Page size"
+                        }
+                    }
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "search_items");
+        assert!(operation.diagnostics.is_empty());
+
+        let limit = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "limit")
+            .expect("limit input");
+        assert_eq!(limit.data_type, IrScalarType::Integer);
+        assert_eq!(limit.default_value.as_deref(), Some("10"));
+        assert_eq!(limit.description, "Page size");
+    }
+
+    #[test]
+    fn property_level_input_schema_refs_ignore_ref_site_validation_siblings() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "$defs": {
+                        "Limit": {"type": "integer"}
+                    },
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "$ref": "#/$defs/Limit",
+                            "type": "string",
+                            "default": 10
+                        }
+                    }
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "search_items");
+        assert!(operation.diagnostics.is_empty());
+
+        let limit = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "limit")
+            .expect("limit input");
+        assert_eq!(limit.data_type, IrScalarType::Integer);
+        assert_eq!(limit.default_value.as_deref(), Some("10"));
+    }
+
+    #[test]
     fn unresolved_input_schema_refs_means_tool_is_not_exposed() {
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(
@@ -556,6 +671,102 @@ surfaces:
             .expect("query input");
         assert_eq!(query.data_type, IrScalarType::String);
         assert!(query.required);
+    }
+
+    #[test]
+    fn imports_all_of_properties_with_equivalent_nested_refs() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "$defs": {
+                        "Id": {"type": "string"}
+                    },
+                    "allOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "filter": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"$ref": "#/$defs/Id"}
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "filter": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "search_items");
+        assert!(operation.diagnostics.is_empty());
+
+        let filter = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "filter")
+            .expect("filter input");
+        assert_eq!(filter.data_type, IrScalarType::Json);
+    }
+
+    #[test]
+    fn imports_all_of_properties_with_ref_site_default_metadata() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "$defs": {
+                        "Limit": {"type": "integer"}
+                    },
+                    "allOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "limit": {
+                                    "$ref": "#/$defs/Limit",
+                                    "default": 10
+                                }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "limit": {"type": "integer"}
+                            }
+                        }
+                    ]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "search_items");
+        assert!(operation.diagnostics.is_empty());
+
+        let limit = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "limit")
+            .expect("limit input");
+        assert_eq!(limit.data_type, IrScalarType::Integer);
+        assert_eq!(limit.default_value.as_deref(), Some("10"));
     }
 
     #[test]

@@ -7,7 +7,7 @@ use crate::v4::ir::{IrInputLocation, IrOperationInput, IrScalarType};
 use crate::v4::surfaces::json_schema::{
     JsonObjectShape, JsonSchemaComparisonError, JsonSchemaWalkError, direct_json_object_shape,
     json_schema_default_to_string, json_schema_scalar_type,
-    merge_json_object_shape_annotation_insensitive, resolve_json_schema_refs,
+    merge_json_object_shape_annotation_insensitive, resolve_json_schema_ref_with_siblings,
     with_resolved_json_schema,
 };
 
@@ -149,7 +149,7 @@ fn resolve_input_property_schemas(
     depth: usize,
 ) -> bool {
     for property in shape.properties.values_mut() {
-        match resolve_json_schema_refs(
+        match resolve_json_schema_ref_with_siblings(
             root,
             property,
             resolving_refs,
