@@ -853,6 +853,16 @@ tables:
         expr:
           kind: path
           path: [product_name]
+      - name: brand_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter-only. Echoes the brand_id query param; not returned on list
+          rows.
+        expr:
+          kind: from_filter
+          key: brand_id
       - name: status
         type: Utf8
         nullable: false

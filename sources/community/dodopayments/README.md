@@ -310,6 +310,7 @@ and to `payments` via `subscription_id`.
 | `customer_email` | Utf8 | Customer email |
 | `product_id` | Utf8 | Product identifier |
 | `product_name` | Utf8 | Product name (when returned by the list endpoint) |
+| `brand_id` | Utf8 | Filter-only virtual column (query param; not on list rows) |
 | `status` | Utf8 | Subscription status |
 | `quantity` | Int64 | Number of units |
 | `recurring_pre_tax_amount` | Int64 | Recurring charge before tax (smallest currency unit) |
