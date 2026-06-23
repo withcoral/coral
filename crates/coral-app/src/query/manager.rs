@@ -83,46 +83,7 @@ pub(crate) struct QueryManager {
 }
 
 impl QueryManager {
-    #[cfg(test)]
     pub(crate) fn new(
-        config_store: ConfigStore,
-        credential_manager: CredentialManager,
-        runtime_context: QueryRuntimeContext,
-        layout: AppStateLayout,
-        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    ) -> Self {
-        Self::new_with_options(
-            config_store,
-            credential_manager,
-            runtime_context,
-            layout,
-            engine_extensions_providers,
-            QueryManagerOptions::default(),
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new_with_options(
-        config_store: ConfigStore,
-        credential_manager: CredentialManager,
-        runtime_context: QueryRuntimeContext,
-        layout: AppStateLayout,
-        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-        options: QueryManagerOptions,
-    ) -> Self {
-        let artifact_store = Arc::new(LocalSourceArtifactStore::new(layout.clone()));
-        Self::new_with_source_identity_providers_and_artifact_store(
-            config_store,
-            credential_manager,
-            runtime_context,
-            layout,
-            artifact_store,
-            engine_extensions_providers,
-            options,
-        )
-    }
-
-    pub(crate) fn new_with_source_identity_providers_and_artifact_store(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
         runtime_context: QueryRuntimeContext,
@@ -143,6 +104,45 @@ impl QueryManager {
             features: options.features,
             identity_manager: IdentityManager::new(options.source_identity_providers),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_tests(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    ) -> Self {
+        Self::new_for_tests_with_options(
+            config_store,
+            credential_manager,
+            runtime_context,
+            layout,
+            engine_extensions_providers,
+            QueryManagerOptions::default(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_tests_with_options(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        options: QueryManagerOptions,
+    ) -> Self {
+        let artifact_store = Arc::new(LocalSourceArtifactStore::new(layout.clone()));
+        Self::new(
+            config_store,
+            credential_manager,
+            runtime_context,
+            layout,
+            artifact_store,
+            engine_extensions_providers,
+            options,
+        )
     }
 
     fn load_query_runtime(
@@ -1043,7 +1043,7 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        let manager = QueryManager::new_with_options(
+        let manager = QueryManager::new_for_tests_with_options(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             runtime_context,
@@ -1834,7 +1834,7 @@ surfaces:
             layout.clone(),
             CredentialStoragePreference::Keychain,
         );
-        let manager = QueryManager::new(
+        let manager = QueryManager::new_for_tests(
             config_store,
             CredentialManager::new(credential_store),
             QueryRuntimeContext::default(),

@@ -758,7 +758,7 @@ fn query_manager_for_server(
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     options: QueryManagerOptions,
 ) -> QueryManager {
-    QueryManager::new_with_source_identity_providers_and_artifact_store(
+    QueryManager::new(
         config_store,
         credential_manager,
         query_runtime_context,
@@ -2006,7 +2006,7 @@ type: fixed_token
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
-        let query_manager = QueryManager::new(
+        let query_manager = QueryManager::new_for_tests(
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
@@ -2446,7 +2446,7 @@ tables:
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
-        let query_manager = QueryManager::new(
+        let query_manager = QueryManager::new_for_tests(
             config_store,
             credential_manager,
             QueryRuntimeContext {
@@ -2564,7 +2564,7 @@ tables:
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
-        let query_manager = QueryManager::new(
+        let query_manager = QueryManager::new_for_tests(
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
@@ -2675,7 +2675,7 @@ tables:
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
-        let query_manager = QueryManager::new(
+        let query_manager = QueryManager::new_for_tests(
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
