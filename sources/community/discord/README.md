@@ -18,7 +18,7 @@ Configure the following by table:
 | `guilds` | Token only | none | none |
 | `channels` | `guild_id` filter | none | `VIEW_CHANNEL` (`0x400`) |
 | `active_threads` | `guild_id` filter | none | `VIEW_CHANNEL` (`0x400`), `READ_MESSAGE_HISTORY` (`0x10000`) |
-| `archived_threads` | `channel_id`, `visibility` filters | none | `VIEW_CHANNEL` (`0x400`), `READ_MESSAGE_HISTORY` (`0x10000`); private archives may require `MANAGE_THREADS` |
+| `archived_threads` | `channel_id`, `visibility` filters | none | `VIEW_CHANNEL` (`0x400`), `READ_MESSAGE_HISTORY` (`0x10000`); `visibility = 'private'` also requires `MANAGE_THREADS` (`0x400000000`) |
 | `joined_private_archived_threads` | `channel_id` filter | none | `VIEW_CHANNEL` (`0x400`), `READ_MESSAGE_HISTORY` (`0x10000`) |
 | `messages` | `channel_id` filter | `MESSAGE_CONTENT` | `VIEW_CHANNEL` (`0x400`), `READ_MESSAGE_HISTORY` (`0x10000`) |
 | `members` | `guild_id` filter | `GUILD_MEMBERS` | none |
@@ -26,7 +26,7 @@ Configure the following by table:
 
 **Privileged intents** are enabled in the Developer Portal under **Bot → Privileged Gateway Intents**. Without `GUILD_MEMBERS`, `GET /guilds/{guild.id}/members` returns an empty result. Without `MESSAGE_CONTENT`, the `content`, `embeds`, and `attachments` columns return empty values.
 
-The minimal bot permission integer for read-only queries across all tables is `0x10400` (`VIEW_CHANNEL` + `READ_MESSAGE_HISTORY`). No bot permission is needed for reading guild members — only the `GUILD_MEMBERS` privileged intent controls access.
+The minimal bot permission integer for read-only queries across public channels, public archived threads, joined private archived threads, messages, and roles is `0x10400` (`VIEW_CHANNEL` + `READ_MESSAGE_HISTORY`). Querying `discord.archived_threads` with `visibility = 'private'` requires `MANAGE_THREADS` as well, for a combined permission integer of `0x400010400`. No bot permission is needed for reading guild members — only the `GUILD_MEMBERS` privileged intent controls access.
 
 The `bot` scope is always required. The `applications.commands` scope is optional and only needed if the bot uses slash commands alongside Coral.
 
@@ -241,7 +241,7 @@ permissions and intents each table needs.
 
 The following output was captured from a live Discord bot at setup time. The manifest
 test queries (`current_user`, `guilds`) passed validation. The `coral sql` examples
-below demonstrate manual queries against all six tables using a bot that was a
+below demonstrate manual queries against all nine tables using a bot that was a
 member of one guild. IDs, names, and message content are anonymized.
 
 ```shell
@@ -253,10 +253,13 @@ Added source discord
 
   ✓ discord connected successfully
 
-    discord (6 tables)
+    discord (9 tables)
+    ├─ active_threads
+    ├─ archived_threads
     ├─ channels
     ├─ current_user
     ├─ guilds
+    ├─ joined_private_archived_threads
     ├─ members
     ├─ messages
     └─ roles
@@ -273,10 +276,13 @@ $ coral source test discord
 
   ✓ discord connected successfully
 
-    discord (6 tables)
+    discord (9 tables)
+    ├─ active_threads
+    ├─ archived_threads
     ├─ channels
     ├─ current_user
     ├─ guilds
+    ├─ joined_private_archived_threads
     ├─ members
     ├─ messages
     └─ roles

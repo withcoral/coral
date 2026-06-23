@@ -1,5 +1,5 @@
 name: discord
-version: 0.1.0
+version: 0.1.1
 dsl_version: 3
 backend: http
 description: >-
@@ -496,8 +496,9 @@ tables:
     response:
       rows_path:
         - threads
-    columns: &thread_columns
-      - name: id
+    columns:
+      - &thread_id_column
+        name: id
         type: Utf8
         nullable: false
         description: Discord thread channel ID
@@ -505,7 +506,8 @@ tables:
           kind: path
           path:
             - id
-      - name: type
+      - &thread_type_column
+        name: type
         type: Int64
         nullable: false
         description: "Thread channel type integer: 10 announcement, 11 public, 12 private"
@@ -513,7 +515,8 @@ tables:
           kind: path
           path:
             - type
-      - name: guild_id
+      - &thread_guild_id_column
+        name: guild_id
         type: Utf8
         nullable: true
         description: Guild ID from the thread channel object
@@ -521,7 +524,8 @@ tables:
           kind: path
           path:
             - guild_id
-      - name: name
+      - &thread_name_column
+        name: name
         type: Utf8
         nullable: true
         description: Thread channel name
@@ -529,7 +533,8 @@ tables:
           kind: path
           path:
             - name
-      - name: parent_id
+      - &thread_parent_id_column
+        name: parent_id
         type: Utf8
         nullable: true
         description: Parent channel ID, such as the forum or media channel
@@ -537,7 +542,8 @@ tables:
           kind: path
           path:
             - parent_id
-      - name: owner_id
+      - &thread_owner_id_column
+        name: owner_id
         type: Utf8
         nullable: true
         description: User ID that created the thread
@@ -545,7 +551,8 @@ tables:
           kind: path
           path:
             - owner_id
-      - name: last_message_id
+      - &thread_last_message_id_column
+        name: last_message_id
         type: Utf8
         nullable: true
         description: Most recent message ID known to Discord
@@ -553,7 +560,8 @@ tables:
           kind: path
           path:
             - last_message_id
-      - name: message_count
+      - &thread_message_count_column
+        name: message_count
         type: Int64
         nullable: true
         description: Approximate message count in the thread
@@ -561,7 +569,8 @@ tables:
           kind: path
           path:
             - message_count
-      - name: member_count
+      - &thread_member_count_column
+        name: member_count
         type: Int64
         nullable: true
         description: Approximate member count in the thread
@@ -569,7 +578,8 @@ tables:
           kind: path
           path:
             - member_count
-      - name: total_message_sent
+      - &thread_total_message_sent_column
+        name: total_message_sent
         type: Int64
         nullable: true
         description: Total number of messages ever sent in the thread
@@ -577,7 +587,8 @@ tables:
           kind: path
           path:
             - total_message_sent
-      - name: rate_limit_per_user
+      - &thread_rate_limit_per_user_column
+        name: rate_limit_per_user
         type: Int64
         nullable: true
         description: Slowmode delay in seconds
@@ -585,7 +596,8 @@ tables:
           kind: path
           path:
             - rate_limit_per_user
-      - name: flags
+      - &thread_flags_column
+        name: flags
         type: Int64
         nullable: true
         description: Thread channel flags as a bitfield
@@ -593,7 +605,8 @@ tables:
           kind: path
           path:
             - flags
-      - name: thread_metadata
+      - &thread_metadata_column
+        name: thread_metadata
         type: Json
         nullable: true
         description: Thread metadata as JSON
@@ -601,7 +614,8 @@ tables:
           kind: path
           path:
             - thread_metadata
-      - name: thread_metadata__archived
+      - &thread_metadata_archived_column
+        name: thread_metadata__archived
         type: Boolean
         nullable: true
         description: Whether the thread is archived
@@ -610,7 +624,8 @@ tables:
           path:
             - thread_metadata
             - archived
-      - name: thread_metadata__archive_timestamp
+      - &thread_metadata_archive_timestamp_column
+        name: thread_metadata__archive_timestamp
         type: Timestamp
         nullable: true
         description: Timestamp when the thread archive state last changed
@@ -622,7 +637,8 @@ tables:
             path:
               - thread_metadata
               - archive_timestamp
-      - name: thread_metadata__auto_archive_duration
+      - &thread_metadata_auto_archive_duration_column
+        name: thread_metadata__auto_archive_duration
         type: Int64
         nullable: true
         description: Auto-archive duration in minutes
@@ -631,7 +647,8 @@ tables:
           path:
             - thread_metadata
             - auto_archive_duration
-      - name: thread_metadata__locked
+      - &thread_metadata_locked_column
+        name: thread_metadata__locked
         type: Boolean
         nullable: true
         description: Whether the thread is locked
@@ -640,7 +657,8 @@ tables:
           path:
             - thread_metadata
             - locked
-      - name: thread_metadata__invitable
+      - &thread_metadata_invitable_column
+        name: thread_metadata__invitable
         type: Boolean
         nullable: true
         description: Whether non-moderators can add users to a private thread
@@ -649,7 +667,8 @@ tables:
           path:
             - thread_metadata
             - invitable
-      - name: applied_tags
+      - &thread_applied_tags_column
+        name: applied_tags
         type: Json
         nullable: true
         description: Forum or media tag IDs applied to the thread
@@ -657,7 +676,8 @@ tables:
           kind: path
           path:
             - applied_tags
-      - name: member
+      - &thread_member_column
+        name: member
         type: Json
         nullable: true
         description: Current bot user's thread member object when returned
@@ -665,7 +685,8 @@ tables:
           kind: path
           path:
             - member
-      - name: permalink
+      - &thread_permalink_column
+        name: permalink
         type: Utf8
         nullable: true
         description: Discord web URL for the thread channel
@@ -695,8 +716,9 @@ tables:
       Requires channel_id from discord.channels and visibility set to public or
       private. Use this for archived forum/media posts and other archived
       public or private threads under a specific parent channel. Private
-      archived threads may require MANAGE_THREADS unless the bot joined the
-      thread; use joined_private_archived_threads for the joined-only endpoint.
+      archived threads require MANAGE_THREADS; use
+      joined_private_archived_threads for private archived threads the bot has
+      joined.
       Use returned id values as channel_id filters for discord.messages.
       SELECT id, name, parent_id, last_message_id
       FROM discord.archived_threads
@@ -726,7 +748,52 @@ tables:
         default: 50
         max: 100
         query_param: limit
-    columns: *thread_columns
+    columns:
+      - name: channel_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Parent channel ID from required filter
+        expr:
+          kind: from_filter
+          key: channel_id
+      - name: visibility
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Archived thread visibility from required filter
+        expr:
+          kind: from_filter
+          key: visibility
+      - name: before
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Archive timestamp cursor for archived threads before that timestamp
+        expr:
+          kind: from_filter
+          key: before
+      - *thread_id_column
+      - *thread_type_column
+      - *thread_guild_id_column
+      - *thread_name_column
+      - *thread_parent_id_column
+      - *thread_owner_id_column
+      - *thread_last_message_id_column
+      - *thread_message_count_column
+      - *thread_member_count_column
+      - *thread_total_message_sent_column
+      - *thread_rate_limit_per_user_column
+      - *thread_flags_column
+      - *thread_metadata_column
+      - *thread_metadata_archived_column
+      - *thread_metadata_archive_timestamp_column
+      - *thread_metadata_auto_archive_duration_column
+      - *thread_metadata_locked_column
+      - *thread_metadata_invitable_column
+      - *thread_applied_tags_column
+      - *thread_member_column
+      - *thread_permalink_column
 
   # ----------------------------------------------------------------------
   # joined_private_archived_threads
@@ -762,7 +829,44 @@ tables:
         default: 50
         max: 100
         query_param: limit
-    columns: *thread_columns
+    columns:
+      - name: channel_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Parent channel ID from required filter
+        expr:
+          kind: from_filter
+          key: channel_id
+      - name: before
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Thread ID cursor for joined private archived threads before that thread
+        expr:
+          kind: from_filter
+          key: before
+      - *thread_id_column
+      - *thread_type_column
+      - *thread_guild_id_column
+      - *thread_name_column
+      - *thread_parent_id_column
+      - *thread_owner_id_column
+      - *thread_last_message_id_column
+      - *thread_message_count_column
+      - *thread_member_count_column
+      - *thread_total_message_sent_column
+      - *thread_rate_limit_per_user_column
+      - *thread_flags_column
+      - *thread_metadata_column
+      - *thread_metadata_archived_column
+      - *thread_metadata_archive_timestamp_column
+      - *thread_metadata_auto_archive_duration_column
+      - *thread_metadata_locked_column
+      - *thread_metadata_invitable_column
+      - *thread_applied_tags_column
+      - *thread_member_column
+      - *thread_permalink_column
 
   # ──────────────────────────────────────────────────────────────────────
   # messages
