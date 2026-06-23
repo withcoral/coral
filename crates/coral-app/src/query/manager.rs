@@ -565,7 +565,7 @@ impl QueryManager {
         let provider_input_resolver = extensions.source_input_resolver.take();
         extensions.source_input_resolver = Some(Arc::new(CredentialRefreshingInputResolver::new(
             workspace_name.clone(),
-            self.config_store.clone(),
+            Arc::clone(&self.source_registry),
             self.credential_manager.clone(),
             provider_input_resolver,
         )));
@@ -1088,6 +1088,22 @@ mod tests {
         QueryManagerFixture {
             _temp: temp,
             manager,
+        }
+    }
+
+    fn test_installed_source(
+        name: &SourceName,
+        secrets: Vec<&str>,
+        credential_storage: Option<CredentialStorageKind>,
+    ) -> InstalledSource {
+        InstalledSource {
+            name: name.clone(),
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: secrets.into_iter().map(ToString::to_string).collect(),
+            credential_storage,
+            identity_bindings: BTreeMap::new(),
+            origin: SourceOrigin::Bundled,
         }
     }
 
@@ -2030,6 +2046,104 @@ tables:
                 .expect("observed token lock")
                 .as_deref(),
             Some("stored-token")
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_config_refreshes_credentials_from_source_registry_metadata() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let registry_layout =
+            AppStateLayout::discover(Some(temp.path().join("registry-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        registry_layout.ensure().expect("ensure registry layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("secured_messages").expect("source name");
+        let config_store = ConfigStore::new(layout.clone());
+        let registry_store = ConfigStore::new(registry_layout);
+        config_store
+            .upsert_source(
+                &workspace_name,
+                test_installed_source(&source_name, Vec::new(), None),
+            )
+            .expect("persist stale config source");
+        registry_store
+            .upsert_source(
+                &workspace_name,
+                test_installed_source(
+                    &source_name,
+                    vec!["API_TOKEN"],
+                    Some(CredentialStorageKind::File),
+                ),
+            )
+            .expect("persist registry source");
+        let source_registry: Arc<dyn SourceRegistry> = Arc::new(registry_store);
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        credential_manager
+            .replace_material(
+                &workspace_name,
+                &CredentialSetId::for_source(&source_name),
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "registry-token".to_string())]),
+            )
+            .expect("write credential material");
+        let manager = QueryManager::new(
+            config_store,
+            source_registry,
+            credential_manager,
+            QueryRuntimeContext::default(),
+            layout.clone(),
+            Arc::new(LocalSourceArtifactStore::new(layout)),
+            Vec::new(),
+            QueryManagerOptions::default(),
+        );
+        let source_spec = parse_source_manifest_yaml(
+            r"
+name: secured_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+inputs:
+  API_TOKEN:
+    kind: secret
+tables:
+  - name: messages
+    description: Secured messages
+    request:
+      method: GET
+      path: /messages
+    response: {}
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect("parse source manifest");
+        let source = QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new());
+        let runtime = manager
+            .runtime_config(
+                &workspace_name,
+                &UserPrincipal::local(),
+                std::slice::from_ref(&source),
+                BTreeMap::new(),
+                &AppConfig::default(),
+            )
+            .expect("runtime config");
+        let input_resolver = runtime
+            .extensions
+            .source_input_resolver
+            .expect("runtime installs input resolver");
+
+        let resolved_inputs = input_resolver
+            .resolve_inputs(&SourceInputResolutionContext::from_query_source(&source))
+            .await
+            .expect("resolve source inputs from registry metadata");
+
+        assert_eq!(
+            resolved_inputs.get("API_TOKEN").map(String::as_str),
+            Some("registry-token")
         );
     }
 }

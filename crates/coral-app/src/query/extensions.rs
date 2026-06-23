@@ -13,8 +13,8 @@ use coral_spec::ManifestInputKind;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
+use crate::source_registry::{SourceRegistry, installed_source_from_record};
 use crate::sources::SourceName;
-use crate::state::ConfigStore;
 use crate::workspaces::WorkspaceName;
 
 /// App-layer provider that selects engine extensions for one runtime build.
@@ -55,7 +55,7 @@ impl EngineExtensionsProvider for AwsEngineExtensionsProvider {
 #[derive(Clone)]
 pub(crate) struct CredentialRefreshingInputResolver {
     workspace_name: WorkspaceName,
-    config_store: ConfigStore,
+    source_registry: Arc<dyn SourceRegistry>,
     credential_manager: CredentialManager,
     delegate: Option<Arc<dyn SourceInputResolver>>,
 }
@@ -63,13 +63,13 @@ pub(crate) struct CredentialRefreshingInputResolver {
 impl CredentialRefreshingInputResolver {
     pub(crate) fn new(
         workspace_name: WorkspaceName,
-        config_store: ConfigStore,
+        source_registry: Arc<dyn SourceRegistry>,
         credential_manager: CredentialManager,
         delegate: Option<Arc<dyn SourceInputResolver>>,
     ) -> Self {
         Self {
             workspace_name,
-            config_store,
+            source_registry,
             credential_manager,
             delegate,
         }
@@ -95,8 +95,15 @@ impl SourceInputResolver for CredentialRefreshingInputResolver {
             .map_err(|error| SourceInputResolverError::invalid_input(error.to_string()))?;
         let credential_set_id = CredentialSetId::for_source(&source_name);
         let installed_source = self
-            .config_store
-            .get_source(&self.workspace_name, &source_name)
+            .source_registry
+            .get_source(self.workspace_name.as_str(), source_name.as_str())
+            .map_err(source_input_error)?
+            .map(|record| installed_source_from_record(&self.workspace_name, record))
+            .transpose()
+            .map_err(source_input_error)?
+            .ok_or_else(|| {
+                AppError::SourceNotFound(format!("{}:{source_name}", self.workspace_name))
+            })
             .map_err(source_input_error)?;
         let material =
             if let Some(credential_storage) = installed_source.credential_storage_for_material() {
