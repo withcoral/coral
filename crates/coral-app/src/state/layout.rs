@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, choose_native_strategy};
 
 use crate::bootstrap::AppError;
-use crate::identities::{IdentityInstanceName, IdentityOwnerKey};
+use crate::identities::{IdentityName, IdentityOwner};
 use crate::identity_specs::IdentitySpecName;
 use crate::sources::SourceName;
 use crate::storage::fs::ensure_dir;
@@ -126,47 +126,48 @@ impl AppStateLayout {
         self.config_dir.join("identities")
     }
 
-    pub(crate) fn user_owned_identities_root(&self, owner: &IdentityOwnerKey) -> PathBuf {
-        self.identities_root().join("users").join(owner.as_str())
+    pub(crate) fn identity_owner_root(&self, owner: &IdentityOwner) -> PathBuf {
+        self.identities_root()
+            .join(owner.storage_segment())
+            .join(owner.key())
     }
 
-    pub(crate) fn user_owned_identity_dir(
+    pub(crate) fn identity_dir(
         &self,
-        owner: &IdentityOwnerKey,
-        identity_name: &IdentityInstanceName,
+        owner: &IdentityOwner,
+        identity_name: &IdentityName,
     ) -> PathBuf {
-        self.user_owned_identities_root(owner)
-            .join(identity_name.as_str())
+        self.identity_owner_root(owner).join(identity_name.as_str())
     }
 
-    pub(crate) fn user_owned_identity_manifest_file(
+    pub(crate) fn identity_manifest_file(
         &self,
-        owner: &IdentityOwnerKey,
-        identity_name: &IdentityInstanceName,
+        owner: &IdentityOwner,
+        identity_name: &IdentityName,
     ) -> PathBuf {
-        self.user_owned_identity_dir(owner, identity_name)
+        self.identity_dir(owner, identity_name)
             .join(INSTALLED_IDENTITY_FILE_NAME)
     }
 
-    pub(crate) fn user_owned_identity_material_file(
+    pub(crate) fn identity_material_file(
         &self,
-        owner: &IdentityOwnerKey,
-        identity_name: &IdentityInstanceName,
+        owner: &IdentityOwner,
+        identity_name: &IdentityName,
     ) -> PathBuf {
-        self.user_owned_identity_dir(owner, identity_name)
+        self.identity_dir(owner, identity_name)
             .join(INSTALLED_SECRETS_FILE_NAME)
     }
 
-    pub(crate) fn user_owned_identity_refresh_lock_file(
+    pub(crate) fn identity_refresh_lock_file(
         &self,
-        owner: &IdentityOwnerKey,
-        identity_name: &IdentityInstanceName,
+        owner: &IdentityOwner,
+        identity_name: &IdentityName,
     ) -> PathBuf {
         self.config_dir
             .join("locks")
             .join("identities")
-            .join("users")
-            .join(owner.as_str())
+            .join(owner.storage_segment())
+            .join(owner.key())
             .join(format!("{}.refresh.lock", identity_name.as_str()))
     }
 

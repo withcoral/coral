@@ -451,7 +451,7 @@ impl IdentitySpecManager {
         &self,
         identity_spec_name: &IdentitySpecName,
     ) -> Result<u32, AppError> {
-        let mut count = self.count_user_owned_identities_for_spec_unlocked(identity_spec_name)?;
+        let mut count = self.count_stored_identities_for_spec_unlocked(identity_spec_name)?;
         for provider in &self.usage_providers {
             count = checked_add_identity_count(
                 count,
@@ -462,33 +462,39 @@ impl IdentitySpecManager {
         Ok(count)
     }
 
-    fn count_user_owned_identities_for_spec_unlocked(
+    fn count_stored_identities_for_spec_unlocked(
         &self,
         identity_spec_name: &IdentitySpecName,
     ) -> Result<u32, AppError> {
-        let users_root = self.layout.identities_root().join("users");
-        if !users_root.exists() {
+        let identities_root = self.layout.identities_root();
+        if !identities_root.exists() {
             return Ok(0);
         }
         let mut count = 0u32;
-        for user_entry in fs::read_dir(users_root)? {
-            let user_entry = user_entry?;
-            if !user_entry.file_type()?.is_dir() {
+        for owner_kind_entry in fs::read_dir(identities_root)? {
+            let owner_kind_entry = owner_kind_entry?;
+            if !owner_kind_entry.file_type()?.is_dir() {
                 continue;
             }
-            for identity_entry in fs::read_dir(user_entry.path())? {
-                let identity_entry = identity_entry?;
-                if !identity_entry.file_type()?.is_dir() {
+            for owner_entry in fs::read_dir(owner_kind_entry.path())? {
+                let owner_entry = owner_entry?;
+                if !owner_entry.file_type()?.is_dir() {
                     continue;
                 }
-                let manifest_path = identity_entry.path().join(INSTALLED_IDENTITY_FILE_NAME);
-                if !manifest_path.exists() {
-                    continue;
-                }
-                let raw = fs::read_to_string(&manifest_path)?;
-                let reference: UserOwnedIdentitySpecReference = serde_yaml::from_str(&raw)?;
-                if reference.identity_spec == identity_spec_name.as_str() {
-                    count = checked_add_identity_count(count, 1, identity_spec_name.as_str())?;
+                for identity_entry in fs::read_dir(owner_entry.path())? {
+                    let identity_entry = identity_entry?;
+                    if !identity_entry.file_type()?.is_dir() {
+                        continue;
+                    }
+                    let manifest_path = identity_entry.path().join(INSTALLED_IDENTITY_FILE_NAME);
+                    if !manifest_path.exists() {
+                        continue;
+                    }
+                    let raw = fs::read_to_string(&manifest_path)?;
+                    let reference: StoredIdentitySpecReference = serde_yaml::from_str(&raw)?;
+                    if reference.identity_spec == identity_spec_name.as_str() {
+                        count = checked_add_identity_count(count, 1, identity_spec_name.as_str())?;
+                    }
                 }
             }
         }
@@ -877,7 +883,7 @@ fn canonical_json_value(value: Value) -> Value {
 }
 
 #[derive(Debug, Deserialize)]
-struct UserOwnedIdentitySpecReference {
+struct StoredIdentitySpecReference {
     identity_spec: String,
 }
 
@@ -1027,7 +1033,7 @@ mod tests {
     use crate::bootstrap::AppError;
     use crate::credentials::{CredentialStoragePreference, CredentialStore};
     use crate::features::{Features, dsl_v4_features};
-    use crate::identities::{IdentityInstanceName, IdentityOwnerKey};
+    use crate::identities::{IdentityName, IdentityOwner};
     use crate::state::AppStateLayout;
     use crate::storage::env_file::parse_env_file;
 
@@ -1623,7 +1629,7 @@ oauth:
         let (_temp, manager, layout) = manager();
         let manifest_yaml = identity_yaml_with_audience("github_oauth", "0.1.0", "github.com");
         add_spec(&manager, &manifest_yaml);
-        write_user_owned_identity_manifest(&layout, "local", "github_local", "github_oauth");
+        write_identity_manifest(&layout, &local_user_owner(), "github_local", "github_oauth");
 
         let (record, replaced) = add_spec(&manager, &manifest_yaml);
         assert!(replaced);
@@ -1706,10 +1712,10 @@ type: oauth
     /// Merges the previous without-force rejection test and the force-removal
     /// orphan report test into one flow over the same stored identities.
     #[test]
-    fn remove_identity_spec_requires_force_and_reports_orphaned_user_owned_identities() {
+    fn remove_identity_spec_requires_force_and_reports_orphaned_identities() {
         let (_temp, manager, layout) = manager();
         add_spec(&manager, &identity_yaml("github_oauth", "0.1.0"));
-        write_user_owned_identity_manifest(&layout, "local", "github_local", "github_oauth");
+        write_identity_manifest(&layout, &local_user_owner(), "github_local", "github_oauth");
 
         let error = manager
             .remove_identity_spec("github_oauth", false)
@@ -1720,8 +1726,13 @@ type: oauth
             .get_identity_spec("github_oauth")
             .expect("spec remains installed");
 
-        write_user_owned_identity_manifest(&layout, "local", "github_alt", "github_oauth");
-        write_user_owned_identity_manifest(&layout, "local", "stripe_local", "stripe_oauth");
+        write_identity_manifest(
+            &layout,
+            &default_workspace_owner(),
+            "github_alt",
+            "github_oauth",
+        );
+        write_identity_manifest(&layout, &local_user_owner(), "stripe_local", "stripe_oauth");
 
         let orphaned = remove_spec(&manager, "github_oauth", true);
 
@@ -1754,26 +1765,35 @@ type: oauth
         assert_eq!(orphaned, 3);
     }
 
-    fn write_user_owned_identity_manifest(
+    fn local_user_owner() -> IdentityOwner {
+        IdentityOwner::user("local").expect("identity owner")
+    }
+
+    fn default_workspace_owner() -> IdentityOwner {
+        IdentityOwner::workspace("default").expect("identity owner")
+    }
+
+    fn write_identity_manifest(
         layout: &AppStateLayout,
-        user_id: &str,
+        owner: &IdentityOwner,
         identity_name: &str,
         identity_spec: &str,
     ) {
-        let owner = IdentityOwnerKey::new(user_id).expect("identity owner");
-        let identity_name = IdentityInstanceName::new(identity_name).expect("identity name");
-        let path = layout.user_owned_identity_manifest_file(&owner, &identity_name);
+        let identity_name = IdentityName::new(identity_name).expect("identity name");
+        let path = layout.identity_manifest_file(owner, &identity_name);
         fs::create_dir_all(path.parent().expect("identity dir")).expect("identity dir");
         fs::write(
             path,
             format!(
                 r"version: 1
+owner: {}
 name: {identity_name}
 identity_spec: {identity_spec}
 issuer: github
 identity_type: oauth
 metadata: {{}}
-"
+",
+                owner.kind().as_config_value()
             ),
         )
         .expect("write identity manifest");

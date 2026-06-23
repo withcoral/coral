@@ -75,11 +75,11 @@ pub use coral_engine::{
     SelectedRequestIdentity,
 };
 pub use identities::{
-    CreateFixedTokenIdentityCommand, IdentityInstanceMaterialGuard, IdentityInstanceName,
-    IdentityInstanceRecord, IdentityInstanceStore, IdentityManagementHandle, IdentityOwnerKey,
+    CreateFixedTokenIdentityCommand, IdentityManagementHandle, IdentityMaterialGuard, IdentityName,
+    IdentityOwner, IdentityRecord, IdentityStore,
 };
 pub use identity::{
-    RuntimeSourceIdentity, SingleUserPrincipalProvider, SourceIdentityBinding, SourceIdentityOwner,
+    IdentityOwnerKind, RuntimeSourceIdentity, SingleUserPrincipalProvider, SourceIdentityBinding,
     SourceIdentityProvider, SourceIdentityResolutionRequest, SourceIdentitySelection,
     SourceIdentitySelectionRequest, UserPrincipal, UserPrincipalProvider,
 };

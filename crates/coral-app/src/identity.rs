@@ -129,16 +129,16 @@ impl UserPrincipalProvider for SingleUserPrincipalProvider {
 }
 
 /// Scope that owns configured provider-facing source identity material.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
-pub enum SourceIdentityOwner {
+pub enum IdentityOwnerKind {
     /// Identity material is owned by the current Coral user principal.
     User,
     /// Identity material is owned by the workspace and independent of a user principal.
     Workspace,
 }
 
-impl SourceIdentityOwner {
+impl IdentityOwnerKind {
     /// Returns the stable config representation for this owner.
     #[must_use]
     pub const fn as_config_value(self) -> &'static str {
@@ -153,7 +153,7 @@ impl SourceIdentityOwner {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SourceIdentityBinding {
     /// Whether the identity is user-specific or workspace-owned.
-    pub owner: SourceIdentityOwner,
+    pub owner: IdentityOwnerKind,
     /// Workspace-owned identity reference understood by installed identity
     /// providers.
     ///
@@ -168,7 +168,7 @@ impl SourceIdentityBinding {
     #[must_use]
     pub const fn user_owned() -> Self {
         Self {
-            owner: SourceIdentityOwner::User,
+            owner: IdentityOwnerKind::User,
             identity: None,
         }
     }
@@ -182,7 +182,7 @@ impl SourceIdentityBinding {
     pub fn workspace_owned(identity: impl Into<String>) -> Result<Self, AppError> {
         let identity = parse_path_segment("identity", &identity.into())?;
         Ok(Self {
-            owner: SourceIdentityOwner::Workspace,
+            owner: IdentityOwnerKind::Workspace,
             identity: Some(identity),
         })
     }
@@ -195,14 +195,14 @@ impl SourceIdentityBinding {
     /// path separator.
     pub fn validate(&self) -> Result<(), AppError> {
         match self.owner {
-            SourceIdentityOwner::User => {
+            IdentityOwnerKind::User => {
                 if self.identity.is_some() {
                     return Err(AppError::InvalidInput(
                         "user-owned source identity bindings store only owner; identity is selected per user".to_string(),
                     ));
                 }
             }
-            SourceIdentityOwner::Workspace => {
+            IdentityOwnerKind::Workspace => {
                 let Some(identity) = &self.identity else {
                     return Err(AppError::InvalidInput(
                         "workspace-owned source identity binding is missing identity".to_string(),

@@ -1,4 +1,4 @@
-//! Storage seam types and traits for provider identity instances.
+//! Storage seam types and traits for provider identities.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info_span;
 
 use crate::bootstrap::AppError;
-use crate::identity::{UserPrincipal, parse_path_segment};
+use crate::identity::{IdentityOwnerKind, UserPrincipal, parse_path_segment};
 use crate::identity_specs::{
     IdentitySpecManager, IdentitySpecRecord, identity_spec_fingerprint, validate_identity_spec_name,
 };
@@ -20,14 +20,16 @@ use crate::state::AppStateLayout;
 use crate::storage::env_file::{parse_env_file, render_env_file};
 use crate::storage::fs::{self as storage_fs, FileLock};
 
-const IDENTITY_INSTANCE_DOCUMENT_VERSION: u32 = 1;
+const IDENTITY_DOCUMENT_VERSION: u32 = 1;
 const FIXED_TOKEN_MATERIAL_KEY: &str = "TOKEN";
 
-/// One stored provider identity instance.
+/// One stored provider identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IdentityInstanceRecord {
+pub struct IdentityRecord {
+    /// Principal or workspace that owns this identity.
+    pub owner: IdentityOwner,
     /// Stable identity name used by source identity bindings.
-    pub name: IdentityInstanceName,
+    pub name: IdentityName,
     /// Installed identity spec used to instantiate this identity.
     pub identity_spec: String,
     /// Fingerprint of the identity spec at creation time.
@@ -40,11 +42,11 @@ pub struct IdentityInstanceRecord {
     pub metadata: BTreeMap<String, String>,
 }
 
-/// Validated storage name for one provider identity instance.
+/// Validated storage name for one provider identity.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct IdentityInstanceName(String);
+pub struct IdentityName(String);
 
-impl IdentityInstanceName {
+impl IdentityName {
     /// Builds an identity name from a storage-safe string.
     ///
     /// # Errors
@@ -61,13 +63,13 @@ impl IdentityInstanceName {
     }
 }
 
-impl fmt::Display for IdentityInstanceName {
+impl fmt::Display for IdentityName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
-impl FromStr for IdentityInstanceName {
+impl FromStr for IdentityName {
     type Err = AppError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
@@ -75,7 +77,7 @@ impl FromStr for IdentityInstanceName {
     }
 }
 
-impl TryFrom<String> for IdentityInstanceName {
+impl TryFrom<String> for IdentityName {
     type Error = AppError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
@@ -83,54 +85,68 @@ impl TryFrom<String> for IdentityInstanceName {
     }
 }
 
-/// Opaque durable owner key for stored provider-facing identity material.
-///
-/// OSS Coral constructs this from the request user principal. Other runtimes can
-/// use their own stable owner keys without adding their ownership model to OSS
-/// identity management.
+/// Explicit owner of stored provider-facing identity material.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct IdentityOwnerKey(String);
+pub struct IdentityOwner {
+    kind: IdentityOwnerKind,
+    key: String,
+}
 
-impl IdentityOwnerKey {
-    /// Builds an owner key from a storage-safe string.
+impl IdentityOwner {
+    /// Builds an owner from its explicit kind and storage-safe key.
     ///
     /// # Errors
     ///
     /// Returns [`AppError`] when the key is empty or contains path separators.
-    pub fn new(value: impl Into<String>) -> Result<Self, AppError> {
-        parse_path_segment("identity owner", &value.into()).map(Self)
+    pub fn new(kind: IdentityOwnerKind, key: impl Into<String>) -> Result<Self, AppError> {
+        parse_path_segment("identity owner", &key.into()).map(|key| Self { kind, key })
+    }
+
+    /// Builds a user-owned identity owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the key is empty or contains path separators.
+    pub fn user(key: impl Into<String>) -> Result<Self, AppError> {
+        Self::new(IdentityOwnerKind::User, key)
+    }
+
+    /// Builds a workspace-owned identity owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the key is empty or contains path separators.
+    pub fn workspace(key: impl Into<String>) -> Result<Self, AppError> {
+        Self::new(IdentityOwnerKind::Workspace, key)
     }
 
     pub(crate) fn for_user_principal(principal: &UserPrincipal) -> Result<Self, AppError> {
-        Self::new(principal.user_id())
+        Self::user(principal.user_id())
+    }
+
+    /// Returns the explicit owner kind.
+    #[must_use]
+    pub const fn kind(&self) -> IdentityOwnerKind {
+        self.kind
     }
 
     /// Returns the storage key string.
     #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub(crate) const fn storage_segment(&self) -> &'static str {
+        match self.kind {
+            IdentityOwnerKind::User => "users",
+            IdentityOwnerKind::Workspace => "workspaces",
+        }
     }
 }
 
-impl fmt::Display for IdentityOwnerKey {
+impl fmt::Display for IdentityOwner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl FromStr for IdentityOwnerKey {
-    type Err = AppError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::new(value)
-    }
-}
-
-impl TryFrom<String> for IdentityOwnerKey {
-    type Error = AppError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::new(value)
+        write!(f, "{}:{}", self.kind.as_config_value(), self.key)
     }
 }
 
@@ -145,9 +161,9 @@ pub struct CreateFixedTokenIdentityCommand {
     pub token: String,
 }
 
-/// Locked access to credential material for one provider identity instance.
+/// Locked access to credential material for one provider identity.
 #[tonic::async_trait]
-pub trait IdentityInstanceMaterialGuard: Send {
+pub trait IdentityMaterialGuard: Send {
     /// Reads the identity's credential material.
     ///
     /// # Errors
@@ -163,29 +179,27 @@ pub trait IdentityInstanceMaterialGuard: Send {
     async fn write_material(&self, material: &BTreeMap<String, String>) -> Result<(), AppError>;
 }
 
-/// Durable storage backend for provider identity instances.
+/// Durable storage backend for provider identities.
 #[tonic::async_trait]
-pub trait IdentityInstanceStore: Send + Sync + std::fmt::Debug + 'static {
-    /// Lists identities owned by one opaque owner key.
+pub trait IdentityStore: Send + Sync + std::fmt::Debug + 'static {
+    /// Lists identities owned by one owner.
     ///
     /// # Errors
     ///
     /// Returns [`AppError`] when the store cannot be read.
-    async fn list_identities(
-        &self,
-        owner: &IdentityOwnerKey,
-    ) -> Result<Vec<IdentityInstanceRecord>, AppError>;
+    async fn list_identities(&self, owner: &IdentityOwner)
+    -> Result<Vec<IdentityRecord>, AppError>;
 
-    /// Loads one identity owned by one opaque owner key.
+    /// Loads one identity owned by one owner.
     ///
     /// # Errors
     ///
     /// Returns [`AppError`] when the store cannot be read.
     async fn load_identity(
         &self,
-        owner: &IdentityOwnerKey,
-        identity_name: &IdentityInstanceName,
-    ) -> Result<Option<IdentityInstanceRecord>, AppError>;
+        owner: &IdentityOwner,
+        identity_name: &IdentityName,
+    ) -> Result<Option<IdentityRecord>, AppError>;
 
     /// Replaces one identity and its credential material atomically.
     ///
@@ -194,8 +208,7 @@ pub trait IdentityInstanceStore: Send + Sync + std::fmt::Debug + 'static {
     /// Returns [`AppError`] when the store cannot be written.
     async fn replace_identity(
         &self,
-        owner: &IdentityOwnerKey,
-        record: &IdentityInstanceRecord,
+        record: &IdentityRecord,
         material: &BTreeMap<String, String>,
     ) -> Result<(), AppError>;
 
@@ -206,8 +219,8 @@ pub trait IdentityInstanceStore: Send + Sync + std::fmt::Debug + 'static {
     /// Returns [`AppError`] when the store cannot be written.
     async fn delete_identity(
         &self,
-        owner: &IdentityOwnerKey,
-        identity_name: &IdentityInstanceName,
+        owner: &IdentityOwner,
+        identity_name: &IdentityName,
     ) -> Result<bool, AppError>;
 
     /// Returns locked access to one identity's credential material.
@@ -217,9 +230,9 @@ pub trait IdentityInstanceStore: Send + Sync + std::fmt::Debug + 'static {
     /// Returns [`AppError`] when the material lock cannot be acquired.
     async fn material_guard(
         &self,
-        owner: &IdentityOwnerKey,
-        identity_name: &IdentityInstanceName,
-    ) -> Result<Box<dyn IdentityInstanceMaterialGuard>, AppError>;
+        owner: &IdentityOwner,
+        identity_name: &IdentityName,
+    ) -> Result<Box<dyn IdentityMaterialGuard>, AppError>;
 
     /// Counts identities that reference `identity_spec_name`.
     ///
@@ -229,21 +242,20 @@ pub trait IdentityInstanceStore: Send + Sync + std::fmt::Debug + 'static {
     fn count_identities_for_spec(&self, identity_spec_name: &str) -> Result<u32, AppError>;
 }
 
-/// Manages provider-facing identity instances keyed by an opaque owner.
+/// Manages provider-facing identities keyed by their explicit owner.
 #[derive(Debug, Clone)]
-pub(crate) struct IdentityInstanceManager {
+pub(crate) struct IdentityManager {
     identity_specs: IdentitySpecManager,
-    store: Arc<dyn IdentityInstanceStore>,
+    store: Arc<dyn IdentityStore>,
 }
 
 /// Product-facing handle for stored provider identity management.
 ///
-/// The handle intentionally deals only in opaque owner keys. OSS callers keep
-/// using user-owned gRPC methods, while other runtimes can map their owner
-/// metadata into stable keys.
+/// OSS callers keep using user-owned gRPC methods, while other runtimes can
+/// pass explicit workspace or user owners.
 #[derive(Debug, Clone)]
 pub struct IdentityManagementHandle {
-    manager: IdentityInstanceManager,
+    manager: IdentityManager,
 }
 
 impl IdentityManagementHandle {
@@ -254,9 +266,9 @@ impl IdentityManagementHandle {
     /// Returns [`AppError`] when validation or storage fails.
     pub async fn create_fixed_token_identity(
         &self,
-        owner: &IdentityOwnerKey,
+        owner: &IdentityOwner,
         command: CreateFixedTokenIdentityCommand,
-    ) -> Result<IdentityInstanceRecord, AppError> {
+    ) -> Result<IdentityRecord, AppError> {
         self.manager
             .create_fixed_token_identity(owner, command)
             .await
@@ -269,8 +281,8 @@ impl IdentityManagementHandle {
     /// Returns [`AppError`] when the store cannot be read.
     pub async fn list_identities(
         &self,
-        owner: &IdentityOwnerKey,
-    ) -> Result<Vec<IdentityInstanceRecord>, AppError> {
+        owner: &IdentityOwner,
+    ) -> Result<Vec<IdentityRecord>, AppError> {
         self.manager.list_identities(owner).await
     }
 
@@ -281,24 +293,24 @@ impl IdentityManagementHandle {
     /// Returns [`AppError`] when the store cannot be written.
     pub async fn delete_identity(
         &self,
-        owner: &IdentityOwnerKey,
+        owner: &IdentityOwner,
         identity_name: &str,
     ) -> Result<bool, AppError> {
         self.manager.delete_identity(owner, identity_name).await
     }
 }
 
-impl IdentityInstanceManager {
+impl IdentityManager {
     pub(crate) fn new(layout: AppStateLayout, identity_specs: IdentitySpecManager) -> Self {
         Self::new_with_store(
             identity_specs.clone(),
-            Arc::new(FileIdentityInstanceStore::new(layout, identity_specs)),
+            Arc::new(FileIdentityStore::new(layout, identity_specs)),
         )
     }
 
     pub(crate) fn new_with_store(
         identity_specs: IdentitySpecManager,
-        store: Arc<dyn IdentityInstanceStore>,
+        store: Arc<dyn IdentityStore>,
     ) -> Self {
         Self {
             identity_specs,
@@ -314,11 +326,11 @@ impl IdentityInstanceManager {
 
     fn prepare_identity_creation(
         &self,
-        owner: &IdentityOwnerKey,
+        owner: &IdentityOwner,
         name: &str,
         identity_spec: &str,
         expected: IdentitySpecType,
-    ) -> Result<(IdentityOwnerKey, IdentityInstanceName, IdentitySpecRecord), AppError> {
+    ) -> Result<(IdentityOwner, IdentityName, IdentitySpecRecord), AppError> {
         self.identity_specs.ensure_dsl_v4_enabled()?;
         let name = validate_identity_name(name)?;
         let identity_spec_name = validate_identity_spec_name(identity_spec)?;
@@ -337,9 +349,9 @@ impl IdentityInstanceManager {
 
     async fn create_fixed_token_identity(
         &self,
-        owner: &IdentityOwnerKey,
+        owner: &IdentityOwner,
         command: CreateFixedTokenIdentityCommand,
-    ) -> Result<IdentityInstanceRecord, AppError> {
+    ) -> Result<IdentityRecord, AppError> {
         let span = info_span!("coral.app.identities.create_fixed_token");
         let _guard = span.enter();
         let (owner, name, spec) = self.prepare_identity_creation(
@@ -354,7 +366,8 @@ impl IdentityInstanceManager {
                 "fixed token identity token must not be empty".to_string(),
             ));
         }
-        let record = IdentityInstanceRecord {
+        let record = IdentityRecord {
+            owner,
             name,
             identity_spec: spec.manifest.name.clone(),
             identity_spec_fingerprint: Some(identity_spec_fingerprint(&spec.manifest)?),
@@ -363,9 +376,7 @@ impl IdentityInstanceManager {
             metadata: BTreeMap::new(),
         };
         let material = BTreeMap::from([(FIXED_TOKEN_MATERIAL_KEY.to_string(), token)]);
-        self.store
-            .replace_identity(&owner, &record, &material)
-            .await?;
+        self.store.replace_identity(&record, &material).await?;
         Ok(record)
     }
 
@@ -373,31 +384,31 @@ impl IdentityInstanceManager {
         &self,
         principal: &UserPrincipal,
         command: CreateFixedTokenIdentityCommand,
-    ) -> Result<IdentityInstanceRecord, AppError> {
-        let owner = IdentityOwnerKey::for_user_principal(principal)?;
+    ) -> Result<IdentityRecord, AppError> {
+        let owner = IdentityOwner::for_user_principal(principal)?;
         self.create_fixed_token_identity(&owner, command).await
     }
 
     async fn list_identities(
         &self,
-        owner: &IdentityOwnerKey,
-    ) -> Result<Vec<IdentityInstanceRecord>, AppError> {
+        owner: &IdentityOwner,
+    ) -> Result<Vec<IdentityRecord>, AppError> {
         self.store.list_identities(owner).await
     }
 
     pub(crate) async fn list_user_owned_identities(
         &self,
         principal: &UserPrincipal,
-    ) -> Result<Vec<IdentityInstanceRecord>, AppError> {
+    ) -> Result<Vec<IdentityRecord>, AppError> {
         let span = info_span!("coral.app.identities.list_user_owned");
         let _guard = span.enter();
-        let owner = IdentityOwnerKey::for_user_principal(principal)?;
+        let owner = IdentityOwner::for_user_principal(principal)?;
         self.list_identities(&owner).await
     }
 
     async fn delete_identity(
         &self,
-        owner: &IdentityOwnerKey,
+        owner: &IdentityOwner,
         identity_name: &str,
     ) -> Result<bool, AppError> {
         let identity_name = validate_identity_name(identity_name)?;
@@ -406,12 +417,12 @@ impl IdentityInstanceManager {
 }
 
 #[derive(Debug, Clone)]
-struct FileIdentityInstanceStore {
+struct FileIdentityStore {
     layout: AppStateLayout,
     identity_specs: IdentitySpecManager,
 }
 
-impl FileIdentityInstanceStore {
+impl FileIdentityStore {
     fn new(layout: AppStateLayout, identity_specs: IdentitySpecManager) -> Self {
         Self {
             layout,
@@ -421,24 +432,24 @@ impl FileIdentityInstanceStore {
 
     fn load_identity_unlocked(
         &self,
-        owner: &IdentityOwnerKey,
-        name: &IdentityInstanceName,
-    ) -> Result<IdentityInstanceRecord, AppError> {
-        let path = self.layout.user_owned_identity_manifest_file(owner, name);
+        owner: &IdentityOwner,
+        name: &IdentityName,
+    ) -> Result<IdentityRecord, AppError> {
+        let path = self.layout.identity_manifest_file(owner, name);
         if !path.exists() {
             return Err(AppError::IdentityNotFound(name.to_string()));
         }
         let raw = fs::read_to_string(&path)?;
-        let document: IdentityInstanceDocument = serde_yaml::from_str(&raw)?;
-        document.into_record(name)
+        let document: IdentityDocument = serde_yaml::from_str(&raw)?;
+        document.into_record(owner, name)
     }
 
     fn material_lock_for_layout(
         layout: &AppStateLayout,
-        owner: &IdentityOwnerKey,
-        identity_name: &IdentityInstanceName,
+        owner: &IdentityOwner,
+        identity_name: &IdentityName,
     ) -> Result<FileLock, AppError> {
-        FileLock::exclusive(&layout.user_owned_identity_refresh_lock_file(owner, identity_name))
+        FileLock::exclusive(&layout.identity_refresh_lock_file(owner, identity_name))
             .map_err(Into::into)
     }
 
@@ -446,31 +457,37 @@ impl FileIdentityInstanceStore {
         layout: &AppStateLayout,
         identity_spec_name: &str,
     ) -> Result<u32, AppError> {
-        let users_root = layout.identities_root().join("users");
-        if !users_root.exists() {
+        let identities_root = layout.identities_root();
+        if !identities_root.exists() {
             return Ok(0);
         }
         let mut count = 0u32;
-        for user_entry in fs::read_dir(users_root)? {
-            let user_entry = user_entry?;
-            if !user_entry.file_type()?.is_dir() {
+        for owner_kind_entry in fs::read_dir(identities_root)? {
+            let owner_kind_entry = owner_kind_entry?;
+            if !owner_kind_entry.file_type()?.is_dir() {
                 continue;
             }
-            for identity_entry in fs::read_dir(user_entry.path())? {
-                let identity_entry = identity_entry?;
-                if !identity_entry.file_type()?.is_dir() {
+            for owner_entry in fs::read_dir(owner_kind_entry.path())? {
+                let owner_entry = owner_entry?;
+                if !owner_entry.file_type()?.is_dir() {
                     continue;
                 }
-                let manifest_path = identity_entry
-                    .path()
-                    .join(crate::state::INSTALLED_IDENTITY_FILE_NAME);
-                if !manifest_path.exists() {
-                    continue;
-                }
-                let raw = fs::read_to_string(&manifest_path)?;
-                let reference: IdentitySpecReference = serde_yaml::from_str(&raw)?;
-                if reference.identity_spec == identity_spec_name {
-                    count = checked_add_identity_count(count, 1, identity_spec_name)?;
+                for identity_entry in fs::read_dir(owner_entry.path())? {
+                    let identity_entry = identity_entry?;
+                    if !identity_entry.file_type()?.is_dir() {
+                        continue;
+                    }
+                    let manifest_path = identity_entry
+                        .path()
+                        .join(crate::state::INSTALLED_IDENTITY_FILE_NAME);
+                    if !manifest_path.exists() {
+                        continue;
+                    }
+                    let raw = fs::read_to_string(&manifest_path)?;
+                    let reference: IdentitySpecReference = serde_yaml::from_str(&raw)?;
+                    if reference.identity_spec == identity_spec_name {
+                        count = checked_add_identity_count(count, 1, identity_spec_name)?;
+                    }
                 }
             }
         }
@@ -479,16 +496,16 @@ impl FileIdentityInstanceStore {
 }
 
 #[tonic::async_trait]
-impl IdentityInstanceStore for FileIdentityInstanceStore {
+impl IdentityStore for FileIdentityStore {
     async fn list_identities(
         &self,
-        owner: &IdentityOwnerKey,
-    ) -> Result<Vec<IdentityInstanceRecord>, AppError> {
+        owner: &IdentityOwner,
+    ) -> Result<Vec<IdentityRecord>, AppError> {
         let store = self.clone();
         let owner = owner.clone();
         tokio::task::spawn_blocking(move || {
             let _lock = FileLock::shared(store.layout.state_lock())?;
-            let root = store.layout.user_owned_identities_root(&owner);
+            let root = store.layout.identity_owner_root(&owner);
             if !root.exists() {
                 return Ok(Vec::new());
             }
@@ -512,9 +529,9 @@ impl IdentityInstanceStore for FileIdentityInstanceStore {
 
     async fn load_identity(
         &self,
-        owner: &IdentityOwnerKey,
-        identity_name: &IdentityInstanceName,
-    ) -> Result<Option<IdentityInstanceRecord>, AppError> {
+        owner: &IdentityOwner,
+        identity_name: &IdentityName,
+    ) -> Result<Option<IdentityRecord>, AppError> {
         let store = self.clone();
         let owner = owner.clone();
         let identity_name = identity_name.clone();
@@ -531,30 +548,25 @@ impl IdentityInstanceStore for FileIdentityInstanceStore {
 
     async fn replace_identity(
         &self,
-        owner: &IdentityOwnerKey,
-        record: &IdentityInstanceRecord,
+        record: &IdentityRecord,
         material: &BTreeMap<String, String>,
     ) -> Result<(), AppError> {
         let store = self.clone();
-        let owner = owner.clone();
         let record = record.clone();
         let material = material.clone();
         tokio::task::spawn_blocking(move || {
+            let owner = record.owner.clone();
             let _material_lock =
                 Self::material_lock_for_layout(&store.layout, &owner, &record.name)?;
             let _state_lock = FileLock::exclusive(store.layout.state_lock())?;
-            let manifest_path = store
-                .layout
-                .user_owned_identity_manifest_file(&owner, &record.name);
-            let material_path = store
-                .layout
-                .user_owned_identity_material_file(&owner, &record.name);
+            let manifest_path = store.layout.identity_manifest_file(&owner, &record.name);
+            let material_path = store.layout.identity_material_file(&owner, &record.name);
             if let Some(parent) = manifest_path.parent() {
                 storage_fs::ensure_private_dir(parent)?;
             }
             validate_identity_spec_reference_unlocked(&store.identity_specs, &record)?;
             write_files_transactionally(&[&manifest_path, &material_path], || {
-                let document = IdentityInstanceDocument::from_record(&record);
+                let document = IdentityDocument::from_record(&record);
                 write_file_unlocked(&manifest_path, serde_yaml::to_string(&document)?.as_bytes())?;
                 write_file_unlocked(&material_path, render_env_file(&material).as_bytes())?;
                 Ok(())
@@ -565,8 +577,8 @@ impl IdentityInstanceStore for FileIdentityInstanceStore {
 
     async fn delete_identity(
         &self,
-        owner: &IdentityOwnerKey,
-        identity_name: &IdentityInstanceName,
+        owner: &IdentityOwner,
+        identity_name: &IdentityName,
     ) -> Result<bool, AppError> {
         let store = self.clone();
         let owner = owner.clone();
@@ -575,18 +587,14 @@ impl IdentityInstanceStore for FileIdentityInstanceStore {
             let _material_lock =
                 Self::material_lock_for_layout(&store.layout, &owner, &identity_name)?;
             let _state_lock = FileLock::exclusive(store.layout.state_lock())?;
-            let manifest_path = store
-                .layout
-                .user_owned_identity_manifest_file(&owner, &identity_name);
-            let material_path = store
-                .layout
-                .user_owned_identity_material_file(&owner, &identity_name);
+            let manifest_path = store.layout.identity_manifest_file(&owner, &identity_name);
+            let material_path = store.layout.identity_material_file(&owner, &identity_name);
             if !manifest_path.exists() {
                 return Ok(false);
             }
             remove_file_if_exists_unlocked(&material_path)?;
             remove_file_if_exists_unlocked(&manifest_path)?;
-            let identity_dir = store.layout.user_owned_identity_dir(&owner, &identity_name);
+            let identity_dir = store.layout.identity_dir(&owner, &identity_name);
             if identity_dir.exists() {
                 match fs::remove_dir(&identity_dir) {
                     Ok(()) => {}
@@ -602,20 +610,20 @@ impl IdentityInstanceStore for FileIdentityInstanceStore {
 
     async fn material_guard(
         &self,
-        owner: &IdentityOwnerKey,
-        identity_name: &IdentityInstanceName,
-    ) -> Result<Box<dyn IdentityInstanceMaterialGuard>, AppError> {
+        owner: &IdentityOwner,
+        identity_name: &IdentityName,
+    ) -> Result<Box<dyn IdentityMaterialGuard>, AppError> {
         let layout = self.layout.clone();
         let owner = owner.clone();
         let identity_name = identity_name.clone();
         tokio::task::spawn_blocking(move || {
             let lock = Self::material_lock_for_layout(&layout, &owner, &identity_name)?;
-            Ok(Box::new(FileIdentityInstanceMaterialGuard {
+            Ok(Box::new(FileIdentityMaterialGuard {
                 layout,
                 owner,
                 identity_name,
                 _lock: lock,
-            }) as Box<dyn IdentityInstanceMaterialGuard>)
+            }) as Box<dyn IdentityMaterialGuard>)
         })
         .await?
     }
@@ -626,19 +634,19 @@ impl IdentityInstanceStore for FileIdentityInstanceStore {
     }
 }
 
-struct FileIdentityInstanceMaterialGuard {
+struct FileIdentityMaterialGuard {
     layout: AppStateLayout,
-    owner: IdentityOwnerKey,
-    identity_name: IdentityInstanceName,
+    owner: IdentityOwner,
+    identity_name: IdentityName,
     _lock: FileLock,
 }
 
 #[tonic::async_trait]
-impl IdentityInstanceMaterialGuard for FileIdentityInstanceMaterialGuard {
+impl IdentityMaterialGuard for FileIdentityMaterialGuard {
     async fn read_material(&self) -> Result<BTreeMap<String, String>, AppError> {
         let path = self
             .layout
-            .user_owned_identity_material_file(&self.owner, &self.identity_name);
+            .identity_material_file(&self.owner, &self.identity_name);
         let identity_name = self.identity_name.to_string();
         tokio::task::spawn_blocking(move || match fs::read_to_string(path) {
             Ok(raw) => parse_env_file(&raw).map_err(|error| {
@@ -660,9 +668,9 @@ impl IdentityInstanceMaterialGuard for FileIdentityInstanceMaterialGuard {
         let identity_name = self.identity_name.clone();
         let material = material.clone();
         tokio::task::spawn_blocking(move || {
-            let path = layout.user_owned_identity_material_file(&owner, &identity_name);
+            let path = layout.identity_material_file(&owner, &identity_name);
             let _state_lock = FileLock::exclusive(layout.state_lock())?;
-            let manifest_path = layout.user_owned_identity_manifest_file(&owner, &identity_name);
+            let manifest_path = layout.identity_manifest_file(&owner, &identity_name);
             if !manifest_path.exists() {
                 return Err(AppError::IdentityNotFound(identity_name.to_string()));
             }
@@ -674,8 +682,10 @@ impl IdentityInstanceMaterialGuard for FileIdentityInstanceMaterialGuard {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct IdentityInstanceDocument {
+struct IdentityDocument {
     version: u32,
+    #[serde(default = "default_identity_owner_kind")]
+    owner: IdentityOwnerKind,
     name: String,
     identity_spec: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -686,10 +696,11 @@ struct IdentityInstanceDocument {
     metadata: BTreeMap<String, String>,
 }
 
-impl IdentityInstanceDocument {
-    fn from_record(record: &IdentityInstanceRecord) -> Self {
+impl IdentityDocument {
+    fn from_record(record: &IdentityRecord) -> Self {
         Self {
-            version: IDENTITY_INSTANCE_DOCUMENT_VERSION,
+            version: IDENTITY_DOCUMENT_VERSION,
+            owner: record.owner.kind(),
             name: record.name.to_string(),
             identity_spec: record.identity_spec.clone(),
             identity_spec_fingerprint: record.identity_spec_fingerprint.clone(),
@@ -701,12 +712,13 @@ impl IdentityInstanceDocument {
 
     fn into_record(
         self,
-        expected_name: &IdentityInstanceName,
-    ) -> Result<IdentityInstanceRecord, AppError> {
-        if self.version != IDENTITY_INSTANCE_DOCUMENT_VERSION {
+        expected_owner: &IdentityOwner,
+        expected_name: &IdentityName,
+    ) -> Result<IdentityRecord, AppError> {
+        if self.version != IDENTITY_DOCUMENT_VERSION {
             return Err(AppError::FailedPrecondition(format!(
                 "identity '{}' has unsupported document version {}; expected {}",
-                self.name, self.version, IDENTITY_INSTANCE_DOCUMENT_VERSION
+                self.name, self.version, IDENTITY_DOCUMENT_VERSION
             )));
         }
         let name = validate_identity_name(&self.name)?;
@@ -715,7 +727,15 @@ impl IdentityInstanceDocument {
                 "identity file for '{expected_name}' contains identity '{name}'"
             )));
         }
-        Ok(IdentityInstanceRecord {
+        if self.owner != expected_owner.kind() {
+            return Err(AppError::FailedPrecondition(format!(
+                "identity file for '{expected_name}' is owned by '{}', but storage path is for '{}'",
+                self.owner.as_config_value(),
+                expected_owner.kind().as_config_value()
+            )));
+        }
+        Ok(IdentityRecord {
+            owner: expected_owner.clone(),
             name,
             identity_spec: validate_identity_spec_name(&self.identity_spec)?.to_string(),
             identity_spec_fingerprint: self.identity_spec_fingerprint,
@@ -726,18 +746,22 @@ impl IdentityInstanceDocument {
     }
 }
 
+const fn default_identity_owner_kind() -> IdentityOwnerKind {
+    IdentityOwnerKind::User
+}
+
 #[derive(Debug, Deserialize)]
 struct IdentitySpecReference {
     identity_spec: String,
 }
 
-fn validate_identity_name(name: &str) -> Result<IdentityInstanceName, AppError> {
-    IdentityInstanceName::new(name)
+fn validate_identity_name(name: &str) -> Result<IdentityName, AppError> {
+    IdentityName::new(name)
 }
 
 fn validate_identity_spec_reference_unlocked(
     identity_specs: &IdentitySpecManager,
-    record: &IdentityInstanceRecord,
+    record: &IdentityRecord,
 ) -> Result<(), AppError> {
     let spec = identity_specs
         .load_identity_spec_manifest_unlocked_for_state_lock(&record.identity_spec)?;
@@ -825,43 +849,38 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn owner_key_rejects_storage_unsafe_values() {
-        IdentityOwnerKey::new(" ").unwrap_err();
-        IdentityOwnerKey::new("a/b").unwrap_err();
-        IdentityOwnerKey::new("a\\b").unwrap_err();
-        IdentityOwnerKey::new("..").unwrap_err();
+    fn identity_owner_rejects_storage_unsafe_keys() {
+        IdentityOwner::user(" ").unwrap_err();
+        IdentityOwner::user("a/b").unwrap_err();
+        IdentityOwner::user("a\\b").unwrap_err();
+        IdentityOwner::user("..").unwrap_err();
     }
 
     #[test]
-    fn owner_key_round_trips_storage_key() {
-        let owner = IdentityOwnerKey::new("member-123").expect("owner key");
+    fn identity_owner_exposes_kind_and_storage_key() {
+        let owner = IdentityOwner::user("member-123").expect("owner");
 
-        assert_eq!(owner.as_str(), "member-123");
-        assert_eq!(owner.to_string(), "member-123");
-        assert_eq!(
-            "member-123".parse::<IdentityOwnerKey>().expect("parse"),
-            owner
-        );
+        assert_eq!(owner.kind(), IdentityOwnerKind::User);
+        assert_eq!(owner.key(), "member-123");
+        assert_eq!(owner.to_string(), "user:member-123");
     }
 
     #[test]
     fn identity_name_rejects_storage_unsafe_values() {
-        IdentityInstanceName::new(" ").unwrap_err();
-        IdentityInstanceName::new("a/b").unwrap_err();
-        IdentityInstanceName::new("a\\b").unwrap_err();
-        IdentityInstanceName::new("..").unwrap_err();
+        IdentityName::new(" ").unwrap_err();
+        IdentityName::new("a/b").unwrap_err();
+        IdentityName::new("a\\b").unwrap_err();
+        IdentityName::new("..").unwrap_err();
     }
 
     #[test]
     fn identity_name_round_trips_storage_name() {
-        let identity_name = IdentityInstanceName::new("github-primary").expect("identity name");
+        let identity_name = IdentityName::new("github-primary").expect("identity name");
 
         assert_eq!(identity_name.as_str(), "github-primary");
         assert_eq!(identity_name.to_string(), "github-primary");
         assert_eq!(
-            "github-primary"
-                .parse::<IdentityInstanceName>()
-                .expect("parse"),
+            "github-primary".parse::<IdentityName>().expect("parse"),
             identity_name
         );
     }
@@ -873,25 +892,25 @@ mod tests {
         layout
     }
 
-    fn manager() -> (TempDir, IdentityInstanceManager, IdentitySpecManager) {
+    fn manager() -> (TempDir, IdentityManager, IdentitySpecManager) {
         manager_with_features(dsl_v4_features())
     }
 
     fn manager_with_features(
         features: Features,
-    ) -> (TempDir, IdentityInstanceManager, IdentitySpecManager) {
+    ) -> (TempDir, IdentityManager, IdentitySpecManager) {
         let temp = TempDir::new().expect("tempdir");
         let layout = test_layout(&temp);
         let identity_specs =
             IdentitySpecManager::new_with_usage_providers(layout.clone(), features, Vec::new());
         (
             temp,
-            IdentityInstanceManager::new(layout, identity_specs.clone()),
+            IdentityManager::new(layout, identity_specs.clone()),
             identity_specs,
         )
     }
 
-    fn manager_with_github_pat_spec() -> (TempDir, IdentityInstanceManager, IdentitySpecManager) {
+    fn manager_with_github_pat_spec() -> (TempDir, IdentityManager, IdentitySpecManager) {
         let (temp, manager, identity_specs) = manager();
         identity_specs
             .add_identity_spec(&fixed_identity_spec_yaml())
@@ -926,12 +945,16 @@ audience:
         }
     }
 
-    fn github_local_name() -> IdentityInstanceName {
-        IdentityInstanceName::new("github_local").expect("github_local identity name")
+    fn github_local_name() -> IdentityName {
+        IdentityName::new("github_local").expect("github_local identity name")
     }
 
-    fn local_owner() -> IdentityOwnerKey {
-        IdentityOwnerKey::new("local").expect("local owner")
+    fn local_owner() -> IdentityOwner {
+        IdentityOwner::user("local").expect("local owner")
+    }
+
+    fn default_workspace_owner() -> IdentityOwner {
+        IdentityOwner::workspace("default").expect("workspace owner")
     }
 
     fn material(key: &str, value: &str) -> BTreeMap<String, String> {
@@ -977,19 +1000,51 @@ audience:
             "identity should pin the identity spec fingerprint"
         );
         assert!(record.metadata.is_empty());
+        assert_eq!(record.owner, local_owner());
+
+        let layout = test_layout(&temp);
+        let raw =
+            fs::read_to_string(layout.identity_manifest_file(&local_owner(), &github_local_name()))
+                .expect("identity manifest");
+        assert!(raw.contains("identity_spec: github_pat"));
+        assert!(raw.contains("owner: user"));
+        let material =
+            fs::read_to_string(layout.identity_material_file(&local_owner(), &github_local_name()))
+                .expect("identity material");
+        assert!(material.contains("TOKEN=ghp_token"));
+        assert!(!material.contains("  ghp_token  "));
+    }
+
+    #[tokio::test]
+    async fn create_workspace_fixed_token_identity_stores_record_and_material() {
+        let (temp, manager, _identity_specs) = manager_with_github_pat_spec();
+        let owner = default_workspace_owner();
+
+        let record = manager
+            .create_fixed_token_identity(&owner, github_local_command("workspace-token"))
+            .await
+            .expect("create workspace identity");
+
+        assert_eq!(record.owner, owner);
+        assert_eq!(record.name.as_str(), "github_local");
 
         let layout = test_layout(&temp);
         let raw = fs::read_to_string(
-            layout.user_owned_identity_manifest_file(&local_owner(), &github_local_name()),
+            layout.identity_manifest_file(&default_workspace_owner(), &github_local_name()),
         )
-        .expect("identity manifest");
-        assert!(raw.contains("identity_spec: github_pat"));
+        .expect("workspace identity manifest");
+        assert!(raw.contains("owner: workspace"));
         let material = fs::read_to_string(
-            layout.user_owned_identity_material_file(&local_owner(), &github_local_name()),
+            layout.identity_material_file(&default_workspace_owner(), &github_local_name()),
         )
-        .expect("identity material");
-        assert!(material.contains("TOKEN=ghp_token"));
-        assert!(!material.contains("  ghp_token  "));
+        .expect("workspace identity material");
+        assert!(material.contains("TOKEN=workspace-token"));
+        assert!(
+            !layout
+                .identity_manifest_file(&local_owner(), &github_local_name())
+                .exists(),
+            "workspace identity should not be stored in the user bucket"
+        );
     }
 
     #[tokio::test]
@@ -1016,7 +1071,8 @@ audience:
         let original_spec = identity_specs
             .get_identity_spec("github_pat")
             .expect("original identity spec");
-        let record = IdentityInstanceRecord {
+        let record = IdentityRecord {
+            owner: local_owner(),
             name: github_local_name(),
             identity_spec: "github_pat".to_string(),
             identity_spec_fingerprint: Some(
@@ -1032,11 +1088,7 @@ audience:
 
         let error = manager
             .store
-            .replace_identity(
-                &local_owner(),
-                &record,
-                &material(FIXED_TOKEN_MATERIAL_KEY, "ghp_token"),
-            )
+            .replace_identity(&record, &material(FIXED_TOKEN_MATERIAL_KEY, "ghp_token"))
             .await
             .expect_err("deleted identity spec reference must be rejected");
 
@@ -1049,7 +1101,8 @@ audience:
         let original_spec = identity_specs
             .get_identity_spec("github_pat")
             .expect("original identity spec");
-        let record = IdentityInstanceRecord {
+        let record = IdentityRecord {
+            owner: local_owner(),
             name: github_local_name(),
             identity_spec: "github_pat".to_string(),
             identity_spec_fingerprint: Some(
@@ -1068,11 +1121,7 @@ audience:
 
         let error = manager
             .store
-            .replace_identity(
-                &local_owner(),
-                &record,
-                &material(FIXED_TOKEN_MATERIAL_KEY, "ghp_token"),
-            )
+            .replace_identity(&record, &material(FIXED_TOKEN_MATERIAL_KEY, "ghp_token"))
             .await
             .expect_err("stale identity spec reference must be rejected");
 
@@ -1083,13 +1132,13 @@ audience:
         let layout = test_layout(&temp);
         assert!(
             !layout
-                .user_owned_identity_manifest_file(&local_owner(), &github_local_name())
+                .identity_manifest_file(&local_owner(), &github_local_name())
                 .exists(),
             "rejected stale identity should not create a manifest"
         );
         assert!(
             !layout
-                .user_owned_identity_material_file(&local_owner(), &github_local_name())
+                .identity_material_file(&local_owner(), &github_local_name())
                 .exists(),
             "rejected stale identity should not create material"
         );
@@ -1186,7 +1235,7 @@ audience:
             .await
             .expect("create identity");
         let layout = test_layout(&temp);
-        fs::remove_dir_all(layout.user_owned_identity_dir(&local_owner(), &github_local_name()))
+        fs::remove_dir_all(layout.identity_dir(&local_owner(), &github_local_name()))
             .expect("delete identity");
 
         let error = manager
@@ -1201,7 +1250,7 @@ audience:
         assert!(matches!(error, AppError::IdentityNotFound(name) if name == "github_local"));
         assert!(
             !layout
-                .user_owned_identity_material_file(&local_owner(), &github_local_name())
+                .identity_material_file(&local_owner(), &github_local_name())
                 .exists(),
             "deleted identity material should stay deleted"
         );

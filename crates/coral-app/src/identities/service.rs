@@ -5,27 +5,26 @@ use std::pin::Pin;
 use coral_api::v1::identity_service_server::IdentityService as IdentityServiceApi;
 use coral_api::v1::{
     CreateUserOwnedIdentityRequest, CreateUserOwnedIdentityResponse, CredentialMetadata,
-    FixedTokenUserOwnedIdentitySetup, Identity, IdentityOwner, ListUserOwnedIdentitiesRequest,
-    ListUserOwnedIdentitiesResponse, create_user_owned_identity_request,
-    create_user_owned_identity_response,
+    FixedTokenUserOwnedIdentitySetup, Identity, IdentityOwner as ProtoIdentityOwner,
+    ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse,
+    create_user_owned_identity_request, create_user_owned_identity_response,
 };
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
-use crate::identities::{
-    CreateFixedTokenIdentityCommand, IdentityInstanceManager, IdentityInstanceRecord,
-};
+use crate::identities::{CreateFixedTokenIdentityCommand, IdentityManager, IdentityRecord};
+use crate::identity::IdentityOwnerKind;
 use crate::request_context::RequestContext;
 use crate::transport::{grpc_span, instrument_grpc};
 
 #[derive(Clone)]
 pub(crate) struct IdentityService {
-    identities: IdentityInstanceManager,
+    identities: IdentityManager,
 }
 
 impl IdentityService {
-    pub(crate) fn new(identities: IdentityInstanceManager) -> Self {
+    pub(crate) fn new(identities: IdentityManager) -> Self {
         Self { identities }
     }
 }
@@ -64,7 +63,7 @@ impl IdentityServiceApi for IdentityService {
                 .map_err(app_status)?;
             let response = CreateUserOwnedIdentityResponse {
                 event: Some(create_user_owned_identity_response::Event::Identity(
-                    identity_record_to_proto(record),
+                    user_owned_identity_record_to_proto(record),
                 )),
             };
             let stream = Box::pin(tokio_stream::iter([Ok(response)]));
@@ -89,7 +88,10 @@ impl IdentityServiceApi for IdentityService {
                 .await
                 .map_err(app_status)?;
             Ok(Response::new(ListUserOwnedIdentitiesResponse {
-                identities: records.into_iter().map(identity_record_to_proto).collect(),
+                identities: records
+                    .into_iter()
+                    .map(user_owned_identity_record_to_proto)
+                    .collect(),
             }))
         })
         .await
@@ -99,13 +101,14 @@ impl IdentityServiceApi for IdentityService {
 type CreateUserOwnedIdentityResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<CreateUserOwnedIdentityResponse, Status>> + Send>>;
 
-fn identity_record_to_proto(record: IdentityInstanceRecord) -> Identity {
+fn user_owned_identity_record_to_proto(record: IdentityRecord) -> Identity {
+    debug_assert_eq!(record.owner.kind(), IdentityOwnerKind::User);
     Identity {
         name: record.name.to_string(),
         identity_spec: record.identity_spec,
         issuer: record.issuer,
         identity_type: record.identity_type,
-        owner: IdentityOwner::User as i32,
+        owner: ProtoIdentityOwner::User as i32,
         metadata: record
             .metadata
             .into_iter()
