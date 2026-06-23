@@ -13,10 +13,10 @@ use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DiscoverSourcesRequest,
-    GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-    OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
-    SourceCredentialStorage, SourceIdentityBinding, SourceIdentityOwner, SourceInfo, SourceOrigin,
-    SourceSecret, SourceVariable, UserSourceIdentityBinding, ValidateSourceRequest,
+    GetSourceInfoRequest, IdentityOwner, ImportSourceRequest, ImportSourceResponse,
+    ListSourcesRequest, OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure,
+    QueryTestSuccess, Source, SourceCredentialStorage, SourceIdentityBinding, SourceInfo,
+    SourceOrigin, SourceSecret, SourceVariable, UserSourceIdentityBinding, ValidateSourceRequest,
     ValidateSourceResponse, create_bundled_source_with_o_auth_response, import_source_response,
     query_test_result, source_input_spec::Input as ProtoSourceInput,
 };
@@ -252,7 +252,7 @@ pub(crate) fn import_source_identity_bindings_from_args(
         identity_bindings.push(SourceIdentityBinding {
             surface_id: binding.surface_id.clone(),
             identity: String::new(),
-            owner: SourceIdentityOwner::User as i32,
+            owner: IdentityOwner::User as i32,
         });
         user_identity_bindings.push(UserSourceIdentityBinding {
             surface_id: binding.surface_id,
@@ -266,7 +266,7 @@ pub(crate) fn import_source_identity_bindings_from_args(
         identity_bindings.push(SourceIdentityBinding {
             surface_id: binding.surface_id,
             identity: binding.identity,
-            owner: SourceIdentityOwner::Workspace as i32,
+            owner: IdentityOwner::Workspace as i32,
         });
     }
 

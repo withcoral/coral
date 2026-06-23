@@ -26,16 +26,6 @@ enum SourceCredentialStorage {
   SOURCE_CREDENTIAL_STORAGE_KEYCHAIN = 2;
 }
 
-// Scope that owns provider-facing identity material for a source binding.
-enum SourceIdentityOwner {
-  // Source identity owner was not specified.
-  SOURCE_IDENTITY_OWNER_UNSPECIFIED = 0;
-  // Identity material is owned by the current Coral user principal.
-  SOURCE_IDENTITY_OWNER_USER = 1;
-  // Identity material is owned by the workspace and independent of a user principal.
-  SOURCE_IDENTITY_OWNER_WORKSPACE = 2;
-}
-
 // One workspace source-surface identity slot.
 message SourceIdentityBinding {
   // DSL v4 surface id being configured.
@@ -46,7 +36,7 @@ message SourceIdentityBinding {
   // selected independently by each Coral user principal.
   string identity = 2;
   // Scope that owns the identity material.
-  SourceIdentityOwner owner = 3;
+  IdentityOwner owner = 3;
 }
 
 // One source-surface identity selection owned by the request user.

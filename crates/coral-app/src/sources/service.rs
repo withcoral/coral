@@ -11,17 +11,17 @@ use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, CredentialMetadata, DeleteSourceRequest,
     DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
-    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, OAuthCredentialAuthorization,
-    OAuthCredentialClient, OAuthCredentialClientId, OAuthCredentialClientSecret,
-    OAuthCredentialCompleted, OAuthCredentialEndpoints, OAuthCredentialInput,
-    OAuthCredentialMethod, OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
+    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
+    IdentityOwner as ProtoIdentityOwner, ImportSourceRequest, ImportSourceResponse,
+    ListSourcesRequest, ListSourcesResponse, OAuthCredentialAuthorization, OAuthCredentialClient,
+    OAuthCredentialClientId, OAuthCredentialClientSecret, OAuthCredentialCompleted,
+    OAuthCredentialEndpoints, OAuthCredentialInput, OAuthCredentialMethod,
+    OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
     OauthCredentialClientSecretTransport, OauthCredentialFlowType, OauthCredentialPkceMode,
     OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter, Source,
     SourceConfigCredentialMethod, SourceCredential, SourceCredentialMethod,
     SourceCredentialStorage as ProtoSourceCredentialStorage,
-    SourceIdentityBinding as ProtoSourceIdentityBinding,
-    SourceIdentityOwner as ProtoSourceIdentityOwner, SourceInfo, SourceInputSpec,
+    SourceIdentityBinding as ProtoSourceIdentityBinding, SourceInfo, SourceInputSpec,
     SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
     SourceVariableInput, UserSourceIdentityBinding as ProtoUserSourceIdentityBinding,
     ValidateSourceRequest, ValidateSourceResponse, create_bundled_source_with_o_auth_response,
@@ -637,10 +637,10 @@ fn source_identity_bindings_from_proto(
 fn source_identity_binding_from_proto(
     binding: ProtoSourceIdentityBinding,
 ) -> Result<(String, AppSourceIdentityBinding), AppError> {
-    let owner = match ProtoSourceIdentityOwner::try_from(binding.owner) {
-        Ok(ProtoSourceIdentityOwner::User) => AppSourceIdentityOwner::User,
-        Ok(ProtoSourceIdentityOwner::Workspace) => AppSourceIdentityOwner::Workspace,
-        Ok(ProtoSourceIdentityOwner::Unspecified) | Err(_) => {
+    let owner = match ProtoIdentityOwner::try_from(binding.owner) {
+        Ok(ProtoIdentityOwner::User) => AppSourceIdentityOwner::User,
+        Ok(ProtoIdentityOwner::Workspace) => AppSourceIdentityOwner::Workspace,
+        Ok(ProtoIdentityOwner::Unspecified) | Err(_) => {
             return Err(AppError::InvalidInput(format!(
                 "source identity binding for surface '{}' has invalid owner",
                 binding.surface_id
@@ -1110,8 +1110,8 @@ fn source_identity_binding_to_proto(
     binding: AppSourceIdentityBinding,
 ) -> ProtoSourceIdentityBinding {
     let owner = match binding.owner {
-        AppSourceIdentityOwner::User => ProtoSourceIdentityOwner::User,
-        AppSourceIdentityOwner::Workspace => ProtoSourceIdentityOwner::Workspace,
+        AppSourceIdentityOwner::User => ProtoIdentityOwner::User,
+        AppSourceIdentityOwner::Workspace => ProtoIdentityOwner::Workspace,
     };
     ProtoSourceIdentityBinding {
         surface_id,

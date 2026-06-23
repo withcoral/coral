@@ -17,8 +17,8 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, Source,
-    SourceCredentialStorage, SourceIdentityOwner, SourceInfo, SourceOrigin,
+    DiscoverSourcesResponse, ExecuteSqlResponse, IdentityOwner, ListSourcesResponse, Source,
+    SourceCredentialStorage, SourceInfo, SourceOrigin,
 };
 use tempfile::tempdir;
 use tonic::Code;
@@ -845,7 +845,7 @@ surfaces:
     assert_eq!(requests[0].identity_bindings.len(), 1);
     let source_binding = &requests[0].identity_bindings[0];
     assert_eq!(source_binding.surface_id, "rest");
-    assert_eq!(source_binding.owner, SourceIdentityOwner::User as i32);
+    assert_eq!(source_binding.owner, IdentityOwner::User as i32);
     assert_eq!(source_binding.identity, "");
     assert_eq!(requests[0].user_identity_bindings.len(), 1);
     let user_binding = &requests[0].user_identity_bindings[0];

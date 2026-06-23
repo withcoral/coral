@@ -9,10 +9,10 @@ use std::{fs, path::PathBuf};
 use coral_api::v1::{
     AddIdentitySpecRequest, CreateBundledSourceRequest, CreateUserOwnedIdentityRequest,
     DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest, ExplainSqlRequest,
-    FixedTokenUserOwnedIdentitySetup, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
-    ListCatalogRequest, ListUserOwnedIdentitiesRequest, OauthCredentialFlowType,
-    OauthCredentialScopeDelimiter, PaginationRequest, QueryTestFailure, QueryTestSuccess, Source,
-    SourceCredentialStorage, SourceIdentityBinding, SourceIdentityOwner, SourceOrigin,
+    FixedTokenUserOwnedIdentitySetup, GetSourceInfoRequest, GetSourceRequest, IdentityOwner,
+    ImportSourceRequest, ListCatalogRequest, ListUserOwnedIdentitiesRequest,
+    OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest, QueryTestFailure,
+    QueryTestSuccess, Source, SourceCredentialStorage, SourceIdentityBinding, SourceOrigin,
     SourceSecret, SourceVariable, UserSourceIdentityBinding, ValidateSourceRequest, Workspace,
     catalog_item, create_user_owned_identity_request, create_user_owned_identity_response,
     import_source_response, query_test_result,
@@ -142,7 +142,7 @@ fn assert_user_owned_rest_identity_binding(source: &Source) {
     let binding = &source.identity_bindings[0];
     assert_eq!(binding.surface_id, "rest");
     assert_eq!(binding.identity, "");
-    assert_eq!(binding.owner, SourceIdentityOwner::User as i32);
+    assert_eq!(binding.owner, IdentityOwner::User as i32);
 }
 
 async fn install_test_fixed_token_identity(harness: &GrpcHarness) {
@@ -296,7 +296,7 @@ async fn import_source_persists_user_identity_binding_for_queries() {
             identity_bindings: vec![SourceIdentityBinding {
                 surface_id: "rest".to_string(),
                 identity: String::new(),
-                owner: SourceIdentityOwner::User as i32,
+                owner: IdentityOwner::User as i32,
             }],
             user_identity_bindings: vec![UserSourceIdentityBinding {
                 surface_id: "rest".to_string(),
@@ -394,7 +394,7 @@ async fn user_identity_source_bindings_are_scoped_to_request_principal() {
                 identity_bindings: vec![SourceIdentityBinding {
                     surface_id: "rest".to_string(),
                     identity: String::new(),
-                    owner: SourceIdentityOwner::User as i32,
+                    owner: IdentityOwner::User as i32,
                 }],
                 user_identity_bindings: vec![UserSourceIdentityBinding {
                     surface_id: "rest".to_string(),
@@ -468,7 +468,7 @@ async fn import_source_rolls_back_user_identity_binding_when_import_fails() {
             identity_bindings: vec![SourceIdentityBinding {
                 surface_id: "rest".to_string(),
                 identity: String::new(),
-                owner: SourceIdentityOwner::User as i32,
+                owner: IdentityOwner::User as i32,
             }],
             user_identity_bindings: vec![UserSourceIdentityBinding {
                 surface_id: "rest".to_string(),
@@ -503,7 +503,7 @@ async fn import_source_rejects_user_owned_identity_binding_without_user_selectio
             identity_bindings: vec![SourceIdentityBinding {
                 surface_id: "rest".to_string(),
                 identity: String::new(),
-                owner: SourceIdentityOwner::User as i32,
+                owner: IdentityOwner::User as i32,
             }],
             user_identity_bindings: Vec::new(),
             replace_identity_bindings: false,
