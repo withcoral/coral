@@ -16,9 +16,9 @@ use coral_api::v1::{
     GetSourceInfoRequest, IdentityOwner, ImportSourceRequest, ImportSourceResponse,
     ListSourcesRequest, OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure,
     QueryTestSuccess, Source, SourceCredentialStorage, SourceIdentityBinding, SourceInfo,
-    SourceOrigin, SourceSecret, SourceVariable, UserSourceIdentityBinding, ValidateSourceRequest,
-    ValidateSourceResponse, create_bundled_source_with_o_auth_response, import_source_response,
-    query_test_result, source_input_spec::Input as ProtoSourceInput,
+    SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
+    create_bundled_source_with_o_auth_response, import_source_response, query_test_result,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
 use coral_spec::v4::SurfaceDescriptor;
@@ -130,7 +130,6 @@ pub(crate) async fn import_source(
             secrets,
             oauth_credential_retrievals: Vec::new(),
             identity_bindings: identity_bindings.source_bindings,
-            user_identity_bindings: identity_bindings.user_selections,
             replace_identity_bindings: identity_bindings.replace_existing,
         }))
         .await?
@@ -224,7 +223,6 @@ pub(crate) async fn import_source_with_credentials(
             secrets: inputs.secrets,
             oauth_credential_retrievals: inputs.oauth_credential_retrievals,
             identity_bindings: identity_bindings.source_bindings,
-            user_identity_bindings: identity_bindings.user_selections,
             replace_identity_bindings: identity_bindings.replace_existing,
         }))
         .await?;
@@ -234,7 +232,6 @@ pub(crate) async fn import_source_with_credentials(
 #[derive(Debug, Default)]
 pub(crate) struct ImportSourceIdentityBindings {
     source_bindings: Vec<SourceIdentityBinding>,
-    user_selections: Vec<UserSourceIdentityBinding>,
     replace_existing: bool,
 }
 
@@ -244,19 +241,14 @@ pub(crate) fn import_source_identity_bindings_from_args(
 ) -> Result<ImportSourceIdentityBindings, anyhow::Error> {
     let mut seen_surfaces = BTreeSet::new();
     let mut identity_bindings = Vec::new();
-    let mut user_identity_bindings = Vec::new();
 
     for value in user_bindings {
         let binding = parse_cli_identity_binding(value, "--user-identity-binding")?;
         reject_repeated_identity_binding_surface(&mut seen_surfaces, &binding.surface_id)?;
         identity_bindings.push(SourceIdentityBinding {
-            surface_id: binding.surface_id.clone(),
-            identity: String::new(),
-            owner: IdentityOwner::User as i32,
-        });
-        user_identity_bindings.push(UserSourceIdentityBinding {
             surface_id: binding.surface_id,
             identity: binding.identity,
+            owner: IdentityOwner::User as i32,
         });
     }
 
@@ -273,7 +265,6 @@ pub(crate) fn import_source_identity_bindings_from_args(
     Ok(ImportSourceIdentityBindings {
         replace_existing: !identity_bindings.is_empty(),
         source_bindings: identity_bindings,
-        user_selections: user_identity_bindings,
     })
 }
 

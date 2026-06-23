@@ -23,9 +23,9 @@ use coral_api::v1::{
     SourceCredentialStorage as ProtoSourceCredentialStorage,
     SourceIdentityBinding as ProtoSourceIdentityBinding, SourceInfo, SourceInputSpec,
     SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
-    SourceVariableInput, UserSourceIdentityBinding as ProtoUserSourceIdentityBinding,
-    ValidateSourceRequest, ValidateSourceResponse, create_bundled_source_with_o_auth_response,
-    import_source_response, source_credential_method::Method as ProtoCredentialMethod,
+    SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
+    create_bundled_source_with_o_auth_response, import_source_response,
+    source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_spec::{
@@ -363,17 +363,14 @@ async fn handle_import_source(
 ) -> Result<Response<ImportSourceResponseStreamBox>, Status> {
     let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
     let response_workspace_name = workspace_name.clone();
-    let identity_bindings =
-        source_identity_bindings_from_proto(request.identity_bindings).map_err(app_status)?;
-    let user_identity_bindings =
-        user_source_identity_bindings_from_proto(request.user_identity_bindings)
-            .map_err(app_status)?;
-    let user_principal = (!user_identity_bindings.is_empty()).then_some(principal);
+    let identity_bindings = import_source_identity_bindings_from_proto(request.identity_bindings)
+        .map_err(app_status)?;
+    let user_principal = (!identity_bindings.user_selections.is_empty()).then_some(principal);
     if request.oauth_credential_retrievals.is_empty() {
         let command = ImportSourceCommand {
             manifest_yaml: request.manifest_yaml,
             bindings: source_bindings_from_proto(request.variables, request.secrets),
-            identity_bindings,
+            identity_bindings: identity_bindings.source_bindings,
             replace_identity_bindings: request.replace_identity_bindings,
         };
         return handle_import_source_without_credentials(
@@ -383,7 +380,7 @@ async fn handle_import_source(
             workspace_name,
             response_workspace_name,
             command,
-            user_identity_bindings,
+            identity_bindings.user_selections,
         )
         .await;
     }
@@ -397,7 +394,7 @@ async fn handle_import_source(
             .map(oauth_credential_retrieval_from_proto)
             .collect::<Result<Vec<_>, _>>()
             .map_err(app_status)?,
-        identity_bindings,
+        identity_bindings: identity_bindings.source_bindings,
         replace_identity_bindings: request.replace_identity_bindings,
     };
     handle_import_source_with_credentials(
@@ -407,7 +404,7 @@ async fn handle_import_source(
         workspace_name,
         response_workspace_name,
         command,
-        user_identity_bindings,
+        identity_bindings.user_selections,
     )
     .await
 }
@@ -619,65 +616,56 @@ fn source_bindings_from_proto(
     }
 }
 
-fn source_identity_bindings_from_proto(
+struct ParsedImportSourceIdentityBindings {
+    source_bindings: BTreeMap<String, AppSourceIdentityBinding>,
+    user_selections: BTreeMap<String, AppSourceIdentitySelection>,
+}
+
+fn import_source_identity_bindings_from_proto(
     bindings: Vec<ProtoSourceIdentityBinding>,
-) -> Result<BTreeMap<String, AppSourceIdentityBinding>, AppError> {
-    let mut result = BTreeMap::new();
+) -> Result<ParsedImportSourceIdentityBindings, AppError> {
+    let mut source_bindings = BTreeMap::new();
+    let mut user_selections = BTreeMap::new();
     for binding in bindings {
-        let (surface_id, binding) = source_identity_binding_from_proto(binding)?;
-        if result.insert(surface_id.clone(), binding).is_some() {
+        let owner = match ProtoIdentityOwner::try_from(binding.owner) {
+            Ok(ProtoIdentityOwner::User) => AppSourceIdentityOwner::User,
+            Ok(ProtoIdentityOwner::Workspace) => AppSourceIdentityOwner::Workspace,
+            Ok(ProtoIdentityOwner::Unspecified) | Err(_) => {
+                return Err(AppError::InvalidInput(format!(
+                    "source identity binding for surface '{}' has invalid owner",
+                    binding.surface_id
+                )));
+            }
+        };
+        let surface_id = binding.surface_id;
+        if source_bindings.contains_key(&surface_id) {
             return Err(AppError::InvalidInput(format!(
                 "source identity binding for surface '{surface_id}' is repeated"
             )));
         }
-    }
-    Ok(result)
-}
-
-fn source_identity_binding_from_proto(
-    binding: ProtoSourceIdentityBinding,
-) -> Result<(String, AppSourceIdentityBinding), AppError> {
-    let owner = match ProtoIdentityOwner::try_from(binding.owner) {
-        Ok(ProtoIdentityOwner::User) => AppSourceIdentityOwner::User,
-        Ok(ProtoIdentityOwner::Workspace) => AppSourceIdentityOwner::Workspace,
-        Ok(ProtoIdentityOwner::Unspecified) | Err(_) => {
-            return Err(AppError::InvalidInput(format!(
-                "source identity binding for surface '{}' has invalid owner",
-                binding.surface_id
-            )));
-        }
-    };
-    let surface_id = binding.surface_id;
-    let binding = match owner {
-        AppSourceIdentityOwner::User => {
-            if !binding.identity.is_empty() {
-                return Err(AppError::InvalidInput(format!(
-                    "user-owned source identity binding for surface '{surface_id}' must not include identity"
-                )));
+        let binding = match owner {
+            AppSourceIdentityOwner::User => {
+                if binding.identity.is_empty() {
+                    return Err(AppError::InvalidInput(format!(
+                        "user-owned source identity binding for surface '{surface_id}' requires identity"
+                    )));
+                }
+                user_selections.insert(
+                    surface_id.clone(),
+                    AppSourceIdentitySelection::new(binding.identity)?,
+                );
+                AppSourceIdentityBinding::user_owned()
             }
-            AppSourceIdentityBinding::user_owned()
-        }
-        AppSourceIdentityOwner::Workspace => {
-            AppSourceIdentityBinding::workspace_owned(binding.identity)?
-        }
-    };
-    Ok((surface_id, binding))
-}
-
-fn user_source_identity_bindings_from_proto(
-    bindings: Vec<ProtoUserSourceIdentityBinding>,
-) -> Result<BTreeMap<String, AppSourceIdentitySelection>, AppError> {
-    let mut result = BTreeMap::new();
-    for binding in bindings {
-        let surface_id = binding.surface_id;
-        let selection = AppSourceIdentitySelection::new(binding.identity)?;
-        if result.insert(surface_id.clone(), selection).is_some() {
-            return Err(AppError::InvalidInput(format!(
-                "user source identity binding for surface '{surface_id}' is repeated"
-            )));
-        }
+            AppSourceIdentityOwner::Workspace => {
+                AppSourceIdentityBinding::workspace_owned(binding.identity)?
+            }
+        };
+        source_bindings.insert(surface_id, binding);
     }
-    Ok(result)
+    Ok(ParsedImportSourceIdentityBindings {
+        source_bindings,
+        user_selections,
+    })
 }
 
 fn source_name_from_manifest_yaml(manifest_yaml: &str) -> Result<SourceName, AppError> {
@@ -739,7 +727,7 @@ fn validate_user_source_identity_bindings_for_slots(
     for (surface_id, slot) in required_slots {
         if slot.owner == AppSourceIdentityOwner::User && !selections.contains_key(surface_id) {
             return Err(AppError::InvalidInput(format!(
-                "user-owned source identity binding for surface '{surface_id}' requires a user_identity_binding selection"
+                "user-owned source identity binding for surface '{surface_id}' requires an identity selection"
             )));
         }
     }
@@ -759,10 +747,10 @@ fn require_user_owned_slot(
     match slots.get(surface_id) {
         Some(slot) if slot.owner == AppSourceIdentityOwner::User => Ok(()),
         Some(_) => Err(AppError::InvalidInput(format!(
-            "user_identity_binding for surface '{surface_id}' targets a workspace-owned source identity binding"
+            "identity selection for surface '{surface_id}' targets a workspace-owned source identity binding"
         ))),
         None => Err(AppError::InvalidInput(format!(
-            "user_identity_binding targets unknown source identity surface '{surface_id}'"
+            "identity selection targets unknown source identity surface '{surface_id}'"
         ))),
     }
 }
@@ -788,14 +776,15 @@ async fn validate_user_source_identity_selections(
     let source_name = SourceName::parse(manifest.schema_name())?;
     let v4 = manifest.as_v4().ok_or_else(|| {
         AppError::InvalidInput(
-            "user_identity_bindings can only be configured for DSL v4 sources".to_string(),
+            "user-owned source identity selections can only be configured for DSL v4 sources"
+                .to_string(),
         )
     })?;
     for (surface_id, selection) in selections {
         require_user_owned_slot(slots, surface_id)?;
         let surface = v4.surface(surface_id).ok_or_else(|| {
             AppError::InvalidInput(format!(
-                "source '{}' user_identity_binding targets unknown surface '{surface_id}'",
+                "source '{}' identity selection targets unknown surface '{surface_id}'",
                 manifest.schema_name()
             ))
         })?;

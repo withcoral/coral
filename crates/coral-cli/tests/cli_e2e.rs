@@ -796,7 +796,7 @@ surfaces:
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn source_add_file_sends_user_identity_bindings() {
+async fn source_add_file_sends_user_owned_identity_binding() {
     let server = MockServer::start().await;
     let source_dir = tempdir().expect("source dir");
     let openapi_file = source_dir.path().join("openapi.yaml");
@@ -846,11 +846,7 @@ surfaces:
     let source_binding = &requests[0].identity_bindings[0];
     assert_eq!(source_binding.surface_id, "rest");
     assert_eq!(source_binding.owner, IdentityOwner::User as i32);
-    assert_eq!(source_binding.identity, "");
-    assert_eq!(requests[0].user_identity_bindings.len(), 1);
-    let user_binding = &requests[0].user_identity_bindings[0];
-    assert_eq!(user_binding.surface_id, "rest");
-    assert_eq!(user_binding.identity, "local_github");
+    assert_eq!(source_binding.identity, "local_github");
     assert!(requests[0].replace_identity_bindings);
 
     server.shutdown().await;

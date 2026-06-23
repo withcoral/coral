@@ -410,7 +410,6 @@ async fn manual_credential_replacement_waits_for_in_flight_refresh() {
                 }],
                 oauth_credential_retrievals: Vec::new(),
                 identity_bindings: Vec::new(),
-                user_identity_bindings: Vec::new(),
                 replace_identity_bindings: false,
             }))
             .await

@@ -1180,7 +1180,6 @@ enabled = false
                 secrets: Vec::new(),
                 oauth_credential_retrievals: Vec::new(),
                 identity_bindings: Vec::new(),
-                user_identity_bindings: Vec::new(),
                 replace_identity_bindings: false,
             }))
             .await
@@ -1618,7 +1617,6 @@ tables:
                 secrets: Vec::new(),
                 oauth_credential_retrievals: Vec::new(),
                 identity_bindings: Vec::new(),
-                user_identity_bindings: Vec::new(),
                 replace_identity_bindings: false,
             }))
             .send()
@@ -1921,7 +1919,6 @@ tables:
                 secrets: Vec::new(),
                 oauth_credential_retrievals: Vec::new(),
                 identity_bindings: Vec::new(),
-                user_identity_bindings: Vec::new(),
                 replace_identity_bindings: false,
             }))
             .await
@@ -2124,7 +2121,6 @@ tables:
                 secrets: Vec::new(),
                 oauth_credential_retrievals: Vec::new(),
                 identity_bindings: Vec::new(),
-                user_identity_bindings: Vec::new(),
                 replace_identity_bindings: false,
             }))
             .await

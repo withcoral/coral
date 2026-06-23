@@ -13,8 +13,8 @@ use coral_api::v1::{
     ImportSourceRequest, ListCatalogRequest, ListUserOwnedIdentitiesRequest,
     OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest, QueryTestFailure,
     QueryTestSuccess, Source, SourceCredentialStorage, SourceIdentityBinding, SourceOrigin,
-    SourceSecret, SourceVariable, UserSourceIdentityBinding, ValidateSourceRequest, Workspace,
-    catalog_item, create_user_owned_identity_request, create_user_owned_identity_response,
+    SourceSecret, SourceVariable, ValidateSourceRequest, Workspace, catalog_item,
+    create_user_owned_identity_request, create_user_owned_identity_response,
     import_source_response, query_test_result,
     source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
@@ -295,12 +295,8 @@ async fn import_source_persists_user_identity_binding_for_queries() {
             oauth_credential_retrievals: Vec::new(),
             identity_bindings: vec![SourceIdentityBinding {
                 surface_id: "rest".to_string(),
-                identity: String::new(),
-                owner: IdentityOwner::User as i32,
-            }],
-            user_identity_bindings: vec![UserSourceIdentityBinding {
-                surface_id: "rest".to_string(),
                 identity: "test_local".to_string(),
+                owner: IdentityOwner::User as i32,
             }],
             replace_identity_bindings: false,
         }))
@@ -393,12 +389,8 @@ async fn user_identity_source_bindings_are_scoped_to_request_principal() {
                 oauth_credential_retrievals: Vec::new(),
                 identity_bindings: vec![SourceIdentityBinding {
                     surface_id: "rest".to_string(),
-                    identity: String::new(),
-                    owner: IdentityOwner::User as i32,
-                }],
-                user_identity_bindings: vec![UserSourceIdentityBinding {
-                    surface_id: "rest".to_string(),
                     identity: "test_local".to_string(),
+                    owner: IdentityOwner::User as i32,
                 }],
                 replace_identity_bindings: false,
             },
@@ -467,12 +459,8 @@ async fn import_source_rolls_back_user_identity_binding_when_import_fails() {
             oauth_credential_retrievals: Vec::new(),
             identity_bindings: vec![SourceIdentityBinding {
                 surface_id: "rest".to_string(),
-                identity: String::new(),
-                owner: IdentityOwner::User as i32,
-            }],
-            user_identity_bindings: vec![UserSourceIdentityBinding {
-                surface_id: "rest".to_string(),
                 identity: "test_local".to_string(),
+                owner: IdentityOwner::User as i32,
             }],
             replace_identity_bindings: false,
         }))
@@ -505,7 +493,6 @@ async fn import_source_rejects_user_owned_identity_binding_without_user_selectio
                 identity: String::new(),
                 owner: IdentityOwner::User as i32,
             }],
-            user_identity_bindings: Vec::new(),
             replace_identity_bindings: false,
         }))
         .await
@@ -577,7 +564,6 @@ async fn import_duplicate_source_overwrites_existing_source() {
             secrets: Vec::new(),
             oauth_credential_retrievals: Vec::new(),
             identity_bindings: Vec::new(),
-            user_identity_bindings: Vec::new(),
             replace_identity_bindings: false,
         }))
         .await
@@ -621,7 +607,6 @@ async fn import_invalid_manifest_returns_invalid_argument() {
             secrets: Vec::new(),
             oauth_credential_retrievals: Vec::new(),
             identity_bindings: Vec::new(),
-            user_identity_bindings: Vec::new(),
             replace_identity_bindings: false,
         }))
         .await
@@ -1040,7 +1025,6 @@ async fn import_source_missing_required_secret_returns_invalid_argument() {
             secrets: Vec::new(),
             oauth_credential_retrievals: Vec::new(),
             identity_bindings: Vec::new(),
-            user_identity_bindings: Vec::new(),
             replace_identity_bindings: false,
         }))
         .await
@@ -1069,7 +1053,6 @@ async fn import_source_missing_required_variable_returns_invalid_argument() {
             }],
             oauth_credential_retrievals: Vec::new(),
             identity_bindings: Vec::new(),
-            user_identity_bindings: Vec::new(),
             replace_identity_bindings: false,
         }))
         .await
@@ -1101,7 +1084,6 @@ async fn import_source_unknown_variable_returns_invalid_argument() {
             }],
             oauth_credential_retrievals: Vec::new(),
             identity_bindings: Vec::new(),
-            user_identity_bindings: Vec::new(),
             replace_identity_bindings: false,
         }))
         .await
@@ -1135,7 +1117,6 @@ async fn import_source_unknown_secret_returns_invalid_argument() {
             ],
             oauth_credential_retrievals: Vec::new(),
             identity_bindings: Vec::new(),
-            user_identity_bindings: Vec::new(),
             replace_identity_bindings: false,
         }))
         .await
@@ -1173,7 +1154,6 @@ async fn import_source_repeated_variable_returns_invalid_argument() {
             }],
             oauth_credential_retrievals: Vec::new(),
             identity_bindings: Vec::new(),
-            user_identity_bindings: Vec::new(),
             replace_identity_bindings: false,
         }))
         .await
@@ -1211,7 +1191,6 @@ async fn import_source_repeated_secret_returns_invalid_argument() {
             ],
             oauth_credential_retrievals: Vec::new(),
             identity_bindings: Vec::new(),
-            user_identity_bindings: Vec::new(),
             replace_identity_bindings: false,
         }))
         .await
@@ -1849,7 +1828,6 @@ async fn import_rolls_back_on_config_write_failure() {
             }],
             oauth_credential_retrievals: Vec::new(),
             identity_bindings: Vec::new(),
-            user_identity_bindings: Vec::new(),
             replace_identity_bindings: false,
         }))
         .await
