@@ -122,7 +122,6 @@ pub(crate) struct ServerConfig {
     identity_spec_usage_providers: Vec<Arc<dyn IdentitySpecUsageProvider>>,
     feature_overrides: FeatureOverrides,
     identity_store: Option<Arc<dyn IdentityStore>>,
-    source_identity_providers: Vec<Arc<dyn SourceIdentityProvider>>,
     source_identity_provider_factories: Vec<SourceIdentityProviderFactory>,
     user_principal_provider: Arc<dyn UserPrincipalProvider>,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
@@ -147,7 +146,6 @@ impl ServerConfig {
             identity_spec_usage_providers: Vec::new(),
             feature_overrides: FeatureOverrides::default(),
             identity_store: None,
-            source_identity_providers: Vec::new(),
             source_identity_provider_factories: Vec::new(),
             user_principal_provider: Arc::new(SingleUserPrincipalProvider),
             management_authorizer: Arc::new(AllowAllManagementAuthorizer),
@@ -222,8 +220,10 @@ impl ServerConfig {
         mut self,
         source_identity_provider: Arc<dyn SourceIdentityProvider>,
     ) -> Self {
-        self.source_identity_providers
-            .push(source_identity_provider);
+        self.source_identity_provider_factories
+            .push(Arc::new(move |_context| {
+                Arc::clone(&source_identity_provider)
+            }));
         self
     }
 
@@ -569,7 +569,6 @@ impl ServerBuilder {
         );
         let extension_context = ServerExtensionContext::new(identity_manager.handle());
         let source_identity_providers = source_identity_providers_for_server(
-            self.config.source_identity_providers,
             self.config.source_identity_provider_factories,
             &extension_context,
             &identity_manager,
@@ -669,16 +668,14 @@ fn identity_spec_manager_for_server(
 }
 
 fn source_identity_providers_for_server(
-    mut providers: Vec<Arc<dyn SourceIdentityProvider>>,
     factories: Vec<SourceIdentityProviderFactory>,
     extension_context: &ServerExtensionContext,
     identity_manager: &IdentityManager,
 ) -> Vec<Arc<dyn SourceIdentityProvider>> {
-    providers.extend(
-        factories
-            .into_iter()
-            .map(|factory| factory(extension_context)),
-    );
+    let mut providers: Vec<_> = factories
+        .into_iter()
+        .map(|factory| factory(extension_context))
+        .collect();
     providers.push(Arc::new(identity_manager.clone()));
     providers
 }
@@ -1095,9 +1092,9 @@ mod tests {
     use tonic::{Code, Request, Response, Status};
 
     use super::{
-        RunningServer, ServerBuilder, ServerExtensionContext, ServerMode, ServerServices,
-        StaticAsset, StaticAssetsProvider, is_grpc_web_content_type, is_native_grpc_content_type,
-        start_server,
+        RunningServer, ServerBuilder, ServerConfig, ServerExtensionContext, ServerMode,
+        ServerServices, StaticAsset, StaticAssetsProvider, is_grpc_web_content_type,
+        is_native_grpc_content_type, source_identity_providers_for_server, start_server,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::episode::store::EpisodeStore;
@@ -1315,6 +1312,43 @@ enabled = false
         ) -> Result<Option<Arc<dyn RuntimeSourceIdentity>>, AppError> {
             Ok(None)
         }
+    }
+
+    #[test]
+    fn source_identity_providers_materialize_from_single_factory_queue() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let identity_spec_manager = test_identity_spec_manager(&layout);
+        let identity_manager = test_identity_manager(&layout, &identity_spec_manager);
+        let extension_context = ServerExtensionContext::new(identity_manager.handle());
+        let static_provider: Arc<dyn SourceIdentityProvider> = Arc::new(NoopSourceIdentityProvider);
+        let factory_provider: Arc<dyn SourceIdentityProvider> =
+            Arc::new(NoopSourceIdentityProvider);
+        let factory_called = Arc::new(AtomicBool::new(false));
+        let config = ServerConfig::new()
+            .add_source_identity_provider(Arc::clone(&static_provider))
+            .add_source_identity_provider_factory({
+                let factory_provider = Arc::clone(&factory_provider);
+                let factory_called = Arc::clone(&factory_called);
+                Arc::new(move |_context| {
+                    factory_called.store(true, Ordering::SeqCst);
+                    Arc::clone(&factory_provider)
+                })
+            });
+
+        let providers = source_identity_providers_for_server(
+            config.source_identity_provider_factories,
+            &extension_context,
+            &identity_manager,
+        );
+
+        assert!(factory_called.load(Ordering::SeqCst));
+        assert_eq!(providers.len(), 3);
+        assert!(Arc::ptr_eq(&providers[0], &static_provider));
+        assert!(Arc::ptr_eq(&providers[1], &factory_provider));
+        assert!(!Arc::ptr_eq(&providers[2], &static_provider));
+        assert!(!Arc::ptr_eq(&providers[2], &factory_provider));
     }
 
     #[derive(Clone)]
