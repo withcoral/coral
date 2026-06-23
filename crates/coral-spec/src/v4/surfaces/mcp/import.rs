@@ -828,6 +828,107 @@ profiles:
     }
 
     #[test]
+    fn rejects_cursor_pagination_overlay_without_response_cursor_path() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    pagination:
+      profiles:
+        - name: cursor_tools
+          match:
+            tool_args: [cursor]
+          pagination:
+            type: cursor
+            cursor_arg: cursor
+            response_cursor_path: []
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+        )
+        .expect_err("invalid cursor pagination overlay");
+
+        assert!(
+            error
+                .to_string()
+                .contains("pagination.response_cursor_path must not be empty"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_pagination_profile_without_match_criterion() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    pagination:
+      profiles:
+        - name: accidental_global
+          match: {}
+          pagination:
+            type: cursor
+            cursor_arg: cursor
+            response_cursor_path: [meta, nextCursor]
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+        )
+        .expect_err("empty profile matcher");
+
+        assert!(
+            error.to_string().contains(
+                "pagination profile 'accidental_global' match must declare at least one criterion"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_offset_pagination_overlay_with_zero_limit_default() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    pagination:
+      profiles:
+        - name: offset_tools
+          match:
+            tool_args: [limit, offset]
+            offset_args: true
+          pagination:
+            type: offset
+            limit_arg: limit
+            default_limit: 0
+            max_limit: 200
+            offset_arg: offset
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+        )
+        .expect_err("invalid offset pagination overlay");
+
+        assert!(
+            error
+                .to_string()
+                .contains("pagination.default_limit must be greater than 0"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn offset_pagination_requires_positive_limit_default() {
         assert_no_offset_pagination_for_input_schema(json!({
             "type": "object",

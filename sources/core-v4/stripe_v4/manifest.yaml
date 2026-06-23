@@ -29,6 +29,7 @@ surfaces:
           pagination:
             mode: cursor_query
             cursor_param: starting_after
+            suppressed_query_params: [ending_before]
             cursor_from_last_row_path: [id]
             has_more_path: [has_more]
             page_size:

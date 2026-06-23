@@ -1,6 +1,6 @@
 //! Pagination request mutation and response-link handling.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use datafusion::error::{DataFusionError, Result};
 use reqwest::header::HeaderMap;
@@ -210,7 +210,7 @@ fn resolve_same_origin_next_url(
     next_raw: &str,
     context: &str,
 ) -> Result<String> {
-    let next_url = base
+    let mut next_url = base
         .join(next_raw)
         .map_err(|e| DataFusionError::Execution(format!("invalid {context} '{next_raw}': {e}")))?;
     if next_url.origin() != base.origin() {
@@ -218,6 +218,25 @@ fn resolve_same_origin_next_url(
             "{context} must stay on origin {}: {next_raw}",
             base.origin().ascii_serialization()
         )));
+    }
+    if next_raw.starts_with('?') && base.query().is_some() {
+        let next_pairs = next_url.query_pairs().into_owned().collect::<Vec<_>>();
+        let next_keys = next_pairs
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect::<HashSet<_>>();
+        next_url.set_query(None);
+        {
+            let mut pairs = next_url.query_pairs_mut();
+            for (key, value) in base.query_pairs() {
+                if !next_keys.contains(key.as_ref()) {
+                    pairs.append_pair(&key, &value);
+                }
+            }
+            for (key, value) in next_pairs {
+                pairs.append_pair(&key, &value);
+            }
+        }
     }
     Ok(next_url.to_string())
 }
@@ -352,6 +371,27 @@ mod tests {
         assert_eq!(
             next,
             Some("https://api.example.com/v1/resources?page=2".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_response_next_url_resolves_query_links_against_current_request() {
+        let payload = json!({
+            "paging": {
+                "next": "?page=2"
+            }
+        });
+
+        let next = extract_response_next_url(
+            &payload,
+            &["paging".to_string(), "next".to_string()],
+            "https://api.example.com/v1/resources?q=rust+sdk&limit=100&page=1",
+        )
+        .unwrap();
+
+        assert_eq!(
+            next,
+            Some("https://api.example.com/v1/resources?q=rust+sdk&limit=100&page=2".to_string())
         );
     }
 

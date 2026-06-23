@@ -886,6 +886,97 @@ paths:
 }
 
 #[test]
+fn openapi_pagination_overlay_requires_semantic_validity() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+    pagination:
+      operations:
+        - target:
+            method: get
+            path: /items
+          pagination:
+            mode: page
+",
+    )
+    .expect_err("invalid pagination overlay");
+
+    assert!(
+        error
+            .to_string()
+            .contains("pagination.mode=page requires page_param"),
+        "{error}"
+    );
+}
+
+#[test]
+fn openapi_pagination_overlay_unknown_fields_fail_manifest_validation() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+    pagination:
+      profiles:
+        - name: mcp_shape
+          match:
+            methods: [get]
+          pagination:
+            type: cursor
+            cursor_arg: cursor
+            response_cursor_path: [meta, nextCursor]
+",
+    )
+    .expect_err("unknown HTTP pagination overlay fields");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source manifest failed schema validation"),
+        "{error}"
+    );
+}
+
+#[test]
+fn openapi_pagination_profile_requires_match_criterion() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+    pagination:
+      profiles:
+        - name: accidental_global
+          match: {}
+          pagination:
+            mode: link_header
+",
+    )
+    .expect_err("empty profile matcher");
+
+    assert!(
+        error.to_string().contains(
+            "pagination profile 'accidental_global' match must declare at least one criterion"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
 fn openapi_unmatched_pagination_operation_overlay_is_rejected() {
     let manifest = parse_source_manifest_yaml(
         r"

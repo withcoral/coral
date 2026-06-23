@@ -575,6 +575,8 @@ pub struct PaginationSpec {
     #[serde(default)]
     pub response_next_url_path: Vec<String>,
     #[serde(default)]
+    pub suppressed_query_params: Vec<String>,
+    #[serde(default)]
     pub page_param: Option<String>,
     #[serde(default)]
     pub page_start: i64,
@@ -603,6 +605,7 @@ impl Default for PaginationSpec {
             cursor_from_last_row_path: Vec::new(),
             has_more_path: Vec::new(),
             response_next_url_path: Vec::new(),
+            suppressed_query_params: Vec::new(),
             page_param: None,
             page_start: 0,
             page_step: default_page_step(),
@@ -657,6 +660,8 @@ impl PaginationSpec {
     }
 
     pub fn validated(&self, schema: &str, table: &str) -> Result<ValidatedPagination> {
+        self.validate_max_pages(schema, table)?;
+        self.validate_suppressed_query_params(schema, table)?;
         let page_size = self.validated_page_size(schema, table)?;
         let mode = self.validated_mode(schema, table, page_size.is_some())?;
         Ok(ValidatedPagination {
@@ -752,6 +757,28 @@ impl PaginationSpec {
                 Ok(ValidatedPaginationMode::ResponseNextUrl)
             }
         }
+    }
+
+    fn validate_max_pages(&self, schema: &str, table: &str) -> Result<()> {
+        if matches!(self.max_pages, Some(0)) {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} pagination.max_pages must be > 0"
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_suppressed_query_params(&self, schema: &str, table: &str) -> Result<()> {
+        if self
+            .suppressed_query_params
+            .iter()
+            .any(|name| name.trim().is_empty())
+        {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} pagination.suppressed_query_params must not contain empty values"
+            )));
+        }
+        Ok(())
     }
 
     fn validated_page_size(&self, schema: &str, table: &str) -> Result<Option<PageSizeSpec>> {
@@ -1332,6 +1359,22 @@ mod tests {
         assert!(err.to_string().contains(
             "demo.items pagination.mode=response_next_url requires response_next_url_path"
         ));
+    }
+
+    #[test]
+    fn pagination_max_pages_must_be_positive_when_set() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::LinkHeader,
+            max_pages: Some(0),
+            ..PaginationSpec::default()
+        };
+
+        let err = pagination.validated("demo", "items").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("demo.items pagination.max_pages must be > 0"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -11,6 +11,7 @@ paths:
         - {name: state, in: query, schema: {type: string}}
         - {name: page, in: query, schema: {type: integer}}
         - {name: per_page, in: query, schema: {type: integer}}
+        - {name: ending_before, in: query, schema: {type: string}}
       responses:
         '200':
           content:

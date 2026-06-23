@@ -156,6 +156,12 @@ pub(super) async fn fetch_rows(
             })?;
             (query_pairs, body)
         };
+        let response_next_base_url =
+            if matches!(pagination.mode, ValidatedPaginationMode::ResponseNextUrl) {
+                Some(request_url_with_query(&url, &query_pairs)?)
+            } else {
+                None
+            };
 
         let request = execute_request(
             &client.http,
@@ -287,7 +293,7 @@ pub(super) async fn fetch_rows(
                 match extract_response_next_url(
                     &payload,
                     &target.pagination().response_next_url_path,
-                    &base_url,
+                    response_next_base_url.as_deref().unwrap_or(&url),
                 )
                 .map_err(|error| {
                     pagination_error(
@@ -366,6 +372,21 @@ fn json_cursor_value(value: &Value) -> Option<String> {
     }
 }
 
+fn request_url_with_query(url: &str, query_pairs: &[(String, String)]) -> Result<String> {
+    if query_pairs.is_empty() {
+        return Ok(url.to_string());
+    }
+    let mut parsed = reqwest::Url::parse(url).map_err(|error| {
+        DataFusionError::Execution(format!("invalid request URL '{url}': {error}"))
+    })?;
+    parsed.query_pairs_mut().extend_pairs(
+        query_pairs
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str())),
+    );
+    Ok(parsed.to_string())
+}
+
 fn resolve_fetch_limits(
     target: &HttpFetchTarget,
     row_limit: Option<usize>,
@@ -399,5 +420,27 @@ fn resolve_fetch_limits(
         effective_limit: effective_limit.map(|limit| limit.min(max_candidates)),
         page_size_limit: Some(requested_top_k.min(search_limits.max_top_k)),
         max_search_calls: Some(search_limits.max_calls_per_query),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::request_url_with_query;
+
+    #[test]
+    fn request_url_with_query_encodes_actual_request_query_pairs() {
+        let url = request_url_with_query(
+            "https://api.example.com/v1/resources",
+            &[
+                ("q".to_string(), "rust sdk".to_string()),
+                ("limit".to_string(), "100".to_string()),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            url,
+            "https://api.example.com/v1/resources?q=rust+sdk&limit=100"
+        );
     }
 }

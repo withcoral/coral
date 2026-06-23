@@ -68,6 +68,7 @@ surfaces:
             page_param: page
             page_start: 1
             page_step: 1
+            suppressed_query_params: [ending_before]
             page_size:
               default: 30
               max: 100
@@ -111,6 +112,10 @@ surfaces:
     assert_eq!(exposures.get("state"), Some(&SqlInputExposure::Filter));
     assert_eq!(exposures.get("page"), Some(&SqlInputExposure::Internal));
     assert_eq!(exposures.get("per_page"), Some(&SqlInputExposure::Internal));
+    assert_eq!(
+        exposures.get("ending_before"),
+        Some(&SqlInputExposure::Internal)
+    );
 
     let filter_names = projection_filter_specs(projection)
         .into_iter()
@@ -130,6 +135,7 @@ surfaces:
     assert!(column_names.contains("state"));
     assert!(!column_names.contains("page"));
     assert!(!column_names.contains("per_page"));
+    assert!(!column_names.contains("ending_before"));
 
     let request = request_spec_for_projection(projection, operation).expect("request");
     let query_names = request
@@ -141,7 +147,10 @@ surfaces:
 
     let mut stale_projection = projection.clone();
     for input in &mut stale_projection.inputs {
-        if matches!(input.wire_name.as_str(), "page" | "per_page") {
+        if matches!(
+            input.wire_name.as_str(),
+            "page" | "per_page" | "ending_before"
+        ) {
             input.sql_exposure = SqlInputExposure::Filter;
         }
     }
@@ -161,7 +170,10 @@ surfaces:
     assert_eq!(stale_query_names, query_names);
 
     for input in &mut stale_projection.inputs {
-        if matches!(input.wire_name.as_str(), "page" | "per_page") {
+        if matches!(
+            input.wire_name.as_str(),
+            "page" | "per_page" | "ending_before"
+        ) {
             input.sql_exposure = SqlInputExposure::FunctionArg;
         }
     }
@@ -171,6 +183,7 @@ surfaces:
         .collect::<BTreeSet<_>>();
     assert!(!stale_arg_names.contains("page"));
     assert!(!stale_arg_names.contains("per_page"));
+    assert!(!stale_arg_names.contains("ending_before"));
 }
 
 #[test]

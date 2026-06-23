@@ -1218,6 +1218,12 @@
             "type": "string"
           }
         },
+        "suppressed_query_params": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "page_param": {
           "type": [
             "string",
@@ -1262,7 +1268,7 @@
             "null"
           ],
           "format": "uint",
-          "minimum": 0
+          "minimum": 1
         }
       },
       "additionalProperties": false
@@ -1355,7 +1361,7 @@
         "target"
       ],
       "unevaluatedProperties": false,
-      "anyOf": [
+      "oneOf": [
         {
           "type": "object",
           "properties": {
@@ -1624,7 +1630,7 @@
                 "null"
               ],
               "format": "uint",
-              "minimum": 0
+              "minimum": 1
             },
             "type": {
               "type": "string",
@@ -1669,7 +1675,7 @@
                 "null"
               ],
               "format": "uint",
-              "minimum": 0
+              "minimum": 1
             },
             "type": {
               "type": "string",
@@ -1718,7 +1724,7 @@
         "target"
       ],
       "unevaluatedProperties": false,
-      "anyOf": [
+      "oneOf": [
         {
           "type": "object",
           "properties": {

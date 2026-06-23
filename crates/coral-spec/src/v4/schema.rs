@@ -1,6 +1,7 @@
 //! Generated JSON Schema for authored DSL v4 source manifests.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -252,7 +253,7 @@ enum V4McpPaginationOverlaySchema {
         cursor_arg: String,
         response_cursor_path: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_pages: Option<usize>,
+        max_pages: Option<NonZeroUsize>,
     },
     Offset {
         limit_arg: String,
@@ -262,7 +263,7 @@ enum V4McpPaginationOverlaySchema {
         #[serde(default)]
         offset_start: usize,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_pages: Option<usize>,
+        max_pages: Option<NonZeroUsize>,
     },
 }
 
@@ -291,6 +292,8 @@ struct V4HttpPaginationSpecSchema {
     has_more_path: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     response_next_url_path: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    suppressed_query_params: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     page_param: Option<String>,
     #[serde(default)]
@@ -306,7 +309,7 @@ struct V4HttpPaginationSpecSchema {
     #[serde(default)]
     link_header_require_results: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    max_pages: Option<usize>,
+    max_pages: Option<NonZeroUsize>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -388,6 +391,7 @@ fn post_process_schema(schema: &mut Value) {
         return;
     };
     post_process_flattened_value_source_defs(defs);
+    post_process_pagination_overlay_outcome_defs(defs);
     if let Some(surface_schema) = defs.get_mut("V4SurfaceSchema") {
         post_process_surface_variants(surface_schema);
         return;
@@ -571,6 +575,20 @@ fn compose_flattened_value_source_def(
         object.insert("description".to_string(), description);
     }
     *definition = replacement;
+}
+
+fn post_process_pagination_overlay_outcome_defs(defs: &mut serde_json::Map<String, Value>) {
+    for name in [
+        "V4OpenApiOperationPaginationOverlaySchema",
+        "V4McpOperationPaginationOverlaySchema",
+    ] {
+        let Some(definition) = defs.get_mut(name).and_then(Value::as_object_mut) else {
+            continue;
+        };
+        if let Some(any_of) = definition.remove("anyOf") {
+            definition.insert("oneOf".to_string(), any_of);
+        }
+    }
 }
 
 fn post_process_surface_id(properties: &mut serde_json::Map<String, Value>) {
@@ -757,6 +775,110 @@ surfaces:
             "empty surfaces should be rejected by generated schema"
         );
         parse_source_manifest_yaml(raw).expect_err("parser should reject empty surfaces");
+    }
+
+    #[test]
+    fn generated_schema_rejects_pagination_operation_with_two_outcomes_and_parser_agrees() {
+        let openapi = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+    pagination:
+      operations:
+        - target:
+            method: get
+            path: /items
+          pagination:
+            mode: link_header
+          unsupported:
+            reason: not needed
+";
+        assert!(
+            validator().validate(&manifest_json(openapi)).is_err(),
+            "OpenAPI overlay with two outcomes should be rejected by generated schema"
+        );
+        parse_source_manifest_yaml(openapi)
+            .expect_err("parser should reject OpenAPI overlay with two outcomes");
+
+        let mcp = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    pagination:
+      operations:
+        - target:
+            tool: list-items
+          pagination:
+            type: cursor
+            cursor_arg: cursor
+            response_cursor_path: [meta, nextCursor]
+          unsupported:
+            reason: not needed
+    server:
+      transport: stdio
+      command: demo-mcp-server
+";
+        assert!(
+            validator().validate(&manifest_json(mcp)).is_err(),
+            "MCP overlay with two outcomes should be rejected by generated schema"
+        );
+        parse_source_manifest_yaml(mcp)
+            .expect_err("parser should reject MCP overlay with two outcomes");
+    }
+
+    #[test]
+    fn generated_schema_rejects_zero_pagination_max_pages_and_parser_agrees() {
+        let openapi = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+    pagination:
+      operations:
+        - target:
+            method: get
+            path: /items
+          pagination:
+            mode: link_header
+            max_pages: 0
+";
+        assert!(
+            validator().validate(&manifest_json(openapi)).is_err(),
+            "OpenAPI max_pages=0 should be rejected by generated schema"
+        );
+        parse_source_manifest_yaml(openapi).expect_err("parser should reject OpenAPI max_pages=0");
+
+        let mcp = r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    pagination:
+      operations:
+        - target:
+            tool: list-items
+          pagination:
+            type: cursor
+            cursor_arg: cursor
+            response_cursor_path: [meta, nextCursor]
+            max_pages: 0
+    server:
+      transport: stdio
+      command: demo-mcp-server
+";
+        assert!(
+            validator().validate(&manifest_json(mcp)).is_err(),
+            "MCP max_pages=0 should be rejected by generated schema"
+        );
+        parse_source_manifest_yaml(mcp).expect_err("parser should reject MCP max_pages=0");
     }
 
     #[test]

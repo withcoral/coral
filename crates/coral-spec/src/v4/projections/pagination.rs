@@ -21,6 +21,12 @@ pub(super) fn pagination_query_param_names(pagination: &PaginationSpec) -> HashS
     {
         names.insert(name);
     }
+    names.extend(
+        pagination
+            .suppressed_query_params
+            .iter()
+            .map(String::as_str),
+    );
     names
 }
 
