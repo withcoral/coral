@@ -12,7 +12,7 @@ use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use tonic::service::interceptor::InterceptedService;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 
 use crate::error::ClientError;
 use crate::grpc::{GrpcClientEndpoint, InstrumentedGrpcService};
@@ -101,8 +101,8 @@ impl AppClient {
         I: IntoIterator<Item = (K, V)>,
     {
         let static_metadata = StaticClientMetadata::try_from_pairs(metadata)?;
-        let endpoint = Endpoint::new(endpoint_uri.to_string())?
-            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
+        let endpoint =
+            endpoint_from_uri(endpoint_uri)?.http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
         let grpc_endpoint = GrpcClientEndpoint::from_endpoint_uri(endpoint_uri);
         let channel = endpoint.connect().await?;
         let source_client = SourceClient::new(grpc_service(
@@ -191,6 +191,21 @@ impl AppClient {
     pub fn episode_client(&self) -> EpisodeClient {
         self.episode.clone()
     }
+}
+
+fn endpoint_from_uri(endpoint_uri: &str) -> Result<Endpoint, tonic::transport::Error> {
+    let endpoint = Endpoint::from_shared(endpoint_uri.to_string())?;
+    if endpoint_uri_scheme_is(endpoint_uri, "https") {
+        endpoint.tls_config(ClientTlsConfig::new().with_enabled_roots())
+    } else {
+        Ok(endpoint)
+    }
+}
+
+fn endpoint_uri_scheme_is(endpoint_uri: &str, expected_scheme: &str) -> bool {
+    endpoint_uri
+        .split_once(':')
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case(expected_scheme))
 }
 
 fn grpc_service(
