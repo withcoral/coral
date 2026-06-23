@@ -1206,6 +1206,7 @@ mod tests {
     ) -> InstalledSource {
         InstalledSource {
             name: name.clone(),
+            source_spec_id: None,
             version: None,
             variables: BTreeMap::new(),
             secrets: secrets.into_iter().map(ToString::to_string).collect(),
