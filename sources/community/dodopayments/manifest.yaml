@@ -974,7 +974,7 @@ tables:
           path: [tax_id]
       - name: discounts
         type: Json
-        nullable: true
+        nullable: false
         description: Applied discounts as a JSON array.
         expr:
           kind: path
