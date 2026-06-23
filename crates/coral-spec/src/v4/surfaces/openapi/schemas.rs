@@ -6,8 +6,8 @@ use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrField, IrType, IrTypeShape};
 use crate::v4::naming::normalize_identifier;
 use crate::v4::surfaces::json_schema::{
-    direct_json_object_shape, json_schema_required_fields, json_schema_scalar_type,
-    merge_json_schema_properties_exact,
+    JsonSchemaComparisonError, direct_json_object_shape, json_schema_required_fields,
+    json_schema_scalar_type, merge_json_schema_properties_exact,
 };
 
 use super::import::OpenApiImporter;
@@ -55,17 +55,26 @@ impl OpenApiImporter<'_> {
             for item in all_of {
                 let item = self.resolve_ref(item, operation_id, diagnostics)?;
                 let properties = direct_json_object_shape(&item).properties;
-                if let Err(conflict) = merge_json_schema_properties_exact(&mut merged, properties) {
-                    diagnostics.push(Diagnostic::warning(
-                        "OPENAPI_ALLOF_CONFLICT",
-                        format!(
-                            "allOf property '{}' conflicts in operation '{operation_id}'",
-                            conflict.property
-                        ),
-                        self.surface.id.clone(),
-                        Some(operation_id.to_string()),
-                    ));
-                    return None;
+                match merge_json_schema_properties_exact(&mut merged, properties) {
+                    Ok(()) => {}
+                    Err(JsonSchemaComparisonError::PropertyConflict(property)) => {
+                        diagnostics.push(Diagnostic::warning(
+                            "OPENAPI_ALLOF_CONFLICT",
+                            format!("allOf property '{property}' conflicts in operation '{operation_id}'"),
+                            self.surface.id.clone(),
+                            Some(operation_id.to_string()),
+                        ));
+                        return None;
+                    }
+                    Err(JsonSchemaComparisonError::DepthExceeded) => {
+                        diagnostics.push(Diagnostic::warning(
+                            "OPENAPI_ALLOF_CONFLICT",
+                            format!("allOf schema exceeds maximum comparison depth in operation '{operation_id}'"),
+                            self.surface.id.clone(),
+                            Some(operation_id.to_string()),
+                        ));
+                        return None;
+                    }
                 }
             }
             IrTypeShape::Object {

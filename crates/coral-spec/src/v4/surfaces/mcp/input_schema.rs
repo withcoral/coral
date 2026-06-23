@@ -5,9 +5,10 @@ use serde_json::Value;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrInputLocation, IrOperationInput, IrScalarType};
 use crate::v4::surfaces::json_schema::{
-    JsonObjectShape, JsonSchemaWalkError, direct_json_object_shape, json_schema_default_to_string,
-    json_schema_scalar_type, merge_json_object_shape_annotation_insensitive,
-    resolve_json_schema_refs, with_resolved_json_schema,
+    JsonObjectShape, JsonSchemaComparisonError, JsonSchemaWalkError, direct_json_object_shape,
+    json_schema_default_to_string, json_schema_scalar_type,
+    merge_json_object_shape_annotation_insensitive, resolve_json_schema_refs,
+    with_resolved_json_schema,
 };
 
 use super::import::McpImporter;
@@ -117,7 +118,13 @@ fn input_object_shape(
                     else {
                         return Ok(None);
                     };
-                    if !merge_input_object_shape(&mut shape, item_shape, context) {
+                    if !merge_input_object_shape(
+                        &mut shape,
+                        item_shape,
+                        context,
+                        depth,
+                        MAX_MCP_INPUT_SCHEMA_DEPTH,
+                    ) {
                         return Ok(None);
                     }
                 }
@@ -186,16 +193,22 @@ fn merge_input_object_shape(
     target: &mut JsonObjectShape,
     source: JsonObjectShape,
     context: &mut InputSchemaContext<'_, '_>,
+    depth: usize,
+    max_depth: usize,
 ) -> bool {
-    match merge_json_object_shape_annotation_insensitive(target, source) {
+    match merge_json_object_shape_annotation_insensitive(target, source, depth, max_depth) {
         Ok(()) => true,
-        Err(conflict) => {
+        Err(JsonSchemaComparisonError::PropertyConflict(property)) => {
             context.push_warning(
                 "MCP_INPUT_SCHEMA_CONFLICT",
-                format!(
-                    "MCP input schema defines conflicting property '{}'",
-                    conflict.property
-                ),
+                format!("MCP input schema defines conflicting property '{property}'"),
+            );
+            false
+        }
+        Err(JsonSchemaComparisonError::DepthExceeded) => {
+            context.push_warning(
+                "MCP_INPUT_SCHEMA_DEPTH_EXCEEDED",
+                "MCP input schema exceeds the maximum supported nesting depth",
             );
             false
         }
