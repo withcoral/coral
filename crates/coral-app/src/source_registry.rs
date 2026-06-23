@@ -5,6 +5,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+pub use coral_spec::{ManifestInputKind, ManifestInputSpec};
+
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialStorageKind;
 use crate::identity::SourceIdentityBinding;
@@ -69,17 +71,10 @@ pub struct SpecBundleIdentitySpec {
     pub identity_spec_id: String,
     /// Authored identity-spec version.
     pub version: String,
+    /// Identity-spec setup inputs in authored order.
+    pub inputs: Vec<ManifestInputSpec>,
     /// Canonical identity manifest YAML.
     pub manifest_yaml: String,
-}
-
-/// Kind of identity-spec setup input declared by an imported bundle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BundleIdentityInputKind {
-    /// Non-secret input material.
-    Variable,
-    /// Secret input material.
-    Secret,
 }
 
 /// Promptable identity-spec setup input declared by an imported bundle.
@@ -87,16 +82,8 @@ pub enum BundleIdentityInputKind {
 pub struct BundleIdentityInputSpec {
     /// Identity spec that owns the input.
     pub identity_spec_id: String,
-    /// Input key declared by the identity spec.
-    pub key: String,
-    /// Input kind.
-    pub kind: BundleIdentityInputKind,
-    /// Whether this input must be present after defaults and existing material are resolved.
-    pub required: bool,
-    /// Authored default value for variable inputs, if any.
-    pub default_value: String,
-    /// Optional authored prompt hint.
-    pub hint: Option<String>,
+    /// Canonical manifest input declaration.
+    pub input: ManifestInputSpec,
 }
 
 /// Error returned while discovering identity-spec inputs from a bundle.
@@ -125,10 +112,14 @@ pub fn parse_spec_bundle_manifest_yaml(raw: &str) -> Result<SpecBundleManifest, 
         identity_specs: bundle
             .identity_manifests
             .into_iter()
-            .map(|identity| SpecBundleIdentitySpec {
-                identity_spec_id: identity.manifest.name,
-                version: identity.manifest.version,
-                manifest_yaml: identity.manifest_yaml,
+            .map(|identity| {
+                let manifest = identity.manifest;
+                SpecBundleIdentitySpec {
+                    identity_spec_id: manifest.name,
+                    version: manifest.version,
+                    inputs: manifest.inputs,
+                    manifest_yaml: identity.manifest_yaml,
+                }
             })
             .collect(),
     })
@@ -149,20 +140,14 @@ pub fn bundle_identity_inputs_from_yaml(
         .into_iter()
         .flat_map(|identity| {
             let identity_spec_id = identity.manifest.name;
-            identity.manifest.inputs.into_iter().map(move |input| {
-                let kind = match input.kind {
-                    coral_spec::ManifestInputKind::Variable => BundleIdentityInputKind::Variable,
-                    coral_spec::ManifestInputKind::Secret => BundleIdentityInputKind::Secret,
-                };
-                BundleIdentityInputSpec {
+            identity
+                .manifest
+                .inputs
+                .into_iter()
+                .map(move |input| BundleIdentityInputSpec {
                     identity_spec_id: identity_spec_id.clone(),
-                    key: input.key,
-                    kind,
-                    required: input.required,
-                    default_value: input.default_value,
-                    hint: input.hint,
-                }
-            })
+                    input,
+                })
         })
         .collect())
 }
@@ -361,7 +346,9 @@ impl From<SourceRegistryCredentialStorage> for CredentialStorageKind {
 
 #[cfg(test)]
 mod tests {
-    use super::{BundleIdentityInputKind, bundle_identity_inputs_from_yaml};
+    use super::{
+        ManifestInputKind, bundle_identity_inputs_from_yaml, parse_spec_bundle_manifest_yaml,
+    };
 
     #[test]
     fn bundle_identity_inputs_from_yaml_discovers_identity_inputs() {
@@ -376,13 +363,42 @@ mod tests {
             panic!("expected two inputs, got {inputs:?}");
         };
         assert_eq!(tenant.identity_spec_id, "demo_oauth");
-        assert_eq!(tenant.key, "DEMO_TENANT");
-        assert_eq!(tenant.kind, BundleIdentityInputKind::Variable);
-        assert_eq!(tenant.default_value, "oauth2");
+        assert_eq!(tenant.input.key, "DEMO_TENANT");
+        assert_eq!(tenant.input.kind, ManifestInputKind::Variable);
+        assert_eq!(tenant.input.default_value, "oauth2");
         assert_eq!(client_secret.identity_spec_id, "demo_oauth");
-        assert_eq!(client_secret.key, "DEMO_OAUTH_CLIENT_SECRET");
-        assert_eq!(client_secret.kind, BundleIdentityInputKind::Secret);
-        assert!(client_secret.required);
+        assert_eq!(client_secret.input.key, "DEMO_OAUTH_CLIENT_SECRET");
+        assert_eq!(client_secret.input.kind, ManifestInputKind::Secret);
+        assert!(client_secret.input.required);
+    }
+
+    #[test]
+    fn parsed_bundle_identity_specs_reuse_manifest_input_specs() {
+        let bundle = parse_spec_bundle_manifest_yaml(&format!(
+            "---\n{}---\n{}",
+            source_yaml("demo"),
+            oauth_identity_yaml()
+        ))
+        .expect("bundle manifest");
+
+        let [identity] = bundle.identity_specs.as_slice() else {
+            panic!(
+                "expected one identity spec, got {:?}",
+                bundle.identity_specs
+            );
+        };
+        assert_eq!(identity.identity_spec_id, "demo_oauth");
+        assert_eq!(
+            identity
+                .inputs
+                .iter()
+                .map(|input| (input.key.as_str(), input.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                ("DEMO_TENANT", ManifestInputKind::Variable),
+                ("DEMO_OAUTH_CLIENT_SECRET", ManifestInputKind::Secret),
+            ]
+        );
     }
 
     fn source_yaml(name: &str) -> String {

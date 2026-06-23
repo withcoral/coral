@@ -97,10 +97,10 @@ pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
 pub use source_registry::{
-    BundleIdentityInputDiscoveryError, BundleIdentityInputKind, BundleIdentityInputSpec,
-    SourceRegistry, SourceRegistryCredentialStorage, SourceRegistryOrigin, SourceRegistryRecord,
-    SourceSpecManifestMetadata, SpecBundleIdentitySpec, SpecBundleManifest, SpecBundleSourceSpec,
-    bundle_identity_inputs_from_yaml, parse_spec_bundle_manifest_yaml,
+    BundleIdentityInputDiscoveryError, BundleIdentityInputSpec, ManifestInputKind,
+    ManifestInputSpec, SourceRegistry, SourceRegistryCredentialStorage, SourceRegistryOrigin,
+    SourceRegistryRecord, SourceSpecManifestMetadata, SpecBundleIdentitySpec, SpecBundleManifest,
+    SpecBundleSourceSpec, bundle_identity_inputs_from_yaml, parse_spec_bundle_manifest_yaml,
     source_spec_manifest_metadata,
 };
 pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
