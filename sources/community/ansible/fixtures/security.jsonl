@@ -1,0 +1,5 @@
+{"hostname":"rhel-control","selinux_status":"enabled","selinux_mode":"enforcing","selinux_policy":"targeted","apparmor_status":"unknown","fips":false,"ssh_host_keys_collected":false,"firewall_hint":"firewalld-present"}
+{"hostname":"alpine-api","selinux_status":"disabled","selinux_mode":"disabled","selinux_policy":"none","apparmor_status":"unknown","fips":false,"ssh_host_keys_collected":false,"firewall_hint":"unknown"}
+{"hostname":"arch-observe","selinux_status":"disabled","selinux_mode":"disabled","selinux_policy":"none","apparmor_status":"unknown","fips":false,"ssh_host_keys_collected":false,"firewall_hint":"nftables-present"}
+{"hostname":"suse-auth","selinux_status":"unknown","selinux_mode":"unknown","selinux_policy":"unknown","apparmor_status":"enabled","fips":false,"ssh_host_keys_collected":false,"firewall_hint":"firewalld-present"}
+{"hostname":"debian-db","selinux_status":"disabled","selinux_mode":"disabled","selinux_policy":"none","apparmor_status":"enabled","fips":false,"ssh_host_keys_collected":false,"firewall_hint":"ufw-present"}

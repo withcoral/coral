@@ -1,0 +1,667 @@
+name: mailchimp
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Mailchimp audiences, campaigns, subscribers, and campaign performance
+  reports via the Mailchimp Marketing API v3. Join with Salesforce contacts or
+  Linear issues for cross-source marketing and engineering intelligence.
+base_url: "https://{{input.MAILCHIMP_SERVER_PREFIX}}.api.mailchimp.com"
+
+inputs:
+  MAILCHIMP_SERVER_PREFIX:
+    kind: variable
+    hint: |
+      Your Mailchimp server prefix. It is the suffix of your API key after
+      the last hyphen: if your key ends in `-us6`, enter `us6`.
+      Find it under Profile > Extras > API keys.
+  MAILCHIMP_API_KEY:
+    kind: secret
+    hint: |
+      Your Mailchimp API key. Generate one at:
+      Profile > Extras > API keys > Create A Key.
+      API keys carry the full permissions of the account that created them —
+      Mailchimp has no key-level scopes. The key must belong to a user whose
+      plan allows reading lists, campaigns, members, and reports. A 403
+      response indicates a plan or user-level restriction, not a bad key.
+
+auth:
+  type: BasicAuth
+  username: anystring
+  password: "{{input.MAILCHIMP_API_KEY}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+rate_limit:
+  extra_statuses:
+    - 429
+  retry_after_header: Retry-After
+
+test_queries:
+  - SELECT id, name FROM mailchimp.lists LIMIT 1
+
+tables:
+  - name: lists
+    description: >-
+      Mailchimp audiences accessible to the authenticated account. Returns
+      subscriber counts, unsubscribe counts, average open and click rates,
+      list rating, visibility, and creation timestamp.
+    guide: |
+      Use id from this table as the required list_id filter on
+      mailchimp.members to fetch subscribers for a specific audience.
+      open_rate and click_rate are rolling averages across all campaigns
+      sent to this audience, not per-campaign stats.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /3.0/lists
+    response:
+      rows_path:
+        - lists
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 1000
+        query_param: count
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique audience identifier; use as list_id on mailchimp.members.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Audience display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: subscriber_count
+        type: Int64
+        nullable: true
+        description: Number of active subscribed members.
+        expr:
+          kind: path
+          path:
+            - stats
+            - member_count
+      - name: unsubscribe_count
+        type: Int64
+        nullable: true
+        description: Number of unsubscribed members.
+        expr:
+          kind: path
+          path:
+            - stats
+            - unsubscribe_count
+      - name: open_rate
+        type: Float64
+        nullable: true
+        description: >-
+          Average open rate across all campaigns sent to this audience
+          (percentage, 0-100; Mailchimp list stats use a 0-100 scale, not 0-1).
+        expr:
+          kind: path
+          path:
+            - stats
+            - open_rate
+      - name: click_rate
+        type: Float64
+        nullable: true
+        description: >-
+          Average click rate across all campaigns sent to this audience
+          (percentage, 0-100; Mailchimp list stats use a 0-100 scale, not 0-1).
+        expr:
+          kind: path
+          path:
+            - stats
+            - click_rate
+      - name: list_rating
+        type: Int64
+        nullable: true
+        description: Mailchimp engagement rating for this audience (0-5).
+        expr:
+          kind: path
+          path:
+            - list_rating
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Audience visibility (pub for public, prv for private).
+        expr:
+          kind: path
+          path:
+            - visibility
+      - name: date_created
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when the audience was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - date_created
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Mailchimp list object.
+        expr:
+          kind: current_row
+
+  - name: campaigns
+    description: >-
+      Mailchimp email campaigns with type, status, subject line, send time,
+      recipient list, and performance summary. report_summary columns
+      (opens, clicks, open_rate, click_rate) are null for unsent campaigns.
+    guide: |
+      Use the status filter to scope to sent, sending, scheduled, or draft
+      campaigns: save (draft), paused, schedule, sending, sent.
+      Use the list_id filter to scope to a specific audience.
+      Use since_send_time and before_send_time (ISO 8601,
+      e.g. 2025-01-01T00:00:00Z) to push a time window to the server so
+      that ORDER BY on the result is meaningful across all matching rows.
+      Use sort_field (create_time or send_time) with sort_dir (ASC or DESC)
+      to have Mailchimp sort before Coral applies LIMIT.
+      Join id with mailchimp.reports for full per-campaign performance stats.
+      report_summary columns are null for campaigns that have not been sent.
+    fetch_limit_default: 100
+    filters:
+      - name: status
+        required: false
+      - name: list_id
+        required: false
+      - name: since_send_time
+        required: false
+      - name: before_send_time
+        required: false
+      - name: sort_field
+        required: false
+      - name: sort_dir
+        required: false
+    request:
+      method: GET
+      path: /3.0/campaigns
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: list_id
+          from: filter
+          key: list_id
+        - name: since_send_time
+          from: filter
+          key: since_send_time
+        - name: before_send_time
+          from: filter
+          key: before_send_time
+        - name: sort_field
+          from: filter
+          key: sort_field
+        - name: sort_dir
+          from: filter
+          key: sort_dir
+    response:
+      rows_path:
+        - campaigns
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 1000
+        query_param: count
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique campaign identifier; join with mailchimp.reports.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Campaign type: regular, plaintext, absplit, rss, or variate.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Campaign status: save (draft), paused, schedule, sending, or sent.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: subject_line
+        type: Utf8
+        nullable: true
+        description: Email subject line.
+        expr:
+          kind: path
+          path:
+            - settings
+            - subject_line
+      - name: preview_text
+        type: Utf8
+        nullable: true
+        description: Preview text shown in email client inboxes.
+        expr:
+          kind: path
+          path:
+            - settings
+            - preview_text
+      - name: from_name
+        type: Utf8
+        nullable: true
+        description: Sender display name.
+        expr:
+          kind: path
+          path:
+            - settings
+            - from_name
+      - name: reply_to
+        type: Utf8
+        nullable: true
+        description: Reply-to email address.
+        expr:
+          kind: path
+          path:
+            - settings
+            - reply_to
+      - name: list_id
+        type: Utf8
+        nullable: true
+        description: ID of the target audience; join with mailchimp.lists.
+        expr:
+          kind: path
+          path:
+            - recipients
+            - list_id
+      - name: emails_sent
+        type: Int64
+        nullable: true
+        description: Number of emails sent; null for unsent campaigns.
+        expr:
+          kind: path
+          path:
+            - emails_sent
+      - name: send_time
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when the campaign was sent; null for unsent campaigns.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - send_time
+      - name: opens
+        type: Int64
+        nullable: true
+        description: Total opens; null for unsent campaigns.
+        expr:
+          kind: path
+          path:
+            - report_summary
+            - opens
+      - name: unique_opens
+        type: Int64
+        nullable: true
+        description: Unique opens; null for unsent campaigns.
+        expr:
+          kind: path
+          path:
+            - report_summary
+            - unique_opens
+      - name: open_rate
+        type: Float64
+        nullable: true
+        description: Open rate (0-1); null for unsent campaigns.
+        expr:
+          kind: path
+          path:
+            - report_summary
+            - open_rate
+      - name: clicks
+        type: Int64
+        nullable: true
+        description: Total clicks; null for unsent campaigns.
+        expr:
+          kind: path
+          path:
+            - report_summary
+            - clicks
+      - name: click_rate
+        type: Float64
+        nullable: true
+        description: Click rate (0-1); null for unsent campaigns.
+        expr:
+          kind: path
+          path:
+            - report_summary
+            - click_rate
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Mailchimp campaign object.
+        expr:
+          kind: current_row
+
+  - name: members
+    description: >-
+      Subscribers in a Mailchimp audience. Requires a list_id filter; obtain
+      list IDs from mailchimp.lists. Returns email address, subscription
+      status, full name, source, and signup timestamps.
+    guide: |
+      Requires list_id. Obtain list IDs from mailchimp.lists.
+      Use the status filter to scope to subscribed, unsubscribed, cleaned,
+      pending, or transactional members.
+      Join email_address with salesforce.contacts.email or
+      linear.issues.assignee_email for cross-source identity resolution.
+    fetch_limit_default: 100
+    filters:
+      - name: list_id
+        required: true
+      - name: status
+        required: false
+    request:
+      method: GET
+      path: /3.0/lists/{{filter.list_id}}/members
+      query:
+        - name: status
+          from: filter
+          key: status
+    response:
+      rows_path:
+        - members
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 1000
+        query_param: count
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: MD5 hash of the lowercase email address (Mailchimp subscriber hash).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: list_id
+        type: Utf8
+        nullable: false
+        description: ID of the parent audience; join with mailchimp.lists.
+        expr:
+          kind: from_filter
+          key: list_id
+        virtual: true
+      - name: email_address
+        type: Utf8
+        nullable: true
+        description: Subscriber email address; primary join key with external sources.
+        expr:
+          kind: path
+          path:
+            - email_address
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Subscription status: subscribed, unsubscribed, cleaned, pending, or
+          transactional.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: Subscriber full name.
+        expr:
+          kind: path
+          path:
+            - full_name
+      - name: source
+        type: Utf8
+        nullable: true
+        description: How the subscriber was added (API, Admin Add, Import, etc.).
+        expr:
+          kind: path
+          path:
+            - source
+      - name: timestamp_signup
+        type: Utf8
+        nullable: true
+        description: >-
+          ISO 8601 timestamp when the subscriber signed up; empty string if
+          not set.
+        expr:
+          kind: path
+          path:
+            - timestamp_signup
+      - name: timestamp_opt
+        type: Utf8
+        nullable: true
+        description: >-
+          ISO 8601 timestamp when the subscriber confirmed opt-in; empty string
+          if not set.
+        expr:
+          kind: path
+          path:
+            - timestamp_opt
+      - name: last_changed
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when the member record was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_changed
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Mailchimp member object including merge_fields and tags.
+        expr:
+          kind: current_row
+
+  - name: reports
+    description: >-
+      Per-campaign performance reports with open rates, click rates, bounces,
+      and unsubscribes. One row per sent campaign; draft and scheduled
+      campaigns do not appear here.
+    guide: |
+      Join id with mailchimp.campaigns on id to combine scheduling metadata
+      with performance stats. Use open_rate and click_rate to rank campaigns.
+      Bounces and abuse_reports help identify list health issues.
+      Use since_send_time and before_send_time (ISO 8601,
+      e.g. 2025-01-01T00:00:00Z) to push a time window to the server so
+      local analysis stays within a relevant period. Mailchimp does not expose
+      server-side sort parameters for this endpoint, so ORDER BY applies only
+      to the rows fetched within the table's 100-row default fetch limit.
+    fetch_limit_default: 100
+    filters:
+      - name: since_send_time
+        required: false
+      - name: before_send_time
+        required: false
+    request:
+      method: GET
+      path: /3.0/reports
+      query:
+        - name: since_send_time
+          from: filter
+          key: since_send_time
+        - name: before_send_time
+          from: filter
+          key: before_send_time
+    response:
+      rows_path:
+        - reports
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 1000
+        query_param: count
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Campaign ID; join with mailchimp.campaigns.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: campaign_title
+        type: Utf8
+        nullable: true
+        description: Internal campaign title.
+        expr:
+          kind: path
+          path:
+            - campaign_title
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Campaign type (regular, plaintext, etc.).
+        expr:
+          kind: path
+          path:
+            - type
+      - name: emails_sent
+        type: Int64
+        nullable: true
+        description: Total number of emails sent.
+        expr:
+          kind: path
+          path:
+            - emails_sent
+      - name: send_time
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when the campaign was sent.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - send_time
+      - name: opens_total
+        type: Int64
+        nullable: true
+        description: Total number of opens including repeat opens.
+        expr:
+          kind: path
+          path:
+            - opens
+            - opens_total
+      - name: unique_opens
+        type: Int64
+        nullable: true
+        description: Number of unique recipients who opened the email.
+        expr:
+          kind: path
+          path:
+            - opens
+            - unique_opens
+      - name: open_rate
+        type: Float64
+        nullable: true
+        description: Fraction of recipients who opened the email (0-1).
+        expr:
+          kind: path
+          path:
+            - opens
+            - open_rate
+      - name: clicks_total
+        type: Int64
+        nullable: true
+        description: Total number of link clicks including repeat clicks.
+        expr:
+          kind: path
+          path:
+            - clicks
+            - clicks_total
+      - name: unique_clicks
+        type: Int64
+        nullable: true
+        description: Number of unique recipients who clicked any link.
+        expr:
+          kind: path
+          path:
+            - clicks
+            - unique_clicks
+      - name: click_rate
+        type: Float64
+        nullable: true
+        description: Fraction of recipients who clicked any link (0-1).
+        expr:
+          kind: path
+          path:
+            - clicks
+            - click_rate
+      - name: hard_bounces
+        type: Int64
+        nullable: true
+        description: Number of hard bounces (permanent delivery failures).
+        expr:
+          kind: path
+          path:
+            - bounces
+            - hard_bounces
+      - name: soft_bounces
+        type: Int64
+        nullable: true
+        description: Number of soft bounces (temporary delivery failures).
+        expr:
+          kind: path
+          path:
+            - bounces
+            - soft_bounces
+      - name: unsubscribed
+        type: Int64
+        nullable: true
+        description: Number of recipients who unsubscribed after this campaign.
+        expr:
+          kind: path
+          path:
+            - unsubscribed
+      - name: abuse_reports
+        type: Int64
+        nullable: true
+        description: Number of spam complaints filed against this campaign.
+        expr:
+          kind: path
+          path:
+            - abuse_reports
+      - name: raw
+        type: Json
+        nullable: true
+        description: Raw Mailchimp report object.
+        expr:
+          kind: current_row

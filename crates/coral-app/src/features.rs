@@ -15,6 +15,10 @@ use crate::state::{
 pub enum Feature {
     /// Expose the optional MCP `feedback` tool.
     Feedback,
+    /// Experimental trajectory-memory episodes (in progress): exposes the MCP
+    /// `open_episode` tool and associates follow-up Coral MCP tool calls with
+    /// the intent they served via the `coral-episode-id` metadata key.
+    Episodes,
 }
 
 impl Feature {
@@ -65,14 +69,24 @@ struct FeatureSpec {
     disable_flag: &'static str,
 }
 
-const FEATURE_SPECS: &[FeatureSpec] = &[FeatureSpec {
-    feature: Feature::Feedback,
-    key: "feedback",
-    default_enabled: false,
-    description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
-    enable_flag: "enable-feedback",
-    disable_flag: "disable-feedback",
-}];
+const FEATURE_SPECS: &[FeatureSpec] = &[
+    FeatureSpec {
+        feature: Feature::Feedback,
+        key: "feedback",
+        default_enabled: false,
+        description: "Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.",
+        enable_flag: "enable-feedback",
+        disable_flag: "disable-feedback",
+    },
+    FeatureSpec {
+        feature: Feature::Episodes,
+        key: "episodes",
+        default_enabled: false,
+        description: "Experimental trajectory memory (in progress): exposes MCP open_episode and tags follow-up Coral tool calls with episode ids. Off by default.",
+        enable_flag: "enable-episodes",
+        disable_flag: "disable-episodes",
+    },
+];
 
 /// How a feature's value is configured in Coral's local config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

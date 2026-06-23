@@ -19,11 +19,28 @@ const transport = createGrpcWebTransport({
 })
 
 const traces = createClient(TraceService, transport)
+const listTraceRequests = new Map<string, Promise<ListTracesResponse>>()
+const getTraceRequests = new Map<string, Promise<GetTraceResponse>>()
 
 export async function listTraces(pageSize = 50, pageToken = ''): Promise<ListTracesResponse> {
-  return traces.listTraces(create(ListTracesRequestSchema, { pageSize, pageToken }))
+  const key = `${pageSize}:${pageToken}`
+  const inFlight = listTraceRequests.get(key)
+  if (inFlight) return inFlight
+
+  const request = traces
+    .listTraces(create(ListTracesRequestSchema, { pageSize, pageToken }))
+    .finally(() => listTraceRequests.delete(key))
+  listTraceRequests.set(key, request)
+  return request
 }
 
 export async function getTrace(traceId: string): Promise<GetTraceResponse> {
-  return traces.getTrace(create(GetTraceRequestSchema, { traceId }))
+  const inFlight = getTraceRequests.get(traceId)
+  if (inFlight) return inFlight
+
+  const request = traces
+    .getTrace(create(GetTraceRequestSchema, { traceId }))
+    .finally(() => getTraceRequests.delete(traceId))
+  getTraceRequests.set(traceId, request)
+  return request
 }

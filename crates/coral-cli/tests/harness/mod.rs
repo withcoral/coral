@@ -17,8 +17,8 @@ use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::{
-    CatalogItem, CatalogSearchResult, Column, ColumnSearchResult, CreateBundledSourceRequest,
-    CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
+    CatalogCounts, CatalogItem, CatalogSearchResult, Column, ColumnSearchResult,
+    CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DeleteSourceResponse,
     DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
     ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
@@ -351,6 +351,15 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             origin: SourceOrigin::Imported as i32,
             credential_storage: SourceCredentialStorage::File as i32,
         }),
+        "versionless" => Ok(SourceInfo {
+            name: "versionless".to_string(),
+            description: String::new(),
+            version: String::new(),
+            inputs: Vec::new(),
+            installed: true,
+            origin: SourceOrigin::Imported as i32,
+            credential_storage: SourceCredentialStorage::File as i32,
+        }),
         _ => Err(Status::not_found(format!("unknown source '{name}'"))),
     }
 }
@@ -534,9 +543,13 @@ impl MockServerConfig {
 }
 
 fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
-    let items = mock_visible_tables()
+    let tables = mock_visible_tables()
         .into_iter()
         .filter(|table| request.schema_name.is_empty() || table.schema_name == request.schema_name)
+        .collect::<Vec<_>>();
+    let table_count = u32::try_from(tables.len()).unwrap_or(u32::MAX);
+    let items = tables
+        .into_iter()
         .filter(|_| request.kind == 0 || request.kind == 1)
         .map(|table| CatalogItem {
             item: Some(catalog_item::Item::Table(table_summary(&table))),
@@ -552,6 +565,10 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
     ListCatalogResponse {
         items,
         pagination: Some(pagination),
+        counts: Some(CatalogCounts {
+            table_count,
+            table_function_count: 0,
+        }),
     }
 }
 
@@ -1102,6 +1119,14 @@ impl MockServer {
             .delete_source
             .lock()
             .expect("delete_source capture")
+            .clone()
+    }
+
+    pub(crate) fn import_source_requests(&self) -> Vec<ImportSourceRequest> {
+        self.captured
+            .import_source
+            .lock()
+            .expect("import_source capture")
             .clone()
     }
 

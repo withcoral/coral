@@ -588,9 +588,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.16.0"
+version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9a7b350e3bb1767102698302bc37256cbd48422809984b98d292c40e2579aa9"
+checksum = "5ec2f1fc3ec205783a5da9a7e6c1509cc69dedf09a1949e412c1e18469326d00"
 dependencies = [
  "aws-lc-sys",
  "zeroize",
@@ -598,9 +598,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.37.1"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b092fe214090261288111db7a2b2c2118e5a7f30dc2569f1732c4069a6840549"
+checksum = "1a2f9779ce85b93ab6170dd940ad0169b5766ff848247aff13bb788b832fe3f4"
 dependencies = [
  "cc",
  "cmake",
@@ -1206,7 +1206,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "coral-api"
-version = "0.4.1"
+version = "0.4.3"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -1218,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "coral-app"
-version = "0.4.1"
+version = "0.4.3"
 dependencies = [
  "apple-native-keyring-store",
  "arrow",
@@ -1230,12 +1230,14 @@ dependencies = [
  "coral-client",
  "coral-engine",
  "coral-spec",
+ "coral-telemetry",
  "etcetera",
  "fs2",
  "keyring-core",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
+ "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost",
  "regex",
@@ -1260,12 +1262,13 @@ dependencies = [
  "url",
  "uuid",
  "windows-native-keyring-store",
+ "wiremock",
  "zbus-secret-service-keyring-store",
 ]
 
 [[package]]
 name = "coral-auth-aws"
-version = "0.4.1"
+version = "0.4.3"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
@@ -1278,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "coral-cli"
-version = "0.4.1"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1297,6 +1300,7 @@ dependencies = [
  "rmcp",
  "rust-embed",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -1308,17 +1312,19 @@ dependencies = [
 
 [[package]]
 name = "coral-client"
-version = "0.4.1"
+version = "0.4.3"
 dependencies = [
  "arrow",
  "coral-api",
  "coral-app",
  "coral-spec",
+ "coral-telemetry",
  "http-body 1.0.1",
  "opentelemetry",
  "opentelemetry_sdk",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "tonic",
  "tonic-types",
  "tracing",
@@ -1328,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "coral-engine"
-version = "0.4.1"
+version = "0.4.3"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1336,6 +1342,7 @@ dependencies = [
  "bytes",
  "chrono",
  "coral-spec",
+ "coral-telemetry",
  "datafusion",
  "datafusion-datasource",
  "datafusion-datasource-json",
@@ -1366,11 +1373,12 @@ dependencies = [
 
 [[package]]
 name = "coral-mcp"
-version = "0.4.1"
+version = "0.4.3"
 dependencies = [
  "coral-api",
  "coral-app",
  "coral-client",
+ "coral-telemetry",
  "jsonschema",
  "opentelemetry",
  "regex",
@@ -1384,19 +1392,32 @@ dependencies = [
  "tonic-types",
  "tracing",
  "tracing-opentelemetry",
+ "uuid",
 ]
 
 [[package]]
 name = "coral-spec"
-version = "0.4.1"
+version = "0.4.3"
 dependencies = [
  "jsonschema",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml",
  "thiserror 2.0.18",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "coral-telemetry"
+version = "0.4.3"
+dependencies = [
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4623,6 +4644,7 @@ dependencies = [
  "base64",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
@@ -4830,7 +4852,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6688,9 +6710,10 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.4.1"
+version = "0.4.3"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "coral-spec",
  "insta",
@@ -6698,6 +6721,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "uuid",
  "walkdir",
 ]
 

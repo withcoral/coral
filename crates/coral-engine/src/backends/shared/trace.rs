@@ -10,7 +10,6 @@
 use opentelemetry::propagation::Injector;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tracing::field;
-use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 /// Mark a span as errored with a generic processing failure.
 ///
@@ -135,10 +134,7 @@ impl Injector for HeaderMapInjector<'_> {
 /// Inject the current span's W3C trace context into the supplied header
 /// map. Used to propagate the trace into downstream HTTP services.
 pub(crate) fn inject_trace_context(span: &tracing::Span, headers: &mut HeaderMap) {
-    let cx = span.context();
-    opentelemetry::global::get_text_map_propagator(|propagator| {
-        propagator.inject_context(&cx, &mut HeaderMapInjector(headers));
-    });
+    coral_telemetry::inject_span_context(span, &mut HeaderMapInjector(headers));
 }
 
 #[cfg(test)]

@@ -7,19 +7,20 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    ColumnSpec, FilterMode, FilterSpec, FunctionArgBinding, ManifestError, ManifestInputKind,
-    ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec, Result, SourceBackend,
-    SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
-    TableFunctionArgSpec, ValueSourceSpec,
+    ColumnSpec, DeclaredRelation, FilterMode, FilterSpec, FunctionArgBinding, ManifestError,
+    ManifestInputKind, ManifestInputSpec, PaginationSpec, RequestSpec, ResponseSpec, Result,
+    SourceBackend, SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec,
+    TableCommon, TableFunctionArgSpec, ValueSourceSpec,
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
-    validate_columns, validate_filters_and_column_exprs, validate_identifier,
-    validate_test_queries, validate_unique_values,
+    validate_columns, validate_declared_relation_namespace, validate_filters_and_column_exprs,
+    validate_identifier, validate_source_name, validate_test_queries, validate_unique_values,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -53,7 +54,7 @@ struct RawMcpSourceManifest {
 }
 
 /// MCP server connection settings.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "transport", rename_all = "snake_case", deny_unknown_fields)]
 pub enum McpServerSpec {
     Stdio {
@@ -71,7 +72,7 @@ pub enum McpServerSpec {
 }
 
 /// Supported MCP transports.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum McpTransport {
     Stdio,
@@ -79,7 +80,7 @@ pub enum McpTransport {
 }
 
 /// One environment variable passed to a stdio MCP server process.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct McpEnvSpec {
     pub name: String,
     #[serde(flatten)]
@@ -87,7 +88,7 @@ pub struct McpEnvSpec {
 }
 
 /// HTTP authentication for Streamable HTTP MCP servers.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct McpHttpAuthSpec {
     #[serde(rename = "type")]
     kind: McpHttpAuthKind,
@@ -96,7 +97,7 @@ pub struct McpHttpAuthSpec {
 }
 
 /// Supported Streamable HTTP MCP auth schemes.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum McpHttpAuthKind {
     Bearer,
@@ -136,6 +137,7 @@ pub struct McpTableFunctionSpec {
     pub common: SourceTableFunctionSpec,
     pub tool: String,
     pub pagination: Option<McpPaginationSpec>,
+    pub offset_pagination: Option<McpOffsetPaginationSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -172,11 +174,12 @@ pub struct McpTableSpec {
     pub filter_bindings: Vec<McpTableFilterBinding>,
     pub limit_binding: Option<McpLimitBinding>,
     pub pagination: Option<McpPaginationSpec>,
+    pub offset_pagination: Option<McpOffsetPaginationSpec>,
     pub response: ResponseSpec,
 }
 
 /// How `LIMIT` pushes into an MCP tool argument.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpLimitBinding {
     pub tool_arg: String,
@@ -185,11 +188,25 @@ pub struct McpLimitBinding {
 }
 
 /// Cursor pagination for MCP tool results.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct McpPaginationSpec {
     pub cursor_arg: String,
     pub response_cursor_path: Vec<String>,
+    #[serde(default)]
+    pub max_pages: Option<usize>,
+}
+
+/// Offset pagination for generated MCP tool-backed relations.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct McpOffsetPaginationSpec {
+    pub limit_arg: String,
+    pub default_limit: usize,
+    pub max_limit: usize,
+    pub offset_arg: String,
+    #[serde(default)]
+    pub offset_start: usize,
     #[serde(default)]
     pub max_pages: Option<usize>,
 }
@@ -289,6 +306,7 @@ impl McpTableFilterSpec {
             required: self.required,
             mode: self.mode,
             description: self.description.clone(),
+            lookup_key: false,
         }
     }
 
@@ -306,6 +324,7 @@ impl RawMcpTableFunctionSpec {
         Ok(McpTableFunctionSpec {
             tool: self.tool,
             pagination: self.pagination,
+            offset_pagination: None,
             common: SourceTableFunctionSpec {
                 name: self.name,
                 kind: SourceTableFunctionKind::default(),
@@ -352,6 +371,7 @@ impl RawMcpTableSpec {
             filter_bindings,
             limit_binding: self.limit_binding,
             pagination: self.pagination,
+            offset_pagination: None,
             response: self.response,
         })
     }
@@ -397,9 +417,20 @@ impl McpSourceManifest {
                 "source '{name}' must define at least one function or table"
             )));
         }
+        validate_source_name(&name)?;
         validate_test_queries(&name, &test_queries)?;
-        validate_server(&name, &server, &declared_inputs)?;
-        validate_table_and_function_names(&name, &tables, &functions)?;
+        validate_mcp_server(&name, &server, &declared_inputs)?;
+        validate_declared_relation_namespace(
+            &name,
+            tables
+                .iter()
+                .map(|table| DeclaredRelation::table(table.name.as_str()))
+                .chain(
+                    functions
+                        .iter()
+                        .map(|function| DeclaredRelation::function(function.name.as_str())),
+                ),
+        )?;
         let common =
             SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let functions = functions
@@ -421,7 +452,7 @@ impl McpSourceManifest {
     }
 }
 
-fn validate_server(
+pub(crate) fn validate_mcp_server(
     source_name: &str,
     server: &McpServerSpec,
     declared_inputs: &[ManifestInputSpec],
@@ -445,11 +476,7 @@ fn validate_stdio_server(source_name: &str, command: &str, env: &[McpEnvSpec]) -
 
     let mut env_names = HashSet::new();
     for env in env {
-        if env.name.trim().is_empty() {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' MCP server env name must not be empty"
-            )));
-        }
+        validate_stdio_env_name(source_name, &env.name)?;
         if !env_names.insert(env.name.as_str()) {
             return Err(ManifestError::validation(format!(
                 "source '{source_name}' MCP server env '{}' is declared more than once",
@@ -457,6 +484,20 @@ fn validate_stdio_server(source_name: &str, command: &str, env: &[McpEnvSpec]) -
             )));
         }
         validate_server_env_value_source(source_name, env)?;
+    }
+    Ok(())
+}
+
+fn validate_stdio_env_name(source_name: &str, name: &str) -> Result<()> {
+    if name.trim().is_empty() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' MCP server env name must not be empty"
+        )));
+    }
+    if name.contains('=') || name.contains('\0') {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' MCP server env '{name}' must not contain '=' or NUL"
+        )));
     }
     Ok(())
 }
@@ -544,45 +585,6 @@ fn validate_server_env_value_source(source_name: &str, env: &McpEnvSpec) -> Resu
         &env.value,
         &format!("source '{source_name}' MCP server env '{}'", env.name),
     )
-}
-
-fn validate_table_and_function_names(
-    source_name: &str,
-    tables: &[RawMcpTableSpec],
-    functions: &[RawMcpTableFunctionSpec],
-) -> Result<()> {
-    let mut table_names = HashSet::new();
-    for table in tables {
-        validate_identifier(&table.name, &format!("source '{source_name}' table name"))?;
-        if !table_names.insert(table.name.to_ascii_lowercase()) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' table '{}' is declared more than once",
-                table.name
-            )));
-        }
-    }
-
-    let mut function_names = HashSet::new();
-    for function in functions {
-        validate_identifier(
-            &function.name,
-            &format!("source '{source_name}' function name"),
-        )?;
-        let normalized_name = function.name.to_ascii_lowercase();
-        if table_names.contains(&normalized_name) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' declares both a table and function named '{}'",
-                function.name
-            )));
-        }
-        if !function_names.insert(normalized_name) {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' function '{}' is declared more than once",
-                function.name
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn validate_mcp_function(source_name: &str, function: &RawMcpTableFunctionSpec) -> Result<()> {
@@ -1555,6 +1557,68 @@ mod tests {
             error
                 .to_string()
                 .contains("MCP server env 'FILTERED' template references table filter 'state'"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_mcp_server_env_name_with_equals() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "stdio",
+                "command": "demo-mcp-server",
+                "env": [{
+                    "name": "BAD=KEY",
+                    "from": "literal",
+                    "value": "ignored"
+                }]
+            },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("env name containing equals should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("MCP server env 'BAD=KEY' must not contain '=' or NUL"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_mcp_server_env_name_with_nul() {
+        let error = McpSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "demo",
+            "version": "0.1.0",
+            "backend": "mcp",
+            "server": {
+                "transport": "stdio",
+                "command": "demo-mcp-server",
+                "env": [{
+                    "name": "BAD\0KEY",
+                    "from": "literal",
+                    "value": "ignored"
+                }]
+            },
+            "tables": [{
+                "name": "issues",
+                "tool": "list_issues",
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect_err("env name containing NUL should fail");
+
+        assert!(
+            error.to_string().contains("must not contain '=' or NUL"),
             "got: {error}"
         );
     }

@@ -1,0 +1,399 @@
+name: google_fonts
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+description: >-
+  Query font families, variants, subsets, file URLs, variable font axes,
+  color font capabilities, and design-space tags from the Google Fonts
+  Developer API.
+
+inputs:
+  GOOGLE_FONTS_API_KEY:
+    kind: secret
+    hint: |
+      Google Fonts Developer API key.
+      Paste the API key value itself.
+      Create one at:
+      https://console.cloud.google.com/apis/credentials
+      with the Web Fonts Developer API enabled.
+
+base_url: https://www.googleapis.com/webfonts/v1
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - >
+    SELECT family, category, variants
+    FROM google_fonts.fonts
+    WHERE sort = 'popularity'
+    LIMIT 5
+
+  - >
+    SELECT family, category
+    FROM google_fonts.fonts
+    WHERE category = 'serif'
+    LIMIT 5
+
+  - >
+    SELECT family, subsets
+    FROM google_fonts.fonts
+    WHERE subset = 'cyrillic'
+    LIMIT 5
+
+  - >
+    SELECT family, axes
+    FROM google_fonts.fonts
+    WHERE capability = 'VF'
+    LIMIT 5
+
+  - >
+    SELECT family, files
+    FROM google_fonts.fonts
+    WHERE capability = 'WOFF2'
+    LIMIT 5
+
+  - >
+    SELECT family, tags
+    FROM google_fonts.fonts
+    WHERE capability = 'FAMILY_TAGS'
+    LIMIT 5
+
+  - >
+    SELECT family, variants, subsets, version, last_modified
+    FROM google_fonts.font
+    WHERE family = 'Roboto'
+    LIMIT 1
+
+  - >
+    SELECT family, axes
+    FROM google_fonts.font
+    WHERE family = 'Inter'
+      AND capability = 'VF'
+    LIMIT 1
+
+tables:
+  - name: fonts
+
+    description: All font families available on Google Fonts.
+
+    guide: |
+      Browse the complete Google Fonts catalog.
+
+      Optional filters:
+
+      - sort
+      - category
+      - subset
+      - capability
+
+      Supported sort values:
+
+      - alpha
+      - popularity
+      - date
+      - style
+      - trending
+
+      Supported capability values:
+
+      - WOFF2
+      - VF
+      - FAMILY_TAGS
+
+      Notes:
+        - The API accepts repeated `capability` query parameters and supports combining them
+          (for example: `?capability=WOFF2&capability=VF`).
+
+    fetch_limit_default: 100
+
+    filters:
+      - name: sort
+        required: false
+
+      - name: category
+        required: false
+
+      - name: subset
+        required: false
+
+      - name: capability
+        required: false
+
+    request:
+      method: GET
+      path: /webfonts
+
+      query:
+        - name: key
+          from: input
+          key: GOOGLE_FONTS_API_KEY
+
+        - name: sort
+          from: filter
+          key: sort
+
+        - name: category
+          from: filter
+          key: category
+
+        - name: subset
+          from: filter
+          key: subset
+
+        - name: capability
+          from: filter
+          key: capability
+
+    response:
+      rows_path:
+        - items
+
+      row_strategy: direct
+
+    pagination:
+      mode: none
+
+    columns:
+      - name: family
+        type: Utf8
+        nullable: false
+        description: Font family name.
+
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Font category.
+
+      - name: variants
+        type: Json
+        nullable: true
+        description: Available font variants.
+
+      - name: subsets
+        type: Json
+        nullable: true
+        description: Supported script subsets.
+
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Font version.
+
+      - name: last_modified
+        type: Utf8
+        nullable: true
+        description: Last modification date.
+
+        expr:
+          kind: path
+          path:
+            - lastModified
+
+      - name: files
+        type: Json
+        nullable: true
+        description: Variant download URLs.
+
+      - name: menu
+        type: Utf8
+        nullable: true
+        description: Menu font URL.
+
+      - name: axes
+        type: Json
+        nullable: true
+        description: Variable font axes metadata.
+
+      - name: color_capabilities
+        type: Json
+        nullable: true
+
+        expr:
+          kind: path
+          path:
+            - colorCapabilities
+
+      - name: tags
+        type: Json
+        nullable: true
+        description: Design-space tags.
+
+      # Virtual filter columns
+      - name: sort
+        type: Utf8
+        nullable: true
+        virtual: true
+
+        expr:
+          kind: from_filter
+          key: sort
+
+      - name: category_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+
+        expr:
+          kind: from_filter
+          key: category
+
+      - name: subset
+        type: Utf8
+        nullable: true
+        virtual: true
+
+        expr:
+          kind: from_filter
+          key: subset
+
+      - name: capability
+        type: Utf8
+        nullable: true
+        virtual: true
+
+        expr:
+          kind: from_filter
+          key: capability
+
+      - name: raw
+        type: Json
+        nullable: false
+
+        expr:
+          kind: current_row
+
+  - name: font
+
+    description: Metadata for a single Google Fonts family.
+
+    guide: |
+      Requires exact family name.
+
+      Examples:
+
+      Roboto
+      Inter
+      Noto Sans Display
+
+      Optional capability values:
+
+      - WOFF2
+      - VF
+      - FAMILY_TAGS
+
+    filters:
+      - name: family
+        required: true
+
+      - name: capability
+        required: false
+
+    request:
+      method: GET
+      path: /webfonts
+
+      query:
+        - name: key
+          from: input
+          key: GOOGLE_FONTS_API_KEY
+
+        - name: family
+          from: filter
+          key: family
+
+        - name: capability
+          from: filter
+          key: capability
+
+    response:
+      rows_path:
+        - items
+
+      row_strategy: direct
+
+    pagination:
+      mode: none
+
+    columns:
+      - name: family_filter
+        type: Utf8
+        nullable: false
+        virtual: true
+
+        expr:
+          kind: from_filter
+          key: family
+
+      - name: family
+        type: Utf8
+        nullable: false
+
+      - name: category
+        type: Utf8
+        nullable: true
+
+      - name: variants
+        type: Json
+        nullable: true
+
+      - name: subsets
+        type: Json
+        nullable: true
+
+      - name: version
+        type: Utf8
+        nullable: true
+
+      - name: last_modified
+        type: Utf8
+        nullable: true
+
+        expr:
+          kind: path
+          path:
+            - lastModified
+
+      - name: files
+        type: Json
+        nullable: true
+
+      - name: menu
+        type: Utf8
+        nullable: true
+
+      - name: axes
+        type: Json
+        nullable: true
+
+      - name: color_capabilities
+        type: Json
+        nullable: true
+
+        expr:
+          kind: path
+          path:
+            - colorCapabilities
+
+      - name: tags
+        type: Json
+        nullable: true
+
+      - name: capability
+        type: Utf8
+        nullable: true
+        virtual: true
+
+        expr:
+          kind: from_filter
+          key: capability
+
+      - name: raw
+        type: Json
+        nullable: false
+
+        expr:
+          kind: current_row

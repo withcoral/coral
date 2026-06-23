@@ -158,14 +158,14 @@ impl SourceInputResolutionContext {
     pub fn from_query_source(source: &QuerySource) -> Self {
         Self {
             source_name: Arc::from(source.source_name()),
-            declared_inputs: Arc::from(source.source_spec().declared_inputs().to_vec()),
+            declared_inputs: Arc::from(source.declared_inputs().to_vec()),
             variables: Arc::new(source.variables().clone()),
             secrets: Arc::new(source.secrets().clone()),
         }
     }
 
     #[must_use]
-    /// Returns the canonical source name. This is also the SQL schema name.
+    /// Returns the canonical installed source name.
     pub fn source_name(&self) -> &str {
         &self.source_name
     }
