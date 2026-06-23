@@ -853,13 +853,6 @@ tables:
         expr:
           kind: path
           path: [product_name]
-      - name: brand_id
-        type: Utf8
-        nullable: true
-        description: Brand identifier this subscription belongs to.
-        expr:
-          kind: path
-          path: [brand_id]
       - name: status
         type: Utf8
         nullable: false
