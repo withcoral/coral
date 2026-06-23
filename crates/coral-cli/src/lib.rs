@@ -28,7 +28,9 @@ use clap::{
     Parser, Subcommand, ValueEnum,
 };
 use clap_complete::{Shell, generate};
-use coral_api::v1::{ExecuteSqlRequest, ExecuteSqlResponse, UserSourceIdentityBinding, Workspace};
+use coral_api::v1::{
+    ExecuteSqlRequest, ExecuteSqlResponse, IdentityOwner, SourceIdentityBinding, Workspace,
+};
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
 use coral_client::{
@@ -1373,9 +1375,10 @@ async fn prompt_user_identity_bindings_for_import(
         let accepted = select_accepted_identity_for_surface(&surface.id, requirements)?;
         let identity =
             select_or_create_user_identity_for_surface(app, loaded, &surface.id, &accepted).await?;
-        bindings.push(UserSourceIdentityBinding {
+        bindings.push(SourceIdentityBinding {
             surface_id: surface.id.clone(),
             identity,
+            owner: IdentityOwner::User as i32,
         });
     }
 

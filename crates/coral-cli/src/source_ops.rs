@@ -425,23 +425,16 @@ pub(crate) fn import_source_identity_bindings_from_args(
 }
 
 pub(crate) fn import_source_user_identity_bindings(
-    user_bindings: Vec<UserSourceIdentityBinding>,
+    user_bindings: Vec<SourceIdentityBinding>,
 ) -> Result<ImportSourceIdentityBindings, anyhow::Error> {
     let mut seen_surfaces = BTreeSet::new();
-    let mut source_bindings = Vec::new();
     for binding in &user_bindings {
         reject_repeated_identity_binding_surface(&mut seen_surfaces, &binding.surface_id)?;
-        source_bindings.push(SourceIdentityBinding {
-            surface_id: binding.surface_id.clone(),
-            identity: String::new(),
-            owner: SourceIdentityOwner::User as i32,
-        });
     }
 
     Ok(ImportSourceIdentityBindings {
-        replace_existing: !source_bindings.is_empty(),
-        source_bindings,
-        user_selections: user_bindings,
+        replace_existing: !user_bindings.is_empty(),
+        source_bindings: user_bindings,
     })
 }
 
@@ -2295,6 +2288,7 @@ mod tests {
     )]
 
     use coral_api::v1::ValidateSourceResponse;
+    use coral_api::v1::{IdentityOwner, SourceIdentityBinding};
     use coral_spec::{
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
         ManifestInputKind, ManifestInputSpec,
@@ -2348,6 +2342,25 @@ mod tests {
         assert_eq!(secrets.len(), 1);
         assert_eq!(secrets[0].key, "LINEAR_API_KEY");
         assert_eq!(secrets[0].value, "lin_token");
+    }
+
+    #[test]
+    fn prompted_user_identity_bindings_preserve_selected_identity() {
+        let bindings = super::import_source_user_identity_bindings(vec![SourceIdentityBinding {
+            surface_id: "rest".to_string(),
+            identity: "github-personal".to_string(),
+            owner: IdentityOwner::User as i32,
+        }])
+        .expect("prompted identity bindings should be valid");
+
+        assert!(bindings.replace_existing);
+        assert_eq!(bindings.source_bindings.len(), 1);
+        assert_eq!(bindings.source_bindings[0].surface_id, "rest");
+        assert_eq!(bindings.source_bindings[0].identity, "github-personal");
+        assert_eq!(
+            bindings.source_bindings[0].owner,
+            IdentityOwner::User as i32
+        );
     }
 
     #[test]
