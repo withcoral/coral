@@ -180,6 +180,16 @@ impl QueryManager {
         ))
     }
 
+    pub(crate) fn installed_source_names(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<SourceName>, QueryManagerError> {
+        self.config_store
+            .list_workspace_sources(workspace_name)
+            .map(|sources| sources.into_iter().map(|source| source.name).collect())
+            .map_err(QueryManagerError::App)
+    }
+
     pub(crate) async fn execute_sql(
         &self,
         workspace_name: &WorkspaceName,

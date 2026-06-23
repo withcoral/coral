@@ -290,13 +290,32 @@ impl SearchIndexStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn enqueue_observed_values(
+        &self,
+        workspace_name: &WorkspaceName,
+        records: Vec<ObservedValueRecord>,
+    ) -> Result<(), SearchIndexError> {
+        self.enqueue_observed_values_if(workspace_name, records, || Ok(true))
+            .map(|_enqueued| ())
+    }
+
+    pub(crate) fn enqueue_observed_values_if(
         &self,
         _workspace_name: &WorkspaceName,
         records: Vec<ObservedValueRecord>,
-    ) -> Result<(), SearchIndexError> {
+        should_enqueue: impl FnOnce() -> Result<bool, SearchIndexError>,
+    ) -> Result<bool, SearchIndexError> {
         if records.is_empty() {
-            return Ok(());
+            return Ok(true);
+        }
+
+        let _guard = self
+            .mutation_lock
+            .lock()
+            .map_err(|_poisoned| SearchIndexError::MutationLockPoisoned)?;
+        if !should_enqueue()? {
+            return Ok(false);
         }
 
         let database = self.observed_database()?;
@@ -334,7 +353,7 @@ impl SearchIndexStore {
             }
         }
         write_txn.commit()?;
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) fn drain_observed_value_queue_for(

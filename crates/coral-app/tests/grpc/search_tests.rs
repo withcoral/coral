@@ -455,6 +455,39 @@ async fn clear_observed_values_clears_workspace_values() {
 }
 
 #[tokio::test]
+async fn clear_observed_values_clears_workspace_values_without_loading_manifests() {
+    let harness = GrpcHarness::new().await;
+    let fixture = ObservedHttpFixture::new().await;
+    import_observed_people_source(&harness, &fixture).await;
+    let rows = harness
+        .execute_sql_rows("SELECT name FROM observed_people.people WHERE id = '2'")
+        .await;
+    assert_eq!(rows.len(), 1);
+
+    let before = search_response(&harness, "grace@example.test").await;
+    assert!(contains_observed_value(
+        &before,
+        "observed_people",
+        "grace@example.test"
+    ));
+    assert!(observed_entity_count(&harness) > 0);
+
+    let manifest_path = source_dir(harness.config_dir(), "observed_people").join("manifest.yaml");
+    std::fs::remove_file(&manifest_path).expect("remove installed manifest");
+
+    harness
+        .search_client()
+        .clear_observed_values(Request::new(ClearObservedValuesRequest {
+            workspace: Some(default_workspace()),
+            source_name: None,
+        }))
+        .await
+        .expect("clear observed values without resolving source manifests");
+
+    assert_eq!(observed_entity_count(&harness), 0);
+}
+
+#[tokio::test]
 async fn clear_observed_values_clears_one_source() {
     let harness = GrpcHarness::new().await;
     let fixture = ObservedHttpFixture::new().await;
@@ -817,13 +850,25 @@ fn total_catalog_entity_count(harness: &GrpcHarness) -> u32 {
 }
 
 fn catalog_count_for_terms(harness: &GrpcHarness, terms: Vec<(&str, &str)>) -> u32 {
+    search_count_for_terms(harness, "catalog", terms)
+}
+
+fn observed_entity_count(harness: &GrpcHarness) -> u32 {
+    search_count_for_terms(harness, "observed_value", Vec::new())
+}
+
+fn search_count_for_terms(
+    harness: &GrpcHarness,
+    entity_kind_value: &str,
+    terms: Vec<(&str, &str)>,
+) -> u32 {
     let index = Index::open_in_dir(search_index_path(harness)).expect("open search index");
     let schema = index.schema();
     let entity_kind = schema.get_field("entity_kind").expect("entity_kind field");
     let mut clauses = vec![(
         Occur::Must,
         Box::new(TermQuery::new(
-            Term::from_field_text(entity_kind, "catalog"),
+            Term::from_field_text(entity_kind, entity_kind_value),
             IndexRecordOption::Basic,
         )) as Box<dyn tantivy::query::Query>,
     )];
@@ -840,7 +885,7 @@ fn catalog_count_for_terms(harness: &GrpcHarness, terms: Vec<(&str, &str)>) -> u
     let query = BooleanQuery::new(clauses);
     let reader = index.reader().expect("reader");
     let searcher = reader.searcher();
-    let count = searcher.search(&query, &Count).expect("catalog count");
+    let count = searcher.search(&query, &Count).expect("search count");
     u32::try_from(count).expect("count fits u32")
 }
 

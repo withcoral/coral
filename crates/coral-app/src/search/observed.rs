@@ -16,7 +16,9 @@ use coral_engine::{
     QuerySource, RuntimeSourceComponent, SourceObservationPublisher, SourceObservationScope,
     SourceObservationSurfaceKind, SourceScanObservation,
 };
-use coral_spec::{ColumnSpec, ManifestInputKind};
+use coral_spec::backends::http::HttpTableSpec;
+use coral_spec::{ColumnSpec, ManifestInputKind, SourceTableFunctionSpec};
+use serde::Serialize;
 use serde_json::{Map, Value};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
@@ -175,7 +177,7 @@ impl ObservedValueIndexer {
                 "source-scan observed-value collection budget exhausted; enqueueing bounded chunks"
             );
         }
-        self.enqueue_record_collection(collection)
+        self.enqueue_record_collection(collection, &provenance)
     }
 
     fn source_scan_surface(
@@ -199,6 +201,7 @@ impl ObservedValueIndexer {
     fn enqueue_record_collection(
         &self,
         collection: ObservedRecordCollection,
+        provenance: &[Option<FieldProvenance>],
     ) -> Result<(), ObservedValueIndexError> {
         if collection.is_empty() {
             return Ok(());
@@ -229,7 +232,17 @@ impl ObservedValueIndexer {
                 );
                 break;
             }
-            store.enqueue_observed_values(&self.workspace_name, records)?;
+            let enqueued =
+                store.enqueue_observed_values_if(&self.workspace_name, records, || {
+                    Ok(!self.source_generations_changed_for_index(provenance)?)
+                })?;
+            if !enqueued {
+                tracing::debug!(
+                    workspace = %self.workspace_name,
+                    "skipping source-scan observed-value enqueue because a source changed after collection"
+                );
+                return Ok(());
+            }
         }
         store.enforce_observed_storage_budget(self.storage_budget_bytes)?;
         Ok(())
@@ -239,6 +252,22 @@ impl ObservedValueIndexer {
         &self,
         provenance: &[Option<FieldProvenance>],
     ) -> Result<bool, ObservedValueIndexError> {
+        self.source_generations_changed_for_io(provenance)
+            .map_err(Into::into)
+    }
+
+    fn source_generations_changed_for_index(
+        &self,
+        provenance: &[Option<FieldProvenance>],
+    ) -> Result<bool, SearchIndexError> {
+        self.source_generations_changed_for_io(provenance)
+            .map_err(Into::into)
+    }
+
+    fn source_generations_changed_for_io(
+        &self,
+        provenance: &[Option<FieldProvenance>],
+    ) -> Result<bool, std::io::Error> {
         let source_names = provenance
             .iter()
             .filter_map(|provenance| provenance.as_ref())
@@ -701,16 +730,14 @@ fn update_component_scope_hashes(hasher: &mut Sha256, source: &QuerySource) {
         match component {
             RuntimeSourceComponent::Http(http) => {
                 update_scope_hash(hasher, "component.kind", "http");
+                update_json_scope_hash(hasher, "http.base_url", &http.base_url);
+                update_json_scope_hash(hasher, "http.auth", &http.auth);
+                update_json_scope_hash(hasher, "http.request_headers", &http.request_headers);
                 for table in &http.tables {
-                    update_surface_scope_hash(hasher, "table", table.name(), table.columns());
+                    update_http_table_scope_hash(hasher, table);
                 }
                 for function in &http.functions {
-                    update_surface_scope_hash(
-                        hasher,
-                        "table_function",
-                        &function.name,
-                        &function.columns,
-                    );
+                    update_http_table_function_scope_hash(hasher, function);
                 }
             }
             RuntimeSourceComponent::File(file) => {
@@ -735,6 +762,37 @@ fn update_component_scope_hashes(hasher: &mut Sha256, source: &QuerySource) {
             }
         }
     }
+}
+
+fn update_http_table_scope_hash(hasher: &mut Sha256, table: &HttpTableSpec) {
+    update_surface_scope_hash(hasher, "table", table.name(), table.columns());
+    update_json_scope_hash(hasher, "http.table.filters", table.filters());
+    update_json_scope_hash(hasher, "http.table.request", &table.request);
+    update_json_scope_hash(hasher, "http.table.requests", &table.requests);
+    update_json_scope_hash(hasher, "http.table.response", &table.response);
+    update_json_scope_hash(hasher, "http.table.pagination", &table.pagination);
+}
+
+fn update_http_table_function_scope_hash(hasher: &mut Sha256, function: &SourceTableFunctionSpec) {
+    update_surface_scope_hash(hasher, "table_function", &function.name, &function.columns);
+    update_scope_hash(hasher, "http.table_function.kind", function.kind.as_str());
+    for arg in &function.args {
+        update_scope_hash(hasher, "http.table_function.arg.name", &arg.name);
+        update_scope_hash(
+            hasher,
+            "http.table_function.arg.required",
+            if arg.required { "true" } else { "false" },
+        );
+        update_json_scope_hash(hasher, "http.table_function.arg.values", &arg.values);
+        update_scope_hash(hasher, "http.table_function.arg.bind.arg", &arg.bind.arg);
+    }
+    update_json_scope_hash(hasher, "http.table_function.request", &function.request);
+    update_json_scope_hash(hasher, "http.table_function.response", &function.response);
+    update_json_scope_hash(
+        hasher,
+        "http.table_function.pagination",
+        &function.pagination,
+    );
 }
 
 pub(crate) fn observed_source_scopes_from_query_sources(
@@ -777,6 +835,13 @@ fn update_scope_hash(hasher: &mut Sha256, label: &str, value: &str) {
     hasher.update(label.as_bytes());
     hasher.update(value.len().to_le_bytes());
     hasher.update(value.as_bytes());
+}
+
+fn update_json_scope_hash<T: Serialize + ?Sized>(hasher: &mut Sha256, label: &str, value: &T) {
+    let serialized = serde_json::to_string(value).unwrap_or_else(|error| {
+        format!("{{\"__observed_scope_serialization_error\":\"{error}\"}}")
+    });
+    update_scope_hash(hasher, label, &serialized);
 }
 
 fn is_safe_oauth_scope_metadata_key(key: &str) -> bool {
@@ -2096,6 +2161,25 @@ observed_value_stale_after_days = 7
     }
 
     #[test]
+    fn observed_source_scope_changes_with_http_request_shape() {
+        let baseline =
+            observed_source_scope_id(&http_query_source_with_shape("fixture", "/messages", &[]));
+        let request_changed = observed_source_scope_id(&http_query_source_with_shape(
+            "fixture",
+            "/messages-v2",
+            &[],
+        ));
+        let response_changed = observed_source_scope_id(&http_query_source_with_shape(
+            "fixture",
+            "/messages",
+            &["items"],
+        ));
+
+        assert_ne!(baseline, request_changed);
+        assert_ne!(baseline, response_changed);
+    }
+
+    #[test]
     fn observed_policy_excludes_sources_surfaces_and_columns() {
         let config = ObservedSearchConfig {
             excluded_sources: vec!["github".to_string()],
@@ -2824,6 +2908,67 @@ observed_value_excluded_columns = [
     }
 
     #[test]
+    fn skips_observation_when_source_generation_changes_after_collection() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = http_query_source("fixture");
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service",
+            DataType::Utf8,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec!["payments-api"]))],
+        )
+        .expect("batch");
+        let indexer = ObservedValueIndexer::new(layout.clone(), workspace.clone(), &[source]);
+        let observation = OwnedSourceScanObservation {
+            source_name: "fixture".to_string(),
+            surface_kind: SourceObservationSurfaceKind::Table,
+            surface_name: "messages".to_string(),
+            observation_scope: SourceObservationScope::MappedRowsBeforeProjection,
+            batch,
+        };
+        let surface = indexer
+            .source_scan_surface(&observation)
+            .expect("observed surface");
+        let schema = observation.batch.schema();
+        let provenance = schema
+            .fields()
+            .iter()
+            .map(|field| direct_field_provenance(surface, field.name(), field.name()))
+            .collect::<Vec<_>>();
+        let collection = observed_records_from_batches(
+            schema.as_ref(),
+            std::slice::from_ref(&observation.batch),
+            &provenance,
+            indexer.collection_budget,
+        )
+        .expect("collect observed records");
+        assert!(!collection.is_empty());
+
+        mark_observed_source_generation(
+            &layout,
+            &workspace,
+            &SourceName::parse("fixture").expect("source"),
+        )
+        .expect("mark source generation");
+        indexer
+            .enqueue_record_collection(collection, &provenance)
+            .expect("post-collection stale source-scan observation is skipped without failing");
+
+        let store = SearchIndexStore::open_workspace(&layout, &workspace).expect("store");
+        drain_observed_queue(&store);
+        let hits = store
+            .search_observed_values(&workspace, &["payments-api".to_string()], 10)
+            .expect("search observed");
+        assert!(hits.is_empty());
+    }
+
+    #[test]
     fn duplicate_values_are_aggregated_before_storage() {
         let temp = tempdir().expect("tempdir");
         let layout =
@@ -3121,6 +3266,10 @@ observed_collection_max_json_depth = 1
     }
 
     fn http_query_source(name: &str) -> QuerySource {
+        http_query_source_with_shape(name, "/messages", &[])
+    }
+
+    fn http_query_source_with_shape(name: &str, path: &str, rows_path: &[&str]) -> QuerySource {
         let manifest = parse_source_manifest_value(json!({
             "name": name,
             "version": "0.1.0",
@@ -3131,10 +3280,10 @@ observed_collection_max_json_depth = 1
                 "name": "messages",
                 "description": "Messages fixture",
                 "request": {
-                    "path": "/messages"
+                    "path": path
                 },
                 "response": {
-                    "rows_path": []
+                    "rows_path": rows_path
                 },
                 "columns": [
                     {"name": "service", "type": "Utf8"},

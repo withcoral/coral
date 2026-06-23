@@ -1,7 +1,7 @@
 //! Implements the gRPC `SearchService`.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
@@ -296,9 +296,7 @@ impl SearchServiceApi for SearchService {
                 .map(SourceName::parse)
                 .transpose()
                 .map_err(app_status)?;
-            search
-                .clear_observed_values(&workspace_name, source_name)
-                .await?;
+            search.clear_observed_values(&workspace_name, source_name)?;
             Ok(Response::new(ClearObservedValuesResponse {}))
         })
         .await
@@ -378,7 +376,7 @@ impl UniversalSearch {
         })
     }
 
-    async fn clear_observed_values(
+    fn clear_observed_values(
         &self,
         workspace_name: &WorkspaceName,
         source_name: Option<SourceName>,
@@ -390,15 +388,10 @@ impl UniversalSearch {
                 .map_err(|error| clear_observed_values_status(&error));
         }
 
-        let catalog = self
+        let source_names = self
             .queries
-            .list_stored_catalog(workspace_name, None)
-            .await
+            .installed_source_names(workspace_name)
             .map_err(query_status)?;
-        let source_names = catalog_source_names(&catalog)
-            .into_iter()
-            .map(|source_name| SourceName::parse(&source_name).map_err(app_status))
-            .collect::<Result<Vec<_>, _>>()?;
         self.indexes
             .clear_observed_values(workspace_name, &source_names)
             .map_err(|error| clear_observed_values_status(&error))
@@ -1715,20 +1708,6 @@ fn observed_index_error_status(error: &SearchIndexError) -> ObservedProviderStat
 
 fn clear_observed_values_status(error: &SearchIndexError) -> Status {
     Status::internal(format!("failed to clear observed values: {error}"))
-}
-
-fn catalog_source_names(catalog: &CatalogInfo) -> BTreeSet<String> {
-    catalog
-        .tables
-        .iter()
-        .map(|table| table.schema_name.clone())
-        .chain(
-            catalog
-                .table_functions
-                .iter()
-                .map(|function| function.schema_name.clone()),
-        )
-        .collect()
 }
 
 fn truncation_note(truncated: bool, total_count: usize, max_results: usize) -> String {
