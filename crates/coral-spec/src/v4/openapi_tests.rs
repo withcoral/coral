@@ -662,6 +662,61 @@ paths:
 }
 
 #[test]
+fn importer_warns_for_openapi_all_of_property_conflicts() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: conflicting_all_of
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Combined'}
+components:
+  schemas:
+    Combined:
+      allOf:
+        - type: object
+          properties:
+            id: {type: string}
+        - type: object
+          properties:
+            id: {type: integer}
+"
+        .as_bytes(),
+    )
+    .expect("conflicting allOf imports with diagnostics");
+
+    let operation = ir.operations.first().expect("operation");
+    let codes = operation
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect::<Vec<_>>();
+    assert!(codes.contains(&"OPENAPI_ALLOF_CONFLICT"), "{codes:?}");
+    assert_eq!(operation.output.type_ref, "json");
+}
+
+#[test]
 fn importer_preserves_non_string_parameter_defaults() {
     let manifest = parse_source_manifest_yaml(
         r"

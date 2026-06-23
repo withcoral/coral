@@ -1,6 +1,106 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde_json::Value;
 
 use crate::v4::ir::IrScalarType;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefError<'a> {
+    External(&'a str),
+    NotFound(&'a str),
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct JsonObjectShape {
+    pub(crate) properties: BTreeMap<String, Value>,
+    pub(crate) required: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct JsonSchemaPropertyConflict {
+    pub(crate) property: String,
+}
+
+pub(crate) fn resolve_local_ref<'a>(
+    root: &'a Value,
+    schema: &'a Value,
+) -> Result<&'a Value, RefError<'a>> {
+    let Some(reference) = schema.get("$ref").and_then(Value::as_str) else {
+        return Ok(schema);
+    };
+    if !reference.starts_with("#/") {
+        return Err(RefError::External(reference));
+    }
+    let pointer = reference.strip_prefix('#').unwrap_or(reference);
+    root.pointer(pointer).ok_or(RefError::NotFound(reference))
+}
+
+pub(crate) fn direct_json_object_shape(schema: &Value) -> JsonObjectShape {
+    let Some(schema) = schema.as_object() else {
+        return JsonObjectShape::default();
+    };
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| {
+            properties
+                .iter()
+                .map(|(name, property)| (name.clone(), property.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    JsonObjectShape {
+        properties,
+        required: json_schema_required_fields(schema),
+    }
+}
+
+pub(crate) fn json_schema_required_fields(
+    schema: &serde_json::Map<String, Value>,
+) -> BTreeSet<String> {
+    schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect()
+}
+
+pub(crate) fn merge_json_schema_properties_exact(
+    target: &mut BTreeMap<String, Value>,
+    source: BTreeMap<String, Value>,
+) -> Result<(), JsonSchemaPropertyConflict> {
+    for (name, property) in source {
+        if let Some(existing) = target.get(&name) {
+            if existing != &property {
+                return Err(JsonSchemaPropertyConflict { property: name });
+            }
+        } else {
+            target.insert(name, property);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn merge_json_object_shape_annotation_insensitive(
+    target: &mut JsonObjectShape,
+    source: JsonObjectShape,
+) -> Result<(), JsonSchemaPropertyConflict> {
+    for (name, property) in source.properties {
+        if let Some(existing) = target.properties.get_mut(&name) {
+            if json_schema_property_schemas_conflict(existing, &property) {
+                return Err(JsonSchemaPropertyConflict { property: name });
+            }
+            merge_json_schema_property_metadata(existing, &property);
+        } else {
+            target.properties.insert(name, property);
+        }
+    }
+    target.required.extend(source.required);
+    Ok(())
+}
 
 pub(crate) fn json_schema_scalar_type(schema: &Value) -> Option<IrScalarType> {
     json_schema_scalar_type_with_default(schema, None)
@@ -102,6 +202,66 @@ fn scalar_for_typeless_schema_format(schema: &Value) -> Option<IrScalarType> {
         })
 }
 
+fn json_schema_property_schemas_conflict(existing: &Value, candidate: &Value) -> bool {
+    schema_without_annotation_metadata(existing) != schema_without_annotation_metadata(candidate)
+}
+
+fn schema_without_annotation_metadata(schema: &Value) -> Value {
+    schema_without_annotation_metadata_at_key(None, schema)
+}
+
+fn schema_without_annotation_metadata_at_key(key: Option<&str>, schema: &Value) -> Value {
+    const ANNOTATION_KEYS: &[&str] = &["$comment", "description", "examples", "title"];
+    match schema {
+        Value::Object(object) => {
+            let is_schema_name_map = matches!(
+                key,
+                Some("$defs" | "definitions" | "patternProperties" | "properties")
+            );
+            Value::Object(
+                object
+                    .iter()
+                    .filter(|(key, _value)| {
+                        is_schema_name_map || !ANNOTATION_KEYS.contains(&key.as_str())
+                    })
+                    .map(|(key, value)| {
+                        (
+                            key.clone(),
+                            schema_without_annotation_metadata_at_key(Some(key), value),
+                        )
+                    })
+                    .collect(),
+            )
+        }
+        Value::Array(values) => {
+            let mut values = values
+                .iter()
+                .map(|value| schema_without_annotation_metadata_at_key(None, value))
+                .collect::<Vec<_>>();
+            if key == Some("type") {
+                values.sort_by_key(Value::to_string);
+            }
+            Value::Array(values)
+        }
+        other => other.clone(),
+    }
+}
+
+fn merge_json_schema_property_metadata(existing: &mut Value, candidate: &Value) {
+    const ANNOTATION_KEYS: &[&str] = &["$comment", "description", "examples", "title"];
+    let (Some(existing), Some(candidate)) = (existing.as_object_mut(), candidate.as_object())
+    else {
+        return;
+    };
+    for key in ANNOTATION_KEYS {
+        if !existing.contains_key(*key)
+            && let Some(value) = candidate.get(*key)
+        {
+            existing.insert((*key).to_string(), value.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -138,5 +298,112 @@ mod tests {
             json_schema_scalar_type(&json!({"format": "date-time"})),
             Some(IrScalarType::Timestamp)
         );
+    }
+
+    #[test]
+    fn resolve_local_ref_returns_input_without_ref() {
+        let root = json!({"$defs": {}});
+        let schema = json!({"type": "string"});
+
+        let resolved = resolve_local_ref(&root, &schema).expect("schema");
+
+        assert!(std::ptr::eq(
+            std::ptr::from_ref(resolved),
+            std::ptr::from_ref(&schema)
+        ));
+    }
+
+    #[test]
+    fn resolve_local_ref_returns_local_pointer_target() {
+        let root = json!({
+            "$defs": {
+                "Name": {"type": "string"}
+            }
+        });
+        let schema = json!({"$ref": "#/$defs/Name"});
+
+        let resolved = resolve_local_ref(&root, &schema).expect("schema");
+
+        assert_eq!(resolved, &json!({"type": "string"}));
+    }
+
+    #[test]
+    fn resolve_local_ref_rejects_external_refs() {
+        let root = json!({});
+        let schema = json!({"$ref": "https://example.com/schema.json#/Name"});
+
+        assert_eq!(
+            resolve_local_ref(&root, &schema),
+            Err(RefError::External("https://example.com/schema.json#/Name"))
+        );
+    }
+
+    #[test]
+    fn resolve_local_ref_reports_missing_refs() {
+        let root = json!({});
+        let schema = json!({"$ref": "#/$defs/Missing"});
+
+        assert_eq!(
+            resolve_local_ref(&root, &schema),
+            Err(RefError::NotFound("#/$defs/Missing"))
+        );
+    }
+
+    #[test]
+    fn exact_property_merge_reports_conflict() {
+        let mut target = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"}
+            }
+        }))
+        .properties;
+        let source = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "integer"}
+            }
+        }))
+        .properties;
+
+        assert_eq!(
+            merge_json_schema_properties_exact(&mut target, source),
+            Err(JsonSchemaPropertyConflict {
+                property: "query".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn annotation_insensitive_object_shape_merge_keeps_metadata() {
+        let mut target = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": ["string", "null"],
+                    "title": "Query"
+                }
+            }
+        }));
+        let source = direct_json_object_shape(&json!({
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {
+                    "type": ["null", "string"],
+                    "description": "Search query"
+                }
+            }
+        }));
+
+        merge_json_object_shape_annotation_insensitive(&mut target, source).expect("merge");
+
+        let query = target.properties.get("query").expect("query property");
+        assert_eq!(query.get("title").and_then(Value::as_str), Some("Query"));
+        assert_eq!(
+            query.get("description").and_then(Value::as_str),
+            Some("Search query")
+        );
+        assert!(target.required.contains("query"));
     }
 }
