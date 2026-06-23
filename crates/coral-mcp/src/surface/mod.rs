@@ -4,6 +4,7 @@ mod catalog;
 mod discovery;
 mod errors;
 mod resources;
+mod source_names;
 mod tools;
 mod values;
 
@@ -16,6 +17,7 @@ pub(crate) use resources::{
     guide_resource, guide_resource_content, initial_instructions, tables_resource,
     tables_resource_content,
 };
+pub(crate) use source_names::connected_source_names_text;
 pub(crate) use tools::{
     CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
     describe_table_tool, feedback_tool, list_catalog_arguments, list_catalog_tool,
