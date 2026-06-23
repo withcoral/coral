@@ -45,17 +45,23 @@ pub(crate) struct StartOAuthCredentialRequest<'a> {
     pub(crate) oauth: &'a ManifestOAuthCredentialSpec,
     pub(crate) source_inputs: &'a BTreeMap<String, String>,
     pub(crate) credential_inputs: Vec<(String, String)>,
-    pub(crate) client_material_persistence: OAuthClientMaterialPersistence,
+    pub(crate) refresh_material_persistence: OAuthRefreshMaterialPersistence,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OAuthClientMaterialPersistence {
+pub(crate) enum OAuthRefreshMaterialPersistence {
+    /// Do not persist OAuth refresh context that can be derived later from the
+    /// source or identity spec.
     None,
-    ClientCredentials {
+    /// Persist only refresh context values that were supplied directly for this
+    /// credential and will not be available from spec-level input material.
+    PartialRefreshContext {
         client_id: bool,
         client_secret: bool,
     },
-    All,
+    /// Persist every non-token value required to refresh standalone credential
+    /// material without resolved source or identity-spec input context.
+    CompleteRefreshContext,
 }
 
 /// Progress event emitted while an OAuth credential authorization runs.
@@ -133,12 +139,12 @@ impl PendingOAuthProgressEvent {
     }
 }
 
-impl OAuthClientMaterialPersistence {
+impl OAuthRefreshMaterialPersistence {
     fn stores_client_id(self) -> bool {
         matches!(
             self,
-            Self::All
-                | Self::ClientCredentials {
+            Self::CompleteRefreshContext
+                | Self::PartialRefreshContext {
                     client_id: true,
                     ..
                 }
@@ -148,12 +154,16 @@ impl OAuthClientMaterialPersistence {
     fn stores_client_secret(self) -> bool {
         matches!(
             self,
-            Self::All
-                | Self::ClientCredentials {
+            Self::CompleteRefreshContext
+                | Self::PartialRefreshContext {
                     client_secret: true,
                     ..
                 }
         )
+    }
+
+    fn stores_token_url(self) -> bool {
+        matches!(self, Self::CompleteRefreshContext)
     }
 }
 
@@ -220,7 +230,7 @@ struct OAuthSessionCommon {
     endpoints: ManifestOAuthEndpointUrls,
     client_id: String,
     client_secret: Option<String>,
-    client_material_persistence: OAuthClientMaterialPersistence,
+    refresh_material_persistence: OAuthRefreshMaterialPersistence,
 }
 
 struct AuthorizationCodeSessionConfig {
@@ -353,7 +363,7 @@ impl OAuthCredentialService {
             endpoints,
             client_id,
             client_secret,
-            client_material_persistence: request.client_material_persistence,
+            refresh_material_persistence: request.refresh_material_persistence,
         };
         match flow_kind {
             ManifestOAuthFlowKind::AuthorizationCode => {
@@ -1435,16 +1445,16 @@ fn oauth_credential_material(
     if let Some(scope) = token.scope.as_deref() {
         internal_metadata.insert(format!("{prefix}scope"), scope.to_string());
     }
-    if session.client_material_persistence.stores_client_id() {
+    if session.refresh_material_persistence.stores_client_id() {
         internal_metadata.insert(format!("{prefix}client_id"), session.client_id.clone());
     }
-    if session.client_material_persistence == OAuthClientMaterialPersistence::All {
+    if session.refresh_material_persistence.stores_token_url() {
         internal_metadata.insert(
             format!("{prefix}token_url"),
             session.endpoints.token_url.clone(),
         );
     }
-    if session.client_material_persistence.stores_client_secret() {
+    if session.refresh_material_persistence.stores_client_secret() {
         if let Some(secret) = session.oauth.client.secret.as_ref() {
             internal_metadata.insert(
                 format!("{prefix}client_secret_transport"),
@@ -1707,7 +1717,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        AuthorizationCodeSessionConfig, OAuthClientMaterialPersistence, OAuthCredentialService,
+        AuthorizationCodeSessionConfig, OAuthCredentialService, OAuthRefreshMaterialPersistence,
         OAuthSessionCommon, RefreshOAuthCredentialRequest, StartOAuthCredentialRequest,
         basic_client_authorization, join_scope_values, material_key_belongs_to_input,
         oauth_metadata_prefix, parse_token_response, pkce_challenge, receive_callback,
@@ -2132,7 +2142,8 @@ mod tests {
                     "OAUTH_CLIENT_ID".to_string(),
                     "override-client".to_string(),
                 )],
-                client_material_persistence: OAuthClientMaterialPersistence::All,
+                refresh_material_persistence:
+                    OAuthRefreshMaterialPersistence::CompleteRefreshContext,
             },
             move |authorization| async move {
                 authorization_tx
@@ -2226,7 +2237,8 @@ mod tests {
                     "OAUTH_CLIENT_ID".to_string(),
                     "device-client".to_string(),
                 )],
-                client_material_persistence: OAuthClientMaterialPersistence::All,
+                refresh_material_persistence:
+                    OAuthRefreshMaterialPersistence::CompleteRefreshContext,
             },
             move |authorization| async move {
                 authorization_tx.send(authorization).map_err(|_error| {
@@ -2307,7 +2319,8 @@ mod tests {
                     "OAUTH_CLIENT_ID".to_string(),
                     "device-client".to_string(),
                 )],
-                client_material_persistence: OAuthClientMaterialPersistence::All,
+                refresh_material_persistence:
+                    OAuthRefreshMaterialPersistence::CompleteRefreshContext,
             },
             |_authorization| async { Ok(()) },
         );
@@ -2393,7 +2406,8 @@ mod tests {
                     ("OAUTH_CLIENT_ID".to_string(), "client".to_string()),
                     ("OAUTH_CLIENT_SECRET".to_string(), "secret".to_string()),
                 ],
-                client_material_persistence: OAuthClientMaterialPersistence::All,
+                refresh_material_persistence:
+                    OAuthRefreshMaterialPersistence::CompleteRefreshContext,
             },
             move |authorization| async move {
                 authorization_tx
@@ -2461,7 +2475,8 @@ mod tests {
                 endpoints,
                 client_id: "client".to_string(),
                 client_secret: None,
-                client_material_persistence: OAuthClientMaterialPersistence::All,
+                refresh_material_persistence:
+                    OAuthRefreshMaterialPersistence::CompleteRefreshContext,
             },
             state: "expected-state".to_string(),
             code_verifier: None,
@@ -2529,7 +2544,8 @@ mod tests {
                 endpoints,
                 client_id: "client".to_string(),
                 client_secret: None,
-                client_material_persistence: OAuthClientMaterialPersistence::All,
+                refresh_material_persistence:
+                    OAuthRefreshMaterialPersistence::CompleteRefreshContext,
             },
             state: "expected-state".to_string(),
             code_verifier: None,
@@ -2591,7 +2607,8 @@ mod tests {
                     ("OAUTH_CLIENT_ID".to_string(), "client".to_string()),
                     ("OAUTH_CLIENT_SECRET".to_string(), "secret".to_string()),
                 ],
-                client_material_persistence: OAuthClientMaterialPersistence::All,
+                refresh_material_persistence:
+                    OAuthRefreshMaterialPersistence::CompleteRefreshContext,
             },
             move |authorization| async move {
                 authorization_tx
@@ -2643,7 +2660,8 @@ mod tests {
                 oauth: &oauth,
                 source_inputs: &EMPTY_SOURCE_INPUTS,
                 credential_inputs: Vec::new(),
-                client_material_persistence: OAuthClientMaterialPersistence::All,
+                refresh_material_persistence:
+                    OAuthRefreshMaterialPersistence::CompleteRefreshContext,
             },
             move |authorization| async move {
                 authorization_tx
@@ -2704,7 +2722,8 @@ mod tests {
                 oauth: &oauth,
                 source_inputs: &EMPTY_SOURCE_INPUTS,
                 credential_inputs: Vec::new(),
-                client_material_persistence: OAuthClientMaterialPersistence::All,
+                refresh_material_persistence:
+                    OAuthRefreshMaterialPersistence::CompleteRefreshContext,
             },
             move |authorization| async move {
                 authorization_tx

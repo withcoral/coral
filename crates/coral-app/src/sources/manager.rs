@@ -8,7 +8,7 @@ use serde_yaml::Value as YamlValue;
 
 use crate::bootstrap::AppError;
 use crate::credentials::oauth::{
-    OAuthClientMaterialPersistence, OAuthCredentialMaterial, OAuthCredentialService,
+    OAuthCredentialMaterial, OAuthCredentialService, OAuthRefreshMaterialPersistence,
     StartOAuthCredentialRequest, material_key_belongs_to_input,
 };
 use crate::credentials::{
@@ -998,7 +998,8 @@ impl SourceManager {
                         oauth: config.oauth,
                         source_inputs,
                         credential_inputs,
-                        client_material_persistence: OAuthClientMaterialPersistence::All,
+                        refresh_material_persistence:
+                            OAuthRefreshMaterialPersistence::CompleteRefreshContext,
                     },
                     move |authorization| {
                         let events = authorization_events;

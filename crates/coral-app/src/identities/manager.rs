@@ -15,8 +15,8 @@ use tracing::info_span;
 
 use crate::bootstrap::AppError;
 use crate::credentials::oauth::{
-    OAuthClientMaterialPersistence, OAuthCredentialMaterial, OAuthCredentialService,
-    OAuthProgressEventSender, StartOAuthCredentialRequest,
+    OAuthCredentialMaterial, OAuthCredentialService, OAuthProgressEventSender,
+    OAuthRefreshMaterialPersistence, StartOAuthCredentialRequest,
 };
 use crate::identities::runtime::{
     FIXED_TOKEN_MATERIAL_KEY, IdentityRuntimeServices, OAUTH_ACCESS_TOKEN_MATERIAL_KEY,
@@ -454,8 +454,8 @@ impl IdentityManager {
             credential_inputs.clone(),
         )?;
 
-        let client_material_persistence =
-            oauth_client_material_persistence_for_identity(oauth, &provided_inputs);
+        let refresh_material_persistence =
+            oauth_refresh_material_persistence_for_identity(oauth, &provided_inputs);
         let material = self
             .oauth_credential_service
             .authorize_with_progress(
@@ -464,7 +464,7 @@ impl IdentityManager {
                     oauth,
                     source_inputs: &identity_inputs,
                     credential_inputs,
-                    client_material_persistence,
+                    refresh_material_persistence,
                 },
                 name.to_string(),
                 &events,
@@ -1073,10 +1073,10 @@ fn oauth_credential_inputs_from_identity_inputs(
     values
 }
 
-fn oauth_client_material_persistence_for_identity(
+fn oauth_refresh_material_persistence_for_identity(
     oauth: &ManifestOAuthCredentialSpec,
     provided: &BTreeMap<String, String>,
-) -> OAuthClientMaterialPersistence {
+) -> OAuthRefreshMaterialPersistence {
     let client_id = oauth
         .client
         .id
@@ -1089,12 +1089,12 @@ fn oauth_client_material_persistence_for_identity(
         .as_ref()
         .is_some_and(|secret| provided.contains_key(&secret.input));
     if client_id || client_secret {
-        OAuthClientMaterialPersistence::ClientCredentials {
+        OAuthRefreshMaterialPersistence::PartialRefreshContext {
             client_id,
             client_secret,
         }
     } else {
-        OAuthClientMaterialPersistence::None
+        OAuthRefreshMaterialPersistence::None
     }
 }
 
