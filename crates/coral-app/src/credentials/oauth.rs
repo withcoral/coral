@@ -169,8 +169,8 @@ impl OAuthRefreshMaterialPersistence {
 
 pub(crate) struct RefreshOAuthCredentialRequest<'a> {
     access_token_material_key: &'a str,
-    material_label: String,
-    reconnect_label: &'static str,
+    error_subject: String,
+    reconnect_hint: &'static str,
     metadata_prefix: String,
     oauth: &'a ManifestOAuthCredentialSpec,
     resolved_inputs: Option<&'a BTreeMap<String, String>>,
@@ -183,8 +183,8 @@ impl<'a> RefreshOAuthCredentialRequest<'a> {
     ) -> Self {
         Self {
             access_token_material_key: input_key,
-            material_label: format!("source secret '{input_key}'"),
-            reconnect_label: "reconnect the source",
+            error_subject: format!("source secret '{input_key}'"),
+            reconnect_hint: "reconnect the source",
             metadata_prefix: oauth_metadata_prefix(input_key),
             oauth,
             resolved_inputs: None,
@@ -199,8 +199,8 @@ impl<'a> RefreshOAuthCredentialRequest<'a> {
     ) -> Self {
         Self {
             access_token_material_key,
-            material_label: format!("identity '{identity_name}'"),
-            reconnect_label: "reconnect the identity",
+            error_subject: format!("identity '{identity_name}'"),
+            reconnect_hint: "reconnect the identity",
             metadata_prefix: oauth_metadata_prefix(access_token_material_key),
             oauth,
             resolved_inputs: Some(resolved_inputs),
@@ -463,8 +463,8 @@ impl OAuthCredentialService {
         credential_material: &mut BTreeMap<String, String>,
     ) -> Result<bool, AppError> {
         let Some(refresh) = oauth_refresh_config(
-            request.material_label.as_str(),
-            request.reconnect_label,
+            request.error_subject.as_str(),
+            request.reconnect_hint,
             request.metadata_prefix.as_str(),
             request.oauth,
             request.resolved_inputs,
@@ -1497,8 +1497,8 @@ fn oauth_metadata_prefix(input_key: &str) -> String {
 }
 
 fn oauth_refresh_config(
-    material_label: &str,
-    reconnect_label: &str,
+    error_subject: &str,
+    reconnect_hint: &str,
     metadata_prefix: &str,
     oauth: &ManifestOAuthCredentialSpec,
     resolved_inputs: Option<&BTreeMap<String, String>>,
@@ -1520,7 +1520,7 @@ fn oauth_refresh_config(
     let expires_at = DateTime::parse_from_rfc3339(expires_at)
         .map_err(|error| {
             AppError::FailedPrecondition(format!(
-                "stored OAuth access token expiry for {material_label} is invalid: {error}"
+                "stored OAuth access token expiry for {error_subject} is invalid: {error}"
             ))
         })?
         .with_timezone(&Utc);
@@ -1537,11 +1537,11 @@ fn oauth_refresh_config(
             return Ok(None);
         }
         return Err(AppError::FailedPrecondition(format!(
-            "OAuth access token for {material_label} expired and cannot be refreshed because no refresh token is stored; {reconnect_label}"
+            "OAuth access token for {error_subject} expired and cannot be refreshed because no refresh token is stored; {reconnect_hint}"
         )));
     };
     let client_id = oauth_refresh_client_id(
-        material_label,
+        error_subject,
         metadata_prefix,
         oauth,
         resolved_inputs,
@@ -1553,7 +1553,7 @@ fn oauth_refresh_config(
         .map(|value| {
             ManifestOAuthClientSecretTransport::from_label(value).ok_or_else(|| {
                 AppError::FailedPrecondition(format!(
-                    "stored OAuth client secret transport for {material_label} is invalid: {value}"
+                    "stored OAuth client secret transport for {error_subject} is invalid: {value}"
                 ))
             })
         })
@@ -1563,7 +1563,7 @@ fn oauth_refresh_config(
         oauth_refresh_client_secret(metadata_prefix, oauth, resolved_inputs, material);
     if client_secret_transport.is_some() && client_secret.is_none() {
         return Err(AppError::FailedPrecondition(format!(
-            "OAuth access token for {material_label} expired and cannot be refreshed because client secret metadata is missing"
+            "OAuth access token for {error_subject} expired and cannot be refreshed because client secret metadata is missing"
         )));
     }
     Ok(Some(OAuthRefreshConfig {
@@ -1576,7 +1576,7 @@ fn oauth_refresh_config(
 }
 
 fn oauth_refresh_client_id(
-    material_label: &str,
+    error_subject: &str,
     metadata_prefix: &str,
     oauth: &ManifestOAuthCredentialSpec,
     resolved_inputs: &BTreeMap<String, String>,
@@ -1605,7 +1605,7 @@ fn oauth_refresh_client_id(
         })
         .ok_or_else(|| {
             AppError::FailedPrecondition(format!(
-                "OAuth access token for {material_label} expired and cannot be refreshed because client ID metadata is missing"
+                "OAuth access token for {error_subject} expired and cannot be refreshed because client ID metadata is missing"
             ))
         })
 }
