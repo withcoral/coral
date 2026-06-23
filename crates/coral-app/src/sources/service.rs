@@ -41,10 +41,9 @@ use crate::authorization::{
 };
 use crate::bootstrap::{AppError, app_status};
 use crate::credentials::CredentialStorageKind;
-use crate::identities::IdentityInstanceManager;
+use crate::identities::IdentityManager;
 use crate::identity::{
-    SourceIdentityBinding as AppSourceIdentityBinding,
-    SourceIdentityOwner as AppSourceIdentityOwner,
+    IdentityOwnerKind as AppSourceIdentityOwner, SourceIdentityBinding as AppSourceIdentityBinding,
     SourceIdentitySelection as AppSourceIdentitySelection, UserPrincipal,
 };
 use crate::query::QueryContext;
@@ -72,7 +71,7 @@ use tokio_stream::StreamExt as _;
 pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
-    identity_instances: IdentityInstanceManager,
+    identity_instances: IdentityManager,
     management_authorizer: Arc<dyn ManagementAuthorizer>,
 }
 
@@ -80,7 +79,7 @@ impl SourceService {
     pub(crate) fn new(
         source_manager: SourceManager,
         query_manager: QueryManager,
-        identity_instance_manager: IdentityInstanceManager,
+        identity_instance_manager: IdentityManager,
         management_authorizer: Arc<dyn ManagementAuthorizer>,
     ) -> Self {
         Self {
@@ -358,7 +357,7 @@ impl SourceServiceApi for SourceService {
 
 async fn handle_import_source(
     sources: SourceManager,
-    identity_instances: IdentityInstanceManager,
+    identity_instances: IdentityManager,
     principal: UserPrincipal,
     request: ImportSourceRequest,
 ) -> Result<Response<ImportSourceResponseStreamBox>, Status> {
@@ -415,7 +414,7 @@ async fn handle_import_source(
 
 async fn handle_import_source_without_credentials(
     sources: SourceManager,
-    identity_instances: IdentityInstanceManager,
+    identity_instances: IdentityManager,
     user_principal: Option<UserPrincipal>,
     workspace_name: WorkspaceName,
     response_workspace_name: WorkspaceName,
@@ -463,7 +462,7 @@ async fn handle_import_source_without_credentials(
 
 async fn handle_import_source_with_credentials(
     sources: SourceManager,
-    identity_instances: IdentityInstanceManager,
+    identity_instances: IdentityManager,
     user_principal: Option<UserPrincipal>,
     workspace_name: WorkspaceName,
     response_workspace_name: WorkspaceName,
@@ -690,7 +689,7 @@ fn source_name_from_manifest_yaml(manifest_yaml: &str) -> Result<SourceName, App
 #[derive(Clone, Copy)]
 struct ValidateUserSourceIdentityImport<'a> {
     sources: &'a SourceManager,
-    identities: &'a IdentityInstanceManager,
+    identities: &'a IdentityManager,
     principal: Option<&'a UserPrincipal>,
     workspace_name: &'a WorkspaceName,
     manifest_yaml: &'a str,
@@ -769,7 +768,7 @@ fn require_user_owned_slot(
 }
 
 async fn validate_user_source_identity_selections(
-    identities: &IdentityInstanceManager,
+    identities: &IdentityManager,
     principal: Option<&UserPrincipal>,
     manifest_yaml: &str,
     slots: &BTreeMap<String, AppSourceIdentityBinding>,
@@ -837,7 +836,7 @@ async fn prepare_user_source_identity_bindings_for_import(
 }
 
 async fn persist_user_source_identity_bindings_for_import(
-    identities: &IdentityInstanceManager,
+    identities: &IdentityManager,
     principal: Option<&UserPrincipal>,
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
@@ -882,7 +881,7 @@ async fn persist_user_source_identity_bindings_for_import(
 }
 
 async fn snapshot_user_source_identity_bindings(
-    identities: &IdentityInstanceManager,
+    identities: &IdentityManager,
     principal: Option<&UserPrincipal>,
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
@@ -913,7 +912,7 @@ async fn snapshot_user_source_identity_bindings(
 }
 
 async fn persist_user_source_identity_bindings(
-    identities: &IdentityInstanceManager,
+    identities: &IdentityManager,
     principal: Option<&UserPrincipal>,
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
@@ -945,7 +944,7 @@ async fn persist_user_source_identity_bindings(
 }
 
 async fn restore_user_source_identity_bindings(
-    identities: &IdentityInstanceManager,
+    identities: &IdentityManager,
     principal: Option<&UserPrincipal>,
     workspace_name: &WorkspaceName,
     source_name: &SourceName,

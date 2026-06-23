@@ -646,7 +646,7 @@ async fn start_server(
     let source_service = SourceService::new(
         source_manager,
         query_manager.clone(),
-        identity_instance_manager.clone(),
+        identity_manager.clone(),
         Arc::clone(&management_authorizer),
     );
     let catalog_service = CatalogService::new(query_manager.clone());

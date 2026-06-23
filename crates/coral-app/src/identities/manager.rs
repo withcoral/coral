@@ -707,7 +707,7 @@ impl IdentityManager {
         selection: &SourceIdentitySelection,
         requirements: &IdentityRequirements,
     ) -> Result<(), AppError> {
-        let owner = IdentityOwnerKey::for_user_principal(principal)?;
+        let owner = IdentityOwner::for_user_principal(principal)?;
         let identity_name = validate_identity_name(&selection.identity)?;
         let record = self
             .store
