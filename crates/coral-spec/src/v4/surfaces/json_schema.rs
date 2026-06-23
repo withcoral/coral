@@ -10,6 +10,14 @@ pub(crate) enum RefError<'a> {
     NotFound(&'a str),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JsonSchemaWalkError<'a> {
+    ExternalRef(&'a str),
+    RefCycle(&'a str),
+    RefNotFound(&'a str),
+    DepthExceeded,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct JsonObjectShape {
     pub(crate) properties: BTreeMap<String, Value>,
@@ -33,6 +41,126 @@ pub(crate) fn resolve_local_ref<'a>(
     }
     let pointer = reference.strip_prefix('#').unwrap_or(reference);
     root.pointer(pointer).ok_or(RefError::NotFound(reference))
+}
+
+pub(crate) fn with_resolved_json_schema<'a, T>(
+    root: &'a Value,
+    schema: &'a Value,
+    resolving_refs: &mut BTreeSet<String>,
+    depth: usize,
+    max_depth: usize,
+    visit: impl FnOnce(&'a Value, &mut BTreeSet<String>, usize) -> Result<T, JsonSchemaWalkError<'a>>,
+) -> Result<T, JsonSchemaWalkError<'a>> {
+    if depth > max_depth {
+        return Err(JsonSchemaWalkError::DepthExceeded);
+    }
+
+    let reference = schema.get("$ref").and_then(Value::as_str);
+    let guarded_reference = match reference {
+        Some(reference) if reference.starts_with("#/") => {
+            if !resolving_refs.insert(reference.to_string()) {
+                return Err(JsonSchemaWalkError::RefCycle(reference));
+            }
+            Some(reference)
+        }
+        _ => None,
+    };
+
+    let resolved = resolve_local_ref(root, schema).map_err(json_schema_walk_error_from_ref);
+    let next_depth = depth + 1;
+    let result = match resolved {
+        Ok(resolved) if resolved.get("$ref").is_some() => {
+            with_resolved_json_schema(root, resolved, resolving_refs, next_depth, max_depth, visit)
+        }
+        Ok(resolved) => visit(resolved, resolving_refs, next_depth),
+        Err(error) => Err(error),
+    };
+
+    if let Some(reference) = guarded_reference {
+        resolving_refs.remove(reference);
+    }
+
+    result
+}
+
+pub(crate) fn resolve_json_schema_refs<'a>(
+    root: &'a Value,
+    schema: &'a Value,
+    resolving_refs: &mut BTreeSet<String>,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Value, JsonSchemaWalkError<'a>> {
+    with_resolved_json_schema(
+        root,
+        schema,
+        resolving_refs,
+        depth,
+        max_depth,
+        |resolved, resolving_refs, next_depth| {
+            resolve_json_schema_child_refs(root, resolved, resolving_refs, next_depth, max_depth)
+        },
+    )
+}
+
+fn resolve_json_schema_child_refs<'a>(
+    root: &'a Value,
+    schema: &'a Value,
+    resolving_refs: &mut BTreeSet<String>,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Value, JsonSchemaWalkError<'a>> {
+    let Some(object) = schema.as_object() else {
+        return Ok(schema.clone());
+    };
+
+    let mut resolved = object.clone();
+    for key in ["items", "additionalProperties", "not"] {
+        if let Some(value) = object.get(key).filter(|value| value.is_object()) {
+            resolved.insert(
+                key.to_string(),
+                resolve_json_schema_refs(root, value, resolving_refs, depth, max_depth)?,
+            );
+        }
+    }
+    for key in ["allOf", "anyOf", "oneOf"] {
+        if let Some(values) = object.get(key).and_then(Value::as_array) {
+            resolved.insert(
+                key.to_string(),
+                Value::Array(
+                    values
+                        .iter()
+                        .map(|value| {
+                            resolve_json_schema_refs(root, value, resolving_refs, depth, max_depth)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
+            );
+        }
+    }
+    for key in ["$defs", "definitions", "patternProperties", "properties"] {
+        if let Some(schemas) = object.get(key).and_then(Value::as_object) {
+            resolved.insert(
+                key.to_string(),
+                Value::Object(
+                    schemas
+                        .iter()
+                        .map(|(name, schema)| {
+                            resolve_json_schema_refs(root, schema, resolving_refs, depth, max_depth)
+                                .map(|schema| (name.clone(), schema))
+                        })
+                        .collect::<Result<serde_json::Map<_, _>, _>>()?,
+                ),
+            );
+        }
+    }
+    Ok(Value::Object(resolved))
+}
+
+fn json_schema_walk_error_from_ref(error: RefError<'_>) -> JsonSchemaWalkError<'_> {
+    match error {
+        RefError::External(reference) => JsonSchemaWalkError::ExternalRef(reference),
+        RefError::NotFound(reference) => JsonSchemaWalkError::RefNotFound(reference),
+    }
 }
 
 pub(crate) fn direct_json_object_shape(schema: &Value) -> JsonObjectShape {
@@ -271,6 +399,8 @@ fn merge_json_schema_property_metadata(existing: &mut Value, candidate: &Value) 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use serde_json::json;
 
     use super::*;
@@ -354,6 +484,61 @@ mod tests {
             resolve_local_ref(&root, &schema),
             Err(RefError::NotFound("#/$defs/Missing"))
         );
+    }
+
+    #[test]
+    fn resolved_schema_walk_keeps_ref_guard_during_visit() {
+        let root = json!({
+            "$defs": {
+                "Name": {"type": "string"}
+            }
+        });
+        let schema = json!({"$ref": "#/$defs/Name"});
+        let mut resolving_refs = BTreeSet::new();
+
+        let guard_was_active = with_resolved_json_schema(
+            &root,
+            &schema,
+            &mut resolving_refs,
+            0,
+            8,
+            |_schema, resolving_refs, _depth| Ok(resolving_refs.contains("#/$defs/Name")),
+        )
+        .expect("walk");
+
+        assert!(guard_was_active);
+        assert!(resolving_refs.is_empty());
+    }
+
+    #[test]
+    fn resolved_schema_refs_resolves_schema_bearing_children() {
+        let root = json!({
+            "$defs": {
+                "Value": {"type": "integer"}
+            },
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {
+                        "value": {"$ref": "#/$defs/Value"}
+                    }
+                }
+            }
+        });
+        let mut resolving_refs = BTreeSet::new();
+        let filter = root.pointer("/properties/filter").expect("filter schema");
+
+        let resolved =
+            resolve_json_schema_refs(&root, filter, &mut resolving_refs, 0, 8).expect("resolved");
+
+        assert_eq!(
+            resolved
+                .pointer("/properties/value/type")
+                .and_then(Value::as_str),
+            Some("integer")
+        );
+        assert!(resolving_refs.is_empty());
     }
 
     #[test]

@@ -346,6 +346,43 @@ surfaces:
     }
 
     #[test]
+    fn imports_property_level_input_schema_refs() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "$defs": {
+                        "Query": {
+                            "type": "string",
+                            "description": "Search query"
+                        }
+                    },
+                    "type": "object",
+                    "properties": {
+                        "query": {"$ref": "#/$defs/Query"}
+                    },
+                    "required": ["query"]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "search_items");
+        assert!(operation.diagnostics.is_empty());
+
+        let query = operation
+            .inputs
+            .iter()
+            .find(|input| input.name == "query")
+            .expect("query input");
+        assert_eq!(query.data_type, IrScalarType::String);
+        assert!(query.required);
+        assert_eq!(query.description, "Search query");
+    }
+
+    #[test]
     fn unresolved_input_schema_refs_means_tool_is_not_exposed() {
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(
@@ -370,6 +407,68 @@ surfaces:
             generate_projection_catalog(manifest().as_v4().expect("v4"), std::slice::from_ref(&ir))
                 .expect("projections");
         assert_eq!(projections.projections.len(), 0);
+    }
+
+    #[test]
+    fn recursive_input_schema_refs_mean_tool_is_not_exposed() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "$defs": {
+                        "A": {
+                            "allOf": [
+                                {"$ref": "#/$defs/B"}
+                            ]
+                        },
+                        "B": {
+                            "allOf": [
+                                {"$ref": "#/$defs/A"}
+                            ]
+                        }
+                    },
+                    "allOf": [
+                        {"$ref": "#/$defs/A"}
+                    ]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        assert!(ir.operations.is_empty());
+        assert!(
+            ir.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "MCP_INPUT_SCHEMA_REF_UNSUPPORTED")
+        );
+    }
+
+    #[test]
+    fn missing_required_input_schema_properties_mean_tool_is_not_exposed() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "search-items",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer"}
+                    },
+                    "required": ["query"]
+                }),
+                Some(json!({"type": "object", "properties": {}})),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        assert!(ir.operations.is_empty());
+        assert!(
+            ir.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "MCP_INPUT_SCHEMA_REQUIRED_PROPERTY_MISSING"
+            })
+        );
     }
 
     #[test]
