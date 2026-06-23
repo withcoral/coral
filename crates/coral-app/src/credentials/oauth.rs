@@ -579,12 +579,16 @@ fn normalize_credential_inputs(
     inputs: Vec<(String, String)>,
 ) -> Result<BTreeMap<String, String>, AppError> {
     let mut normalized = BTreeMap::new();
+    let mut seen = BTreeSet::new();
     for (key, value) in inputs {
         let key = normalize_credential_input_key(&key)?;
-        if normalized.insert(key.clone(), value).is_some() {
+        if !seen.insert(key.clone()) {
             return Err(AppError::InvalidInput(format!(
                 "credential input '{key}' is repeated"
             )));
+        }
+        if let Some(value) = trimmed_non_empty(value.as_str()) {
+            normalized.insert(key, value.to_string());
         }
     }
     Ok(normalized)
@@ -621,6 +625,11 @@ fn normalize_credential_input_key(value: &str) -> Result<String, AppError> {
     Ok(trimmed.to_string())
 }
 
+fn trimmed_non_empty(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
 fn reject_unknown_credential_inputs(
     oauth: &ManifestOAuthCredentialSpec,
     inputs: &BTreeMap<String, String>,
@@ -648,12 +657,12 @@ fn resolve_client_id(
 ) -> Result<String, AppError> {
     if let Some(input_key) = oauth.client.id.input.as_deref()
         && let Some(value) = inputs.get(input_key)
-        && !value.is_empty()
+        && let Some(value) = trimmed_non_empty(value)
     {
-        return Ok(value.clone());
+        return Ok(value.to_string());
     }
     if let Some(default) = oauth.client.id.default.as_deref()
-        && !default.is_empty()
+        && let Some(default) = trimmed_non_empty(default)
     {
         return Ok(default.to_string());
     }
@@ -677,13 +686,16 @@ fn resolve_client_secret(
     let Some(secret) = oauth.client.secret.as_ref() else {
         return Ok(None);
     };
-    let Some(value) = inputs.get(&secret.input).filter(|value| !value.is_empty()) else {
+    let Some(value) = inputs
+        .get(&secret.input)
+        .and_then(|value| trimmed_non_empty(value))
+    else {
         return Err(AppError::FailedPrecondition(format!(
             "missing OAuth client secret input '{}'",
             secret.input
         )));
     };
-    Ok(Some(value.clone()))
+    Ok(Some(value.to_string()))
 }
 
 async fn bind_redirect_listener(
@@ -1124,7 +1136,7 @@ fn parse_device_authorization_response(
     let verification_uri_complete = body
         .get("verification_uri_complete")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .map(ToString::to_string);
     let expires_in = Duration::from_secs(json_u64_field(&body, "expires_in")?.max(1));
     let interval = Duration::from_secs(
@@ -1354,7 +1366,7 @@ fn parse_token_response_value(body: &Value) -> Result<TokenResponse, AppError> {
     let access_token = body
         .get("access_token")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .ok_or_else(|| {
             AppError::FailedPrecondition(
                 "OAuth token response did not include access_token".to_string(),
@@ -1364,17 +1376,17 @@ fn parse_token_response_value(body: &Value) -> Result<TokenResponse, AppError> {
     let refresh_token = body
         .get("refresh_token")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .map(ToString::to_string);
     let token_type = body
         .get("token_type")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .map(ToString::to_string);
     let scope = body
         .get("scope")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .map(ToString::to_string);
     let expires_at = body
         .get("expires_in")
@@ -1393,7 +1405,7 @@ fn parse_token_response_value(body: &Value) -> Result<TokenResponse, AppError> {
 fn json_string_field<'a>(body: &'a Value, field: &str) -> Result<&'a str, AppError> {
     body.get(field)
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .and_then(trimmed_non_empty)
         .ok_or_else(|| {
             AppError::FailedPrecondition(format!("OAuth response did not include {field}"))
         })
@@ -1416,7 +1428,7 @@ fn oauth_error_message(body: &Value) -> Option<String> {
         .get("error_description")
         .or_else(|| body.get("error_description_uri"))
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty());
+        .and_then(trimmed_non_empty);
     Some(match description {
         Some(description) => format!("{error}: {description}"),
         None => error.to_string(),
@@ -1461,7 +1473,7 @@ fn oauth_credential_material(
                 secret.transport.label().to_string(),
             );
         }
-        if let Some(client_secret) = session.client_secret.as_deref() {
+        if let Some(client_secret) = session.client_secret.as_deref().and_then(trimmed_non_empty) {
             internal_metadata.insert(format!("{prefix}client_secret"), client_secret.to_string());
         }
     }
@@ -1518,8 +1530,8 @@ fn oauth_refresh_config(
     }
     let Some(refresh_token) = material
         .get(&format!("{metadata_prefix}refresh_token"))
-        .filter(|value| !value.is_empty())
-        .cloned()
+        .and_then(|value| trimmed_non_empty(value))
+        .map(ToString::to_string)
     else {
         if expires_at > now {
             return Ok(None);
@@ -1572,19 +1584,25 @@ fn oauth_refresh_client_id(
 ) -> Result<String, AppError> {
     material
         .get(&format!("{metadata_prefix}client_id"))
-        .filter(|value| !value.is_empty())
-        .cloned()
+        .and_then(|value| trimmed_non_empty(value))
+        .map(ToString::to_string)
         .or_else(|| {
             oauth.client
                 .id
                 .input
                 .as_deref()
                 .and_then(|input| resolved_inputs.get(input))
-                .filter(|value| !value.is_empty())
-                .cloned()
+                .and_then(|value| trimmed_non_empty(value))
+                .map(ToString::to_string)
         })
-        .or_else(|| oauth.client.id.default.clone())
-        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            oauth.client
+                .id
+                .default
+                .as_deref()
+                .and_then(trimmed_non_empty)
+                .map(ToString::to_string)
+        })
         .ok_or_else(|| {
             AppError::FailedPrecondition(format!(
                 "OAuth access token for {material_label} expired and cannot be refreshed because client ID metadata is missing"
@@ -1600,8 +1618,8 @@ fn oauth_refresh_token_url(
 ) -> Result<String, AppError> {
     material
         .get(&format!("{metadata_prefix}token_url"))
-        .filter(|value| !value.is_empty())
-        .cloned()
+        .and_then(|value| trimmed_non_empty(value))
+        .map(ToString::to_string)
         .map_or_else(
             || {
                 oauth
@@ -1621,16 +1639,16 @@ fn oauth_refresh_client_secret(
 ) -> Option<String> {
     material
         .get(&format!("{metadata_prefix}client_secret"))
-        .filter(|value| !value.is_empty())
-        .cloned()
+        .and_then(|value| trimmed_non_empty(value))
+        .map(ToString::to_string)
         .or_else(|| {
             oauth
                 .client
                 .secret
                 .as_ref()
                 .and_then(|secret| resolved_inputs.get(&secret.input))
-                .filter(|value| !value.is_empty())
-                .cloned()
+                .and_then(|value| trimmed_non_empty(value))
+                .map(ToString::to_string)
         })
 }
 
@@ -1775,6 +1793,33 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_only_oauth_credential_input_is_treated_as_missing() {
+        let oauth = oauth_spec(
+            "https://provider.example.com/oauth/token",
+            free_loopback_port(),
+            ManifestOAuthPkceMode::Disabled,
+            confidential_client(ManifestOAuthClientSecretTransport::RequestBody),
+        );
+
+        let error = OAuthCredentialService::validate_credential_inputs(
+            &oauth,
+            &EMPTY_SOURCE_INPUTS,
+            vec![
+                (" OAUTH_CLIENT_ID ".to_string(), " client ".to_string()),
+                ("OAUTH_CLIENT_SECRET".to_string(), "   ".to_string()),
+            ],
+        )
+        .expect_err("blank client secret should be missing");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing OAuth client secret input 'OAUTH_CLIENT_SECRET'"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
     fn token_response_ignores_unrepresentable_expires_in() {
         let token = parse_token_response(
             r#"{"access_token":"access-token","expires_in":9223372036854775807}"#,
@@ -1783,6 +1828,20 @@ mod tests {
 
         assert_eq!(token.access_token, "access-token");
         assert!(token.expires_at.is_none());
+    }
+
+    #[test]
+    fn token_response_rejects_whitespace_only_access_token() {
+        let Err(error) = parse_token_response(r#"{"access_token":"   "}"#) else {
+            panic!("blank access token should be missing");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("OAuth token response did not include access_token"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[tokio::test]
@@ -2082,7 +2141,7 @@ mod tests {
             (format!("{prefix}client_id"), "stored-client".to_string()),
             (
                 format!("{prefix}client_secret"),
-                "stored-secret".to_string(),
+                " stored-secret ".to_string(),
             ),
             (
                 format!("{prefix}client_secret_transport"),
@@ -2403,8 +2462,8 @@ mod tests {
                 oauth: &oauth,
                 source_inputs: &EMPTY_SOURCE_INPUTS,
                 credential_inputs: vec![
-                    ("OAUTH_CLIENT_ID".to_string(), "client".to_string()),
-                    ("OAUTH_CLIENT_SECRET".to_string(), "secret".to_string()),
+                    (" OAUTH_CLIENT_ID ".to_string(), " client ".to_string()),
+                    ("OAUTH_CLIENT_SECRET".to_string(), " secret ".to_string()),
                 ],
                 refresh_material_persistence:
                     OAuthRefreshMaterialPersistence::CompleteRefreshContext,

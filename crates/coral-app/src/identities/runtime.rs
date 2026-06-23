@@ -148,8 +148,8 @@ fn required_material<'a>(
 ) -> Result<&'a str, RequestIdentityHttpAuthenticatorError> {
     data.material
         .get(key)
+        .map(|value| value.trim())
         .filter(|value| !value.is_empty())
-        .map(String::as_str)
         .ok_or_else(|| {
             RequestIdentityHttpAuthenticatorError::failed_precondition(format!(
                 "identity '{}' is missing {label} material key '{key}'",
@@ -393,6 +393,23 @@ audience:
             "Bearer fixed-token",
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn identity_headers_reject_whitespace_only_material() {
+        let prepared =
+            prepared_identity(fixed_token_identity_spec(), FIXED_TOKEN_MATERIAL_KEY, "   ").await;
+
+        let error = resolve_headers(&prepared, "api.example.test")
+            .await
+            .expect_err("blank material should not produce identity headers");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing fixed token material key 'TOKEN'"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]
