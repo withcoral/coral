@@ -10,6 +10,8 @@ enum IdentityOwner {
   IDENTITY_OWNER_UNSPECIFIED = 0;
   // Identity material is owned by the current Coral user principal.
   IDENTITY_OWNER_USER = 1;
+  // Identity material is owned by a workspace and independent of a user principal.
+  IDENTITY_OWNER_WORKSPACE = 2;
 }
 
 // Stored provider-facing identity instance backed by an installed identity spec.
