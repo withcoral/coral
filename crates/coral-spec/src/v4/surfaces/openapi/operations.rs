@@ -9,7 +9,7 @@ use crate::v4::ir::{
 };
 use crate::v4::naming::normalize_identifier;
 use crate::v4::surfaces::json_schema::{
-    json_schema_scalar_type_or_string, json_schema_type_display,
+    json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_display,
 };
 use crate::{ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result};
 
@@ -160,7 +160,7 @@ impl OpenApiImporter<'_> {
                     location,
                     required: parameter_is_required(parameter_obj, location),
                     data_type: scalar,
-                    default_value: schema.get("default").map(openapi_default_to_string),
+                    default_value: schema.get("default").map(json_schema_default_to_string),
                     description: parameter_obj
                         .get("description")
                         .and_then(Value::as_str)
@@ -263,15 +263,6 @@ fn parameter_is_required(parameter_obj: &Map<String, Value>, location: IrInputLo
         .get("required")
         .and_then(Value::as_bool)
         .unwrap_or(false)
-}
-
-fn openapi_default_to_string(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        Value::Number(value) => value.to_string(),
-        Value::Bool(value) => value.to_string(),
-        Value::Null | Value::Array(_) | Value::Object(_) => value.to_string(),
-    }
 }
 
 fn detect_pagination(inputs: &[IrOperationInput]) -> PaginationSpec {

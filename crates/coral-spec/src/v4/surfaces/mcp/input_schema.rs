@@ -5,8 +5,8 @@ use serde_json::Value;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrInputLocation, IrOperationInput, IrScalarType};
 use crate::v4::surfaces::json_schema::{
-    JsonObjectShape, RefError, direct_json_object_shape, json_schema_scalar_type,
-    merge_json_object_shape_annotation_insensitive, resolve_local_ref,
+    JsonObjectShape, RefError, direct_json_object_shape, json_schema_default_to_string,
+    json_schema_scalar_type, merge_json_object_shape_annotation_insensitive, resolve_local_ref,
 };
 
 use super::import::McpImporter;
@@ -46,7 +46,7 @@ impl McpImporter<'_> {
                     location: IrInputLocation::ToolArg,
                     required: shape.required.contains(name.as_str()),
                     data_type,
-                    default_value: property_default(property),
+                    default_value: property.get("default").map(json_schema_default_to_string),
                     description: schema_description(property),
                 }
             })
@@ -207,11 +207,4 @@ pub(super) fn schema_description(schema: &Value) -> String {
         .or_else(|| schema.get("title").and_then(Value::as_str))
         .unwrap_or_default()
         .to_string()
-}
-
-fn property_default(schema: &Value) -> Option<String> {
-    schema.get("default").map(|value| match value {
-        Value::String(text) => text.clone(),
-        other => other.to_string(),
-    })
 }

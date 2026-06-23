@@ -68,6 +68,13 @@ pub(crate) fn json_schema_required_fields(
         .collect()
 }
 
+pub(crate) fn json_schema_default_to_string(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        other => other.to_string(),
+    }
+}
+
 pub(crate) fn merge_json_schema_properties_exact(
     target: &mut BTreeMap<String, Value>,
     source: BTreeMap<String, Value>,
@@ -405,5 +412,16 @@ mod tests {
             Some("Search query")
         );
         assert!(target.required.contains("query"));
+    }
+
+    #[test]
+    fn default_to_string_preserves_string_values_and_serializes_other_json() {
+        assert_eq!(json_schema_default_to_string(&json!("text")), "text");
+        assert_eq!(json_schema_default_to_string(&json!(30)), "30");
+        assert_eq!(json_schema_default_to_string(&json!(true)), "true");
+        assert_eq!(
+            json_schema_default_to_string(&json!({"enabled": true})),
+            r#"{"enabled":true}"#
+        );
     }
 }
