@@ -86,25 +86,6 @@ pub(crate) fn with_resolved_json_schema<'a, T>(
     result
 }
 
-pub(crate) fn resolve_json_schema_refs<'a>(
-    root: &'a Value,
-    schema: &'a Value,
-    resolving_refs: &mut BTreeSet<String>,
-    depth: usize,
-    max_depth: usize,
-) -> Result<Value, JsonSchemaWalkError<'a>> {
-    with_resolved_json_schema(
-        root,
-        schema,
-        resolving_refs,
-        depth,
-        max_depth,
-        |resolved, resolving_refs, next_depth| {
-            resolve_json_schema_child_refs(root, resolved, resolving_refs, next_depth, max_depth)
-        },
-    )
-}
-
 pub(crate) fn resolve_json_schema_ref_with_siblings<'a>(
     root: &'a Value,
     schema: &'a Value,
@@ -235,60 +216,6 @@ fn resolve_json_schema_child_refs_allow_cycles<'a>(
                                 max_depth,
                             )
                             .map(|schema| (name.clone(), schema))
-                        })
-                        .collect::<Result<serde_json::Map<_, _>, _>>()?,
-                ),
-            );
-        }
-    }
-    Ok(Value::Object(resolved))
-}
-
-fn resolve_json_schema_child_refs<'a>(
-    root: &'a Value,
-    schema: &'a Value,
-    resolving_refs: &mut BTreeSet<String>,
-    depth: usize,
-    max_depth: usize,
-) -> Result<Value, JsonSchemaWalkError<'a>> {
-    let Some(object) = schema.as_object() else {
-        return Ok(schema.clone());
-    };
-
-    let mut resolved = object.clone();
-    for key in ["items", "additionalProperties", "not"] {
-        if let Some(value) = object.get(key).filter(|value| value.is_object()) {
-            resolved.insert(
-                key.to_string(),
-                resolve_json_schema_refs(root, value, resolving_refs, depth, max_depth)?,
-            );
-        }
-    }
-    for key in ["allOf", "anyOf", "oneOf"] {
-        if let Some(values) = object.get(key).and_then(Value::as_array) {
-            resolved.insert(
-                key.to_string(),
-                Value::Array(
-                    values
-                        .iter()
-                        .map(|value| {
-                            resolve_json_schema_refs(root, value, resolving_refs, depth, max_depth)
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                ),
-            );
-        }
-    }
-    for key in ["$defs", "definitions", "patternProperties", "properties"] {
-        if let Some(schemas) = object.get(key).and_then(Value::as_object) {
-            resolved.insert(
-                key.to_string(),
-                Value::Object(
-                    schemas
-                        .iter()
-                        .map(|(name, schema)| {
-                            resolve_json_schema_refs(root, schema, resolving_refs, depth, max_depth)
-                                .map(|schema| (name.clone(), schema))
                         })
                         .collect::<Result<serde_json::Map<_, _>, _>>()?,
                 ),
@@ -686,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn resolved_schema_refs_resolves_schema_bearing_children() {
+    fn resolved_schema_ref_with_siblings_resolves_schema_bearing_children() {
         let root = json!({
             "$defs": {
                 "Value": {"type": "integer"}
@@ -705,7 +632,8 @@ mod tests {
         let filter = root.pointer("/properties/filter").expect("filter schema");
 
         let resolved =
-            resolve_json_schema_refs(&root, filter, &mut resolving_refs, 0, 8).expect("resolved");
+            resolve_json_schema_ref_with_siblings(&root, filter, &mut resolving_refs, 0, 8)
+                .expect("resolved");
 
         assert_eq!(
             resolved
