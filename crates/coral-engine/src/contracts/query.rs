@@ -379,6 +379,7 @@ pub type QueryParameters = BTreeMap<String, QueryParameterValue>;
 /// through `DataFusion` parameter substitution, so no quoting or escaping
 /// rules apply anywhere in the request path.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum QueryParameterValue {
     /// UTF-8 string value.
     String(String),

@@ -3210,6 +3210,40 @@ async fn source_scoped_table_function_binds_query_parameters() {
 }
 
 #[tokio::test]
+async fn explain_sql_binds_query_parameters() {
+    let server = MockServer::start().await;
+    let source = build_source(search_function_manifest(
+        "explain_param_search",
+        &server.uri(),
+    ));
+    let params = QueryParameters::from([
+        string_param("q", "flaky cleanup repo:withcoral/coral"),
+        string_param("mode", "hybrid"),
+    ]);
+
+    let plan = CoralQuery::explain_sql_with_params(
+        &[source],
+        test_runtime(),
+        "SELECT title FROM explain_param_search.search_issues(q => $q, mode => $mode)",
+        params,
+    )
+    .await
+    .expect("parameterized source function call should explain after binding");
+
+    assert!(
+        plan.unoptimized_logical_plan()
+            .contains("explain_param_search.search_issues"),
+        "unexpected unoptimized plan: {}",
+        plan.unoptimized_logical_plan()
+    );
+    assert!(
+        plan.physical_plan().contains("Exec"),
+        "unexpected physical plan: {}",
+        plan.physical_plan()
+    );
+}
+
+#[tokio::test]
 async fn source_scoped_table_function_rejects_unbound_parameter() {
     let server = MockServer::start().await;
     let source = build_source(search_function_manifest("unbound_search", &server.uri()));
@@ -3320,6 +3354,36 @@ async fn null_query_parameter_for_required_argument_fails() {
             .to_string()
             .contains("null_required.search_issues missing required argument(s): q"),
         "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn query_parameters_bind_typed_scalar_values() {
+    let params = QueryParameters::from([
+        ("count".to_string(), QueryParameterValue::Integer(7)),
+        ("score".to_string(), QueryParameterValue::Float(9.5)),
+        ("enabled".to_string(), QueryParameterValue::Boolean(true)),
+    ]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql_with_params(
+            &[],
+            test_runtime(),
+            "SELECT $count AS count, $score AS score, $enabled AS enabled \
+             WHERE $count = 7 AND $score > 9.0 AND $enabled",
+            params,
+        )
+        .await
+        .expect("integer, float, and boolean parameters should bind"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "count": 7,
+            "score": 9.5,
+            "enabled": true
+        })]
     );
 }
 
