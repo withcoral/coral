@@ -140,17 +140,50 @@ pub(crate) struct CoralMcpServer {
     query: QueryClient,
     feedback: FeedbackClient,
     episode: EpisodeClient,
+    startup_context: McpStartupContext,
     options: McpOptions,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct McpStartupContext {
+    source_names: Vec<String>,
+}
+
+impl McpStartupContext {
+    fn from_source_names(source_names: impl IntoIterator<Item = String>) -> Self {
+        let mut source_names = source_names
+            .into_iter()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect::<Vec<_>>();
+        source_names.sort_unstable();
+        source_names.dedup();
+        Self { source_names }
+    }
+
+    fn source_names(&self) -> &[String] {
+        &self.source_names
+    }
 }
 
 impl CoralMcpServer {
     pub(crate) fn new(app: &AppClient, options: McpOptions) -> Self {
+        let startup_context = McpStartupContext::from_source_names(options.source_names.clone());
+        Self::new_with_startup_context(app, options, startup_context)
+    }
+
+    pub(crate) fn new_with_startup_context(
+        app: &AppClient,
+        options: McpOptions,
+        startup_context: McpStartupContext,
+    ) -> Self {
         Self {
             source: app.source_client(),
             catalog: app.catalog_client(),
             query: app.query_client(),
             feedback: app.feedback_client(),
             episode: app.episode_client(),
+            startup_context,
             options,
         }
     }
@@ -553,7 +586,7 @@ impl ServerHandler for CoralMcpServer {
                 .build(),
         )
         .with_server_info(Implementation::new("coral", env!("CARGO_PKG_VERSION")))
-        .with_instructions(initial_instructions())
+        .with_instructions(initial_instructions(self.startup_context.source_names()))
     }
 
     async fn list_tools(
@@ -744,4 +777,28 @@ fn guide_catalog_from_response(
         }
     }
     (tables, table_function_schema_names)
+}
+
+#[cfg(test)]
+mod startup_context_tests {
+    use super::McpStartupContext;
+
+    #[test]
+    fn startup_context_sorts_and_dedupes_source_names() {
+        let context = McpStartupContext::from_source_names([
+            "slack".to_string(),
+            "github".to_string(),
+            "linear".to_string(),
+            "github".to_string(),
+        ]);
+
+        assert_eq!(
+            context
+                .source_names()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["github", "linear", "slack"]
+        );
+    }
 }
