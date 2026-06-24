@@ -1,12 +1,15 @@
 //! Concrete `DataFusion` runtime assembly for the data plane.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use datafusion::common::TableReference;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::dataframe::DataFrame;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
@@ -29,11 +32,12 @@ use crate::runtime::query_planner::CoralQueryPlanner;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
-use crate::runtime::source_functions::SourceFunctionRegistry;
+use crate::runtime::source_functions::{SourceFunctionNode, SourceFunctionRegistry};
 use crate::{
     CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, MemorySize, QueryExecution,
-    QueryMemoryConfig, QueryPlan, QueryResultObserver, QueryResultObserverError,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceDecorator,
+    QueryExecutionProvenance, QueryMemoryConfig, QueryPlan, QueryResultObserver,
+    QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
+    QueryTableFunctionUsage, QueryTableUsage, RequestAuthenticator, SourceDecorator,
     SourceInputResolver, TableFunctionInfo, TableInfo,
 };
 
@@ -44,6 +48,7 @@ pub(crate) struct QueryRuntimeAdapter {
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
+    schema_to_source: HashMap<String, String>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
 }
 
@@ -131,6 +136,7 @@ async fn build_runtime_inner(
         tables: primary.tables,
         table_functions: primary.table_functions,
         failures: primary.failures,
+        schema_to_source: schema_to_source_names(sources),
         query_result_observers: extensions.query_result_observers,
     })
 }
@@ -413,13 +419,22 @@ impl QueryRuntimeAdapter {
             .await
             .map_err(SqlExecutionFailure::Planning)?;
         let arrow_schema = Arc::new(df.schema().as_arrow().clone());
+        let provenance = self
+            .query_provenance(sql, df.logical_plan())
+            .map_err(SqlExecutionFailure::Planning)?;
         let batches = df
             .collect()
             .await
             .map_err(SqlExecutionFailure::Collection)?;
-        self.observe_query_result(sql, arrow_schema.as_ref(), &batches)
-            .map_err(SqlExecutionFailure::Observer)?;
-        Ok(QueryExecution::new(arrow_schema, batches))
+        let execution = QueryExecution::new(arrow_schema, batches, provenance);
+        self.observe_query_result(
+            sql,
+            execution.arrow_schema().as_ref(),
+            execution.batches(),
+            execution.provenance(),
+        )
+        .map_err(SqlExecutionFailure::Observer)?;
+        Ok(execution)
     }
 
     fn sql_execution_failure_to_core(&self, error: SqlExecutionFailure, sql: &str) -> CoreError {
@@ -451,13 +466,106 @@ impl QueryRuntimeAdapter {
         sql: &str,
         schema: &arrow::datatypes::Schema,
         batches: &[arrow::record_batch::RecordBatch],
+        provenance: &QueryExecutionProvenance,
     ) -> Result<(), CoreError> {
         for observer in &self.query_result_observers {
             observer
-                .observe_result(sql, schema, batches)
+                .observe_result(sql, schema, batches, provenance)
                 .map_err(|error| query_result_observer_error(observer.name(), &error))?;
         }
         Ok(())
+    }
+
+    fn query_provenance(
+        &self,
+        sql: &str,
+        plan: &LogicalPlan,
+    ) -> Result<QueryExecutionProvenance, DataFusionError> {
+        let mut tables = BTreeSet::new();
+        let mut table_functions = BTreeSet::new();
+        plan.apply_with_subqueries(|node| {
+            match node {
+                LogicalPlan::TableScan(scan) => {
+                    self.collect_table_scan_usage(&scan.table_name, &mut tables);
+                }
+                LogicalPlan::Extension(extension) => {
+                    if let Some(function) =
+                        extension.node.as_any().downcast_ref::<SourceFunctionNode>()
+                    {
+                        self.collect_table_function_usage(
+                            function.table_reference(),
+                            &mut table_functions,
+                        );
+                    }
+                }
+                _ => {}
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+
+        let mut sources = BTreeSet::new();
+        sources.extend(tables.iter().map(|usage| usage.source_name().to_string()));
+        sources.extend(
+            table_functions
+                .iter()
+                .map(|usage| usage.source_name().to_string()),
+        );
+
+        Ok(QueryExecutionProvenance::new(
+            sql,
+            sources.into_iter().collect(),
+            tables.into_iter().collect(),
+            table_functions.into_iter().collect(),
+        ))
+    }
+
+    fn collect_table_scan_usage(
+        &self,
+        table_reference: &TableReference,
+        tables: &mut BTreeSet<QueryTableUsage>,
+    ) {
+        let Some((schema_name, table_name)) = relation_parts(table_reference) else {
+            return;
+        };
+        if self
+            .tables
+            .iter()
+            .any(|table| table.schema_name == schema_name && table.table_name == table_name)
+        {
+            tables.insert(QueryTableUsage::new(
+                self.source_name_for_schema(schema_name),
+                schema_name,
+                table_name,
+            ));
+        }
+    }
+
+    fn collect_table_function_usage(
+        &self,
+        table_reference: &TableReference,
+        table_functions: &mut BTreeSet<QueryTableFunctionUsage>,
+    ) -> bool {
+        let Some((schema_name, function_name)) = relation_parts(table_reference) else {
+            return false;
+        };
+        if self.table_functions.iter().any(|function| {
+            function.schema_name == schema_name && function.function_name == function_name
+        }) {
+            table_functions.insert(QueryTableFunctionUsage::new(
+                self.source_name_for_schema(schema_name),
+                schema_name,
+                function_name,
+            ));
+            return true;
+        }
+        false
+    }
+
+    fn source_name_for_schema(&self, schema_name: &str) -> String {
+        self.schema_to_source
+            .get(schema_name)
+            .cloned()
+            .unwrap_or_else(|| schema_name.to_string())
     }
 
     pub(crate) async fn explain_sql(&self, sql: &str) -> Result<QueryPlan, CoreError> {
@@ -580,6 +688,24 @@ fn read_only_sql_options() -> SQLOptions {
         .with_allow_statements(false)
 }
 
+fn schema_to_source_names(sources: &[QuerySource]) -> HashMap<String, String> {
+    sources
+        .iter()
+        .flat_map(|source| {
+            let source_name = source.source_name().to_string();
+            source
+                .schema_names()
+                .into_iter()
+                .map(move |schema_name| (schema_name.to_string(), source_name.clone()))
+        })
+        .collect()
+}
+
+fn relation_parts(table_reference: &TableReference) -> Option<(&str, &str)> {
+    let schema_name = table_reference.schema()?;
+    Some((schema_name, table_reference.table()))
+}
+
 fn table_metadata_without_columns(table: &TableInfo) -> TableInfo {
     TableInfo {
         schema_name: table.schema_name.clone(),
@@ -638,6 +764,7 @@ mod tests {
             }],
             table_functions: Vec::new(),
             failures: Vec::new(),
+            schema_to_source: HashMap::from([("demo".to_string(), "demo".to_string())]),
             query_result_observers: Vec::new(),
         }
     }
