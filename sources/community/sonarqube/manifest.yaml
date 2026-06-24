@@ -474,7 +474,6 @@ tables:
     description: Search quality profiles
     filters:
       - name: organization
-        required: true
     request:
       path: /qualityprofiles/search
       method: GET
@@ -513,7 +512,6 @@ tables:
     description: Search user groups
     filters:
       - name: organization
-        required: true
     request:
       path: /user_groups/search
       method: GET

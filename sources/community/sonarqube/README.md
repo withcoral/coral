@@ -46,8 +46,8 @@ This manifest provides comprehensive access to the following tables:
 | `users` | Search users | `/users/search` | *(None)* | Yes |
 | `rules` | Search coding rules | `/rules/search` | *(None)* | Yes |
 | `project_pull_requests` | List pull requests of a project | `/project_pull_requests/list` | `project` | No |
-| `qualityprofiles` | Search quality profiles | `/qualityprofiles/search` | `organization` | No |
-| `user_groups` | Search user groups (may require admin privileges) | `/user_groups/search` | `organization` | Yes |
+| `qualityprofiles` | Search quality profiles | `/qualityprofiles/search` | `organization` (Optional) | No |
+| `user_groups` | Search user groups (may require admin privileges) | `/user_groups/search` | `organization` (Optional) | Yes |
 
 ## Features
 
