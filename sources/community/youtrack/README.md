@@ -20,17 +20,14 @@ To rotate or update your token, run the same command again.
 
 Generate a permanent token in your YouTrack instance under **Profile** -> **Account Security** -> **Tokens**.
 
-Permanent tokens are constrained by both the selected token scope and the permissions
-of the user who created them. The token must be granted the **YouTrack** scope, and
-the user account generating the token must have access to the resources being queried.
+Permanent tokens are constrained by both the selected token scope(s) and the permissions
+of the user who created them. When generating your token, you must select the scope(s)
+needed for the tables you plan to query, and your account must have the matching permissions:
 
-Additional requirements:
+* **Standard Access (`YouTrack` scope)**: Required for core tables like `issues`, `comments`, `tags`, and `agile_boards`. Note that `saved_queries` will only return searches visible to the authenticated user.
+* **Admin/Access Management (`YouTrack Administration` scope)**: Required for administrative and access-management tables, including `projects` (via `/api/admin/projects`), `custom_fields`, `users`, `groups`, and `roles`. Your account must also have corresponding project/access-management privileges (such as *Update Organization*, *Admin Read App*, or *Low-level Admin Read*).
 
-* The `users`, `groups`, and `roles` tables rely on the YouTrack REST API introduced in **YouTrack 2026.1+**.
-* Querying the `roles` table requires **Read** permission in at least one scope, **Update Organization**, or **Admin Read App**.
-* Querying the `groups` table requires access to the **Read Group** feature, **Update Project**, or **Low-level Admin Read** plus group visibility.
-* Querying the `users` table requires permission to view users available to the authenticated user.
-* Tables such as `issues`, `projects`, `comments`, `tags`, and `agile_boards` require standard read access to those entities.
+*(Note: The `users`, `groups`, and `roles` tables rely on the YouTrack REST API introduced in YouTrack 2026.1+)*
 
 Your `YOUTRACK_BASE_URL` should be the base path of your instance (e.g. `https://example.myjetbrains.com/youtrack`), without the `/api` suffix or a trailing slash.
 

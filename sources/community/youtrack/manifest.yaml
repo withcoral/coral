@@ -14,8 +14,9 @@ inputs:
   YOUTRACK_TOKEN:
     kind: secret
     required: true
-    hint: |
-      Permanent token generated from your YouTrack Profile -> Account Security.
+    hint: >
+      Permanent token generated from your YouTrack Profile -> Account Security. Select scopes
+      (YouTrack and/or YouTrack Administration) matching the tables you plan to query.
 base_url: "{{input.YOUTRACK_BASE_URL}}/api"
 auth:
   type: HeaderAuth
