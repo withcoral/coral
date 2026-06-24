@@ -24,7 +24,7 @@ Permanent tokens are constrained by both the selected token scope(s) and the per
 of the user who created them. When generating your token, you must select the scope(s)
 needed for the tables you plan to query, and your account must have the matching permissions:
 
-* **Standard Access (`YouTrack` scope)**: Required for core tables like `issues`, `comments`, `tags`, and `agile_boards`. Note that `saved_queries` will only return searches visible to the authenticated user.
+* **Standard Access (`YouTrack` scope)**: Required for core tables like `issues`, `comments`, `tags`, and `agile_boards`. Note that `saved_searches` will only return searches visible to the authenticated user.
 * **Admin/Access Management (`YouTrack Administration` scope)**: Required for administrative and access-management tables, including `projects` (via `/api/admin/projects`), `custom_fields`, `users`, `groups`, and `roles`. Your account must also have corresponding project/access-management privileges (such as *Update Organization*, *Admin Read App*, or *Low-level Admin Read*).
 
 *(Note: The `users`, `groups`, and `roles` tables rely on the YouTrack REST API introduced in YouTrack 2026.1+)*
