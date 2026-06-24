@@ -87,8 +87,8 @@ impl AppStateLayout {
     }
 
     /// Per-workspace episode log (JSONL) for experimental trajectory memory. The
-    /// episode store appends here; the `OpenEpisode` handler that reads it lands in
-    /// a later PR.
+    /// episode store appends `OpenEpisode` records here; indexing and retrieval
+    /// land in a later PR.
     pub(crate) fn episodes_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.workspace_dir(workspace_name)
             .join("episodes")

@@ -29,6 +29,8 @@ use tokio::{
     time::timeout,
 };
 
+const RAW_JSONRPC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+
 fn json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
 }
@@ -87,6 +89,13 @@ fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
     }
 }
 
+fn tool_input_properties(tool: &rmcp::model::Tool) -> &Map<String, Value> {
+    tool.input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("tool '{}' should advertise input properties", tool.name))
+}
+
 async fn structured_tool_content(
     client: &RunningService<RoleClient, ()>,
     request: CallToolRequestParams,
@@ -114,7 +123,11 @@ async fn read_jsonrpc_response(
     let mut line = String::new();
     loop {
         line.clear();
-        let bytes_read = timeout(Duration::from_secs(5), stdout.read_line(&mut line)).await??;
+        let bytes_read = timeout(RAW_JSONRPC_RESPONSE_TIMEOUT, stdout.read_line(&mut line))
+            .await
+            .map_err(|error| {
+                format!("timed out waiting for JSON-RPC response id {id}: {error}")
+            })??;
         if bytes_read == 0 {
             return Err(format!("mcp stdio closed before response id {id}").into());
         }
@@ -182,13 +195,23 @@ fn assert_raw_tools_list_contract(response: &Value) {
 async fn mcp_stdio_raw_tools_list_advertises_client_compatible_schemas()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
+    write_config(
+        &server,
+        r#"
+[workspaces.default.sources.jira]
+origin = "bundled"
+
+[workspaces.default.sources.github]
+origin = "bundled"
+"#,
+    )?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
         .arg("mcp-stdio")
         .env("CORAL_ENDPOINT", server.endpoint_uri())
         .env("CORAL_CONFIG_DIR", server.config_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
     let mut stdin = child.stdin.take().expect("mcp stdio stdin");
@@ -216,6 +239,14 @@ async fn mcp_stdio_raw_tools_list_advertises_client_compatible_schemas()
     assert!(
         initialize.pointer("/result/protocolVersion").is_some(),
         "initialize response should include protocolVersion: {initialize}"
+    );
+    let instructions = initialize
+        .pointer("/result/instructions")
+        .and_then(Value::as_str)
+        .expect("initialize response should include instructions");
+    assert!(
+        instructions.contains("Connected Coral sources: github, jira."),
+        "initialize instructions should include connected source names: {instructions}"
     );
 
     write_jsonrpc_message(
@@ -359,6 +390,51 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_enable_episodes_flag_lists_open_episode_tool()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client_with_args(&server, &["--enable-episodes"]).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec![
+            "sql",
+            "list_catalog",
+            "search_catalog",
+            "describe_table",
+            "list_columns",
+            "open_episode"
+        ]
+    );
+    for tool in tools
+        .iter()
+        .filter(|tool| tool.name.as_ref() != "open_episode")
+    {
+        assert!(
+            tool_input_properties(tool).contains_key("episode_id"),
+            "tool '{}' should advertise optional episode_id",
+            tool.name
+        );
+    }
+    let open_episode = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "open_episode")
+        .expect("open_episode tool should be listed");
+    assert!(
+        tool_input_properties(open_episode).contains_key("parent_episode_id"),
+        "open_episode should accept an optional parent_episode_id"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_stdio_feature_config_enables_feedback_tool() -> Result<(), Box<dyn std::error::Error>>
 {
     let server = MockServer::start().await;
@@ -375,6 +451,32 @@ feedback = true
     assert!(
         tools.iter().any(|tool| tool.name.as_ref() == "feedback"),
         "feedback tool should be listed when [features].feedback is true"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_feature_config_enables_open_episode_tool()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    write_config(
+        &server,
+        r"
+[features]
+episodes = true
+",
+    )?;
+    let client = start_mcp_client(&server).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == "open_episode"),
+        "open_episode tool should be listed when [features].episodes is true"
     );
 
     client.cancel().await?;
@@ -509,7 +611,7 @@ future_flag = true
         .env("CORAL_CONFIG_DIR", server.config_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
     let mut stdin = child.stdin.take().expect("mcp stdio stdin");

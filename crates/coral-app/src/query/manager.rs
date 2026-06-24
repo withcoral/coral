@@ -74,40 +74,74 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
+        attribution: &QueryAttribution,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
-        let config = self
-            .config_store
-            .load_config()
-            .map_err(QueryManagerError::App)?;
-        let sources = self
-            .load_query_sources(workspace_name, &config)
-            .map_err(QueryManagerError::App)?;
-        let runtime = self
-            .runtime_config(workspace_name, &sources, &config)
-            .map_err(QueryManagerError::App)?;
-        CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
-            .await
-            .map_err(QueryManagerError::Core)
+        let trace_sql = list_tables_trace_sql(schema_filter, table_filter);
+        run_query_operation(
+            QueryOperation::ListTables,
+            workspace_name,
+            &trace_sql,
+            attribution.episode_id.as_ref(),
+            async {
+                let config = self
+                    .config_store
+                    .load_config()
+                    .map_err(QueryManagerError::App)?;
+                let sources = self
+                    .load_query_sources(workspace_name, &config)
+                    .map_err(QueryManagerError::App)?;
+                let runtime = self
+                    .runtime_config(workspace_name, &sources, &config)
+                    .map_err(QueryManagerError::App)?;
+                CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
+                    .await
+                    .map_err(QueryManagerError::Core)
+            },
+            |tables| Some(u64::try_from(tables.len()).unwrap_or(u64::MAX)),
+        )
+        .await
     }
 
     pub(crate) async fn list_catalog(
         &self,
         workspace_name: &WorkspaceName,
         schema_filter: Option<&str>,
+        attribution: &QueryAttribution,
     ) -> Result<CatalogInfo, QueryManagerError> {
-        let config = self
-            .config_store
-            .load_config()
-            .map_err(QueryManagerError::App)?;
-        let sources = self
-            .load_query_sources(workspace_name, &config)
-            .map_err(QueryManagerError::App)?;
-        let runtime = self
-            .runtime_config(workspace_name, &sources, &config)
-            .map_err(QueryManagerError::App)?;
-        CoralQuery::list_catalog(&sources, runtime, schema_filter)
-            .await
-            .map_err(QueryManagerError::Core)
+        let trace_sql = list_catalog_trace_sql(schema_filter);
+        run_query_operation(
+            QueryOperation::ListCatalog,
+            workspace_name,
+            &trace_sql,
+            attribution.episode_id.as_ref(),
+            async {
+                let config = self
+                    .config_store
+                    .load_config()
+                    .map_err(QueryManagerError::App)?;
+                let sources = self
+                    .load_query_sources(workspace_name, &config)
+                    .map_err(QueryManagerError::App)?;
+                let runtime = self
+                    .runtime_config(workspace_name, &sources, &config)
+                    .map_err(QueryManagerError::App)?;
+                CoralQuery::list_catalog(&sources, runtime, schema_filter)
+                    .await
+                    .map_err(QueryManagerError::Core)
+            },
+            |catalog| {
+                Some(
+                    u64::try_from(
+                        catalog
+                            .tables
+                            .len()
+                            .saturating_add(catalog.table_functions.len()),
+                    )
+                    .unwrap_or(u64::MAX),
+                )
+            },
+        )
+        .await
     }
 
     pub(crate) async fn describe_table(
@@ -115,20 +149,32 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         schema_name: &str,
         table_name: &str,
+        attribution: &QueryAttribution,
     ) -> Result<DescribeTableInfo, QueryManagerError> {
-        let config = self
-            .config_store
-            .load_config()
-            .map_err(QueryManagerError::App)?;
-        let sources = self
-            .load_query_sources(workspace_name, &config)
-            .map_err(QueryManagerError::App)?;
-        let runtime = self
-            .runtime_config(workspace_name, &sources, &config)
-            .map_err(QueryManagerError::App)?;
-        CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
-            .await
-            .map_err(QueryManagerError::Core)
+        let trace_sql = describe_table_trace_sql(schema_name, table_name);
+        run_query_operation(
+            QueryOperation::DescribeTable,
+            workspace_name,
+            &trace_sql,
+            attribution.episode_id.as_ref(),
+            async {
+                let config = self
+                    .config_store
+                    .load_config()
+                    .map_err(QueryManagerError::App)?;
+                let sources = self
+                    .load_query_sources(workspace_name, &config)
+                    .map_err(QueryManagerError::App)?;
+                let runtime = self
+                    .runtime_config(workspace_name, &sources, &config)
+                    .map_err(QueryManagerError::App)?;
+                CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
+                    .await
+                    .map_err(QueryManagerError::Core)
+            },
+            |_| None,
+        )
+        .await
     }
 
     pub(crate) async fn execute_sql(
@@ -368,6 +414,9 @@ impl QueryManager {
 enum QueryOperation {
     ExecuteSql,
     ExplainSql,
+    ListTables,
+    ListCatalog,
+    DescribeTable,
 }
 
 impl QueryOperation {
@@ -375,8 +424,31 @@ impl QueryOperation {
         match self {
             Self::ExecuteSql => "execute_sql",
             Self::ExplainSql => "explain_sql",
+            Self::ListTables => "list_tables",
+            Self::ListCatalog => "list_catalog",
+            Self::DescribeTable => "describe_table",
         }
     }
+}
+
+fn list_tables_trace_sql(schema_filter: Option<&str>, table_filter: Option<&str>) -> String {
+    match (schema_filter, table_filter) {
+        (Some(schema), Some(table)) => format!("LIST TABLES {schema}.{table}"),
+        (Some(schema), None) => format!("LIST TABLES {schema}.*"),
+        (None, Some(table)) => format!("LIST TABLES *.{table}"),
+        (None, None) => "LIST TABLES *.*".to_string(),
+    }
+}
+
+fn list_catalog_trace_sql(schema_filter: Option<&str>) -> String {
+    match schema_filter {
+        Some(schema) => format!("LIST CATALOG {schema}"),
+        None => "LIST CATALOG".to_string(),
+    }
+}
+
+fn describe_table_trace_sql(schema_name: &str, table_name: &str) -> String {
+    format!("DESCRIBE TABLE {schema_name}.{table_name}")
 }
 
 async fn run_query_operation<T, Fut, RowCount>(
@@ -618,10 +690,9 @@ mod tests {
             }),
             sql: "SELECT 1".to_string(),
         });
-        request.metadata_mut().insert(
-            "coral-episode-id",
-            "ep_trace_1".parse().expect("ascii value"),
-        );
+        request
+            .extensions_mut()
+            .insert(crate::episode::EpisodeId::parse("ep_trace_1").expect("episode id"));
 
         // The query may fail (the fixture has no installed sources); the
         // `coral.query` span is created and stamped before execution regardless.
@@ -639,6 +710,142 @@ mod tests {
             .find(|attribute| attribute.key.as_str() == "episode.id")
             .expect("episode.id attribute present");
         assert_eq!(episode_attr.value.as_str(), "ep_trace_1");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn catalog_service_stamps_episode_id_on_query_spans() {
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        use crate::catalog::service::CatalogService;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("catalog-episode-attribution-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let service = CatalogService::new(fixture.manager.clone());
+
+        call_catalog_tools_with_episode(&service).await;
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        assert_catalog_episode_spans(&spans);
+    }
+
+    async fn call_catalog_tools_with_episode(service: &crate::catalog::service::CatalogService) {
+        use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
+        use coral_api::v1::{
+            DescribeTableRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
+            SearchCatalogRequest,
+        };
+
+        let _list_catalog_result = service
+            .list_catalog(tagged_catalog_request(ListCatalogRequest {
+                workspace: Some(default_workspace_proto()),
+                schema_name: String::new(),
+                kind: 0,
+                pagination: Some(PaginationRequest {
+                    limit: 10,
+                    offset: 0,
+                }),
+            }))
+            .await;
+        let _search_catalog_result = service
+            .search_catalog(tagged_catalog_request(SearchCatalogRequest {
+                workspace: Some(default_workspace_proto()),
+                pattern: "tables".to_string(),
+                ignore_case: true,
+                schema_name: String::new(),
+                kind: 0,
+                pagination: Some(PaginationRequest {
+                    limit: 10,
+                    offset: 0,
+                }),
+            }))
+            .await;
+        let _describe_table_result = service
+            .describe_table(tagged_catalog_request(DescribeTableRequest {
+                workspace: Some(default_workspace_proto()),
+                schema_name: "coral".to_string(),
+                table_name: "tables".to_string(),
+            }))
+            .await;
+        let _list_columns_result = service
+            .list_columns(tagged_catalog_request(ListColumnsRequest {
+                workspace: Some(default_workspace_proto()),
+                schema_name: "coral".to_string(),
+                table_name: "tables".to_string(),
+                pattern: None,
+                ignore_case: true,
+                required_only: false,
+                pagination: Some(PaginationRequest {
+                    limit: 10,
+                    offset: 0,
+                }),
+            }))
+            .await;
+    }
+
+    fn default_workspace_proto() -> coral_api::v1::Workspace {
+        coral_api::v1::Workspace {
+            name: WorkspaceName::default().as_str().to_string(),
+        }
+    }
+
+    fn tagged_catalog_request<T>(message: T) -> tonic::Request<T> {
+        let mut request = tonic::Request::new(message);
+        request
+            .extensions_mut()
+            .insert(crate::episode::EpisodeId::parse("ep_catalog_trace").expect("episode id"));
+        request
+    }
+
+    fn assert_catalog_episode_spans(spans: &[opentelemetry_sdk::trace::SpanData]) {
+        let attributed_query_spans = spans
+            .iter()
+            .filter(|span| {
+                span.name == "coral.query"
+                    && span.attributes.iter().any(|attribute| {
+                        attribute.key.as_str() == "episode.id"
+                            && attribute.value.as_str() == "ep_catalog_trace"
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            attributed_query_spans.len() >= 4,
+            "each catalog service call should stamp a backend query span: {spans:?}"
+        );
+        let operations = attributed_query_spans
+            .iter()
+            .flat_map(|span| {
+                span.attributes
+                    .iter()
+                    .filter(|attribute| attribute.key.as_str() == "operation")
+                    .map(|attribute| attribute.value.as_str().to_string())
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            operations
+                .iter()
+                .any(|operation| operation == "list_catalog")
+        );
+        assert!(
+            operations
+                .iter()
+                .any(|operation| operation == "describe_table")
+        );
+        assert!(
+            operations
+                .iter()
+                .any(|operation| operation == "list_tables")
+        );
     }
 
     fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {

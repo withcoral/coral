@@ -562,11 +562,22 @@ async fn run_app_command(
             let features = coral_app::features::FeatureStore::discover(None)
                 .and_then(|store| store.load_with_overrides(feature_overrides))
                 .map_err(anyhow::Error::from)?;
+            let source_names = match coral_app::bootstrap::default_workspace_source_names() {
+                Ok(source_names) => source_names,
+                Err(error) => {
+                    eprintln!(
+                        "warning: failed to load source names for MCP initialize instructions: {error}"
+                    );
+                    Vec::new()
+                }
+            };
             Box::pin(coral_mcp::run_stdio_with_client(
                 app,
                 coral_mcp::McpOptions {
                     feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
+                    episodes_enabled: features.enabled(coral_app::features::Feature::Episodes),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
+                    source_names,
                 },
             ))
             .await
