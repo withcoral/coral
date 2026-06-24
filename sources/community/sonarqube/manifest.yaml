@@ -15,8 +15,7 @@ inputs:
       your self-hosted URL like `https://sonarqube.example.com/api`.
   SONARQUBE_API_KEY:
     kind: secret
-    hint: A SonarQube User Token with read access. Generate this from My Account >
-      Security.
+    hint: A SonarQube User Token. Basic read access (Browse) works for most tables. Administer System is required for user groups and full user details.
 auth:
   type: HeaderAuth
   headers:
@@ -119,16 +118,22 @@ tables:
         type: Utf8
   - name: issues
     description: Search issues for a project
+    guide: |
+      SonarCloud users should filter by `component_keys`.
+      Self-hosted SonarQube users should filter by `components`.
     filters:
-      - name: projects
-        required: true
+      - name: components
+      - name: component_keys
     request:
       path: /issues/search
       method: GET
       query:
-        - name: projects
+        - name: components
           from: filter
-          key: projects
+          key: components
+        - name: componentKeys
+          from: filter
+          key: component_keys
     response:
       rows_path:
         - issues
@@ -141,11 +146,16 @@ tables:
         max: 500
         query_param: ps
     columns:
-      - name: projects
+      - name: components
         type: Utf8
         expr:
           kind: from_filter
-          key: projects
+          key: components
+      - name: component_keys
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: component_keys
       - name: key
         type: Utf8
       - name: component
@@ -199,13 +209,19 @@ tables:
         type: Json
   - name: hotspots
     description: Search security hotspots
+    guide: |
+      SonarCloud users should filter by `project_key`.
+      Self-hosted SonarQube users should filter by `project`.
     filters:
+      - name: project
       - name: project_key
-        required: true
     request:
       path: /hotspots/search
       method: GET
       query:
+        - name: project
+          from: filter
+          key: project
         - name: projectKey
           from: filter
           key: project_key
@@ -221,6 +237,11 @@ tables:
         max: 500
         query_param: ps
     columns:
+      - name: project
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: project
       - name: project_key
         type: Utf8
         expr:
@@ -364,7 +385,9 @@ tables:
       - name: type
         type: Utf8
   - name: users
-    description: Search users
+    description: Search users (Self-hosted only)
+    guide: |
+      This table is only supported on self-hosted SonarQube instances. SonarCloud does not expose the `/users/search` endpoint.
     request:
       path: /users/search
       method: GET
@@ -391,9 +414,17 @@ tables:
         type: Boolean
   - name: rules
     description: Search coding rules
+    guide: |
+      SonarCloud requires an `organization` filter. Self-hosted SonarQube instances do not use this parameter and you should omit it.
+    filters:
+      - name: organization
     request:
       path: /rules/search
       method: GET
+      query:
+        - name: organization
+          from: filter
+          key: organization
     response:
       rows_path:
         - rules
@@ -406,6 +437,11 @@ tables:
         max: 500
         query_param: ps
     columns:
+      - name: organization
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: organization
       - name: key
         type: Utf8
       - name: name

@@ -6,6 +6,11 @@ This is a Coral source manifest for [SonarQube](https://www.sonarqube.org/) and 
 
 To connect Coral to your SonarQube or SonarCloud instance, you will need a personal User Token.
 
+### Permissions
+A User Token with standard project **Browse** access is sufficient for querying projects, measures, issues, and hotspots.
+However, be aware of the following permission limitations:
+* **`user_groups` and `users`**: Querying user groups requires **Administer System** permissions. Additionally, standard users may not be able to view certain fields like user email addresses; admin permissions are often required to retrieve full user details.
+
 ### 1. Generate a SonarQube Token
 1. Log into your SonarQube or SonarCloud instance.
 2. Click on your profile picture in the top right corner and select **My Account**.
@@ -37,14 +42,14 @@ This manifest provides comprehensive access to the following tables:
 |---|---|---|---|---|
 | `project_measures` | Live source code metrics, security vulnerabilities, and bug counts | `/measures/component` | `component`, `metric_keys` | No |
 | `projects` | Search projects | `/projects/search` | `organization` (SonarCloud only) | Yes |
-| `issues` | Search issues for a project | `/issues/search` | `projects` | Yes |
+| `issues` | Search issues for a project | `/issues/search` | `component_keys` (Cloud) or `components` (Server) | Yes |
 | `qualitygates_status` | Quality gate status of a project | `/qualitygates/project_status` | `project_key` | No |
-| `hotspots` | Search security hotspots | `/hotspots/search` | `project_key` | Yes |
+| `hotspots` | Search security hotspots | `/hotspots/search` | `project_key` (Cloud) or `project` (Server) | Yes |
 | `component_tree` | File-level measures | `/measures/component_tree` | `component`, `metric_keys` | Yes |
 | `project_branches` | List branches of a project | `/project_branches/list` | `project` | No |
 | `metrics_catalog` | List of all available metrics | `/metrics/search` | *(None)* | No |
-| `users` | Search users | `/users/search` | *(None)* | Yes |
-| `rules` | Search coding rules | `/rules/search` | *(None)* | Yes |
+| `users` | Search users (Self-hosted only) | `/users/search` | *(None)* | Yes |
+| `rules` | Search coding rules | `/rules/search` | `organization` (SonarCloud only) | Yes |
 | `project_pull_requests` | List pull requests of a project | `/project_pull_requests/list` | `project` | No |
 | `qualityprofiles` | Search quality profiles | `/qualityprofiles/search` | `organization` (SonarCloud only) | No |
 | `user_groups` | Search user groups (may require admin privileges) | `/user_groups/search` | `organization` (SonarCloud only) | Yes |
@@ -58,22 +63,22 @@ This manifest provides comprehensive access to the following tables:
 
 Once loaded into Coral with your `SONARQUBE_API_KEY` set in your environment, you can run queries like:
 
-**Get all issues for a specific project:**
+**Get all issues for a specific project (SonarCloud uses `component_keys`, self-hosted uses `components`):**
 ```sql
 SELECT key, message, severity, status
 FROM sonar.issues
-WHERE projects = 'my-project-key';
+WHERE component_keys = 'my-project-key';
 ```
 
-**Find security hotspots:**
+**Find security hotspots (SonarCloud uses `project_key`, self-hosted uses `project`):**
 ```sql
 SELECT message, vulnerability_probability
 FROM sonar.hotspots
 WHERE project_key = 'my-project-key';
 ```
 
-**List users:**
-*(Note: On SonarCloud, this endpoint is not a reliable organization member listing and may require admin privileges. It is primarily meant for self-hosted instances or admin scopes.)*
+**List users (Self-hosted SonarQube only):**
+*(Note: SonarCloud does not expose this endpoint. It is only available for self-hosted SonarQube Server instances.)*
 ```sql
 SELECT login, name, email
 FROM sonar.users;
