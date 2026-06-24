@@ -82,6 +82,7 @@ mod error;
 mod inputs;
 mod loader;
 mod parser;
+mod saved_function;
 mod schema;
 mod template;
 pub mod v4;
@@ -115,6 +116,10 @@ pub use inputs::{
 pub use loader::load_manifest_path;
 pub use parser::{
     ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,
+};
+pub use recipe::{
+    RecipeArgumentSpec, RecipeArgumentType, RecipeImplementationSpec, RecipePublishSpec,
+    RecipeSpec, RecipeValidationSpec, RecipeValidationValue, parse_recipe_yaml,
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
 pub(crate) use validate::{
