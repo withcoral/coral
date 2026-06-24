@@ -35,9 +35,8 @@ use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
     CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, MemorySize, QueryExecution,
     QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan, QueryResultObserver,
-    QueryResultObserverError,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceDecorator,
-    SourceInputResolver, TableFunctionInfo, TableInfo,
+    QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
+    RequestAuthenticator, SourceDecorator, SourceInputResolver, TableFunctionInfo, TableInfo,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
