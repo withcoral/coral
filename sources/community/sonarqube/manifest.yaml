@@ -71,10 +71,12 @@ tables:
           path:
             - bestValue
   - name: projects
-    description: Search projects by organization
+    description: Search projects
+    guide: |
+      SonarCloud requires an `organization` filter. Self-hosted SonarQube instances do not use this parameter and you should omit it.
     filters:
       - name: organization
-        required: true
+        required: false
     request:
       path: /projects/search
       method: GET
@@ -185,7 +187,6 @@ tables:
     response:
       rows_path:
         - projectStatus
-        - conditions
     columns:
       - name: project_key
         type: Utf8
@@ -194,26 +195,8 @@ tables:
           key: project_key
       - name: status
         type: Utf8
-      - name: metric_key
-        type: Utf8
-        expr:
-          kind: path
-          path:
-            - metricKey
-      - name: comparator
-        type: Utf8
-      - name: error_threshold
-        type: Utf8
-        expr:
-          kind: path
-          path:
-            - errorThreshold
-      - name: actual_value
-        type: Utf8
-        expr:
-          kind: path
-          path:
-            - actualValue
+      - name: conditions
+        type: Json
   - name: hotspots
     description: Search security hotspots
     filters:
@@ -312,6 +295,8 @@ tables:
         type: Utf8
       - name: language
         type: Utf8
+      - name: measures
+        type: Json
   - name: project_branches
     description: List branches of a project
     filters:
@@ -472,6 +457,8 @@ tables:
             - analysisDate
   - name: qualityprofiles
     description: Search quality profiles
+    guide: |
+      SonarCloud requires an `organization` filter. Self-hosted SonarQube instances do not use this parameter and you should omit it.
     filters:
       - name: organization
     request:
@@ -510,6 +497,8 @@ tables:
             - activeRuleCount
   - name: user_groups
     description: Search user groups
+    guide: |
+      SonarCloud requires an `organization` filter. Self-hosted SonarQube instances do not use this parameter and you should omit it.
     filters:
       - name: organization
     request:

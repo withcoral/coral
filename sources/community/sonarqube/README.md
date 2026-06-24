@@ -14,7 +14,7 @@ To connect Coral to your SonarQube or SonarCloud instance, you will need a perso
 5. **Copy the generated token immediately**, as you won't be able to see it again.
 
 ### 2. Configure Coral
-This connector requires your token to be securely passed as a secret input named `SONARQUBE_API_KEY`. 
+This connector requires your token to be securely passed as a secret input named `SONARQUBE_API_KEY`.
 
 If you are using the **Coral CLI** to test this connector locally, you can provide the key as an environment variable and add the source:
 
@@ -36,7 +36,7 @@ This manifest provides comprehensive access to the following tables:
 | Table Name | Description | Endpoint | Requires Filter | Paginated |
 |---|---|---|---|---|
 | `project_measures` | Live source code metrics, security vulnerabilities, and bug counts | `/measures/component` | `component`, `metric_keys` | No |
-| `projects` | Search projects by organization | `/projects/search` | `organization` | Yes |
+| `projects` | Search projects | `/projects/search` | `organization` (SonarCloud only) | Yes |
 | `issues` | Search issues for a project | `/issues/search` | `projects` | Yes |
 | `qualitygates_status` | Quality gate status of a project | `/qualitygates/project_status` | `project_key` | No |
 | `hotspots` | Search security hotspots | `/hotspots/search` | `project_key` | Yes |
@@ -46,8 +46,8 @@ This manifest provides comprehensive access to the following tables:
 | `users` | Search users | `/users/search` | *(None)* | Yes |
 | `rules` | Search coding rules | `/rules/search` | *(None)* | Yes |
 | `project_pull_requests` | List pull requests of a project | `/project_pull_requests/list` | `project` | No |
-| `qualityprofiles` | Search quality profiles | `/qualityprofiles/search` | `organization` (Optional) | No |
-| `user_groups` | Search user groups (may require admin privileges) | `/user_groups/search` | `organization` (Optional) | Yes |
+| `qualityprofiles` | Search quality profiles | `/qualityprofiles/search` | `organization` (SonarCloud only) | No |
+| `user_groups` | Search user groups (may require admin privileges) | `/user_groups/search` | `organization` (SonarCloud only) | Yes |
 
 ## Features
 
