@@ -26,29 +26,31 @@
   "dependencies": {
     "@base-ui-components/react": "^1.0.0-rc.0",
     "@bufbuild/protobuf": "^2.12.0",
-    "@connectrpc/connect": "^2.1.1",
-    "@connectrpc/connect-web": "^2.1.1",
+    "@connectrpc/connect": "^2.1.2",
+    "@connectrpc/connect-web": "^2.1.2",
     "@vanilla-extract/css": "^1.20.1",
     "@vanilla-extract/recipes": "^0.5.7",
     "classnames": "^2.5.1",
-    "lucide-react": "^1.16.0",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "lucide-react": "^1.18.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-markdown": "^10.1.0",
+    "react-toastify": "^11.1.0"
   },
   "devDependencies": {
     "@bufbuild/buf": "^1.70.0",
     "@bufbuild/protoc-gen-es": "^2.12.0",
     "@msw/playwright": "^0.6.7",
-    "@playwright/test": "^1.60.0",
-    "@types/react": "^19.2.15",
+    "@playwright/test": "^1.61.0",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vanilla-extract/vite-plugin": "^5.2.2",
     "@vitejs/plugin-react": "^6.0.2",
-    "concurrently": "^9.2.1",
+    "concurrently": "^10.0.3",
     "msw": "^2.14.6",
-    "oxfmt": "^0.52.0",
-    "oxlint": "^1.67.0",
+    "oxfmt": "^0.55.0",
+    "oxlint": "^1.70.0",
     "typescript": "^6.0.3",
-    "vite": "^8.0.14"
+    "vite": "^8.0.16"
   }
 }

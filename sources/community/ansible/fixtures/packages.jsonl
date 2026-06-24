@@ -1,0 +1,8 @@
+{"hostname":"rhel-control","name":"python3","version":"3.12.3","release":"1.el10","arch":"x86_64","source":"rpm","epoch":"0","origin":"redhat"}
+{"hostname":"rhel-control","name":"podman","version":"5.4.0","release":"1.el10","arch":"x86_64","source":"rpm","epoch":"0","origin":"redhat"}
+{"hostname":"alpine-api","name":"python3","version":"3.12.1-r0","release":"","arch":"x86_64","source":"apk","epoch":"","origin":"alpine"}
+{"hostname":"alpine-api","name":"checkout-api","version":"0.4.2-r0","release":"","arch":"x86_64","source":"apk","epoch":"","origin":"local"}
+{"hostname":"arch-observe","name":"datadog-agent","version":"7.54.0-1","release":"","arch":"x86_64","source":"pacman","epoch":"","origin":"arch"}
+{"hostname":"debian-db","name":"postgresql","version":"15+248","release":"","arch":"amd64","source":"apt","epoch":"","origin":"debian"}
+{"hostname":"debian-db","name":"rabbitmq-server","version":"3.12.1-1","release":"","arch":"amd64","source":"apt","epoch":"","origin":"debian"}
+{"hostname":"suse-auth","name":"python311","version":"3.11.10","release":"150600.3.1","arch":"x86_64","source":"rpm","epoch":"0","origin":"opensuse"}

@@ -13,6 +13,8 @@
 - `crates/coral-mcp`: MCP stdio adapter over `coral-client`.
 - `crates/coral-spec`: declarative source-spec parsing, validation,
   input discovery, and normalized source-definition models.
+- `crates/coral-telemetry`: cross-crate telemetry helpers that are independent
+  of app bootstrap, query runtime, and adapter surfaces.
 - `plugins/coral`: Agent plugin packaging. `plugins/coral/skills` is the
   canonical in-repo home for maintained Coral agent skills.
 
@@ -48,6 +50,9 @@
   installed materialized package, never silently refreshes descriptors or
   projections, and should fail loudly on missing or incompatible artifacts with
   guidance to re-add the source.
+- Keep cross-crate W3C trace-context propagation helpers in
+  `coral-telemetry`; do not make `coral-app`, `coral-client`, `coral-engine`,
+  or `coral-mcp` depend on each other just to share telemetry carrier logic.
 - Keep shared Arrow IPC decoding and result rendering in `coral-client`.
 - Treat `coral-app` as an internal composition root even if sibling crates use
   its bootstrap seam today.
@@ -57,8 +62,11 @@
   runtime/bootstrap env reads, `coral-cli` owns CLI-surface env reads, and
   other crates should receive explicit values from callers instead of reading
   ambient process environment directly.
-- Changes to CLI or MCP surfaces must include corresponding documentation
-  updates under `docs/` in the same change.
+- Keep docs lean and readable. For CLI or MCP changes, update `docs/` only
+  when the change affects a public surface or captures important user-facing or
+  contributor-facing knowledge. Do not document every implementation detail.
+  When docs are warranted, choose the best existing location first and make the
+  amount of space match the feature's user-facing weight and visibility.
 - Keep stable bundled sources under `sources/core/**`; put preview DSL v4 source
   specs under `sources/core-v4/**` with distinct manifest names such as
   `<name>_v4`. Do not bundle `sources/core-v4` into the binary; install preview
@@ -72,9 +80,10 @@
 - Keep `xtask` organized by workflow: docs generation lives under
   `xtask/src/docs/`, shared source-manifest discovery lives in
   `xtask/src/sources.rs`, performance checks live in `xtask/src/perf.rs`, and
-  skill export lives in `xtask/src/skills.rs`. `@withcoral/repo-ops` owns the
-  whole tree; add narrower owners only for the workflow-specific paths they
-  actually maintain.
+  skill export lives in `xtask/src/skills.rs`. Release signing and
+  notarization automation lives in `xtask/src/release.rs`.
+  `@withcoral/repo-ops` owns the whole tree; add narrower owners only for the
+  workflow-specific paths they actually maintain.
 - `make docs-check` intentionally skips the aggregate community source catalog.
   Any PR may leave that generated page stale so unrelated changes do not fail
   on aggregate community catalog drift; keep docs freshness strict for bundled
@@ -129,8 +138,9 @@ source-authoring instructions.
 For meta changes:
 
 - Update the nearest relevant `AGENTS.md` in the same change.
-- Update `docs/`, generated docs, or docs tooling when the changed behavior is
-  user-facing or docs-authoring-facing.
+- Update `docs/`, generated docs, or docs tooling only when the changed
+  behavior is user-facing or docs-authoring-facing, and use the smallest useful
+  edit in the best existing location.
 - Preserve provenance: keep observed repo facts, project direction, local
   preferences, and generated context separate instead of merging them into one
   untraceable rule.

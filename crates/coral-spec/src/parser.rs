@@ -60,7 +60,7 @@ impl ValidatedSourceManifest {
     }
 
     #[must_use]
-    /// Returns the source-spec `name`, which is also the stable SQL schema name.
+    /// Returns the source-spec `name`.
     pub fn schema_name(&self) -> &str {
         match &self.inner {
             ValidatedManifestKind::Http(manifest) => &manifest.common.name,
@@ -287,6 +287,119 @@ tables:
         .expect("manifest should parse");
 
         assert_eq!(manifest.test_queries(), &["SELECT 1", "SELECT 2"]);
+    }
+
+    #[test]
+    fn reserved_source_name_is_rejected() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: public
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect_err("reserved source name should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("source name 'public' is reserved"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn lookup_key_on_file_jsonl_rejects_at_spec_layer() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    filters:
+      - name: id
+        lookup_key: true
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect_err("spec layer should reject lookup_key filters on file sources");
+
+        assert!(error.to_string().contains(
+            "demo.messages filter 'id': backend=file does not support lookup_key filters"
+        ));
+    }
+
+    #[test]
+    fn lookup_key_on_file_parquet_rejects_at_spec_layer() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: parquet
+    filters:
+      - name: id
+        lookup_key: true
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect_err("spec layer should reject lookup_key filters on file sources");
+
+        assert!(error.to_string().contains(
+            "demo.messages filter 'id': backend=file does not support lookup_key filters"
+        ));
+    }
+
+    #[test]
+    fn http_rate_limit_max_concurrency_is_not_manifest_metadata() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+rate_limit:
+  max_concurrency: 8
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect_err("manifest-owned concurrency should fail schema validation");
+
+        assert!(error.to_string().contains("max_concurrency"));
     }
 
     #[test]

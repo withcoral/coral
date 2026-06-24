@@ -13,9 +13,9 @@ workspace = true
 arrow = { workspace = true, features = ["prettyprint"] }
 http-body.workspace = true
 opentelemetry.workspace = true
-opentelemetry_sdk.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 tonic.workspace = true
 tonic-types.workspace = true
 tracing.workspace = true
@@ -24,6 +24,7 @@ tracing-opentelemetry.workspace = true
 coral-api.workspace = true
 coral-app.workspace = true
 coral-spec.workspace = true
+coral-telemetry.workspace = true
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
