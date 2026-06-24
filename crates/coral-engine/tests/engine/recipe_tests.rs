@@ -579,3 +579,34 @@ async fn published_recipe_table_function_preserves_inner_limit() {
 
     assert_eq!(execution_to_rows(&execution), vec![json!({"count": 1})]);
 }
+
+#[tokio::test]
+async fn published_recipe_table_function_is_cataloged() {
+    let server = MockServer::start().await;
+    let source = search_source(&server, "catalog_recipe_search");
+    let runtime =
+        test_runtime().with_recipes(vec![published_review_queue_recipe("catalog_recipe_search")]);
+
+    let catalog = CoralQuery::list_catalog(&[source], runtime, Some("recipes"))
+        .await
+        .expect("catalog should include recipe function");
+
+    assert!(catalog.tables.is_empty());
+    assert_eq!(catalog.table_functions.len(), 1);
+    let function = catalog
+        .table_functions
+        .first()
+        .expect("recipe table function");
+    assert_eq!(function.schema_name, "recipes");
+    assert_eq!(function.function_name, "review_queue");
+    assert_eq!(function.arguments.len(), 2);
+    assert_eq!(function.result_columns.len(), 2);
+    assert_eq!(
+        function
+            .result_columns
+            .first()
+            .expect("title result column")
+            .name,
+        "title"
+    );
+}

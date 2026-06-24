@@ -29,6 +29,7 @@ use crate::runtime::json::register_json_support;
 use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::query_planner::CoralQueryPlanner;
 use crate::runtime::recipe_functions::RecipeFunctionRegistry;
+use crate::runtime::recipes::published_table_functions;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
@@ -167,12 +168,15 @@ async fn build_registered_runtime(
         config.source_decorators,
     )
     .await?;
-    reject_duplicate_table_function_surfaces(&registration.active_sources, config.recipes)
+    let recipe_table_functions =
+        published_table_functions(config.recipes).map_err(|err| datafusion_to_core(&err, &[]))?;
+    reject_duplicate_table_function_surfaces(&registration.active_sources, &recipe_table_functions)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
-    catalog::register(&ctx, &registration.active_sources)
+    catalog::register(&ctx, &registration.active_sources, &recipe_table_functions)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
     let tables = catalog::collect_tables(&registration.active_sources);
-    let table_functions = catalog::collect_table_functions(&registration.active_sources);
+    let table_functions =
+        catalog::collect_table_functions(&registration.active_sources, &recipe_table_functions);
     let source_function_schemas = registration
         .active_sources
         .iter()
@@ -731,7 +735,7 @@ pub(crate) fn read_only_sql_options() -> SQLOptions {
 
 fn reject_duplicate_table_function_surfaces(
     active_sources: &[RegisteredSource],
-    recipes: &[RecipeRuntimeDefinition],
+    recipe_table_functions: &[catalog::CatalogTableFunction],
 ) -> Result<(), DataFusionError> {
     let mut source_functions = HashMap::new();
     for source in active_sources {
@@ -746,18 +750,11 @@ fn reject_duplicate_table_function_surfaces(
         }
     }
 
-    let mut recipe_functions = HashSet::new();
-    for recipe in recipes {
-        let publish = &recipe.publish.table_function;
-        let key = (publish.schema.as_str(), publish.name.as_str());
-        if !recipe_functions.insert(key) {
-            return Err(DataFusionError::Plan(format!(
-                "duplicate recipe table function {}.{}",
-                key.0, key.1
-            )));
-        }
-
-        if let Some(kind) = source_functions.get(&key) {
+    for function in recipe_table_functions {
+        if let Some(kind) = source_functions.get(&(
+            function.schema_name.as_str(),
+            function.function_name.as_str(),
+        )) {
             let existing = if *kind == "table" {
                 "table function".to_string()
             } else {
@@ -765,7 +762,7 @@ fn reject_duplicate_table_function_surfaces(
             };
             return Err(DataFusionError::Plan(format!(
                 "recipe table function {}.{} conflicts with existing {existing}",
-                key.0, key.1
+                function.schema_name, function.function_name
             )));
         }
     }

@@ -1,6 +1,6 @@
-//! Recipe SQL parameter binding helpers.
+//! Recipe SQL parameter binding and catalog helpers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr as _;
 use std::sync::Arc;
 
@@ -9,6 +9,9 @@ use datafusion::common::ScalarValue;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::Expr;
 
+use crate::runtime::catalog::{
+    CatalogTableFunction, CatalogTableFunctionArgument, CatalogTableFunctionResultColumn,
+};
 use crate::runtime::query::QueryRuntimeAdapter;
 use crate::runtime::query::parameter_scalar_value;
 use crate::{
@@ -49,6 +52,57 @@ pub(crate) async fn validate_recipe(
     query_runtime
         .validate_sql(recipe_sql(recipe), &params)
         .await
+}
+
+pub(crate) fn published_table_functions(
+    recipes: &[RecipeRuntimeDefinition],
+) -> Result<Vec<CatalogTableFunction>> {
+    let mut functions = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for recipe in recipes {
+        let publish = &recipe.publish.table_function;
+        let key = (publish.schema.as_str(), publish.name.as_str());
+        if !seen.insert(key) {
+            return Err(DataFusionError::Plan(format!(
+                "duplicate recipe table function {}.{}",
+                key.0, key.1
+            )));
+        }
+
+        recipe_arrow_schema(recipe)?;
+        functions.push(CatalogTableFunction {
+            schema_name: publish.schema.clone(),
+            function_name: publish.name.clone(),
+            kind: "recipe".to_string(),
+            description: publish_description(&publish.description, &recipe.description),
+            arguments: recipe
+                .arguments
+                .iter()
+                .map(|argument| CatalogTableFunctionArgument {
+                    name: argument.name.clone(),
+                    required: argument.required,
+                    values: Vec::new(),
+                })
+                .collect(),
+            result_columns: recipe
+                .result_columns
+                .iter()
+                .map(|column| CatalogTableFunctionResultColumn {
+                    name: column.name.clone(),
+                    data_type: column.data_type.clone(),
+                    nullable: column.nullable,
+                    description: column.description.clone(),
+                })
+                .collect(),
+            search_limits_json: None,
+        });
+    }
+
+    functions.sort_by(|left, right| {
+        (&left.schema_name, &left.function_name).cmp(&(&right.schema_name, &right.function_name))
+    });
+    Ok(functions)
 }
 
 pub(crate) fn recipe_argument_values(
@@ -167,6 +221,14 @@ fn recipe_result_field(column: &RecipeRuntimeResultColumn) -> Result<Field> {
         ))
     })?;
     Ok(Field::new(&column.name, data_type, column.nullable))
+}
+
+fn publish_description(target_description: &str, recipe_description: &str) -> String {
+    if target_description.trim().is_empty() {
+        recipe_description.to_string()
+    } else {
+        target_description.to_string()
+    }
 }
 
 fn scalar_value_name(value: &ScalarValue) -> &'static str {

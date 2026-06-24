@@ -180,6 +180,24 @@ impl CatalogDiscovery {
         pagination: Pagination,
         attribution: &QueryAttribution,
     ) -> Result<CatalogPage, QueryManagerError> {
+        Box::pin(self.list_catalog_inner(
+            workspace_name,
+            schema_name,
+            kind,
+            pagination,
+            attribution,
+        ))
+        .await
+    }
+
+    async fn list_catalog_inner(
+        &self,
+        workspace_name: &WorkspaceName,
+        schema_name: Option<&str>,
+        kind: Option<CatalogItemKind>,
+        pagination: Pagination,
+        attribution: &QueryAttribution,
+    ) -> Result<CatalogPage, QueryManagerError> {
         let catalog = self
             .queries
             .list_catalog(workspace_name, schema_name, attribution)
@@ -207,6 +225,15 @@ impl CatalogDiscovery {
     }
 
     pub(crate) async fn describe_table(
+        &self,
+        workspace_name: &WorkspaceName,
+        table_ref: CatalogTableRef<'_>,
+        attribution: &QueryAttribution,
+    ) -> Result<DescribeTableResult, QueryManagerError> {
+        Box::pin(self.describe_table_inner(workspace_name, table_ref, attribution)).await
+    }
+
+    async fn describe_table_inner(
         &self,
         workspace_name: &WorkspaceName,
         table_ref: CatalogTableRef<'_>,
@@ -281,6 +308,15 @@ impl CatalogDiscovery {
         query: SearchCatalogQuery<'_>,
         attribution: &QueryAttribution,
     ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
+        Box::pin(self.search_catalog_inner(workspace_name, query, attribution)).await
+    }
+
+    async fn search_catalog_inner(
+        &self,
+        workspace_name: &WorkspaceName,
+        query: SearchCatalogQuery<'_>,
+        attribution: &QueryAttribution,
+    ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
         let regex = compile_metadata_regex(query.pattern, query.ignore_case)
             .map_err(QueryManagerError::App)?;
         let matches = self
@@ -299,6 +335,15 @@ impl CatalogDiscovery {
     }
 
     pub(crate) async fn list_columns(
+        &self,
+        workspace_name: &WorkspaceName,
+        query: ListColumnsQuery<'_>,
+        attribution: &QueryAttribution,
+    ) -> Result<Option<Page<ColumnSearchResult>>, QueryManagerError> {
+        Box::pin(self.list_columns_inner(workspace_name, query, attribution)).await
+    }
+
+    async fn list_columns_inner(
         &self,
         workspace_name: &WorkspaceName,
         query: ListColumnsQuery<'_>,
