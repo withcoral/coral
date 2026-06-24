@@ -9,6 +9,7 @@ To connect Coral to your SonarQube or SonarCloud instance, you will need a perso
 ### Permissions
 A User Token with standard project **Browse** access is sufficient for querying projects, measures, issues, and hotspots.
 However, be aware of the following permission limitations:
+* **`projects` (Self-hosted)**: Querying projects on a self-hosted instance requires **Administer System** permissions.
 * **`user_groups` and `users`**: Querying user groups requires **Administer System** permissions. Additionally, standard users may not be able to view certain fields like user email addresses; admin permissions are often required to retrieve full user details.
 
 ### 1. Generate a SonarQube Token
@@ -44,7 +45,8 @@ This manifest provides comprehensive access to the following tables:
 | `projects` | Search projects | `/projects/search` | `organization` (SonarCloud only) | Yes |
 | `issues` | Search issues for a project | `/issues/search` | `component_keys` (Cloud) or `components` (Server) | Yes |
 | `qualitygates_status` | Quality gate status of a project | `/qualitygates/project_status` | `project_key` | No |
-| `hotspots` | Search security hotspots | `/hotspots/search` | `project_key` (Cloud) or `project` (Server) | Yes |
+| `hotspots_cloud` | Search security hotspots (SonarCloud) | `/hotspots/search` | `project_key` | Yes |
+| `hotspots_server` | Search security hotspots (SonarQube Server) | `/hotspots/search` | `project` | Yes |
 | `component_tree` | File-level measures | `/measures/component_tree` | `component`, `metric_keys` | Yes |
 | `project_branches` | List branches of a project | `/project_branches/list` | `project` | No |
 | `metrics_catalog` | List of all available metrics | `/metrics/search` | *(None)* | No |
@@ -70,10 +72,10 @@ FROM sonar.issues
 WHERE component_keys = 'my-project-key';
 ```
 
-**Find security hotspots (SonarCloud uses `project_key`, self-hosted uses `project`):**
+**Find security hotspots (SonarCloud):**
 ```sql
 SELECT message, vulnerability_probability
-FROM sonar.hotspots
+FROM sonar.hotspots_cloud
 WHERE project_key = 'my-project-key';
 ```
 

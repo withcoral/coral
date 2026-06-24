@@ -15,7 +15,9 @@ inputs:
       your self-hosted URL like `https://sonarqube.example.com/api`.
   SONARQUBE_API_KEY:
     kind: secret
-    hint: A SonarQube User Token. Basic read access (Browse) works for most tables. Administer System is required for user groups and full user details.
+    hint: >
+      A SonarQube User Token. Basic read access (Browse) works for most tables.
+      Administer System is required for projects (self-hosted), user groups, and full user details.
 auth:
   type: HeaderAuth
   headers:
@@ -73,6 +75,7 @@ tables:
     description: Search projects
     guide: |
       SonarCloud requires an `organization` filter. Self-hosted SonarQube instances do not use this parameter and you should omit it.
+      On self-hosted instances, querying this table requires `Administer System` permission.
     filters:
       - name: organization
         required: false
@@ -207,14 +210,60 @@ tables:
         type: Utf8
       - name: conditions
         type: Json
-  - name: hotspots
-    description: Search security hotspots
-    guide: |
-      SonarCloud users should filter by `project_key`.
-      Self-hosted SonarQube users should filter by `project`.
+  - name: hotspots_cloud
+    description: Search security hotspots (SonarCloud)
+    filters:
+      - name: project_key
+        required: true
+    request:
+      path: /hotspots/search
+      method: GET
+      query:
+        - name: projectKey
+          from: filter
+          key: project_key
+    response:
+      rows_path:
+        - hotspots
+    pagination:
+      mode: page
+      page_param: p
+      page_start: 1
+      page_size:
+        default: 100
+        max: 500
+        query_param: ps
+    columns:
+      - name: project_key
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: project_key
+      - name: key
+        type: Utf8
+      - name: vulnerability_probability
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - vulnerabilityProbability
+      - name: status
+        type: Utf8
+      - name: message
+        type: Utf8
+      - name: author
+        type: Utf8
+      - name: creation_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - creationDate
+  - name: hotspots_server
+    description: Search security hotspots (SonarQube Server)
     filters:
       - name: project
-      - name: project_key
+        required: true
     request:
       path: /hotspots/search
       method: GET
@@ -222,9 +271,6 @@ tables:
         - name: project
           from: filter
           key: project
-        - name: projectKey
-          from: filter
-          key: project_key
     response:
       rows_path:
         - hotspots
@@ -242,11 +288,6 @@ tables:
         expr:
           kind: from_filter
           key: project
-      - name: project_key
-        type: Utf8
-        expr:
-          kind: from_filter
-          key: project_key
       - name: key
         type: Utf8
       - name: vulnerability_probability
