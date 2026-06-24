@@ -369,6 +369,29 @@ impl QueryRuntimeContext {
     }
 }
 
+/// Named SQL query parameters, keyed by parameter name without the `$`
+/// prefix: binding `owner` supplies `$owner` in the statement.
+pub type QueryParameters = BTreeMap<String, QueryParameterValue>;
+
+/// Value bound to one named SQL query parameter (`$name`).
+///
+/// Values are data, never SQL text: they bind into the planned statement
+/// through `DataFusion` parameter substitution, so no quoting or escaping
+/// rules apply anywhere in the request path.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QueryParameterValue {
+    /// UTF-8 string value.
+    String(String),
+    /// 64-bit signed integer value.
+    Integer(i64),
+    /// 64-bit floating point value.
+    Float(f64),
+    /// Boolean value.
+    Boolean(bool),
+    /// SQL NULL.
+    Null,
+}
+
 /// Owned runtime-build inputs needed while compiling and registering sources.
 #[derive(Default)]
 pub struct QueryRuntimeConfig {
