@@ -20,7 +20,9 @@ To rotate or update your token, run the same command again.
 
 Generate a permanent token in your YouTrack instance under **Profile** -> **Account Security** -> **Tokens**.
 
-Permanent tokens are constrained by both the selected token scope and the permissions of the user who created them. The token must be granted the **YouTrack** scope, and the user account generating the token must have access to the resources being queried.
+Permanent tokens are constrained by both the selected token scope and the permissions
+of the user who created them. The token must be granted the **YouTrack** scope, and
+the user account generating the token must have access to the resources being queried.
 
 Additional requirements:
 
