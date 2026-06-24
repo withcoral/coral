@@ -71,8 +71,10 @@ pub use contracts::{
     DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution, QueryMemoryConfig,
     QueryParameterValue, QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
     QuerySource, QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeSourceComponent,
-    RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
-    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    RuntimeSourcePackage, SavedFunctionRuntimeArgument, SavedFunctionRuntimeArgumentType,
+    SavedFunctionRuntimeDefinition, SavedFunctionRuntimeImplementation, SourceValidationReport,
+    StatusCode, StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
+    TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
@@ -179,6 +181,28 @@ impl CoralQuery {
             .await?
             .execute_sql(sql, &params)
             .await
+    }
+
+    /// Validates one saved function against the selected sources using one concrete invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if source compilation fails, if saved function argument
+    /// values cannot be bound, if the saved function SQL cannot plan against the
+    /// selected sources, or if the validation invocation cannot execute.
+    pub async fn validate_saved_function(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        saved_function: SavedFunctionRuntimeDefinition,
+        arguments: QueryParameters,
+    ) -> Result<std::sync::Arc<arrow::datatypes::Schema>, CoreError> {
+        let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
+        runtime::saved_functions::validate_saved_function(
+            &query_runtime,
+            &saved_function,
+            &arguments,
+        )
+        .await
     }
 
     /// Explains one `SQL` statement with logical and physical plan renderings.

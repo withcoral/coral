@@ -10,6 +10,7 @@ pub(crate) mod pattern_validator;
 pub(crate) mod query;
 pub(crate) mod query_planner;
 pub(crate) mod registry;
+pub(crate) mod saved_functions;
 pub(crate) mod schema_provider;
 pub(crate) mod scoped_table_functions;
 pub(crate) mod source_functions;

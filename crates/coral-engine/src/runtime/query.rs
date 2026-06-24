@@ -365,6 +365,32 @@ impl QueryRuntimeAdapter {
         sql: &str,
         params: &QueryParameters,
     ) -> Result<QueryExecution, CoreError> {
+        self.execute_sql_with_fallback(sql, params).await
+    }
+
+    pub(crate) async fn infer_sql_schema(
+        &self,
+        sql: &str,
+        params: &QueryParameters,
+    ) -> Result<Arc<arrow::datatypes::Schema>, CoreError> {
+        let df = self.sql_dataframe(sql, params).await?;
+        let (session_state, logical_plan) = df.into_parts();
+        let analyzed_plan = session_state.optimize(&logical_plan).map_err(|err| {
+            datafusion_to_core_with_sql_and_table_functions(
+                &err,
+                &self.tables,
+                &self.table_functions,
+                Some(sql),
+            )
+        })?;
+        Ok(Arc::new(analyzed_plan.schema().as_arrow().clone()))
+    }
+
+    async fn execute_sql_with_fallback(
+        &self,
+        sql: &str,
+        params: &QueryParameters,
+    ) -> Result<QueryExecution, CoreError> {
         match self.execute_sql_once(&self.ctx, sql, params).await {
             Ok(execution) => Ok(execution),
             Err(SqlExecutionFailure::Collection(error)) => {

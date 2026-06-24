@@ -391,6 +391,30 @@ pub enum QueryParameterValue {
     Boolean(Option<bool>),
 }
 
+impl QueryParameterValue {
+    /// Returns whether this parameter value is a typed SQL NULL.
+    #[must_use]
+    pub(crate) fn is_null(&self) -> bool {
+        match self {
+            Self::String(value) => value.is_none(),
+            Self::Integer(value) => value.is_none(),
+            Self::Float(value) => value.is_none(),
+            Self::Boolean(value) => value.is_none(),
+        }
+    }
+
+    /// Returns the scalar type name used in validation diagnostics.
+    #[must_use]
+    pub(crate) fn type_name(&self) -> &'static str {
+        match self {
+            Self::String(_) => "string",
+            Self::Integer(_) => "integer",
+            Self::Float(_) => "float",
+            Self::Boolean(_) => "boolean",
+        }
+    }
+}
+
 /// Owned runtime-build inputs needed while compiling and registering sources.
 #[derive(Default)]
 pub struct QueryRuntimeConfig {
