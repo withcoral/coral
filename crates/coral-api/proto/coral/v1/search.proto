@@ -1,0 +1,228 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/catalog.proto";
+import "coral/v1/resources.proto";
+
+// Universal Search request for clue routing over Coral metadata and local memory.
+message SearchRequest {
+  // Workspace whose current search context should be inspected.
+  Workspace workspace = 1;
+  // User or agent clue to route to likely Coral surfaces. The server trims
+  // surrounding whitespace, rejects empty queries, and rejects queries longer
+  // than 512 bytes.
+  string query = 2;
+  // Optional maximum results. Zero applies the API default of 10. Non-zero
+  // values must be between 1 and 50 inclusive; larger values are rejected
+  // rather than clamped.
+  uint32 limit = 3;
+}
+
+// Universal Search response with typed, bounded routing hints.
+message SearchResponse {
+  // Ordered search hints.
+  repeated SearchResult results = 1;
+  // Provider coverage and error disclosure.
+  repeated SearchProviderStatus provider_statuses = 2;
+  // Result truncation metadata.
+  SearchResultTruncation truncation = 3;
+}
+
+// Result truncation metadata.
+message SearchResultTruncation {
+  // Whether more results were available than returned.
+  bool truncated = 1;
+  // Number of results returned in this response.
+  uint32 returned_count = 2;
+  // Applied maximum result count.
+  uint32 max_results = 3;
+  // Human-readable truncation note.
+  string note = 4;
+}
+
+// Backing provider status for a search response.
+message SearchProviderStatus {
+  // Provider name.
+  SearchProvider provider = 1;
+  // Provider state for this request.
+  SearchProviderState state = 2;
+  // Short coverage or error note.
+  string note = 3;
+  // Structured provider-local coverage for this request. Absent when the provider is not enabled or skipped.
+  SearchProviderCoverage coverage = 4;
+}
+
+// Structured provider-local coverage for one request.
+message SearchProviderCoverage {
+  // Units the provider considered eligible for this request.
+  uint32 eligible_units = 1;
+  // Units the provider actually searched for this request.
+  uint32 searched_units = 2;
+  // Units that failed while this provider ran.
+  uint32 failed_units = 3;
+  // Candidates returned by the provider before global fusion/truncation.
+  uint32 returned_count = 4;
+  // Whether the provider had more candidates than its local retrieval window.
+  bool has_more = 5;
+  // Whether the provider stopped because its maintenance/search budget expired.
+  bool budget_exhausted = 6;
+  // Whether the provider timed out.
+  bool timed_out = 7;
+  // Whether the provider served from stale or partially refreshed local state.
+  bool stale_index = 8;
+}
+
+// Universal Search backing providers.
+enum SearchProvider {
+  // Unknown provider.
+  SEARCH_PROVIDER_UNSPECIFIED = 0;
+  // Catalog metadata provider.
+  SEARCH_PROVIDER_CATALOG_METADATA = 1;
+  // Local observed-value provider.
+  SEARCH_PROVIDER_OBSERVED_VALUES = 2;
+  // Active provider-native fanout provider.
+  SEARCH_PROVIDER_NATIVE_FANOUT = 3;
+}
+
+// Provider state for one request.
+enum SearchProviderState {
+  // Unknown provider state.
+  SEARCH_PROVIDER_STATE_UNSPECIFIED = 0;
+  // Provider returned one or more results.
+  SEARCH_PROVIDER_STATE_RESULTS_FOUND = 1;
+  // Provider ran and returned no results.
+  SEARCH_PROVIDER_STATE_EMPTY = 2;
+  // Provider is not enabled.
+  SEARCH_PROVIDER_STATE_NOT_ENABLED = 3;
+  // Provider was skipped for this request.
+  SEARCH_PROVIDER_STATE_SKIPPED = 4;
+  // Provider returned partial results.
+  SEARCH_PROVIDER_STATE_PARTIAL = 5;
+  // Provider failed for this request.
+  SEARCH_PROVIDER_STATE_ERROR = 6;
+}
+
+// One typed Universal Search result.
+message SearchResult {
+  // Provider that produced this result.
+  SearchProvider provider = 1;
+  // Typed result payload.
+  oneof payload {
+    // Table or table-function metadata hit with search context.
+    CatalogMetadata catalog_metadata = 10;
+    // Column, filter, argument, or result-column hint.
+    ColumnHint column_hint = 11;
+    // Local observed-value hit. Reserved for the observed-value provider.
+    ObservedValue observed_value = 12;
+  }
+}
+
+// Table or table-function metadata hit with search-specific context.
+message CatalogMetadata {
+  // Matched catalog item.
+  CatalogItem item = 1;
+  // Metadata fields that matched the query.
+  repeated string matched_fields = 2;
+  // Compact table column hints for ordinary table hits.
+  SearchTableColumnPreview table_column_preview = 3;
+}
+
+// Compact column hints for an ordinary table metadata hit.
+message SearchTableColumnPreview {
+  // Total column count for the table before preview capping.
+  uint32 column_count = 1;
+  // Capped columns selected for query-writing orientation.
+  repeated SearchTableColumnPreviewColumn columns = 2;
+  // Number of table columns not included in the capped preview.
+  uint32 omitted_column_count = 3;
+}
+
+// One compact column hint in a table metadata hit preview.
+message SearchTableColumnPreviewColumn {
+  // Column name as exposed by the query engine.
+  string name = 1;
+  // The DataFusion/Arrow data type rendered as text.
+  string data_type = 2;
+  // Whether the column must be constrained before querying the table.
+  bool is_required_filter = 3;
+  // Human-readable column description.
+  string description = 4;
+  // Column metadata fields that matched the query.
+  repeated string matched_fields = 5;
+}
+
+// Surface kind for a column-style hint.
+enum SearchSurfaceKind {
+  // Unknown surface kind.
+  SEARCH_SURFACE_KIND_UNSPECIFIED = 0;
+  // Table surface.
+  SEARCH_SURFACE_KIND_TABLE = 1;
+  // Table-function surface.
+  SEARCH_SURFACE_KIND_TABLE_FUNCTION = 2;
+}
+
+// Role of a field-style hint on its owning surface.
+enum SearchFieldRole {
+  // Unknown field role.
+  SEARCH_FIELD_ROLE_UNSPECIFIED = 0;
+  // Ordinary table column.
+  SEARCH_FIELD_ROLE_TABLE_COLUMN = 1;
+  // Required or optional table filter.
+  SEARCH_FIELD_ROLE_TABLE_FILTER = 2;
+  // Table-function argument.
+  SEARCH_FIELD_ROLE_TABLE_FUNCTION_ARGUMENT = 3;
+  // Table-function result column.
+  SEARCH_FIELD_ROLE_TABLE_FUNCTION_RESULT_COLUMN = 4;
+}
+
+// A field-level hint that may hold or accept the query clue.
+message ColumnHint {
+  // Workspace that scopes this hint.
+  Workspace workspace = 1;
+  // Source schema that owns the surface.
+  string schema_name = 2;
+  // Table or table-function name.
+  string surface_name = 3;
+  // Whether the owning surface is a table or table function.
+  SearchSurfaceKind surface_kind = 4;
+  // Column, required filter, argument, or result-column name.
+  string name = 5;
+  // Data type when known.
+  string data_type = 6;
+  // Whether this field must be supplied or constrained.
+  bool required = 7;
+  // Human-readable field description.
+  string description = 8;
+  // Metadata fields that matched the query.
+  repeated string matched_fields = 9;
+  // How the field should be used when querying the owning surface.
+  SearchFieldRole field_role = 10;
+}
+
+// Local observed-value result.
+message ObservedValue {
+  // Matched observed value.
+  string value = 1;
+  // Source schema where the value was observed.
+  string schema_name = 2;
+  // Table or function where the value was observed.
+  string surface_name = 3;
+  // Column that produced the value.
+  string column_name = 4;
+  // Whether the owning surface is a table or table function.
+  SearchSurfaceKind surface_kind = 5;
+  // Field path where the value was observed.
+  string field_path = 6;
+  // Number of times this field/value pair has been observed.
+  uint64 observed_count = 7;
+  // RFC3339 timestamp when this field/value pair was most recently observed.
+  string last_observed_at = 8;
+}
+
+
+// Universal Search APIs.
+service SearchService {
+  // Routes a clue to typed Coral search hints.
+  rpc Search(SearchRequest) returns (SearchResponse);
+}

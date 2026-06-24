@@ -50,6 +50,7 @@ pub mod features;
 mod feedback;
 mod identity;
 mod query;
+mod search;
 mod sources;
 mod state;
 mod storage;

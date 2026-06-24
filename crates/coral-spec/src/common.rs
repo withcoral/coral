@@ -307,6 +307,52 @@ pub struct SearchLimitsSpec {
     pub max_calls_per_query: usize,
 }
 
+impl SearchLimitsSpec {
+    pub fn validate(&self, context: &str) -> Result<()> {
+        if self.default_top_k == 0 {
+            return Err(ManifestError::validation(format!(
+                "{context}.default_top_k must be > 0"
+            )));
+        }
+        if self.max_top_k == 0 {
+            return Err(ManifestError::validation(format!(
+                "{context}.max_top_k must be > 0"
+            )));
+        }
+        if self.max_top_k > MAX_SEARCH_TOP_K {
+            return Err(ManifestError::validation(format!(
+                "{context}.max_top_k must be <= {MAX_SEARCH_TOP_K}"
+            )));
+        }
+        if self.default_top_k > self.max_top_k {
+            return Err(ManifestError::validation(format!(
+                "{context}.default_top_k must be <= max_top_k"
+            )));
+        }
+        if self.max_calls_per_query == 0 {
+            return Err(ManifestError::validation(format!(
+                "{context}.max_calls_per_query must be > 0"
+            )));
+        }
+        if self.max_calls_per_query > MAX_SEARCH_CALLS_PER_QUERY {
+            return Err(ManifestError::validation(format!(
+                "{context}.max_calls_per_query must be <= {MAX_SEARCH_CALLS_PER_QUERY}"
+            )));
+        }
+        let Some(candidate_budget) = self.max_top_k.checked_mul(self.max_calls_per_query) else {
+            return Err(ManifestError::validation(format!(
+                "{context}.max_top_k * max_calls_per_query exceeds supported range"
+            )));
+        };
+        if candidate_budget > MAX_SEARCH_CANDIDATES_PER_QUERY {
+            return Err(ManifestError::validation(format!(
+                "{context}.max_top_k * max_calls_per_query must be <= {MAX_SEARCH_CANDIDATES_PER_QUERY}"
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Machine-readable path from a search candidate row to a detail table.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

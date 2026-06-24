@@ -7,7 +7,7 @@ use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputR
 use async_trait::async_trait;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SearchLimitsSpec, SourceBackend, SourceTableFunctionSpec, TableCommon,
+    SearchLimitsSpec, SourceBackend, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::TableProvider;
@@ -49,7 +49,7 @@ pub(crate) struct RegisteredTable {
     pub(crate) columns: Vec<RegisteredColumn>,
     pub(crate) filters: Vec<RegisteredFilter>,
     pub(crate) required_filters: Vec<String>,
-    pub(crate) search_limits_json: Option<String>,
+    pub(crate) search_limits: Option<SearchLimitsSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,11 +57,12 @@ pub(crate) struct RegisteredTableFunction {
     pub(crate) schema_name: String,
     pub(crate) function_name: String,
     pub(crate) factory: Arc<dyn SourceFunctionProviderFactory>,
-    pub(crate) kind: String,
+    pub(crate) kind: SourceTableFunctionKind,
     pub(crate) description: String,
     pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
     pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
-    pub(crate) search_limits_json: Option<String>,
+    pub(crate) arg_names: Vec<String>,
+    pub(crate) search_limits: Option<SearchLimitsSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -323,7 +324,7 @@ pub(crate) fn build_registered_table(
         columns,
         filters: registered_filters_from_specs(&common.filters),
         required_filters,
-        search_limits_json: common.search_limits.as_ref().map(serialize_search_limits),
+        search_limits: common.search_limits.clone(),
     }
 }
 
@@ -356,16 +357,13 @@ pub(crate) fn build_registered_table_function(
         schema_name: schema_name.to_string(),
         function_name: function.name.clone(),
         factory,
-        kind: function.kind.as_str().to_string(),
+        kind: function.kind,
         description: function.description.clone(),
         arguments,
         result_columns,
-        search_limits_json: function.search_limits.as_ref().map(serialize_search_limits),
+        arg_names: function.args.iter().map(|arg| arg.name.clone()).collect(),
+        search_limits: function.search_limits.clone(),
     }
-}
-
-fn serialize_search_limits(limits: &SearchLimitsSpec) -> String {
-    serde_json::to_string(limits).expect("search limits json")
 }
 
 pub(crate) fn arrow_type_for_column(column: &ColumnSpec) -> DataType {

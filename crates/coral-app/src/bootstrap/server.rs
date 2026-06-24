@@ -18,12 +18,13 @@ use coral_api::v1::catalog_service_server::CatalogServiceServer;
 use coral_api::v1::episode_service_server::EpisodeServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
+use coral_api::v1::search_service_server::SearchServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
 use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
-    TRACE_RESPONSE_MAX_MESSAGE_SIZE,
+    SEARCH_RESPONSE_MAX_MESSAGE_SIZE, TRACE_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -51,6 +52,8 @@ use crate::feedback::publisher::{
 use crate::feedback::service::FeedbackService;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
+use crate::search::manager::SearchManager;
+use crate::search::service::SearchService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
@@ -421,10 +424,12 @@ async fn start_server(
         service: trace_service,
         local_trace_store_dir,
     } = trace_components;
+    let search_manager = SearchManager::new(query_manager.config_store());
     let source_service = SourceService::new(source_manager, query_manager.clone());
     let workspace_service = WorkspaceService::new(workspace_manager);
     let catalog_service = CatalogService::new(query_manager.clone());
     let query_service = QueryService::new(query_manager);
+    let search_service = SearchService::new(search_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
     let episode_service = EpisodeService::new(episode_store);
     let mut routes = Routes::default()
@@ -454,6 +459,10 @@ async fn start_server(
         .add_service(GrpcMethodAnnotatedService::new(
             QueryServiceServer::new(query_service)
                 .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
+        ))
+        .add_service(GrpcMethodAnnotatedService::new(
+            SearchServiceServer::new(search_service)
+                .max_encoding_message_size(SEARCH_RESPONSE_MAX_MESSAGE_SIZE),
         ));
     if let Some(trace_service) = trace_service {
         routes = routes.add_service(GrpcMethodAnnotatedService::new(

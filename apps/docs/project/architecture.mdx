@@ -68,6 +68,7 @@ The local server and core orchestrator.
 | Feedback persistence | Workspace-scoped blocked-agent feedback reports (`feedback/`) |
 | Query orchestration | Loads sources, builds the engine, executes SQL (`query/`) |
 | Catalog discovery | Lists/searches/describes query-visible tables and columns (`catalog/`) |
+| Universal Search | Owns the `SearchService` shell and app-domain search result contract (`search/`) |
 
 This is the largest crate. It ties `coral-spec` and `coral-engine` together and manages all persistent local state.
 
@@ -117,7 +118,7 @@ The shared gRPC contract.
 | Protobuf definitions | `proto/coral/v1/` transport contracts for Coral services and messages |
 | Generated bindings   | Tonic-generated Rust types and service traits                                          |
 
-All inter-crate communication between `coral-client` and `coral-app` goes through these generated types.
+All inter-crate communication between `coral-client` and `coral-app` goes through these generated types. The active service contracts include source management, query execution, catalog discovery, workspaces, feedback, episodes, traces, and Universal Search.
 
 ## Dependency graph
 

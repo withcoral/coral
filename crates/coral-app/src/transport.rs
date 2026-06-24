@@ -8,11 +8,12 @@ use coral_api::{
         CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
         ColumnSearchResult as ProtoColumnSearchResult,
         DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
-        QueryTestResult, QueryTestSuccess, Source, Table, TableFunction, TableFunctionArgument,
-        TableFunctionResultColumn, TableSummary, ValidateSourceResponse, Workspace, catalog_item,
-        query_test_result,
+        QueryTestResult, QueryTestSuccess, SearchLimits, Source, Table, TableFunction,
+        TableFunctionArgument, TableFunctionKind, TableFunctionResultColumn, TableSummary,
+        ValidateSourceResponse, Workspace, catalog_item, query_test_result,
     },
 };
+use coral_spec::{SearchLimitsSpec, SourceTableFunctionKind};
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::Status as OtelStatus;
 use tonic::codegen::{Service, http};
@@ -337,10 +338,12 @@ pub(crate) fn table_function_to_proto(
     workspace_name: &WorkspaceName,
     function: coral_engine::TableFunctionInfo,
 ) -> TableFunction {
+    let schema_name = function.schema_name;
+    let function_name = function.function_name;
     TableFunction {
         workspace: Some(workspace_to_proto(workspace_name)),
-        schema_name: function.schema_name,
-        name: function.function_name,
+        schema_name,
+        name: function_name,
         description: function.description,
         arguments: function
             .arguments
@@ -361,6 +364,26 @@ pub(crate) fn table_function_to_proto(
                 description: column.description,
             })
             .collect(),
+        kind: table_function_kind_to_proto(function.kind) as i32,
+        search_limits: function.search_limits.as_ref().map(search_limits_to_proto),
+    }
+}
+
+fn table_function_kind_to_proto(kind: SourceTableFunctionKind) -> TableFunctionKind {
+    match kind {
+        SourceTableFunctionKind::Table => TableFunctionKind::Table,
+        SourceTableFunctionKind::Search => TableFunctionKind::Search,
+    }
+}
+
+fn search_limits_to_proto(limits: &SearchLimitsSpec) -> SearchLimits {
+    SearchLimits {
+        default_top_k: u32::try_from(limits.default_top_k)
+            .expect("validated search limits default_top_k fits u32"),
+        max_top_k: u32::try_from(limits.max_top_k)
+            .expect("validated search limits max_top_k fits u32"),
+        max_calls_per_query: u32::try_from(limits.max_calls_per_query)
+            .expect("validated search limits max_calls_per_query fits u32"),
     }
 }
 

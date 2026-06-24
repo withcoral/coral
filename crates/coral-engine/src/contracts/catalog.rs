@@ -1,5 +1,7 @@
 //! Typed query-visible catalog metadata.
 
+use coral_spec::{SearchLimitsSpec, SourceTableFunctionKind};
+
 /// Describes one queryable column.
 #[derive(Debug, Clone)]
 pub struct ColumnInfo {
@@ -91,4 +93,8 @@ pub struct TableFunctionInfo {
     pub arguments: Vec<TableFunctionArgumentInfo>,
     /// Columns returned by the function.
     pub result_columns: Vec<TableFunctionResultColumnInfo>,
+    /// Function role. Search functions perform provider-native retrieval.
+    pub kind: SourceTableFunctionKind,
+    /// Provider search limit metadata, when declared by the source.
+    pub search_limits: Option<SearchLimitsSpec>,
 }

@@ -7,8 +7,8 @@ use coral_api::v1::{
     ValidateSourceResponse, catalog_item, import_source_response,
 };
 use coral_client::{
-    AppClient, CatalogClient, QueryClient, SourceClient, WorkspaceClient, batches_to_json_rows,
-    decode_execute_sql_response, default_workspace,
+    AppClient, CatalogClient, QueryClient, SearchClient, SourceClient, WorkspaceClient,
+    batches_to_json_rows, decode_execute_sql_response, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
 use serde_json::{Value, json};
@@ -86,6 +86,10 @@ impl GrpcHarness {
 
     pub(crate) fn workspace_client(&self) -> WorkspaceClient {
         self.app.workspace_client()
+    }
+
+    pub(crate) fn search_client(&self) -> SearchClient {
+        self.app.search_client()
     }
 
     pub(crate) async fn import_source(
@@ -564,7 +568,7 @@ pub(crate) fn invalid_manifest_yaml() -> String {
     }))
 }
 
-fn manifest_yaml(value: &Value) -> String {
+pub(crate) fn manifest_yaml(value: &Value) -> String {
     serde_yaml::to_string(value).expect("serialize manifest yaml")
 }
 

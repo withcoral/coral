@@ -4,8 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::common::{
     BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
-    MAX_SEARCH_CALLS_PER_QUERY, MAX_SEARCH_CANDIDATES_PER_QUERY, MAX_SEARCH_TOP_K, PaginationSpec,
-    RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
+    PaginationSpec, RequestRouteSpec, RequestSpec, SearchLimitsSpec, SourceTableFunctionKind,
     SourceTableFunctionSpec, ValueSourceSpec,
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
@@ -370,57 +369,13 @@ fn validate_search_metadata(
         )));
     }
     if let Some(limits) = search_limits {
-        validate_search_limits(limits, &format!("{schema}.{table} search_limits"))?;
+        limits.validate(&format!("{schema}.{table} search_limits"))?;
     }
     validate_detail_hints(
         detail_hints,
         columns,
         &format!("{schema}.{table} detail_hints"),
     )
-}
-
-fn validate_search_limits(limits: &SearchLimitsSpec, context: &str) -> Result<()> {
-    if limits.default_top_k == 0 {
-        return Err(ManifestError::validation(format!(
-            "{context}.default_top_k must be > 0"
-        )));
-    }
-    if limits.max_top_k == 0 {
-        return Err(ManifestError::validation(format!(
-            "{context}.max_top_k must be > 0"
-        )));
-    }
-    if limits.max_top_k > MAX_SEARCH_TOP_K {
-        return Err(ManifestError::validation(format!(
-            "{context}.max_top_k must be <= {MAX_SEARCH_TOP_K}"
-        )));
-    }
-    if limits.default_top_k > limits.max_top_k {
-        return Err(ManifestError::validation(format!(
-            "{context}.default_top_k must be <= max_top_k"
-        )));
-    }
-    if limits.max_calls_per_query == 0 {
-        return Err(ManifestError::validation(format!(
-            "{context}.max_calls_per_query must be > 0"
-        )));
-    }
-    if limits.max_calls_per_query > MAX_SEARCH_CALLS_PER_QUERY {
-        return Err(ManifestError::validation(format!(
-            "{context}.max_calls_per_query must be <= {MAX_SEARCH_CALLS_PER_QUERY}"
-        )));
-    }
-    let Some(candidate_budget) = limits.max_top_k.checked_mul(limits.max_calls_per_query) else {
-        return Err(ManifestError::validation(format!(
-            "{context}.max_top_k * max_calls_per_query exceeds supported range"
-        )));
-    };
-    if candidate_budget > MAX_SEARCH_CANDIDATES_PER_QUERY {
-        return Err(ManifestError::validation(format!(
-            "{context}.max_top_k * max_calls_per_query must be <= {MAX_SEARCH_CANDIDATES_PER_QUERY}"
-        )));
-    }
-    Ok(())
 }
 
 fn validate_lookup_key_filters_compatible_with_search_limits(

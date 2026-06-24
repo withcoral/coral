@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use coral_spec::ManifestInputKind;
+use coral_spec::{ManifestInputKind, SearchLimitsSpec};
 use datafusion::arrow::array::{ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::datasource::MemTable;
@@ -86,6 +86,10 @@ fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<Me
         .iter()
         .map(|row| table_function_result_columns_json(row))
         .collect::<Result<Vec<_>>>()?;
+    let search_limits_json = rows
+        .iter()
+        .map(|row| search_limits_json(row.search_limits.as_ref()))
+        .collect::<Result<Vec<_>>>()?;
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -96,7 +100,7 @@ fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<Me
             utf8_column(arguments_json.iter().map(|value| Some(value.as_str()))),
             utf8_column(result_columns_json.iter().map(|value| Some(value.as_str()))),
             utf8_column(rows.iter().map(|row| Some(row.kind.as_str()))),
-            utf8_column(rows.iter().map(|row| row.search_limits_json.as_deref())),
+            utf8_column(search_limits_json.iter().map(|value| value.as_deref())),
         ],
     )
     .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
@@ -120,6 +124,15 @@ fn table_function_result_columns_json(row: &RegisteredTableFunction) -> Result<S
         .map(TableFunctionResultColumnJson::from)
         .collect::<Vec<_>>();
     serde_json::to_string(&columns).map_err(|error| DataFusionError::External(Box::new(error)))
+}
+
+fn search_limits_json(limits: Option<&SearchLimitsSpec>) -> Result<Option<String>> {
+    limits
+        .map(|limits| {
+            serde_json::to_string(limits)
+                .map_err(|error| DataFusionError::External(Box::new(error)))
+        })
+        .transpose()
 }
 
 #[derive(Serialize)]
@@ -547,6 +560,8 @@ pub(crate) fn collect_table_functions(
                             description: column.description.clone(),
                         })
                         .collect(),
+                    kind: function.kind,
+                    search_limits: function.search_limits.clone(),
                 })
         })
         .collect::<Vec<_>>();
@@ -562,7 +577,7 @@ struct CatalogTable {
     description: String,
     guide: String,
     required_filters: String,
-    search_limits_json: Option<String>,
+    search_limits: Option<SearchLimitsSpec>,
 }
 
 fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
@@ -583,7 +598,7 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
             description: table.description.to_string(),
             guide: table.guide.to_string(),
             required_filters: String::new(),
-            search_limits_json: None,
+            search_limits: None,
         })
         .chain(active_sources.iter().flat_map(|source| {
             source.tables.iter().map(move |table| CatalogTable {
@@ -592,7 +607,7 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
                 description: table.description.clone(),
                 guide: table.guide.clone(),
                 required_filters: table.required_filters.join(","),
-                search_limits_json: table.search_limits_json.clone(),
+                search_limits: table.search_limits.clone(),
             })
         }))
         .collect::<Vec<_>>();
@@ -600,6 +615,11 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
     rows.sort_by(|left, right| {
         (&left.schema_name, &left.table_name).cmp(&(&right.schema_name, &right.table_name))
     });
+
+    let search_limits_json = rows
+        .iter()
+        .map(|row| search_limits_json(row.search_limits.as_ref()))
+        .collect::<Result<Vec<_>>>()?;
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -609,7 +629,7 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
             utf8_column(rows.iter().map(|row| Some(row.description.as_str()))),
             utf8_column(rows.iter().map(|row| Some(row.guide.as_str()))),
             utf8_column(rows.iter().map(|row| Some(row.required_filters.as_str()))),
-            utf8_column(rows.iter().map(|row| row.search_limits_json.as_deref())),
+            utf8_column(search_limits_json.iter().map(|value| value.as_deref())),
         ],
     )
     .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
@@ -956,11 +976,12 @@ mod tests {
                 schema_name: "function_schema".to_string(),
                 function_name: "search".to_string(),
                 factory: Arc::new(StubSourceFunctionFactory::default()),
-                kind: "search".to_string(),
+                kind: coral_spec::SourceTableFunctionKind::Search,
                 description: String::new(),
                 arguments: Vec::new(),
                 result_columns: Vec::new(),
-                search_limits_json: None,
+                arg_names: Vec::new(),
+                search_limits: None,
             }],
             inputs: Vec::new(),
         }]);
@@ -971,6 +992,10 @@ mod tests {
                 .first()
                 .map(|function| function.schema_name.as_str()),
             Some("function_schema")
+        );
+        assert_eq!(
+            functions.first().map(|function| function.kind.as_str()),
+            Some("search")
         );
     }
 }
