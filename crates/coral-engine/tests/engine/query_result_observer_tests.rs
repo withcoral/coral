@@ -5,7 +5,7 @@ use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
 use coral_engine::{
     CoralQuery, CoreError, EngineExtensions, QueryResultObserver, QueryResultObserverError,
-    QueryRuntimeConfig, QueryRuntimeContext, StatusCode,
+    QueryRuntimeConfig, QueryRuntimeContext, StatusCode, TableRef,
 };
 use serde_json::{Value, json};
 
@@ -16,6 +16,7 @@ struct ObservedQuery {
     sql: String,
     column_names: Vec<String>,
     row_count: usize,
+    tables: Vec<TableRef>,
     rows: Vec<Value>,
 }
 
@@ -43,6 +44,7 @@ impl QueryResultObserver for RecordingObserver {
         sql: &str,
         schema: &Schema,
         batches: &[RecordBatch],
+        tables: &[TableRef],
     ) -> Result<(), QueryResultObserverError> {
         self.calls
             .lock()
@@ -59,6 +61,7 @@ impl QueryResultObserver for RecordingObserver {
                     .map(|field| field.name().clone())
                     .collect(),
                 row_count: batches.iter().map(RecordBatch::num_rows).sum(),
+                tables: tables.to_vec(),
                 rows: batches_to_rows(batches),
             });
         Ok(())
@@ -78,6 +81,7 @@ impl QueryResultObserver for FailingObserver {
         _sql: &str,
         _schema: &Schema,
         _batches: &[RecordBatch],
+        _tables: &[TableRef],
     ) -> Result<(), QueryResultObserverError> {
         Err(QueryResultObserverError::failed_precondition(
             "expected benchmark state is missing",
@@ -108,6 +112,7 @@ async fn observer_called_after_successful_query_and_sees_final_batches() {
             sql: sql.to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
             row_count: 2,
+            tables: vec![TableRef::new("observer_success", "users")],
             rows: vec![
                 json!({"id": 2, "name": "Grace"}),
                 json!({"id": 3, "name": "Linus"}),
@@ -193,6 +198,7 @@ async fn observer_sees_filtered_projected_result_not_raw_source_rows() {
             sql: sql.to_string(),
             column_names: vec!["name".to_string()],
             row_count: 1,
+            tables: vec![TableRef::new("observer_final", "users")],
             rows: vec![json!({"name": "Grace"})],
         }
     );

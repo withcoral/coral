@@ -47,6 +47,19 @@ pub struct McpOptions {
     pub trace_parent: Option<String>,
     /// Installed source names to include in MCP initialize instructions.
     pub source_names: Vec<String>,
+    /// Selected local query examples to include in MCP initialize instructions.
+    pub example_queries: Vec<McpExampleQuery>,
+}
+
+/// One local query-history example rendered into MCP initialize instructions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpExampleQuery {
+    /// SQL text as run locally.
+    pub sql: String,
+    /// Number of rows returned by the successful query.
+    pub row_count: u64,
+    /// Referenced Coral source names.
+    pub sources: Vec<String>,
 }
 
 /// Runs the `MCP` stdio server using an existing Coral client.

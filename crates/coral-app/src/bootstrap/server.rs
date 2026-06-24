@@ -43,6 +43,7 @@ use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::episode::service::EpisodeService;
 use crate::episode::store::EpisodeStore;
+use crate::features::{FeatureOverrides, FeatureStore};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
@@ -84,6 +85,7 @@ pub(crate) struct ServerConfig {
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     enable_stderr_logs: bool,
+    feature_overrides: FeatureOverrides,
 }
 
 impl Default for ServerConfig {
@@ -100,6 +102,7 @@ impl ServerConfig {
             engine_extensions_providers: Vec::new(),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             enable_stderr_logs: false,
+            feature_overrides: FeatureOverrides::default(),
         }
     }
 
@@ -125,6 +128,11 @@ impl ServerConfig {
     #[must_use]
     pub(crate) fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
         self.enable_stderr_logs = enable_stderr_logs;
+        self
+    }
+
+    pub(crate) fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
+        self.feature_overrides = feature_overrides;
         self
     }
 }
@@ -228,6 +236,13 @@ impl ServerBuilder {
         self
     }
 
+    #[must_use]
+    /// Applies process-local runtime feature overrides to this server.
+    pub fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
+        self.config = self.config.with_feature_overrides(feature_overrides);
+        self
+    }
+
     /// Disables hosted feedback upload for tests and controlled local harnesses.
     #[doc(hidden)]
     #[must_use]
@@ -251,6 +266,8 @@ impl ServerBuilder {
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
+        let features = FeatureStore::new(layout.clone())
+            .load_with_overrides(&self.config.feature_overrides)?;
         let internal_trace_store_dir = telemetry_config
             .trace_history
             .enabled
@@ -286,6 +303,7 @@ impl ServerBuilder {
             query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
+            features,
         );
         let trace_service = if telemetry_config.trace_history.enabled {
             installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
@@ -780,6 +798,7 @@ enabled = false
             QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
+            crate::features::Features::default(),
         );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
@@ -1163,6 +1182,7 @@ tables:
             },
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
+            crate::features::Features::default(),
         );
         let running = start_server(
             source_manager,
@@ -1264,6 +1284,7 @@ tables:
             QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
+            crate::features::Features::default(),
         );
         let running = start_server(
             source_manager,
@@ -1365,6 +1386,7 @@ tables:
             QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
+            crate::features::Features::default(),
         );
         let running = start_server(
             source_manager,

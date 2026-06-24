@@ -13,8 +13,9 @@ use coral_spec::ManifestInputKind;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
+use crate::query_history::QueryHistoryRecorder;
 use crate::sources::SourceName;
-use crate::state::ConfigStore;
+use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
 /// App-layer provider that selects engine extensions for one runtime build.
@@ -48,6 +49,43 @@ impl EngineExtensionsProvider for AwsEngineExtensionsProvider {
         extensions
             .request_authenticators
             .insert(authenticator.name().to_string(), authenticator);
+        extensions
+    }
+}
+
+/// Provider that installs the workspace query-history observer.
+#[derive(Clone)]
+pub(crate) struct QueryHistoryEngineExtensionsProvider {
+    layout: AppStateLayout,
+    workspace_name: WorkspaceName,
+}
+
+impl QueryHistoryEngineExtensionsProvider {
+    pub(crate) fn new(layout: AppStateLayout, workspace_name: WorkspaceName) -> Self {
+        Self {
+            layout,
+            workspace_name,
+        }
+    }
+}
+
+impl fmt::Debug for QueryHistoryEngineExtensionsProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QueryHistoryEngineExtensionsProvider")
+            .field("workspace_name", &self.workspace_name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl EngineExtensionsProvider for QueryHistoryEngineExtensionsProvider {
+    fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+        let mut extensions = EngineExtensions::default();
+        extensions
+            .query_result_observers
+            .push(Arc::new(QueryHistoryRecorder::new(
+                self.layout.clone(),
+                self.workspace_name.clone(),
+            )));
         extensions
     }
 }
@@ -210,7 +248,7 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use coral_engine::{
         QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
-        RequestAuthenticatorError,
+        RequestAuthenticatorError, TableRef,
     };
     use reqwest::header::{HeaderName, HeaderValue};
 
@@ -250,6 +288,7 @@ mod tests {
             _sql: &str,
             _schema: &Schema,
             _batches: &[RecordBatch],
+            _tables: &[TableRef],
         ) -> Result<(), QueryResultObserverError> {
             Ok(())
         }

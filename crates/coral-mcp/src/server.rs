@@ -147,10 +147,26 @@ pub(crate) struct CoralMcpServer {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct McpStartupContext {
     source_names: Vec<String>,
+    example_queries: Vec<crate::McpExampleQuery>,
 }
 
 impl McpStartupContext {
+    #[cfg(test)]
     fn from_source_names(source_names: impl IntoIterator<Item = String>) -> Self {
+        Self::from_parts(source_names, Vec::new())
+    }
+
+    fn from_options(options: &McpOptions) -> Self {
+        Self::from_parts(
+            options.source_names.clone(),
+            options.example_queries.clone(),
+        )
+    }
+
+    fn from_parts(
+        source_names: impl IntoIterator<Item = String>,
+        example_queries: impl IntoIterator<Item = crate::McpExampleQuery>,
+    ) -> Self {
         let mut source_names = source_names
             .into_iter()
             .map(|name| name.trim().to_string())
@@ -158,17 +174,42 @@ impl McpStartupContext {
             .collect::<Vec<_>>();
         source_names.sort_unstable();
         source_names.dedup();
-        Self { source_names }
+        let example_queries = example_queries
+            .into_iter()
+            .filter_map(|mut query| {
+                query.sql = query.sql.trim().to_string();
+                if query.sql.is_empty() {
+                    return None;
+                }
+                query.sources = query
+                    .sources
+                    .into_iter()
+                    .map(|source| source.trim().to_string())
+                    .filter(|source| !source.is_empty())
+                    .collect();
+                query.sources.sort_unstable();
+                query.sources.dedup();
+                (!query.sources.is_empty()).then_some(query)
+            })
+            .collect();
+        Self {
+            source_names,
+            example_queries,
+        }
     }
 
     fn source_names(&self) -> &[String] {
         &self.source_names
     }
+
+    fn example_queries(&self) -> &[crate::McpExampleQuery] {
+        &self.example_queries
+    }
 }
 
 impl CoralMcpServer {
     pub(crate) fn new(app: &AppClient, options: McpOptions) -> Self {
-        let startup_context = McpStartupContext::from_source_names(options.source_names.clone());
+        let startup_context = McpStartupContext::from_options(&options);
         Self::new_with_startup_context(app, options, startup_context)
     }
 
@@ -586,7 +627,10 @@ impl ServerHandler for CoralMcpServer {
                 .build(),
         )
         .with_server_info(Implementation::new("coral", env!("CARGO_PKG_VERSION")))
-        .with_instructions(initial_instructions(self.startup_context.source_names()))
+        .with_instructions(initial_instructions(
+            self.startup_context.source_names(),
+            self.startup_context.example_queries(),
+        ))
     }
 
     async fn list_tools(

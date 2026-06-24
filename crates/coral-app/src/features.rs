@@ -19,6 +19,8 @@ pub enum Feature {
     /// `open_episode` tool and associates follow-up Coral MCP tool calls with
     /// the intent they served via the `coral-episode-id` metadata key.
     Episodes,
+    /// Experimental query-history recaps for MCP initialize instructions.
+    QueryHistory,
 }
 
 impl Feature {
@@ -85,6 +87,14 @@ const FEATURE_SPECS: &[FeatureSpec] = &[
         description: "Experimental trajectory memory (in progress): exposes MCP open_episode and tags follow-up Coral tool calls with episode ids. Off by default.",
         enable_flag: "enable-episodes",
         disable_flag: "disable-episodes",
+    },
+    FeatureSpec {
+        feature: Feature::QueryHistory,
+        key: "query_history",
+        default_enabled: true,
+        description: "Experimental query history: records successful local SQL metadata and surfaces selected examples in MCP initialize. On by default.",
+        enable_flag: "enable-query-history",
+        disable_flag: "disable-query-history",
     },
 ];
 
@@ -157,6 +167,17 @@ impl Features {
         self.enabled.get(&feature).copied().unwrap_or(false)
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_enabled_for_tests(
+        overrides: impl IntoIterator<Item = (Feature, bool)>,
+    ) -> Self {
+        let mut features = Self::default();
+        for (feature, enabled) in overrides {
+            features.enabled.insert(feature, enabled);
+        }
+        features
+    }
+
     fn from_raw_overrides(raw: &RawFeatureOverrides) -> Self {
         let mut features = Self::default();
         for (key, value) in raw.iter() {
@@ -213,6 +234,10 @@ pub struct FeatureStore {
 }
 
 impl FeatureStore {
+    pub(crate) fn new(layout: AppStateLayout) -> Self {
+        Self { layout }
+    }
+
     /// Discovers the Coral app state layout used for runtime feature config.
     ///
     /// # Errors
@@ -347,6 +372,13 @@ mod tests {
     }
 
     #[test]
+    fn defaults_enable_query_history() {
+        let features = Features::default();
+
+        assert!(features.enabled(Feature::QueryHistory));
+    }
+
+    #[test]
     fn process_overrides_enable_default_disabled_feature() {
         let mut overrides = FeatureOverrides::default();
         overrides.set(Feature::Feedback, true);
@@ -423,5 +455,6 @@ mod tests {
 
         assert!(error.to_string().contains("unknown feature 'nope'"));
         assert!(error.to_string().contains("feedback"));
+        assert!(error.to_string().contains("query_history"));
     }
 }

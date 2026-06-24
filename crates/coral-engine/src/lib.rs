@@ -65,6 +65,7 @@ pub use composition::{
     EngineExtensions, QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
     RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
     SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
+    TableRef,
 };
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,

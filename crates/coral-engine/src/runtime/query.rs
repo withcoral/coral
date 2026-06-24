@@ -1,12 +1,14 @@
 //! Concrete `DataFusion` runtime assembly for the data plane.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::dataframe::DataFrame;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
@@ -34,7 +36,7 @@ use crate::{
     CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, MemorySize, QueryExecution,
     QueryMemoryConfig, QueryPlan, QueryResultObserver, QueryResultObserverError,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceDecorator,
-    SourceInputResolver, TableFunctionInfo, TableInfo,
+    SourceInputResolver, TableFunctionInfo, TableInfo, TableRef,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -413,11 +415,12 @@ impl QueryRuntimeAdapter {
             .await
             .map_err(SqlExecutionFailure::Planning)?;
         let arrow_schema = Arc::new(df.schema().as_arrow().clone());
+        let tables = referenced_tables(df.logical_plan());
         let batches = df
             .collect()
             .await
             .map_err(SqlExecutionFailure::Collection)?;
-        self.observe_query_result(sql, arrow_schema.as_ref(), &batches)
+        self.observe_query_result(sql, arrow_schema.as_ref(), &batches, &tables)
             .map_err(SqlExecutionFailure::Observer)?;
         Ok(QueryExecution::new(arrow_schema, batches))
     }
@@ -451,10 +454,11 @@ impl QueryRuntimeAdapter {
         sql: &str,
         schema: &arrow::datatypes::Schema,
         batches: &[arrow::record_batch::RecordBatch],
+        tables: &[TableRef],
     ) -> Result<(), CoreError> {
         for observer in &self.query_result_observers {
             observer
-                .observe_result(sql, schema, batches)
+                .observe_result(sql, schema, batches, tables)
                 .map_err(|error| query_result_observer_error(observer.name(), &error))?;
         }
         Ok(())
@@ -580,6 +584,21 @@ fn read_only_sql_options() -> SQLOptions {
         .with_allow_statements(false)
 }
 
+fn referenced_tables(plan: &LogicalPlan) -> Vec<TableRef> {
+    let mut tables = BTreeSet::new();
+    if let Err(error) = plan.apply(|plan| {
+        if let LogicalPlan::TableScan(scan) = plan
+            && let Some(source) = scan.table_name.schema()
+        {
+            tables.insert(TableRef::new(source, scan.table_name.table()));
+        }
+        Ok(TreeNodeRecursion::Continue)
+    }) {
+        tracing::warn!(%error, "failed to collect referenced tables from logical plan");
+    }
+    tables.into_iter().collect()
+}
+
 fn table_metadata_without_columns(table: &TableInfo) -> TableInfo {
     TableInfo {
         schema_name: table.schema_name.clone(),
@@ -608,9 +627,15 @@ mod tests {
     use std::collections::HashMap;
     use std::str::FromStr as _;
 
+    use arrow::array::{ArrayRef, Int64Array};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use datafusion::datasource::MemTable;
+    use datafusion::datasource::TableProvider;
     use datafusion::execution::memory_pool::MemoryConsumer;
 
     use super::*;
+    use crate::runtime::schema_provider::StaticSchemaProvider;
     use crate::{
         ColumnInfo, DependentJoinConfig, MemorySize, QueryMemoryConfig, QueryRuntimeContext,
     };
@@ -663,6 +688,35 @@ mod tests {
             .expect("missing context table");
         assert!(context_table.columns.is_empty());
         assert_eq!(context_table.required_filters, ["owner".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn referenced_tables_collects_distinct_resolved_table_scans() {
+        let ctx = SessionContext::new();
+        register_test_table(&ctx, "github", "pull_requests");
+        register_test_table(&ctx, "linear", "issues");
+
+        let df = ctx
+            .sql(
+                "WITH prs AS (
+                    SELECT id FROM github.pull_requests AS p
+                )
+                SELECT prs.id
+                FROM prs
+                JOIN linear.issues AS i ON prs.id = i.id",
+            )
+            .await
+            .expect("query should plan");
+
+        let tables = referenced_tables(df.logical_plan());
+
+        assert_eq!(
+            tables,
+            [
+                TableRef::new("github", "pull_requests"),
+                TableRef::new("linear", "issues"),
+            ]
+        );
     }
 
     #[test]
@@ -721,5 +775,24 @@ mod tests {
             error.to_string().contains("Resources exhausted"),
             "unexpected error: {error}"
         );
+    }
+
+    fn register_test_table(ctx: &SessionContext, schema_name: &str, table_name: &str) {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![1_i64])) as ArrayRef],
+        )
+        .expect("record batch");
+        let table = MemTable::try_new(schema, vec![vec![batch]]).expect("mem table");
+        let mut tables = HashMap::new();
+        tables.insert(
+            table_name.to_string(),
+            Arc::new(table) as Arc<dyn TableProvider>,
+        );
+        let catalog = ctx.catalog("datafusion").expect("default catalog");
+        catalog
+            .register_schema(schema_name, Arc::new(StaticSchemaProvider::new(tables)))
+            .expect("register schema");
     }
 }

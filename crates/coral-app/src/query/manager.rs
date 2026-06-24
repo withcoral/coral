@@ -18,9 +18,11 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::episode::EpisodeId;
+use crate::features::{Feature, Features};
 use crate::query::QueryAttribution;
 use crate::query::extensions::{
-    CredentialRefreshingInputResolver, EngineExtensionsProvider, engine_extensions_for_providers,
+    CredentialRefreshingInputResolver, EngineExtensionsProvider,
+    QueryHistoryEngineExtensionsProvider, engine_extensions_for_providers,
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
@@ -50,6 +52,7 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    features: Features,
 }
 
 impl QueryManager {
@@ -59,6 +62,7 @@ impl QueryManager {
         runtime_context: QueryRuntimeContext,
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        features: Features,
     ) -> Self {
         Self {
             config_store,
@@ -66,6 +70,7 @@ impl QueryManager {
             runtime_context,
             layout,
             engine_extensions_providers,
+            features,
         }
     }
 
@@ -388,8 +393,15 @@ impl QueryManager {
         selected_sources: &[QuerySource],
         config: &AppConfig,
     ) -> Result<QueryRuntimeConfig, AppError> {
+        let mut engine_extensions_providers = self.engine_extensions_providers.clone();
+        if self.features.enabled(Feature::QueryHistory) {
+            engine_extensions_providers.push(Arc::new(QueryHistoryEngineExtensionsProvider::new(
+                self.layout.clone(),
+                workspace_name.clone(),
+            )));
+        }
         let mut extensions =
-            engine_extensions_for_providers(&self.engine_extensions_providers, selected_sources);
+            engine_extensions_for_providers(&engine_extensions_providers, selected_sources);
         let provider_input_resolver = extensions.source_input_resolver.take();
         extensions.source_input_resolver = Some(Arc::new(CredentialRefreshingInputResolver::new(
             workspace_name.clone(),
@@ -643,6 +655,14 @@ mod tests {
         runtime_context: QueryRuntimeContext,
         providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> QueryManagerFixture {
+        query_manager_with_features(runtime_context, providers, Features::default())
+    }
+
+    fn query_manager_with_features(
+        runtime_context: QueryRuntimeContext,
+        providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        features: Features,
+    ) -> QueryManagerFixture {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -652,6 +672,7 @@ mod tests {
             runtime_context,
             layout,
             providers,
+            features,
         );
         QueryManagerFixture {
             _temp: temp,
@@ -877,6 +898,44 @@ mod tests {
             .body_capture_max_bytes
             .expect("body capture config");
         assert_eq!(config, 42);
+    }
+
+    #[test]
+    fn runtime_config_installs_query_history_observer_only_when_feature_enabled() {
+        let disabled = query_manager_with_features(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            Features::from_enabled_for_tests([(Feature::QueryHistory, false)]),
+        );
+        let disabled_runtime = disabled
+            .manager
+            .runtime_config(&WorkspaceName::default(), &[], &AppConfig::default())
+            .expect("runtime config");
+        assert!(
+            disabled_runtime
+                .extensions
+                .query_result_observers
+                .iter()
+                .all(|observer| observer.name() != "query_history")
+        );
+
+        let enabled = query_manager_with_features(
+            QueryRuntimeContext::default(),
+            Vec::new(),
+            Features::from_enabled_for_tests([(Feature::QueryHistory, true)]),
+        );
+        let enabled_runtime = enabled
+            .manager
+            .runtime_config(&WorkspaceName::default(), &[], &AppConfig::default())
+            .expect("runtime config");
+
+        assert!(
+            enabled_runtime
+                .extensions
+                .query_result_observers
+                .iter()
+                .any(|observer| observer.name() == "query_history")
+        );
     }
 
     #[test]
@@ -1140,6 +1199,7 @@ surfaces:
             QueryRuntimeContext::default(),
             layout,
             Vec::new(),
+            Features::default(),
         );
         let config = manager.config_store.load_config().expect("load config");
 

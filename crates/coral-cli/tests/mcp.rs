@@ -10,10 +10,13 @@
 
 mod harness;
 
+use std::path::Path;
 use std::process::{Command as StdCommand, Stdio};
 use std::time::Duration;
 use std::{fs, io};
 
+use coral_api::v1::{ExecuteSqlRequest, ImportSourceRequest, import_source_response};
+use coral_client::{AppClient, default_workspace, local::ServerBuilder};
 use harness::MockServer;
 use jsonschema::JSONSchema;
 use rmcp::{
@@ -28,6 +31,7 @@ use tokio::{
     process::{ChildStdin, ChildStdout, Command},
     time::timeout,
 };
+use tonic::Request;
 
 const RAW_JSONRPC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -36,8 +40,32 @@ fn json_object(value: &Value) -> Map<String, Value> {
 }
 
 fn write_config(server: &MockServer, raw: &str) -> Result<(), io::Error> {
-    fs::create_dir_all(server.config_dir())?;
-    fs::write(server.config_dir().join("config.toml"), raw)
+    write_config_dir(server.config_dir(), raw)
+}
+
+fn write_config_dir(config_dir: &Path, raw: &str) -> Result<(), io::Error> {
+    fs::create_dir_all(config_dir)?;
+    fs::write(config_dir.join("config.toml"), raw)
+}
+
+fn write_query_history(
+    server: &MockServer,
+    records: &[Value],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let history_dir = server
+        .config_dir()
+        .join("workspaces")
+        .join("default")
+        .join("query_history");
+    fs::create_dir_all(&history_dir)?;
+    let mut contents = records
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n");
+    contents.push('\n');
+    fs::write(history_dir.join("history.jsonl"), contents)?;
+    Ok(())
 }
 
 fn run_features_command(
@@ -68,16 +96,94 @@ async fn start_mcp_client_with_args(
     server: &MockServer,
     args: &[&str],
 ) -> Result<RunningService<RoleClient, ()>, Box<dyn std::error::Error>> {
+    start_mcp_client_for_endpoint(server.endpoint_uri(), server.config_dir(), args).await
+}
+
+async fn start_mcp_client_for_endpoint(
+    endpoint_uri: &str,
+    config_dir: &Path,
+    args: &[&str],
+) -> Result<RunningService<RoleClient, ()>, Box<dyn std::error::Error>> {
     let transport = TokioChildProcess::new(
         tokio::process::Command::new(env!("CARGO_BIN_EXE_coral")).configure(|cmd| {
             cmd.arg("mcp-stdio")
                 .args(args)
-                .env("CORAL_ENDPOINT", server.endpoint_uri())
-                .env("CORAL_CONFIG_DIR", server.config_dir());
+                .env("CORAL_ENDPOINT", endpoint_uri)
+                .env("CORAL_CONFIG_DIR", config_dir);
         }),
     )?;
     let client = ().serve(transport).await?;
     Ok(client)
+}
+
+fn fixture_manifest_yaml(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let data_dir = root.join("fixture-data");
+    fs::create_dir_all(&data_dir)?;
+    fs::write(
+        data_dir.join("messages.jsonl"),
+        r#"{"type":"user","sessionId":"s1","text":"hello"}
+{"type":"assistant","sessionId":"s1","text":"world"}
+"#,
+    )?;
+    Ok(serde_yaml::to_string(&json!({
+        "name": "local_messages",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [{
+            "name": "messages",
+            "description": "Fixture messages",
+            "format": "jsonl",
+            "source": {
+                "location": format!("file://{}/", data_dir.display()),
+                "glob": "**/*.jsonl",
+            },
+            "columns": [
+                {"name": "type", "type": "Utf8"},
+                {"name": "sessionId", "type": "Utf8"},
+                {"name": "text", "type": "Utf8"},
+            ],
+        }],
+    }))?)
+}
+
+async fn import_local_messages_source(
+    app: &AppClient,
+    manifest_yaml: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stream = app
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml,
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await?
+        .into_inner();
+    let response = stream
+        .message()
+        .await?
+        .expect("import source should return source event");
+    assert!(
+        matches!(
+            response.event,
+            Some(import_source_response::Event::Source(source)) if source.name == "local_messages"
+        ),
+        "import source response should contain local_messages source"
+    );
+    Ok(())
+}
+
+async fn execute_sql(app: &AppClient, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
+    app.query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: sql.to_string(),
+        }))
+        .await?;
+    Ok(())
 }
 
 fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
@@ -477,6 +583,179 @@ episodes = true
             .iter()
             .any(|tool| tool.name.as_ref() == "open_episode"),
         "open_episode tool should be listed when [features].episodes is true"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_feature_config_includes_query_history_examples()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    write_config(
+        &server,
+        r#"
+[features]
+query_history = true
+
+[workspaces.default.sources.github]
+origin = "bundled"
+"#,
+    )?;
+    write_query_history(
+        &server,
+        &[json!({
+            "sql": "SELECT title FROM github.pull_requests\n-- comment",
+            "row_count": 2,
+            "tables": [
+                { "source": "github", "table": "pull_requests" }
+            ],
+            "sources": ["github"],
+            "created_at_unix_nanos": 1
+        })],
+    )?;
+
+    let client = start_mcp_client(&server).await?;
+    let instructions = client
+        .peer_info()
+        .and_then(|info| info.instructions.as_deref())
+        .expect("initialize instructions");
+    assert!(
+        instructions.contains("Recent successful queries from this local workspace."),
+        "query-history examples should be rendered when feature is enabled: {instructions}"
+    );
+    assert!(
+        instructions.contains("-- 2 rows, sources: github"),
+        "query-history example metadata should be rendered: {instructions}"
+    );
+    assert!(
+        instructions.contains("SELECT title FROM github.pull_requests -- comment"),
+        "query-history SQL should be sanitized into one prompt line: {instructions}"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_initialize_recaps_query_run_before_startup()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::TempDir::new()?;
+    let config_dir = temp.path().join("coral-config");
+    write_config_dir(
+        &config_dir,
+        r#"
+[features]
+query_history = true
+
+[credentials]
+storage = "file"
+"#,
+    )?;
+
+    let server = ServerBuilder::new()
+        .with_config_dir(&config_dir)
+        .with_noop_feedback_uploads()
+        .start()
+        .await?;
+    let app = AppClient::connect(server.endpoint_uri()).await?;
+    import_local_messages_source(&app, fixture_manifest_yaml(temp.path())?).await?;
+    execute_sql(
+        &app,
+        "SELECT text FROM local_messages.messages ORDER BY text",
+    )
+    .await?;
+    server.shutdown().await?;
+
+    let history_path = config_dir
+        .join("workspaces")
+        .join("default")
+        .join("query_history")
+        .join("history.jsonl");
+    let history = fs::read_to_string(&history_path)?;
+    assert!(
+        history.contains("local_messages"),
+        "query execution should persist source provenance into history: {history}"
+    );
+
+    let server = ServerBuilder::new()
+        .with_config_dir(&config_dir)
+        .with_noop_feedback_uploads()
+        .start()
+        .await?;
+    let client = start_mcp_client_for_endpoint(server.endpoint_uri(), &config_dir, &[]).await?;
+    let instructions = client
+        .peer_info()
+        .and_then(|info| info.instructions.as_deref())
+        .expect("initialize instructions");
+    assert!(
+        instructions.contains("Connected Coral sources: local_messages."),
+        "MCP initialize should load installed sources from the same config: {instructions}"
+    );
+    assert!(
+        instructions.contains("Recent successful queries from this local workspace."),
+        "MCP initialize should render query-history examples after restart: {instructions}"
+    );
+    assert!(
+        instructions.contains("-- 2 rows, sources: local_messages"),
+        "MCP initialize should include row count and source provenance: {instructions}"
+    );
+    assert!(
+        instructions.contains("SELECT text FROM local_messages.messages ORDER BY text"),
+        "MCP initialize should include sanitized SQL text: {instructions}"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_omits_query_history_examples_when_feature_disabled()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    write_config(
+        &server,
+        r#"
+[features]
+query_history = false
+
+[workspaces.default.sources.github]
+origin = "bundled"
+"#,
+    )?;
+    write_query_history(
+        &server,
+        &[json!({
+            "sql": "SELECT title FROM github.pull_requests",
+            "row_count": 2,
+            "tables": [
+                { "source": "github", "table": "pull_requests" }
+            ],
+            "sources": ["github"],
+            "created_at_unix_nanos": 1
+        })],
+    )?;
+
+    let client = start_mcp_client(&server).await?;
+    let instructions = client
+        .peer_info()
+        .and_then(|info| info.instructions.as_deref())
+        .expect("initialize instructions");
+    assert!(
+        instructions.contains("Connected Coral sources: github."),
+        "connected sources should still render: {instructions}"
+    );
+    assert!(
+        !instructions.contains("Recent successful queries from this local workspace."),
+        "query-history examples should not render while feature is disabled: {instructions}"
+    );
+    assert!(
+        !instructions.contains("SELECT title FROM github.pull_requests"),
+        "stale query-history SQL should not render while feature is disabled: {instructions}"
     );
 
     client.cancel().await?;

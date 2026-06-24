@@ -44,6 +44,7 @@ use tempfile as _;
 /// gRPC-Web surface.
 #[cfg(feature = "embedded-ui")]
 const DEFAULT_SERVER_PORT: u16 = 1457;
+const MCP_INITIAL_EXAMPLE_QUERY_LIMIT: usize = 5;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -437,6 +438,7 @@ pub async fn run_from_env() -> Result<(), CliError> {
             let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
             let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
                 enable_stderr_logs: command.enables_stderr_logs(),
+                feature_overrides: feature_overrides.clone(),
             })
             .await
             .map_err(anyhow::Error::from)?;
@@ -571,6 +573,29 @@ async fn run_app_command(
                     Vec::new()
                 }
             };
+            let example_queries = if features.enabled(coral_app::features::Feature::QueryHistory) {
+                match coral_app::bootstrap::default_workspace_example_queries(
+                    &source_names,
+                    MCP_INITIAL_EXAMPLE_QUERY_LIMIT,
+                ) {
+                    Ok(example_queries) => example_queries
+                        .into_iter()
+                        .map(|query| coral_mcp::McpExampleQuery {
+                            sql: query.sql,
+                            row_count: query.row_count,
+                            sources: query.sources,
+                        })
+                        .collect(),
+                    Err(error) => {
+                        eprintln!(
+                            "warning: failed to load query history for MCP initialize instructions: {error}"
+                        );
+                        Vec::new()
+                    }
+                }
+            } else {
+                Vec::new()
+            };
             Box::pin(coral_mcp::run_stdio_with_client(
                 app,
                 coral_mcp::McpOptions {
@@ -578,6 +603,7 @@ async fn run_app_command(
                     episodes_enabled: features.enabled(coral_app::features::Feature::Episodes),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                     source_names,
+                    example_queries,
                 },
             ))
             .await

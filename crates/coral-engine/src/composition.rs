@@ -38,6 +38,26 @@ pub enum SourceFailurePolicy {
     Abort,
 }
 
+/// One table referenced by a resolved query plan.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TableRef {
+    /// Coral source/schema name.
+    pub source: String,
+    /// Table name inside the source/schema.
+    pub table: String,
+}
+
+impl TableRef {
+    /// Builds one resolved table reference.
+    #[must_use]
+    pub fn new(source: impl Into<String>, table: impl Into<String>) -> Self {
+        Self {
+            source: source.into(),
+            table: table.into(),
+        }
+    }
+}
+
 /// Neutral error type for source-decoration failures.
 #[derive(Debug, thiserror::Error)]
 pub enum SourceDecoratorError {
@@ -290,6 +310,7 @@ pub trait QueryResultObserver: Send + Sync {
         sql: &str,
         schema: &Schema,
         batches: &[RecordBatch],
+        tables: &[TableRef],
     ) -> Result<(), QueryResultObserverError>;
 }
 

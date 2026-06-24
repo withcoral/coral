@@ -25,7 +25,7 @@ use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use tonic::Request;
 
-use crate::{CoralMcpServer, McpOptions};
+use crate::{CoralMcpServer, McpExampleQuery, McpOptions};
 
 fn write_fixture_manifest(root: &Path) -> PathBuf {
     let source_dir = root.join("fixture-source");
@@ -243,6 +243,36 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
         app_server: server,
         mcp_server_task,
     }
+}
+
+#[tokio::test]
+async fn initialize_instructions_include_query_examples_from_startup_context() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            source_names: vec!["github".to_string()],
+            example_queries: vec![McpExampleQuery {
+                sql: "SELECT title FROM github.pull_requests\n-- comment".to_string(),
+                row_count: 3,
+                sources: vec!["github".to_string()],
+            }],
+            ..McpOptions::default()
+        },
+    )
+    .await;
+
+    let instructions = session
+        .client
+        .peer_info()
+        .and_then(|info| info.instructions.as_deref())
+        .expect("initialize instructions");
+    assert!(instructions.contains("Connected Coral sources: github."));
+    assert!(instructions.contains("Recent successful queries from this local workspace"));
+    assert!(instructions.contains("-- 3 rows, sources: github"));
+    assert!(instructions.contains("SELECT title FROM github.pull_requests -- comment"));
+
+    session.shutdown().await;
 }
 
 fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {

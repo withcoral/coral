@@ -95,6 +95,12 @@ impl AppStateLayout {
             .join("episodes.jsonl")
     }
 
+    pub(crate) fn query_history_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.workspace_dir(workspace_name)
+            .join("query_history")
+            .join("history.jsonl")
+    }
+
     pub(crate) fn source_dir(
         &self,
         workspace_name: &WorkspaceName,
