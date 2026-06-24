@@ -145,7 +145,8 @@ tables:
     description: Issues in the YouTrack instance.
     guide: |
       By default, querying issues without a filter fetches a large, unconstrained list.
-      To avoid exhausting API limits and pulling excessive data, strongly prefer using the `query` filter with YouTrack's native search syntax (e.g., `WHERE query = '#Unresolved'`).
+      To avoid exhausting API limits and pulling excessive data, strongly prefer using the
+      `query` filter with YouTrack's native search syntax (e.g., `WHERE query = '#Unresolved'`).
     filters:
       - name: query
         required: false
@@ -576,7 +577,7 @@ tables:
       query:
         - name: fields
           from: literal
-          value: "id,name,emptyFieldText"
+          value: "id,name,fieldDefaults(emptyFieldText)"
     response:
       row_strategy: direct
     pagination:
@@ -607,4 +608,5 @@ tables:
         expr:
           kind: path
           path:
+            - fieldDefaults
             - emptyFieldText

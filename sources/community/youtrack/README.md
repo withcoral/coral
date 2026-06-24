@@ -20,13 +20,13 @@ To rotate or update your token, run the same command again.
 
 Generate a permanent token in your YouTrack instance under **Profile** -> **Account Security** -> **Tokens**.
 
-Permanent tokens are constrained by the permissions of the user who created them rather than OAuth scopes. The user account generating the token must have access to the resources being queried.
+Permanent tokens are constrained by both the selected token scope and the permissions of the user who created them. The token must be granted the **YouTrack** scope, and the user account generating the token must have access to the resources being queried.
 
 Additional requirements:
 
 * The `users`, `groups`, and `roles` tables rely on the YouTrack REST API introduced in **YouTrack 2026.1+**.
-* Querying the `roles` table requires the **Read Role** permission.
-* Querying the `groups` table requires permission to view groups available to the authenticated user.
+* Querying the `roles` table requires **Read** permission in at least one scope, **Update Organization**, or **Admin Read App**.
+* Querying the `groups` table requires access to the **Read Group** feature, **Update Project**, or **Low-level Admin Read** plus group visibility.
 * Querying the `users` table requires permission to view users available to the authenticated user.
 * Tables such as `issues`, `projects`, `comments`, `tags`, and `agile_boards` require standard read access to those entities.
 
