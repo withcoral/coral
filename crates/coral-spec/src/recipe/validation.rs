@@ -4,100 +4,157 @@ use crate::{ManifestError, Result, validate_identifier};
 
 use super::RawRecipeSpec;
 use super::model::{
-    RecipeArgumentSpec, RecipeArgumentType, RecipeImplementationSpec, RecipePublishSpec,
-    RecipeSpec, RecipeValidationSpec, RecipeValidationValue,
+    SavedFunctionArgumentSpec, SavedFunctionArgumentType, SavedFunctionImplementationSpec,
+    SavedFunctionSpec, SavedFunctionValidationValue,
 };
 
 const RESERVED_TABLE_FUNCTION_SCHEMAS: &[&str] =
     &["coral", "coral_admin", "__coral_saved_functions"];
 
-pub(super) fn validate_raw_recipe(raw: RawRecipeSpec) -> Result<RecipeSpec> {
-    if raw.kind != "recipe" {
-        return Err(ManifestError::validation(format!(
-            "recipe kind must be 'recipe', got '{}'",
-            raw.kind
-        )));
-    }
-    validate_lowercase_identifier(&raw.name, "recipe name")?;
-    validate_arguments(&raw.name, &raw.inputs.0)?;
-    validate_implementation(&raw.name, &raw.implementation)?;
-    validate_validation(&raw.name, &raw.inputs.0, &raw.validation)?;
-    validate_publish_targets(&raw.name, &raw.publish)?;
-    Ok(RecipeSpec {
-        name: raw.name,
-        description: raw.description,
-        arguments: raw.inputs.0,
-        implementation: raw.implementation,
-        validation: raw.validation,
-        publish: raw.publish,
-    })
+pub(super) fn validate_raw_saved_function(raw: RawSavedFunctionSpec) -> Result<SavedFunctionSpec> {
+    SavedFunctionValidator { raw }.validate()
 }
 
-fn validate_arguments(recipe: &str, arguments: &[RecipeArgumentSpec]) -> Result<()> {
-    let mut seen = HashSet::new();
-    for argument in arguments {
-        validate_lowercase_identifier(&argument.name, &format!("recipe '{recipe}' input name"))?;
-        if !seen.insert(argument.name.as_str()) {
+struct SavedFunctionValidator {
+    raw: RawSavedFunctionSpec,
+}
+
+impl SavedFunctionValidator {
+    fn validate(self) -> Result<SavedFunctionSpec> {
+        self.validate_header()?;
+        self.validate_inputs()?;
+        self.validate_implementation()?;
+        self.validate_validation_call()?;
+        self.validate_publish()?;
+        Ok(self.finish())
+    }
+
+    fn validate_header(&self) -> Result<()> {
+        if self.raw.kind != "saved_function" {
             return Err(ManifestError::validation(format!(
-                "recipe '{recipe}' input '{}' is declared more than once",
-                argument.name
+                "saved_function kind must be 'saved_function', got '{}'",
+                self.raw.kind
             )));
         }
+        validate_lowercase_identifier(&self.raw.name, "saved_function name")
     }
-    Ok(())
-}
 
-fn validate_implementation(recipe: &str, implementation: &RecipeImplementationSpec) -> Result<()> {
-    match implementation {
-        RecipeImplementationSpec::CoralSql { query } if query.trim().is_empty() => {
-            Err(ManifestError::validation(format!(
-                "recipe '{recipe}' coral_sql query must not be empty"
-            )))
+    fn validate_inputs(&self) -> Result<()> {
+        let mut seen = HashSet::new();
+        for argument in &self.raw.inputs.0 {
+            validate_lowercase_identifier(
+                &argument.name,
+                &format!("saved_function '{}' input name", self.raw.name),
+            )?;
+            if !seen.insert(argument.name.as_str()) {
+                return Err(ManifestError::validation(format!(
+                    "recipe '{}' input '{}' is declared more than once",
+                    self.raw.name, argument.name
+                )));
+            }
         }
-        RecipeImplementationSpec::CoralSql { .. } => Ok(()),
+        Ok(())
     }
-}
 
-fn validate_validation(
-    recipe: &str,
-    arguments: &[RecipeArgumentSpec],
-    validation: &RecipeValidationSpec,
-) -> Result<()> {
-    let arguments_by_name = arguments
-        .iter()
-        .map(|argument| (argument.name.as_str(), argument))
-        .collect::<HashMap<_, _>>();
-
-    for (name, value) in &validation.args {
-        let Some(argument) = arguments_by_name.get(name.as_str()) else {
-            return Err(ManifestError::validation(format!(
-                "recipe '{recipe}' validation arg '{name}' is not declared as an input"
-            )));
-        };
-        if !validation_value_matches_argument(argument, value) {
-            return Err(ManifestError::validation(format!(
-                "recipe '{recipe}' validation arg '{name}' expected {}, got {}",
-                argument_type_name(argument.data_type),
-                validation_value_type_name(value)
-            )));
+    fn validate_implementation(&self) -> Result<()> {
+        match &self.raw.implementation {
+            SavedFunctionImplementationSpec::CoralSql { query } if query.trim().is_empty() => {
+                Err(ManifestError::validation(format!(
+                    "saved_function '{}' coral_sql query must not be empty",
+                    self.raw.name
+                )))
+            }
+            SavedFunctionImplementationSpec::CoralSql { .. } => Ok(()),
         }
     }
 
-    for argument in arguments {
-        if argument.required
-            && !matches!(
-                validation.args.get(&argument.name),
-                Some(value) if !matches!(value, RecipeValidationValue::Null(()))
-            )
+    fn validate_validation_call(&self) -> Result<()> {
+        let arguments_by_name = self
+            .raw
+            .inputs
+            .0
+            .iter()
+            .map(|argument| (argument.name.as_str(), argument))
+            .collect::<HashMap<_, _>>();
+
+        for (name, value) in &self.raw.validation.args {
+            let Some(argument) = arguments_by_name.get(name.as_str()) else {
+                return Err(ManifestError::validation(format!(
+                    "saved_function '{}' validation arg '{name}' is not declared as an input",
+                    self.raw.name
+                )));
+            };
+            if !validation_value_matches_argument(argument, value) {
+                return Err(ManifestError::validation(format!(
+                    "saved_function '{}' validation arg '{name}' expected {}, got {}",
+                    self.raw.name,
+                    argument_type_name(argument.data_type),
+                    validation_value_type_name(value)
+                )));
+            }
+        }
+
+        for argument in &self.raw.inputs.0 {
+            if argument.required
+                && !matches!(
+                    self.raw.validation.args.get(&argument.name),
+                    Some(value) if !matches!(value, SavedFunctionValidationValue::Null(()))
+                )
+            {
+                return Err(ManifestError::validation(format!(
+                    "saved_function '{}' validation.args must include required input '{}'",
+                    self.raw.name, argument.name
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_publish(&self) -> Result<()> {
+        let table_function = &self.raw.publish.table_function;
+        validate_lowercase_identifier(
+            &table_function.schema,
+            &format!(
+                "saved_function '{}' table_function publish schema",
+                self.raw.name
+            ),
+        )?;
+        validate_lowercase_identifier(
+            &table_function.name,
+            &format!(
+                "saved_function '{}' table_function publish name",
+                self.raw.name
+            ),
+        )?;
+        if RESERVED_TABLE_FUNCTION_SCHEMAS
+            .iter()
+            .any(|reserved| table_function.schema.eq_ignore_ascii_case(reserved))
         {
             return Err(ManifestError::validation(format!(
-                "recipe '{recipe}' validation.args must include required input '{}'",
-                argument.name
+                "saved_function '{}' table_function publish schema '{}' is reserved",
+                self.raw.name, table_function.schema
             )));
         }
+        if let Some(mcp) = &self.raw.publish.mcp {
+            validate_lowercase_identifier(
+                &mcp.name,
+                &format!("saved_function '{}' mcp publish name", self.raw.name),
+            )?;
+        }
+        Ok(())
     }
 
-    Ok(())
+    fn finish(self) -> SavedFunctionSpec {
+        SavedFunctionSpec {
+            name: self.raw.name,
+            description: self.raw.description,
+            arguments: self.raw.inputs.0,
+            implementation: self.raw.implementation,
+            validation: self.raw.validation,
+            publish: self.raw.publish,
+        }
+    }
 }
 
 fn validation_value_matches_argument(
@@ -134,31 +191,6 @@ fn validation_value_type_name(value: &SavedFunctionValidationValue) -> &'static 
         SavedFunctionValidationValue::Boolean(_) => "boolean",
         SavedFunctionValidationValue::Null(()) => "null",
     }
-}
-
-fn validate_publish_targets(recipe: &str, publish: &RecipePublishSpec) -> Result<()> {
-    let table_function = &publish.table_function;
-    validate_lowercase_identifier(
-        &table_function.schema,
-        &format!("recipe '{recipe}' table_function publish schema"),
-    )?;
-    validate_lowercase_identifier(
-        &table_function.name,
-        &format!("recipe '{recipe}' table_function publish name"),
-    )?;
-    if RESERVED_TABLE_FUNCTION_SCHEMAS
-        .iter()
-        .any(|reserved| table_function.schema.eq_ignore_ascii_case(reserved))
-    {
-        return Err(ManifestError::validation(format!(
-            "recipe '{recipe}' table_function publish schema '{}' is reserved",
-            table_function.schema
-        )));
-    }
-    if let Some(mcp) = &publish.mcp {
-        validate_lowercase_identifier(&mcp.name, &format!("recipe '{recipe}' mcp publish name"))?;
-    }
-    Ok(())
 }
 
 fn validate_lowercase_identifier(value: &str, context: &str) -> Result<()> {
