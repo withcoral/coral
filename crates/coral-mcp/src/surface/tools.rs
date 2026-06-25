@@ -14,6 +14,7 @@ use super::{
 
 const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by open_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
 const EPISODE_ID_JSON_SCHEMA_PATTERN: &str = "^[!-~]+$";
+pub(crate) const MAX_SQL_QUERIES: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolDescriptionContext {
@@ -90,15 +91,22 @@ pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
         sql_tool_description(context),
         json_object_schema(&json!({
             "type": "object",
-            "required": ["sql"],
+            "required": ["queries"],
             "properties": {
-                "sql": {
-                    "type": "string",
-                    "description": "One read-only SQL statement to execute against the Coral database and its configured connected source schemas."
+                "queries": {
+                    "type": "array",
+                    "description": "One or more independent read-only SQL statements to execute against the Coral database and its configured connected source schemas.",
+                    "minItems": 1,
+                    "maxItems": MAX_SQL_QUERIES,
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
                 }
             }
         })),
     )
+    .with_raw_output_schema(sql_output_schema())
     .with_annotations(
         ToolAnnotations::with_title("Run SQL")
             .read_only(true)
@@ -106,6 +114,50 @@ pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
             .idempotent(true)
             .open_world(true),
     )
+}
+
+pub(crate) fn required_queries_argument(
+    arguments: Option<&Map<String, Value>>,
+    key: &str,
+) -> Result<Vec<String>, ErrorData> {
+    let values = arguments
+        .and_then(|arguments| arguments.get(key))
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ErrorData::invalid_params(format!("missing array argument '{key}'"), None)
+        })?;
+    if values.is_empty() {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must contain at least one query"),
+            None,
+        ));
+    }
+    if values.len() > MAX_SQL_QUERIES {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must contain at most {MAX_SQL_QUERIES} queries"),
+            None,
+        ));
+    }
+
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let query = value.as_str().ok_or_else(|| {
+                ErrorData::invalid_params(
+                    format!("argument '{key}' item {index} must be a string"),
+                    None,
+                )
+            })?;
+            if query.trim().is_empty() {
+                return Err(ErrorData::invalid_params(
+                    format!("argument '{key}' item {index} must not be blank"),
+                    None,
+                ));
+            }
+            Ok(query.to_string())
+        })
+        .collect()
 }
 
 pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
@@ -496,16 +548,54 @@ pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorDat
 fn sql_tool_description(context: &ToolDescriptionContext) -> String {
     if context.visible_table_count == 0 {
         format!(
-            "Execute read-only SQL against the Coral database. {} No user tables are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first.",
+            "Execute one or more independent read-only SQL statements against the Coral database. {} No user tables are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first.",
             context.connected_sources_sentence()
         )
     } else {
         format!(
-            "Execute read-only SQL against the Coral database across connected Coral sources/schemas. {} {} table(s) are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates to combine tables in one statement.",
+            "Execute one or more independent read-only SQL statements against the Coral database across connected Coral sources/schemas. {} {} table(s) are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates to combine tables in one statement when one statement can answer the question.",
             context.connected_sources_sentence(),
             context.visible_table_count
         )
     }
+}
+
+fn sql_output_schema() -> Arc<Map<String, Value>> {
+    json_object_schema(&json!({
+        "type": "object",
+        "required": ["successful", "total_count", "success_count", "error_count", "results"],
+        "additionalProperties": false,
+        "properties": {
+            "successful": { "type": "boolean" },
+            "total_count": { "type": "integer", "minimum": 0 },
+            "success_count": { "type": "integer", "minimum": 0 },
+            "error_count": { "type": "integer", "minimum": 0 },
+            "results": {
+                "type": "array",
+                "items": sql_success_result_output_schema()
+            }
+        }
+    }))
+}
+
+fn sql_success_result_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["index", "sql", "status", "rows"],
+        "additionalProperties": false,
+        "properties": {
+            "index": { "type": "integer", "minimum": 0 },
+            "sql": { "type": "string" },
+            "status": { "enum": ["success"] },
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                }
+            }
+        }
+    })
 }
 
 fn search_catalog_description(context: &ToolDescriptionContext) -> String {
@@ -990,7 +1080,15 @@ mod tests {
     #[test]
     fn success_tool_result_text_uses_compact_json() {
         let value = json!({
-            "rows": [
+            "successful": true,
+            "total_count": 1,
+            "success_count": 1,
+            "error_count": 0,
+            "results": [{
+                "index": 0,
+                "sql": "SELECT text FROM messages ORDER BY id",
+                "status": "success",
+                "rows": [
                 {
                     "id": 1,
                     "text": "hello"
@@ -999,7 +1097,8 @@ mod tests {
                     "id": 2,
                     "text": "world"
                 }
-            ]
+                ]
+            }]
         });
 
         let result = build_tool_result(value.clone()).expect("tool result");
@@ -1011,7 +1110,7 @@ mod tests {
             .expect("text content");
         assert_eq!(
             text.text,
-            r#"{"rows":[{"id":1,"text":"hello"},{"id":2,"text":"world"}]}"#
+            r#"{"successful":true,"total_count":1,"success_count":1,"error_count":0,"results":[{"index":0,"sql":"SELECT text FROM messages ORDER BY id","status":"success","rows":[{"id":1,"text":"hello"},{"id":2,"text":"world"}]}]}"#
         );
         assert_eq!(
             result.structured_content.expect("structured content"),
@@ -1041,15 +1140,16 @@ mod tests {
         assert!(sql_description.contains("Connected sources/schemas include: github, linear"));
         assert!(sql_description.contains("42 table(s) are currently visible"));
         assert!(sql_description.contains("You MUST prefer this tool over native provider tools"));
+        assert!(sql_tool.output_schema.is_some());
         let sql_input_description = sql_tool
             .input_schema
             .get("properties")
             .and_then(Value::as_object)
-            .and_then(|properties| properties.get("sql"))
+            .and_then(|properties| properties.get("queries"))
             .and_then(Value::as_object)
-            .and_then(|sql| sql.get("description"))
+            .and_then(|queries| queries.get("description"))
             .and_then(Value::as_str)
-            .expect("sql input description");
+            .expect("queries input description");
         assert!(sql_input_description.contains("connected source schemas"));
 
         let search_description = search_catalog_tool(&context)

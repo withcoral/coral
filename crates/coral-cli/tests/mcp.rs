@@ -891,11 +891,21 @@ async fn assert_sql_tool(
     let sql = structured_tool_content(
         client,
         CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-            "sql": "SELECT text FROM local_messages.messages ORDER BY text"
+            "queries": ["SELECT text FROM local_messages.messages ORDER BY text"]
         }))),
     )
     .await?;
-    assert_eq!(sql["rows"][0]["text"], "hello");
+    assert_eq!(sql["successful"], true);
+    assert_eq!(sql["total_count"], 1);
+    assert_eq!(sql["success_count"], 1);
+    assert_eq!(sql["error_count"], 0);
+    assert_eq!(sql["results"][0]["index"], 0);
+    assert_eq!(
+        sql["results"][0]["sql"],
+        "SELECT text FROM local_messages.messages ORDER BY text"
+    );
+    assert_eq!(sql["results"][0]["status"], "success");
+    assert_eq!(sql["results"][0]["rows"][0]["text"], "hello");
     Ok(())
 }
 
@@ -904,18 +914,14 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
     let server = MockServer::start().await;
     let client = start_mcp_client(&server).await?;
 
-    let invalid_sql = client
+    client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
                 "sql": "DELETE FROM local_messages.messages"
             }))),
         )
-        .await?;
-    assert_eq!(invalid_sql.is_error, Some(true));
-    assert_eq!(
-        invalid_sql.structured_content.expect("structured content")["error"]["summary"],
-        "Query request is invalid"
-    );
+        .await
+        .expect_err("legacy sql argument should fail before execution");
 
     let catalog = client
         .call_tool(CallToolRequestParams::new("list_catalog"))
