@@ -117,9 +117,11 @@ pub use loader::load_manifest_path;
 pub use parser::{
     ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,
 };
-pub use recipe::{
-    RecipeArgumentSpec, RecipeArgumentType, RecipeImplementationSpec, RecipePublishSpec,
-    RecipeSpec, RecipeValidationSpec, RecipeValidationValue, parse_recipe_yaml,
+pub use saved_function::{
+    SavedFunctionArgumentSpec, SavedFunctionArgumentType, SavedFunctionImplementationSpec,
+    SavedFunctionMcpPublishSpec, SavedFunctionPublishSpec, SavedFunctionSpec,
+    SavedFunctionTableFunctionPublishSpec, SavedFunctionValidationSpec,
+    SavedFunctionValidationValue, parse_saved_function_yaml,
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
 pub(crate) use validate::{

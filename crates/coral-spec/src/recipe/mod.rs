@@ -5,125 +5,24 @@
 //! collisions against live catalog objects are checked by the app/runtime
 //! layers.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 
-use schemars::JsonSchema;
 use serde::de::{self, MapAccess, Visitor};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer};
 
-use crate::{ManifestError, Result, validate_identifier};
+use crate::{ManifestError, Result};
 
-const RESERVED_TABLE_FUNCTION_SCHEMAS: &[&str] = &["coral", "coral_admin", "__coral_recipes"];
+mod model;
+mod validation;
 
-/// Validated recipe artifact.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecipeSpec {
-    name: String,
-    description: String,
-    arguments: Vec<RecipeArgumentSpec>,
-    implementation: RecipeImplementationSpec,
-    validation: RecipeValidationSpec,
-    publish: RecipePublishSpec,
-}
+pub use model::{
+    RecipeArgumentSpec, RecipeArgumentType, RecipeImplementationSpec, RecipeMcpPublishSpec,
+    RecipePublishSpec, RecipeSpec, RecipeTableFunctionPublishSpec, RecipeValidationSpec,
+    RecipeValidationValue,
+};
 
-/// One typed recipe argument.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RecipeArgumentSpec {
-    /// Argument name used in recipe SQL placeholders and published call schemas.
-    pub name: String,
-    /// Scalar argument type.
-    #[serde(rename = "type")]
-    pub data_type: RecipeArgumentType,
-    /// Whether callers must provide this argument.
-    #[serde(default)]
-    pub required: bool,
-    /// Optional human-readable argument description.
-    #[serde(default)]
-    pub description: String,
-}
-
-/// Scalar argument types supported by v1 recipes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RecipeArgumentType {
-    /// UTF-8 string value.
-    String,
-    /// Signed 64-bit integer value.
-    Integer,
-    /// Boolean value.
-    Boolean,
-}
-
-/// Runtime validation inputs for one recipe.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RecipeValidationSpec {
-    /// Concrete argument values Coral uses when validating the recipe at install time.
-    #[serde(default)]
-    pub args: BTreeMap<String, RecipeValidationValue>,
-}
-
-/// One scalar validation argument value.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(untagged)]
-pub enum RecipeValidationValue {
-    /// UTF-8 string value.
-    String(String),
-    /// Signed 64-bit integer value.
-    Integer(i64),
-    /// Boolean value.
-    Boolean(bool),
-    /// Explicit null value.
-    Null(()),
-}
-
-/// The executable body behind a recipe.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RecipeImplementationSpec {
-    /// Read-only Coral SQL using `DataFusion` value parameters like `$argument`.
-    CoralSql {
-        /// SQL query executed by Coral after typed argument binding.
-        query: String,
-    },
-}
-
-/// Public surfaces a recipe should publish.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RecipePublishSpec {
-    /// Required SQL table-function surface.
-    pub table_function: RecipeTableFunctionPublishSpec,
-    /// Optional MCP tool surface.
-    #[serde(default)]
-    pub mcp: Option<RecipeMcpPublishSpec>,
-}
-
-/// SQL table-function surface published by a recipe.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RecipeTableFunctionPublishSpec {
-    /// SQL schema where the public table function is exposed.
-    pub schema: String,
-    /// Public table-function name within `schema`.
-    pub name: String,
-    /// Optional publish-target-specific description.
-    #[serde(default)]
-    pub description: String,
-}
-
-/// Optional MCP tool surface published by a recipe.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RecipeMcpPublishSpec {
-    /// MCP tool name.
-    pub name: String,
-    /// Optional publish-target-specific description.
-    #[serde(default)]
-    pub description: String,
-}
+use validation::validate_raw_recipe;
 
 /// One recipe input as authored under the `inputs` map.
 #[derive(Debug, Deserialize)]
@@ -149,7 +48,7 @@ impl RecipeInputSpec {
 }
 
 #[derive(Debug, Default)]
-struct RawRecipeInputs(Vec<RecipeArgumentSpec>);
+pub(super) struct RawRecipeInputs(pub(super) Vec<RecipeArgumentSpec>);
 
 impl<'de> Deserialize<'de> for RawRecipeInputs {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
@@ -189,55 +88,17 @@ impl<'de> Deserialize<'de> for RawRecipeInputs {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawRecipeSpec {
-    kind: String,
-    name: String,
+pub(super) struct RawRecipeSpec {
+    pub(super) kind: String,
+    pub(super) name: String,
     #[serde(default)]
-    description: String,
+    pub(super) description: String,
     #[serde(default)]
-    inputs: RawRecipeInputs,
-    implementation: RecipeImplementationSpec,
+    pub(super) inputs: RawRecipeInputs,
+    pub(super) implementation: RecipeImplementationSpec,
     #[serde(default)]
-    validation: RecipeValidationSpec,
-    publish: RecipePublishSpec,
-}
-
-impl RecipeSpec {
-    /// Returns the stable recipe id within one workspace.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Returns the user-facing recipe description.
-    #[must_use]
-    pub fn description(&self) -> &str {
-        &self.description
-    }
-
-    /// Returns declared recipe arguments in authored order.
-    #[must_use]
-    pub fn arguments(&self) -> &[RecipeArgumentSpec] {
-        &self.arguments
-    }
-
-    /// Returns the executable recipe implementation.
-    #[must_use]
-    pub fn implementation(&self) -> &RecipeImplementationSpec {
-        &self.implementation
-    }
-
-    /// Returns the install-time validation invocation.
-    #[must_use]
-    pub fn validation(&self) -> &RecipeValidationSpec {
-        &self.validation
-    }
-
-    /// Returns public surfaces the recipe asks Coral to publish.
-    #[must_use]
-    pub fn publish(&self) -> &RecipePublishSpec {
-        &self.publish
-    }
+    pub(super) validation: RecipeValidationSpec,
+    pub(super) publish: RecipePublishSpec,
 }
 
 /// Parses and statically validates one recipe YAML document.
@@ -249,166 +110,6 @@ impl RecipeSpec {
 pub fn parse_recipe_yaml(raw: &str) -> Result<RecipeSpec> {
     let raw: RawRecipeSpec = serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
     validate_raw_recipe(raw)
-}
-
-fn validate_raw_recipe(raw: RawRecipeSpec) -> Result<RecipeSpec> {
-    if raw.kind != "recipe" {
-        return Err(ManifestError::validation(format!(
-            "recipe kind must be 'recipe', got '{}'",
-            raw.kind
-        )));
-    }
-    validate_lowercase_identifier(&raw.name, "recipe name")?;
-    validate_arguments(&raw.name, &raw.inputs.0)?;
-    validate_implementation(&raw.name, &raw.implementation)?;
-    validate_validation(&raw.name, &raw.inputs.0, &raw.validation)?;
-    validate_publish_targets(&raw.name, &raw.publish)?;
-    Ok(RecipeSpec {
-        name: raw.name,
-        description: raw.description,
-        arguments: raw.inputs.0,
-        implementation: raw.implementation,
-        validation: raw.validation,
-        publish: raw.publish,
-    })
-}
-
-fn validate_arguments(recipe: &str, arguments: &[RecipeArgumentSpec]) -> Result<()> {
-    let mut seen = HashSet::new();
-    for argument in arguments {
-        validate_lowercase_identifier(&argument.name, &format!("recipe '{recipe}' input name"))?;
-        if !seen.insert(argument.name.as_str()) {
-            return Err(ManifestError::validation(format!(
-                "recipe '{recipe}' input '{}' is declared more than once",
-                argument.name
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_implementation(recipe: &str, implementation: &RecipeImplementationSpec) -> Result<()> {
-    match implementation {
-        RecipeImplementationSpec::CoralSql { query } if query.trim().is_empty() => {
-            Err(ManifestError::validation(format!(
-                "recipe '{recipe}' coral_sql query must not be empty"
-            )))
-        }
-        RecipeImplementationSpec::CoralSql { .. } => Ok(()),
-    }
-}
-
-fn validate_validation(
-    recipe: &str,
-    arguments: &[RecipeArgumentSpec],
-    validation: &RecipeValidationSpec,
-) -> Result<()> {
-    let arguments_by_name = arguments
-        .iter()
-        .map(|argument| (argument.name.as_str(), argument))
-        .collect::<HashMap<_, _>>();
-
-    for (name, value) in &validation.args {
-        let Some(argument) = arguments_by_name.get(name.as_str()) else {
-            return Err(ManifestError::validation(format!(
-                "recipe '{recipe}' validation arg '{name}' is not declared as an input"
-            )));
-        };
-        if !validation_value_matches_argument(argument, value) {
-            return Err(ManifestError::validation(format!(
-                "recipe '{recipe}' validation arg '{name}' expected {}, got {}",
-                argument_type_name(argument.data_type),
-                validation_value_type_name(value)
-            )));
-        }
-    }
-
-    for argument in arguments {
-        if argument.required
-            && !matches!(
-                validation.args.get(&argument.name),
-                Some(value) if !matches!(value, RecipeValidationValue::Null(()))
-            )
-        {
-            return Err(ManifestError::validation(format!(
-                "recipe '{recipe}' validation.args must include required input '{}'",
-                argument.name
-            )));
-        }
-    }
-
-    Ok(())
-}
-
-fn validation_value_matches_argument(
-    argument: &RecipeArgumentSpec,
-    value: &RecipeValidationValue,
-) -> bool {
-    matches!(
-        (argument.data_type, value),
-        (RecipeArgumentType::String, RecipeValidationValue::String(_))
-            | (
-                RecipeArgumentType::Integer,
-                RecipeValidationValue::Integer(_)
-            )
-            | (
-                RecipeArgumentType::Boolean,
-                RecipeValidationValue::Boolean(_)
-            )
-            | (_, RecipeValidationValue::Null(()))
-    )
-}
-
-fn argument_type_name(data_type: RecipeArgumentType) -> &'static str {
-    match data_type {
-        RecipeArgumentType::String => "string",
-        RecipeArgumentType::Integer => "integer",
-        RecipeArgumentType::Boolean => "boolean",
-    }
-}
-
-fn validation_value_type_name(value: &RecipeValidationValue) -> &'static str {
-    match value {
-        RecipeValidationValue::String(_) => "string",
-        RecipeValidationValue::Integer(_) => "integer",
-        RecipeValidationValue::Boolean(_) => "boolean",
-        RecipeValidationValue::Null(()) => "null",
-    }
-}
-
-fn validate_publish_targets(recipe: &str, publish: &RecipePublishSpec) -> Result<()> {
-    let table_function = &publish.table_function;
-    validate_lowercase_identifier(
-        &table_function.schema,
-        &format!("recipe '{recipe}' table_function publish schema"),
-    )?;
-    validate_lowercase_identifier(
-        &table_function.name,
-        &format!("recipe '{recipe}' table_function publish name"),
-    )?;
-    if RESERVED_TABLE_FUNCTION_SCHEMAS
-        .iter()
-        .any(|reserved| table_function.schema.eq_ignore_ascii_case(reserved))
-    {
-        return Err(ManifestError::validation(format!(
-            "recipe '{recipe}' table_function publish schema '{}' is reserved",
-            table_function.schema
-        )));
-    }
-    if let Some(mcp) = &publish.mcp {
-        validate_lowercase_identifier(&mcp.name, &format!("recipe '{recipe}' mcp publish name"))?;
-    }
-    Ok(())
-}
-
-fn validate_lowercase_identifier(value: &str, context: &str) -> Result<()> {
-    validate_identifier(value, context)?;
-    if value != value.to_ascii_lowercase() {
-        return Err(ManifestError::validation(format!(
-            "{context} '{value}' must be lowercase"
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
