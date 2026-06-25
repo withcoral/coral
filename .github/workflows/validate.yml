@@ -29,6 +29,7 @@ jobs:
       install-script: ${{ steps.filter.outputs.install-script }}
       ui-build: ${{ steps.filter.outputs.ui-build }}
       ui-tests: ${{ steps.filter.outputs.ui-tests }}
+      reef-checks: ${{ steps.filter.outputs.reef-checks }}
       proto-lint: ${{ steps.filter.outputs.proto-lint }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
       docs-freshness: ${{ steps.filter.outputs.docs-freshness }}
@@ -70,6 +71,9 @@ jobs:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
               - 'ui/**'
+            reef-checks:
+              - '.github/workflows/validate.yml'
+              - 'reef/**'
             proto-lint:
               - '.github/workflows/validate.yml'
               - 'Makefile'
@@ -350,6 +354,49 @@ jobs:
             ui/playwright-report/**
           if-no-files-found: ignore
 
+  reef-checks:
+    name: Reef checks
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.reef-checks == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: reef/.node-version
+          package-manager-cache: false
+
+      - name: Set up Node with trusted npm cache
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: reef/.node-version
+          cache: npm
+          cache-dependency-path: reef/package-lock.json
+
+      - name: Install Reef dependencies
+        run: npm ci --prefix reef
+
+      - name: Lint and format check
+        run: npm run check --prefix reef
+
+      - name: Type-check Reef
+        run: npm run typecheck --prefix reef
+
+      - name: Install Chromium for Reef browser tests
+        run: npm exec --prefix reef -- playwright install --with-deps chromium
+
+      - name: Test Reef
+        run: npm test --prefix reef
+
+      - name: Build Reef
+        run: npm run build --prefix reef
+
   proto-lint:
     name: Lint protobuf API
     runs-on: ubuntu-latest
@@ -460,6 +507,20 @@ jobs:
       - name: Run make docs-check
         run: make docs-check
 
+      - name: Set up Node for Mintlify validation
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: ui/.node-version
+          package-manager-cache: false
+
+      - name: Validate Mintlify docs
+        working-directory: docs
+        run: npx --yes mint validate
+
+      - name: Check Mintlify links
+        working-directory: docs
+        run: npx --yes mint broken-links
+
   schema-freshness:
     name: Schema freshness check
     runs-on: ubuntu-latest
@@ -559,6 +620,7 @@ jobs:
         install-script,
         ui-build,
         ui-tests,
+        reef-checks,
         proto-lint,
         gha-security-audit-pr,
         gha-security-audit-sarif,
@@ -580,6 +642,7 @@ jobs:
           INSTALL_SCRIPT_RESULT: ${{ needs.install-script.result }}
           UI_BUILD_RESULT: ${{ needs.ui-build.result }}
           UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
+          REEF_CHECKS_RESULT: ${{ needs.reef-checks.result }}
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
           GHA_SECURITY_AUDIT_PR_RESULT: ${{ needs.gha-security-audit-pr.result }}
           GHA_SECURITY_AUDIT_SARIF_RESULT: ${{ needs.gha-security-audit-sarif.result }}
@@ -596,6 +659,7 @@ jobs:
             "install-script:$INSTALL_SCRIPT_RESULT"
             "ui-build:$UI_BUILD_RESULT"
             "ui-tests:$UI_TESTS_RESULT"
+            "reef-checks:$REEF_CHECKS_RESULT"
             "proto-lint:$PROTO_LINT_RESULT"
             "gha-security-audit-pr:$GHA_SECURITY_AUDIT_PR_RESULT"
             "gha-security-audit-sarif:$GHA_SECURITY_AUDIT_SARIF_RESULT"
