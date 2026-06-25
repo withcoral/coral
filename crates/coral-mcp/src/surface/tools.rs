@@ -13,11 +13,9 @@ pub(crate) struct ToolDescriptionContext {
     pub(crate) visible_table_count: usize,
     pub(crate) visible_function_count: usize,
     connected_source_names: Vec<String>,
-    catalog_deferred: bool,
 }
 
 impl ToolDescriptionContext {
-    #[cfg(test)]
     pub(crate) fn new(
         visible_table_count: usize,
         visible_function_count: usize,
@@ -29,24 +27,10 @@ impl ToolDescriptionContext {
             visible_table_count,
             visible_function_count,
             connected_source_names,
-            catalog_deferred: false,
-        }
-    }
-
-    pub(crate) fn deferred_catalog() -> Self {
-        Self {
-            visible_table_count: 0,
-            visible_function_count: 0,
-            connected_source_names: Vec::new(),
-            catalog_deferred: true,
         }
     }
 
     fn connected_sources_sentence(&self) -> String {
-        if self.catalog_deferred {
-            return "Connected sources/schemas are discovered on demand.".to_string();
-        }
-
         connected_source_names_text(&self.connected_source_names).map_or_else(
             || "No connected user sources are currently configured.".to_string(),
             |names| format!("Connected sources/schemas include: {names}."),
@@ -113,23 +97,14 @@ pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
 }
 
 pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
-    let description = if context.catalog_deferred {
-        format!(
-            "List database catalog items for Coral sources. {} Use this tool to discover currently visible tables and table functions.",
-            context.connected_sources_sentence(),
-        )
-    } else {
+    Tool::new(
+        "list_catalog",
         format!(
             "List database catalog items for Coral sources. {} {} table(s) and {} table function(s) are currently visible.",
             context.connected_sources_sentence(),
             context.visible_table_count,
             context.visible_function_count
-        )
-    };
-
-    Tool::new(
-        "list_catalog",
-        description,
+        ),
         json_object_schema(&json!({
             "type": "object",
             "properties": {
@@ -434,13 +409,6 @@ pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorDat
 }
 
 fn sql_tool_description(context: &ToolDescriptionContext) -> String {
-    if context.catalog_deferred {
-        return format!(
-            "Execute read-only SQL against the Coral database across connected Coral sources/schemas. {} You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools to discover schemas, tables, functions, columns, and filters first. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates to combine tables in one statement.",
-            context.connected_sources_sentence()
-        );
-    }
-
     if context.visible_table_count == 0 {
         format!(
             "Execute read-only SQL against the Coral database. {} No user tables are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first.",
@@ -456,13 +424,6 @@ fn sql_tool_description(context: &ToolDescriptionContext) -> String {
 }
 
 fn search_catalog_description(context: &ToolDescriptionContext) -> String {
-    if context.catalog_deferred {
-        return format!(
-            "Search database catalog metadata with a Rust regex across connected Coral sources/schemas. {} Use this tool to discover matching schemas, tables, table functions, columns, and filters.",
-            context.connected_sources_sentence()
-        );
-    }
-
     format!(
         "Search database catalog metadata with a Rust regex across connected Coral sources/schemas. {} {} table(s) and {} table function(s) are currently visible.",
         context.connected_sources_sentence(),

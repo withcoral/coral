@@ -457,7 +457,25 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<ListToolsResult, ErrorData> {
         let span = telemetry::list_tools_span(self.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
-            let tool_context = ToolDescriptionContext::deferred_catalog();
+            let (visible_table_count, visible_function_count) = self
+                .load_catalog_counts()
+                .await
+                .map_err(|status| status_to_error_data(&status))?;
+            let source_names = match self.load_sources().await {
+                Ok(sources) => sources.into_iter().map(|source| source.name).collect(),
+                Err(status) => {
+                    tracing::warn!(
+                        error = %status,
+                        "failed to load source names for MCP tool descriptions"
+                    );
+                    Vec::new()
+                }
+            };
+            let tool_context = ToolDescriptionContext::new(
+                visible_table_count,
+                visible_function_count,
+                source_names,
+            );
             let mut tools = vec![
                 sql_tool(&tool_context),
                 list_catalog_tool(&tool_context),
