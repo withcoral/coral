@@ -1,6 +1,6 @@
 # Reef
 
-Reef is the Coral frontend shell.
+Reef is the Coral frontend shell!
 
 ## Local Development
 
