@@ -14,7 +14,7 @@
     "check": "npm run type-check",
     "package": "electron-builder --config electron-builder.config.ts",
     "package:dir": "electron-builder --dir --config electron-builder.config.ts",
-    "package:pkg": "electron-builder --mac pkg --config electron-builder.config.ts",
+    "package:dmg": "electron-builder --mac dmg --config electron-builder.config.ts",
     "stage:coral": "node ./scripts/stage-coral.mjs"
   },
   "dependencies": {

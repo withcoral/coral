@@ -42,4 +42,4 @@ binary, and stages it under `desktop/resources/coral/` for Electron packaging.
 npm run package:dir --prefix desktop
 ```
 
-Use `npm run package --prefix desktop` for installer artifacts.
+Use `npm run package:dmg --prefix desktop` for the macOS drag-and-drop DMG.

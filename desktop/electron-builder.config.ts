@@ -29,13 +29,7 @@ const config: Configuration = {
   mac: {
     category: 'public.app-category.developer-tools',
     icon: 'resources/icons/icon.icns',
-    target: ['dmg', 'zip', 'pkg'],
-  },
-  pkg: {
-    allowAnywhere: false,
-    allowCurrentUserHome: false,
-    allowRootDirectory: true,
-    installLocation: '/Applications',
+    target: ['dmg'],
   },
   win: {
     icon: 'resources/icons/icon.ico',
