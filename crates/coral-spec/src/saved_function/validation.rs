@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::{ManifestError, Result, validate_identifier};
 
@@ -40,18 +40,11 @@ impl SavedFunctionValidator {
     }
 
     fn validate_inputs(&self) -> Result<()> {
-        let mut seen = HashSet::new();
         for argument in &self.raw.inputs.0 {
             validate_lowercase_identifier(
                 &argument.name,
                 &format!("saved_function '{}' input name", self.raw.name),
             )?;
-            if !seen.insert(argument.name.as_str()) {
-                return Err(ManifestError::validation(format!(
-                    "recipe '{}' input '{}' is declared more than once",
-                    self.raw.name, argument.name
-                )));
-            }
         }
         Ok(())
     }
