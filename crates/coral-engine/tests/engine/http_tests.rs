@@ -3126,7 +3126,7 @@ async fn legacy_json_body_array_form_still_works() {
 fn string_param(name: &str, value: &str) -> (String, QueryParameterValue) {
     (
         name.to_string(),
-        QueryParameterValue::String(value.to_string()),
+        QueryParameterValue::String(Some(value.to_string())),
     )
 }
 
@@ -3275,7 +3275,7 @@ async fn null_query_parameter_is_treated_as_omitted_optional_argument() {
     let source = build_source(search_function_manifest("null_param_search", &server.uri()));
     let params = QueryParameters::from([
         string_param("q", "flaky cleanup repo:withcoral/coral"),
-        ("mode".to_string(), QueryParameterValue::Null),
+        ("mode".to_string(), QueryParameterValue::String(None)),
     ]);
 
     let rows = execution_to_rows(
@@ -3302,7 +3302,7 @@ async fn null_query_parameter_is_treated_as_omitted_optional_argument() {
 async fn null_query_parameter_for_required_argument_fails() {
     let server = MockServer::start().await;
     let source = build_source(search_function_manifest("null_required", &server.uri()));
-    let params = QueryParameters::from([("q".to_string(), QueryParameterValue::Null)]);
+    let params = QueryParameters::from([("q".to_string(), QueryParameterValue::String(None))]);
 
     let error = CoralQuery::execute_sql_with_params(
         &[source],
@@ -3324,9 +3324,12 @@ async fn null_query_parameter_for_required_argument_fails() {
 #[tokio::test]
 async fn query_parameters_bind_typed_scalar_values() {
     let params = QueryParameters::from([
-        ("count".to_string(), QueryParameterValue::Integer(7)),
-        ("score".to_string(), QueryParameterValue::Float(9.5)),
-        ("enabled".to_string(), QueryParameterValue::Boolean(true)),
+        ("count".to_string(), QueryParameterValue::Integer(Some(7))),
+        ("score".to_string(), QueryParameterValue::Float(Some(9.5))),
+        (
+            "enabled".to_string(),
+            QueryParameterValue::Boolean(Some(true)),
+        ),
     ]);
 
     let rows = execution_to_rows(

@@ -577,11 +577,10 @@ fn reject_unknown_parameters(
 
 fn parameter_scalar_value(value: &QueryParameterValue) -> ScalarValue {
     match value {
-        QueryParameterValue::String(value) => ScalarValue::Utf8(Some(value.clone())),
-        QueryParameterValue::Integer(value) => ScalarValue::Int64(Some(*value)),
-        QueryParameterValue::Float(value) => ScalarValue::Float64(Some(*value)),
-        QueryParameterValue::Boolean(value) => ScalarValue::Boolean(Some(*value)),
-        QueryParameterValue::Null => ScalarValue::Null,
+        QueryParameterValue::String(value) => ScalarValue::Utf8(value.clone()),
+        QueryParameterValue::Integer(value) => ScalarValue::Int64(*value),
+        QueryParameterValue::Float(value) => ScalarValue::Float64(*value),
+        QueryParameterValue::Boolean(value) => ScalarValue::Boolean(*value),
     }
 }
 

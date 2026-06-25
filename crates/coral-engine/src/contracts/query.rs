@@ -381,16 +381,14 @@ pub type QueryParameters = BTreeMap<String, QueryParameterValue>;
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum QueryParameterValue {
-    /// UTF-8 string value.
-    String(String),
-    /// 64-bit signed integer value.
-    Integer(i64),
-    /// 64-bit floating point value.
-    Float(f64),
-    /// Boolean value.
-    Boolean(bool),
-    /// SQL NULL.
-    Null,
+    /// UTF-8 string value, or a typed string NULL.
+    String(Option<String>),
+    /// 64-bit signed integer value, or a typed integer NULL.
+    Integer(Option<i64>),
+    /// 64-bit floating point value, or a typed float NULL.
+    Float(Option<f64>),
+    /// Boolean value, or a typed boolean NULL.
+    Boolean(Option<bool>),
 }
 
 /// Owned runtime-build inputs needed while compiling and registering sources.
