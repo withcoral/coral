@@ -28,7 +28,7 @@ use tonic::{
 };
 
 use crate::{
-    McpOptions,
+    McpOptions, McpQueryExample,
     surface::{
         CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
         describe_table_tool, describe_table_value, feedback_tool, guide_resource,
@@ -48,6 +48,7 @@ const LIST_CATALOG_COUNT_LIMIT: u32 = 1;
 const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified;
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
+const MAX_INITIAL_QUERY_EXAMPLES: usize = 5;
 
 enum ToolCallOutcome {
     Success(Value),
@@ -147,10 +148,14 @@ pub(crate) struct CoralMcpServer {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct McpStartupContext {
     source_names: Vec<String>,
+    query_examples: Vec<McpQueryExample>,
 }
 
 impl McpStartupContext {
-    fn from_source_names(source_names: impl IntoIterator<Item = String>) -> Self {
+    fn new(
+        source_names: impl IntoIterator<Item = String>,
+        query_examples: impl IntoIterator<Item = McpQueryExample>,
+    ) -> Self {
         let mut source_names = source_names
             .into_iter()
             .map(|name| name.trim().to_string())
@@ -158,17 +163,29 @@ impl McpStartupContext {
             .collect::<Vec<_>>();
         source_names.sort_unstable();
         source_names.dedup();
-        Self { source_names }
+        let query_examples = normalize_query_examples(query_examples);
+        Self {
+            source_names,
+            query_examples,
+        }
+    }
+
+    fn from_options(options: &McpOptions) -> Self {
+        Self::new(options.source_names.clone(), options.query_examples.clone())
     }
 
     fn source_names(&self) -> &[String] {
         &self.source_names
     }
+
+    fn query_examples(&self) -> &[McpQueryExample] {
+        &self.query_examples
+    }
 }
 
 impl CoralMcpServer {
     pub(crate) fn new(app: &AppClient, options: McpOptions) -> Self {
-        let startup_context = McpStartupContext::from_source_names(options.source_names.clone());
+        let startup_context = McpStartupContext::from_options(&options);
         Self::new_with_startup_context(app, options, startup_context)
     }
 
@@ -586,7 +603,10 @@ impl ServerHandler for CoralMcpServer {
                 .build(),
         )
         .with_server_info(Implementation::new("coral", env!("CARGO_PKG_VERSION")))
-        .with_instructions(initial_instructions(self.startup_context.source_names()))
+        .with_instructions(initial_instructions(
+            self.startup_context.source_names(),
+            self.startup_context.query_examples(),
+        ))
     }
 
     async fn list_tools(
@@ -779,18 +799,44 @@ fn guide_catalog_from_response(
     (tables, table_function_schema_names)
 }
 
+fn normalize_query_examples(
+    query_examples: impl IntoIterator<Item = McpQueryExample>,
+) -> Vec<McpQueryExample> {
+    let mut normalized = Vec::new();
+    for example in query_examples {
+        let sql = example.sql().trim();
+        if sql.is_empty() {
+            continue;
+        }
+        let mut normalized_example =
+            McpQueryExample::new(sql.to_string()).with_sources(example.sources().iter().cloned());
+        if let Some(row_count) = example.row_count() {
+            normalized_example = normalized_example.with_row_count(row_count);
+        }
+        normalized.push(normalized_example);
+        if normalized.len() >= MAX_INITIAL_QUERY_EXAMPLES {
+            break;
+        }
+    }
+    normalized
+}
+
 #[cfg(test)]
 mod startup_context_tests {
-    use super::McpStartupContext;
+    use super::{MAX_INITIAL_QUERY_EXAMPLES, McpStartupContext};
+    use crate::McpQueryExample;
 
     #[test]
     fn startup_context_sorts_and_dedupes_source_names() {
-        let context = McpStartupContext::from_source_names([
-            "slack".to_string(),
-            "github".to_string(),
-            "linear".to_string(),
-            "github".to_string(),
-        ]);
+        let context = McpStartupContext::new(
+            [
+                "slack".to_string(),
+                "github".to_string(),
+                "linear".to_string(),
+                "github".to_string(),
+            ],
+            [],
+        );
 
         assert_eq!(
             context
@@ -799,6 +845,62 @@ mod startup_context_tests {
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             vec!["github", "linear", "slack"]
+        );
+    }
+
+    #[test]
+    fn startup_context_keeps_query_examples_in_order() {
+        let context = McpStartupContext::new(
+            [],
+            [
+                McpQueryExample::new(" SELECT * FROM github.issues "),
+                McpQueryExample::new(""),
+                McpQueryExample::new("SELECT * FROM github.issues"),
+                McpQueryExample::new("SELECT * FROM linear.issues"),
+            ],
+        );
+
+        assert_eq!(
+            context
+                .query_examples()
+                .iter()
+                .map(McpQueryExample::sql)
+                .collect::<Vec<_>>(),
+            vec![
+                "SELECT * FROM github.issues",
+                "SELECT * FROM github.issues",
+                "SELECT * FROM linear.issues",
+            ]
+        );
+    }
+
+    #[test]
+    fn startup_context_keeps_query_example_metadata() {
+        let context = McpStartupContext::new(
+            [],
+            [McpQueryExample::new(" SELECT * FROM github.issues ")
+                .with_sources(["github".to_string(), "github".to_string()])
+                .with_row_count(15)],
+        );
+
+        let example = context.query_examples().first().expect("query example");
+        assert_eq!(example.sql(), "SELECT * FROM github.issues");
+        assert_eq!(example.sources(), &["github".to_string()]);
+        assert_eq!(example.row_count(), Some(15));
+    }
+
+    #[test]
+    fn startup_context_caps_query_examples() {
+        let context = McpStartupContext::new(
+            [],
+            (0..MAX_INITIAL_QUERY_EXAMPLES + 2)
+                .map(|index| McpQueryExample::new(format!("SELECT {index}"))),
+        );
+
+        assert_eq!(context.query_examples().len(), MAX_INITIAL_QUERY_EXAMPLES);
+        assert_eq!(
+            context.query_examples().last().map(McpQueryExample::sql),
+            Some("SELECT 4")
         );
     }
 }

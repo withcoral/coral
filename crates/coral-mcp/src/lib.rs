@@ -36,6 +36,64 @@ use rmcp::ServiceExt;
 pub use error::McpError;
 pub(crate) use server::CoralMcpServer;
 
+/// A successful SQL query example for MCP initialize instructions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpQueryExample {
+    sql: String,
+    sources: Vec<String>,
+    row_count: Option<u64>,
+}
+
+impl McpQueryExample {
+    /// Creates a query example from SQL text.
+    #[must_use]
+    pub fn new(sql: impl Into<String>) -> Self {
+        Self {
+            sql: sql.into(),
+            sources: Vec::new(),
+            row_count: None,
+        }
+    }
+
+    /// Adds installed source names used by this query.
+    #[must_use]
+    pub fn with_sources(mut self, sources: impl IntoIterator<Item = String>) -> Self {
+        self.sources = sources
+            .into_iter()
+            .map(|source| source.trim().to_string())
+            .filter(|source| !source.is_empty())
+            .collect();
+        self.sources.sort_unstable();
+        self.sources.dedup();
+        self
+    }
+
+    /// Adds the number of rows returned by this query.
+    #[must_use]
+    pub fn with_row_count(mut self, row_count: u64) -> Self {
+        self.row_count = Some(row_count);
+        self
+    }
+
+    /// SQL text for this query example.
+    #[must_use]
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    /// Installed source names used by this query.
+    #[must_use]
+    pub fn sources(&self) -> &[String] {
+        &self.sources
+    }
+
+    /// Number of rows returned by this query, when known.
+    #[must_use]
+    pub fn row_count(&self) -> Option<u64> {
+        self.row_count
+    }
+}
+
 /// Optional MCP surface features.
 #[derive(Debug, Clone, Default)]
 pub struct McpOptions {
@@ -47,6 +105,8 @@ pub struct McpOptions {
     pub trace_parent: Option<String>,
     /// Installed source names to include in MCP initialize instructions.
     pub source_names: Vec<String>,
+    /// Successful SQL examples to include in MCP initialize instructions.
+    pub query_examples: Vec<McpQueryExample>,
 }
 
 /// Runs the `MCP` stdio server using an existing Coral client.
