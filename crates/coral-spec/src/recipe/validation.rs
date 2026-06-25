@@ -2,11 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{ManifestError, Result, validate_identifier};
 
-use super::RawRecipeSpec;
 use super::model::{
     SavedFunctionArgumentSpec, SavedFunctionArgumentType, SavedFunctionImplementationSpec,
     SavedFunctionSpec, SavedFunctionValidationValue,
 };
+use super::parser::RawSavedFunctionSpec;
 
 const RESERVED_TABLE_FUNCTION_SCHEMAS: &[&str] =
     &["coral", "coral_admin", "__coral_saved_functions"];
