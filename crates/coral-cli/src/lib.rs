@@ -578,7 +578,7 @@ async fn run_app_command(
                     episodes_enabled: features.enabled(coral_app::features::Feature::Episodes),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                     source_names,
-                    query_examples: Vec::new(),
+                    query_examples,
                 },
             ))
             .await
