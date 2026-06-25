@@ -7,8 +7,7 @@ export interface SidecarInfo {
 
 export interface CliInstallResult {
   commandPath: string
-  installKind: 'cmd' | 'path' | 'symlink'
-  shellConfigPath?: string
+  installKind: 'symlink'
   targetPath: string
   onPath: boolean
 }

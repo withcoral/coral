@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { McpClientId, SidecarInfo } from '../shared/types'
-import { installCliCommand } from './cli-alias'
+import { installCliCommand } from './cli-command'
 import { configureMcpClient, mcpClients } from './mcp-config'
 import { openMcpConnectionTest } from './mcp-test'
 import { startCoralSidecar, type CoralSidecar } from './sidecar'
@@ -91,11 +91,7 @@ function registerIpcHandlers() {
 }
 
 function cliInstallDetail(result: Awaited<ReturnType<typeof installCliCommand>>): string {
-  const link = `${result.commandPath} -> ${result.targetPath}`
-  if (result.installKind === 'path' && result.shellConfigPath) {
-    return `${link}\n\nAdded the command directory to PATH in ${result.shellConfigPath}. Open a new terminal.`
-  }
-  return link
+  return `${result.commandPath} -> ${result.targetPath}`
 }
 
 function installMenu() {

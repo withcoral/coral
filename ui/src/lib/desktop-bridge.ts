@@ -2,8 +2,7 @@ export type DesktopMcpClientId = 'codex' | 'claude-desktop' | 'cursor' | 'vscode
 
 export interface DesktopCliInstallResult {
   commandPath: string
-  installKind: 'cmd' | 'path' | 'symlink'
-  shellConfigPath?: string
+  installKind: 'symlink'
   targetPath: string
   onPath: boolean
 }

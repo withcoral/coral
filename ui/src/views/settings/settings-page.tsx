@@ -42,16 +42,13 @@ function resultPath(
   result: DesktopCliInstallResult | DesktopMcpConfigureResult | DesktopMcpTestResult,
 ): string {
   return 'commandPath' in result
-    ? (result.shellConfigPath ?? result.commandPath)
+    ? result.commandPath
     : 'configPath' in result
       ? result.configPath
       : result.launchUrl
 }
 
 function cliInstallDetail(result: DesktopCliInstallResult): string {
-  if (result.installKind === 'path' && result.shellConfigPath) {
-    return `Installed ${result.commandPath}; added PATH entry to ${result.shellConfigPath}`
-  }
   return `Installed ${result.commandPath}`
 }
 
