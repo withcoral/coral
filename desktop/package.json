@@ -17,7 +17,9 @@
     "package:pkg": "electron-builder --mac pkg --config electron-builder.config.ts",
     "stage:coral": "node ./scripts/stage-coral.mjs"
   },
-  "dependencies": {},
+  "dependencies": {
+    "add-mcp": "^1.11.0"
+  },
   "devDependencies": {
     "@types/node": "^22.19.2",
     "electron": "^42.3.3",

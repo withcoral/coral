@@ -9,8 +9,9 @@ coral ui --no-open --port 0
 ```
 
 The renderer displays the sidecar-served Coral UI and exposes desktop actions
-for installing a `coral` command and writing MCP stdio config files for common
-clients.
+for installing a `coral` command and configuring common MCP clients. MCP config
+updates are delegated to `add-mcp` so client-specific file formats stay out of
+the Electron shell.
 
 ## Development
 
