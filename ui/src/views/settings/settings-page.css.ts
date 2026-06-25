@@ -130,5 +130,6 @@ export const unavailable = style({
 export const actionSlot = style({
   alignItems: 'center',
   display: 'flex',
+  gap: 8,
   justifyContent: 'flex-end',
 })

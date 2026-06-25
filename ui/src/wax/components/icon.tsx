@@ -3,6 +3,7 @@ import {
   Activity,
   Check,
   CircleCheck,
+  ExternalLink,
   Loader,
   Pencil,
   Plus,
@@ -35,6 +36,7 @@ export type IconName =
   | 'CircleAlert'
   | 'CircleCheck'
   | 'Coral'
+  | 'ExternalLink'
   | 'Loader'
   | 'PanelLeft'
   | 'Pencil'
@@ -57,6 +59,7 @@ const lucideIcons = {
   Activity,
   Check,
   CircleCheck,
+  ExternalLink,
   Loader,
   Pencil,
   Plus,

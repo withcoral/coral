@@ -6,6 +6,7 @@ const api: CoralDesktopApi = {
   installCli: () => ipcRenderer.invoke('coral:install-cli'),
   listMcpClients: () => ipcRenderer.invoke('coral:list-mcp-clients'),
   configureMcp: (clientId: McpClientId) => ipcRenderer.invoke('coral:configure-mcp', clientId),
+  testMcp: (clientId: McpClientId) => ipcRenderer.invoke('coral:test-mcp', clientId),
   onShowOnboarding: (callback: () => void) => {
     const listener = () => callback()
     ipcRenderer.on('coral:show-onboarding', listener)

@@ -19,10 +19,17 @@ export interface DesktopMcpConfigureResult {
   configPath: string
 }
 
+export interface DesktopMcpTestResult {
+  client: DesktopMcpClientDescriptor
+  launchUrl: string
+  message: string
+}
+
 type DesktopAction =
   | { action: 'install-cli' }
   | { action: 'list-mcp-clients' }
   | { action: 'configure-mcp'; clientId: DesktopMcpClientId }
+  | { action: 'test-mcp'; clientId: DesktopMcpClientId }
 
 type DesktopBridgeRequest = DesktopAction & {
   id: string
@@ -102,4 +109,8 @@ export function configureDesktopMcpClient(
   clientId: DesktopMcpClientId,
 ): Promise<DesktopMcpConfigureResult> {
   return requestDesktop<DesktopMcpConfigureResult>({ action: 'configure-mcp', clientId })
+}
+
+export function testDesktopMcpClient(clientId: DesktopMcpClientId): Promise<DesktopMcpTestResult> {
+  return requestDesktop<DesktopMcpTestResult>({ action: 'test-mcp', clientId })
 }

@@ -100,6 +100,11 @@ async function runDesktopBridgeAction(request: DesktopBridgeRequest): Promise<un
         throw new Error('Unknown MCP client.')
       }
       return desktopApi().configureMcp(request.clientId)
+    case 'test-mcp':
+      if (!isMcpClientId(request.clientId)) {
+        throw new Error('Unknown MCP client.')
+      }
+      return desktopApi().testMcp(request.clientId)
     default:
       throw new Error(`Unsupported desktop action: ${request.action}`)
   }

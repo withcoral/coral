@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import type { McpClientId, SidecarInfo } from '../shared/types'
 import { installCliAlias } from './cli-alias'
 import { configureMcpClient, mcpClients } from './mcp-config'
+import { openMcpConnectionTest } from './mcp-test'
 import { startCoralSidecar, type CoralSidecar } from './sidecar'
 
 let mainWindow: BrowserWindow | null = null
@@ -86,6 +87,7 @@ function registerIpcHandlers() {
   ipcMain.handle('coral:install-cli', () => installCliAlias())
   ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
   ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) => configureMcpClient(clientId))
+  ipcMain.handle('coral:test-mcp', (_event, clientId: McpClientId) => openMcpConnectionTest(clientId))
 }
 
 function installMenu() {

@@ -5,10 +5,12 @@ import {
   installDesktopCliAlias,
   isDesktopBridgeLikelyAvailable,
   listDesktopMcpClients,
+  testDesktopMcpClient,
   type DesktopCliInstallResult,
   type DesktopMcpClientDescriptor,
   type DesktopMcpClientId,
   type DesktopMcpConfigureResult,
+  type DesktopMcpTestResult,
 } from '@/lib/desktop-bridge'
 import {
   Container as Button,
@@ -36,10 +38,14 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function resultPath(result: DesktopCliInstallResult | DesktopMcpConfigureResult): string {
+function resultPath(
+  result: DesktopCliInstallResult | DesktopMcpConfigureResult | DesktopMcpTestResult,
+): string {
   return 'commandPath' in result
     ? (result.shellConfigPath ?? result.commandPath)
-    : result.configPath
+    : 'configPath' in result
+      ? result.configPath
+      : result.launchUrl
 }
 
 function statusText(status: ActionStatus | undefined) {
@@ -71,6 +77,9 @@ export function SettingsPage() {
   const [mcpStatuses, setMcpStatuses] = useState<Partial<Record<DesktopMcpClientId, ActionStatus>>>(
     {},
   )
+  const [mcpTestStatuses, setMcpTestStatuses] = useState<
+    Partial<Record<DesktopMcpClientId, ActionStatus>>
+  >({})
 
   useEffect(() => {
     if (!desktopAvailable) return
@@ -126,6 +135,25 @@ export function SettingsPage() {
       const detail = errorMessage(error)
       setMcpStatuses((current) => ({ ...current, [client.id]: { detail, state: 'error' } }))
       addToast('error', { title: `${client.name} connection failed`, description: detail })
+    }
+  }, [])
+
+  const testMcp = useCallback(async (client: DesktopMcpClientDescriptor) => {
+    setMcpTestStatuses((current) => ({ ...current, [client.id]: { state: 'running' } }))
+    try {
+      const result = await testDesktopMcpClient(client.id)
+      setMcpTestStatuses((current) => ({
+        ...current,
+        [client.id]: { detail: result.message, state: 'done' },
+      }))
+      addToast('success', {
+        title: `${result.client.name} test opened`,
+        description: result.message,
+      })
+    } catch (error) {
+      const detail = errorMessage(error)
+      setMcpTestStatuses((current) => ({ ...current, [client.id]: { detail, state: 'error' } }))
+      addToast('error', { title: `${client.name} test failed`, description: detail })
     }
   }, [])
 
@@ -219,6 +247,9 @@ export function SettingsPage() {
 
           {sortedClients.map((client) => {
             const status = mcpStatuses[client.id] ?? { state: 'idle' }
+            const testStatus = mcpTestStatuses[client.id] ?? { state: 'idle' }
+            const visibleStatus = testStatus.state === 'idle' ? status : testStatus
+            const canTest = client.id === 'claude-desktop'
             return (
               <div className={styles.row} key={client.id}>
                 <div className={styles.rowMain}>
@@ -227,7 +258,7 @@ export function SettingsPage() {
                       {client.name}
                     </Typography.BodyStrong>
                   </div>
-                  {statusText(status) ?? (
+                  {statusText(visibleStatus) ?? (
                     <Typography.CodeSmallInline as="p" className={styles.meta} variant="tertiary">
                       {client.configPath}
                     </Typography.CodeSmallInline>
@@ -245,6 +276,19 @@ export function SettingsPage() {
                       {status.state === 'running' ? 'Connecting' : 'Connect MCP'}
                     </ButtonText>
                   </Button>
+                  {canTest ? (
+                    <Button
+                      disabled={testStatus.state === 'running'}
+                      onClick={() => void testMcp(client)}
+                      size="32"
+                      variant="secondary"
+                    >
+                      <ButtonIcon
+                        name={testStatus.state === 'running' ? 'Loader' : 'ExternalLink'}
+                      />
+                      <ButtonText>{testStatus.state === 'running' ? 'Opening' : 'Test'}</ButtonText>
+                    </Button>
+                  ) : null}
                 </div>
               </div>
             )

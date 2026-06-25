@@ -24,10 +24,17 @@ export interface McpConfigureResult {
   configPath: string
 }
 
+export interface McpTestResult {
+  client: McpClientDescriptor
+  launchUrl: string
+  message: string
+}
+
 export interface CoralDesktopApi {
   awaitInitialization(): Promise<SidecarInfo>
   installCli(): Promise<CliInstallResult>
   listMcpClients(): Promise<McpClientDescriptor[]>
   configureMcp(clientId: McpClientId): Promise<McpConfigureResult>
+  testMcp(clientId: McpClientId): Promise<McpTestResult>
   onShowOnboarding(callback: () => void): () => void
 }
