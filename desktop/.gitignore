@@ -3,3 +3,4 @@ out/
 dist*/
 resources/coral/*
 !resources/coral/.gitkeep
+resources/bin/*

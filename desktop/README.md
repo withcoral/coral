@@ -9,9 +9,11 @@ coral ui --no-open --port 0
 ```
 
 The renderer displays the sidecar-served Coral UI and exposes desktop actions
-for installing a `coral` command and configuring common MCP clients. MCP config
-updates are delegated to `add-mcp` so client-specific file formats stay out of
-the Electron shell.
+for installing a `coral` command and configuring common MCP clients. The command
+installer follows the VS Code pattern: it creates a PATH-visible symlink to an
+entrypoint inside the `.app` bundle, `Contents/Resources/bin/coral`, which then
+execs the bundled CLI binary. MCP config updates are delegated to `add-mcp` so
+client-specific file formats stay out of the Electron shell.
 
 ## Development
 

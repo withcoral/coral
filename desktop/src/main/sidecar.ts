@@ -35,10 +35,21 @@ export function bundledCoralPath(): string {
     : resolve(desktopRoot(), 'resources', 'coral', binary)
 }
 
+export function bundledCoralCommandPath(): string {
+  const command = process.platform === 'win32' ? 'coral.cmd' : 'coral'
+  return app.isPackaged
+    ? join(process.resourcesPath, 'bin', command)
+    : resolve(desktopRoot(), 'resources', 'bin', command)
+}
+
+function releaseCoralPath(): string {
+  return resolve(repoRoot(), 'target', 'release', process.platform === 'win32' ? 'coral.exe' : 'coral')
+}
+
 export async function externalCoralPath(): Promise<string> {
   const candidates = [
     bundledCoralPath(),
-    resolve(repoRoot(), 'target', 'release', process.platform === 'win32' ? 'coral.exe' : 'coral'),
+    releaseCoralPath(),
   ]
 
   for (const candidate of candidates) {
@@ -51,6 +62,21 @@ export async function externalCoralPath(): Promise<string> {
   }
 
   throw new Error('No Coral binary is available yet. Run `npm run stage:coral --prefix desktop` first.')
+}
+
+export async function externalCoralCommandPath(): Promise<string> {
+  const candidates = [bundledCoralCommandPath(), bundledCoralPath(), releaseCoralPath()]
+
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.X_OK)
+      return candidate
+    } catch {
+      // Try the next candidate.
+    }
+  }
+
+  throw new Error('No Coral command is available yet. Run `npm run stage:coral --prefix desktop` first.')
 }
 
 function devSidecarCommand(): { command: string; args: string[]; cwd: string } {

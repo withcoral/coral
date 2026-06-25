@@ -16,6 +16,11 @@ const config: Configuration = {
       filter: ['**/*'],
     },
     {
+      from: 'resources/bin/',
+      to: 'bin/',
+      filter: ['**/*'],
+    },
+    {
       from: 'resources/icons/',
       to: 'icons/',
       filter: ['**/*'],

@@ -14,7 +14,7 @@ import { delimiter, dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { app } from 'electron'
 import type { CliInstallResult } from '../shared/types'
-import { externalCoralPath } from './sidecar'
+import { externalCoralCommandPath } from './sidecar'
 
 const execFileAsync = promisify(execFile)
 const COMMAND_NAME = process.platform === 'win32' ? 'coral.cmd' : 'coral'
@@ -225,6 +225,6 @@ async function installWindowsCli(targetPath: string): Promise<CliInstallResult> 
 }
 
 export async function installCliCommand(): Promise<CliInstallResult> {
-  const targetPath = await externalCoralPath()
+  const targetPath = await externalCoralCommandPath()
   return process.platform === 'win32' ? installWindowsCli(targetPath) : installUnixCliCommand(targetPath)
 }
