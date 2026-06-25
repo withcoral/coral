@@ -7,11 +7,6 @@ const api: CoralDesktopApi = {
   listMcpClients: () => ipcRenderer.invoke('coral:list-mcp-clients'),
   configureMcp: (clientId: McpClientId) => ipcRenderer.invoke('coral:configure-mcp', clientId),
   testMcp: (clientId: McpClientId) => ipcRenderer.invoke('coral:test-mcp', clientId),
-  onShowOnboarding: (callback: () => void) => {
-    const listener = () => callback()
-    ipcRenderer.on('coral:show-onboarding', listener)
-    return () => ipcRenderer.removeListener('coral:show-onboarding', listener)
-  },
 }
 
 contextBridge.exposeInMainWorld('coralDesktop', api)

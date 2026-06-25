@@ -120,11 +120,6 @@ function installMenu() {
       label: 'Coral',
       submenu: [
         {
-          label: 'Show Onboarding',
-          click: () => mainWindow?.webContents.send('coral:show-onboarding'),
-        },
-        { type: 'separator' },
-        {
           label: 'Install CLI Command',
           click: async () => {
             try {

@@ -17,7 +17,7 @@ import * as styles from './sources-index.css'
 type IndexEntry = CatalogEntry
 
 export function SourcesIndex() {
-  const { location, navigate } = useRouter()
+  const { navigate } = useRouter()
   const [bundled, setBundled] = useState<CatalogEntry[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
@@ -51,12 +51,6 @@ export function SourcesIndex() {
   useEffect(() => {
     void refresh()
   }, [refresh])
-
-  useEffect(() => {
-    if (location.route.kind === 'sources' && location.installSource) {
-      setInstallingName(location.installSource)
-    }
-  }, [location])
 
   const loading = bundled === null && !error
 
@@ -205,12 +199,7 @@ export function SourcesIndex() {
         name={installingName}
         open={installingName !== null}
         onOpenChange={(open) => {
-          if (!open) {
-            setInstallingName(null)
-            if (location.route.kind === 'sources' && location.installSource) {
-              navigate({ route: { kind: 'sources' } })
-            }
-          }
+          if (!open) setInstallingName(null)
         }}
         onInstalled={onInstalled}
       />

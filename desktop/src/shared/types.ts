@@ -36,5 +36,4 @@ export interface CoralDesktopApi {
   listMcpClients(): Promise<McpClientDescriptor[]>
   configureMcp(clientId: McpClientId): Promise<McpConfigureResult>
   testMcp(clientId: McpClientId): Promise<McpTestResult>
-  onShowOnboarding(callback: () => void): () => void
 }

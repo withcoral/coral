@@ -4,20 +4,15 @@ export type Route = { kind: 'traces' } | { kind: 'sources' } | { kind: 'settings
 
 export interface ParsedLocation {
   route: Route
-  installSource?: string
 }
 
 function parseHash(): ParsedLocation {
   const raw = window.location.hash.replace(/^#\/?/, '')
-  const [pathPart, queryPart = ''] = raw.split('?')
+  const [pathPart] = raw.split('?')
   const segments = pathPart.split('/').filter(Boolean)
 
   if (segments[0] === 'sources') {
-    const installSource = new URLSearchParams(queryPart).get('install')?.trim()
-    return {
-      route: { kind: 'sources' },
-      ...(installSource ? { installSource } : {}),
-    }
+    return { route: { kind: 'sources' } }
   }
 
   if (segments[0] === 'settings') {
@@ -34,10 +29,7 @@ function parseHash(): ParsedLocation {
 function serialise(parsed: ParsedLocation): string {
   if (parsed.route.kind === 'traces') return '#/traces'
   if (parsed.route.kind === 'settings') return '#/settings'
-  const params = new URLSearchParams()
-  if (parsed.installSource) params.set('install', parsed.installSource)
-  const query = params.toString()
-  return `#/sources${query ? `?${query}` : ''}`
+  return '#/sources'
 }
 
 let cachedLocation: ParsedLocation = parseHash()
