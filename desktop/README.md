@@ -43,3 +43,4 @@ npm run package:dir --prefix desktop
 ```
 
 Use `npm run package:dmg --prefix desktop` for the macOS drag-and-drop DMG.
+Windows and Linux installer targets are intentionally not configured yet.

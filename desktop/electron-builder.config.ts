@@ -31,19 +31,6 @@ const config: Configuration = {
     icon: 'resources/icons/icon.icns',
     target: ['dmg'],
   },
-  win: {
-    icon: 'resources/icons/icon.ico',
-    target: ['nsis'],
-  },
-  nsis: {
-    oneClick: true,
-    perMachine: false,
-  },
-  linux: {
-    category: 'Development',
-    icon: 'resources/icons/icon.png',
-    target: ['AppImage', 'deb', 'rpm'],
-  },
 }
 
 export default config
