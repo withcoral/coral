@@ -538,9 +538,17 @@ pub(crate) fn optional_episode_id_argument(
 }
 
 pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
+    build_tool_result_with_error(value, false)
+}
+
+pub(crate) fn build_tool_result_with_error(
+    value: Value,
+    is_error: bool,
+) -> Result<CallToolResult, ErrorData> {
     let compact = serde_json::to_string(&value)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
     let mut result = CallToolResult::structured(value);
+    result.is_error = Some(is_error);
     result.content = vec![Content::text(compact)];
     Ok(result)
 }
@@ -572,10 +580,45 @@ fn sql_output_schema() -> Arc<Map<String, Value>> {
             "error_count": { "type": "integer", "minimum": 0 },
             "results": {
                 "type": "array",
-                "items": sql_success_result_output_schema()
+                "items": {
+                    "oneOf": [
+                        sql_success_result_output_schema(),
+                        sql_error_result_output_schema()
+                    ]
+                }
             }
         }
     }))
+}
+
+fn sql_error_result_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["index", "sql", "status", "error"],
+        "additionalProperties": false,
+        "properties": {
+            "index": { "type": "integer", "minimum": 0 },
+            "sql": { "type": "string" },
+            "status": { "enum": ["error"] },
+            "error": {
+                "type": "object",
+                "required": ["summary", "detail", "grpc_code", "retryable", "metadata"],
+                "additionalProperties": false,
+                "properties": {
+                    "summary": { "type": "string" },
+                    "detail": { "type": "string" },
+                    "hint": { "type": "string" },
+                    "grpc_code": { "type": "string" },
+                    "reason": { "type": "string" },
+                    "retryable": { "type": "boolean" },
+                    "metadata": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
 }
 
 fn sql_success_result_output_schema() -> Value {

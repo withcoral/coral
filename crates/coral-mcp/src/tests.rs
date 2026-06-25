@@ -1530,6 +1530,10 @@ async fn mcp_sql_executes_multiple_queries_in_input_order() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Session-continuity coverage intentionally keeps success, partial failure, all failure, and follow-up call assertions together."
+)]
 async fn mcp_tool_error_does_not_end_session() {
     let temp = TempDir::new().expect("temp dir");
     let manifest_path = write_fixture_manifest(temp.path());
@@ -1572,26 +1576,72 @@ async fn mcp_tool_error_does_not_end_session() {
         .await
         .expect_err("legacy sql argument should fail before execution");
 
-    let invalid_sql = client
+    let mixed_sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": [
+                    "SELECT text FROM local_messages.messages ORDER BY text LIMIT 1",
+                    "DELETE FROM local_messages.messages",
+                    "SELECT text FROM local_messages.messages ORDER BY text DESC LIMIT 1"
+                ]
+            }))),
+        )
+        .await
+        .expect("partially failing sql still returns tool result");
+    assert_eq!(mixed_sql.is_error, Some(true));
+    let mixed_text = mixed_sql.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .as_str();
+    let mixed_value = mixed_sql.structured_content.expect("structured content");
+    assert_eq!(
+        serde_json::to_string(&mixed_value).expect("compact json"),
+        mixed_text
+    );
+    assert_eq!(mixed_value["successful"], false);
+    assert_eq!(mixed_value["total_count"], 3);
+    assert_eq!(mixed_value["success_count"], 2);
+    assert_eq!(mixed_value["error_count"], 1);
+    assert_eq!(mixed_value["results"][0]["status"], "success");
+    assert_eq!(sql_result_rows(&mixed_value, 0)[0]["text"], "hello");
+    assert_eq!(mixed_value["results"][1]["index"], 1);
+    assert_eq!(mixed_value["results"][1]["status"], "error");
+    assert_eq!(
+        mixed_value["results"][1]["error"]["summary"],
+        "Query request is invalid"
+    );
+    assert_eq!(
+        mixed_value["results"][1]["error"]["grpc_code"],
+        "InvalidArgument"
+    );
+    assert_eq!(mixed_value["results"][1]["error"]["retryable"], false);
+    assert!(mixed_value["results"][1]["error"]["metadata"].is_object());
+    assert_eq!(mixed_value["results"][2]["status"], "success");
+    assert_eq!(sql_result_rows(&mixed_value, 2)[0]["text"], "world");
+    assert_matches_output_schema(sql_tool, &mixed_value);
+
+    let all_invalid_sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
                 "queries": ["DELETE FROM local_messages.messages"]
             }))),
         )
         .await
-        .expect("failing sql still returns tool result");
-    assert_eq!(invalid_sql.is_error, Some(true));
+        .expect("failing sql still returns aggregate tool result");
+    assert_eq!(all_invalid_sql.is_error, Some(true));
+    let all_invalid_value = all_invalid_sql
+        .structured_content
+        .expect("structured content");
+    assert_eq!(all_invalid_value["successful"], false);
+    assert_eq!(all_invalid_value["success_count"], 0);
+    assert_eq!(all_invalid_value["error_count"], 1);
+    assert_eq!(all_invalid_value["results"][0]["status"], "error");
     assert_eq!(
-        invalid_sql.structured_content.expect("structured content")["error"]["summary"],
+        all_invalid_value["results"][0]["error"]["summary"],
         "Query request is invalid"
     );
-    assert!(
-        invalid_sql.content[0]
-            .as_text()
-            .expect("text content")
-            .text
-            .contains("Detail:")
-    );
+    assert_matches_output_schema(sql_tool, &all_invalid_value);
 
     let catalog_after_error = client
         .call_tool(
@@ -1613,6 +1663,48 @@ async fn mcp_tool_error_does_not_end_session() {
         "local_messages.events"
     );
     assert_eq!(catalog_after_error.is_error, Some(false));
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_sql_rejects_invalid_queries_argument() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+
+    for (arguments, expected) in [
+        (json!({}), "missing array argument 'queries'"),
+        (
+            json!({ "queries": [] }),
+            "argument 'queries' must contain at least one query",
+        ),
+        (
+            json!({ "queries": "SELECT 1" }),
+            "missing array argument 'queries'",
+        ),
+        (
+            json!({ "queries": ["SELECT 1", 2] }),
+            "argument 'queries' item 1 must be a string",
+        ),
+        (
+            json!({ "queries": [" "] }),
+            "argument 'queries' item 0 must not be blank",
+        ),
+        (
+            json!({ "queries": ["SELECT 1", "SELECT 2", "SELECT 3", "SELECT 4", "SELECT 5", "SELECT 6", "SELECT 7", "SELECT 8", "SELECT 9", "SELECT 10", "SELECT 11"] }),
+            "argument 'queries' must contain at most 10 queries",
+        ),
+    ] {
+        let error = client
+            .call_tool(CallToolRequestParams::new("sql").with_arguments(json_object(&arguments)))
+            .await
+            .expect_err("invalid queries argument should fail before execution");
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?} in {error}"
+        );
+    }
 
     session.shutdown().await;
 }

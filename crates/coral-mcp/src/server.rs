@@ -31,15 +31,15 @@ use tonic::{
 use crate::{
     McpOptions,
     surface::{
-        CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
-        describe_table_tool, describe_table_value, feedback_tool, guide_resource,
-        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_tool,
-        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
-        open_episode_arguments, open_episode_tool, optional_episode_id_argument,
-        required_queries_argument, required_string_argument, search_catalog_arguments,
-        search_catalog_tool, search_catalog_value, sql_tool, status_to_error_data, tables_resource,
-        tables_resource_content, tool_error_from_status, tool_error_result,
-        with_episode_id_argument,
+        CatalogToolKind, ToolDescriptionContext, build_tool_result, build_tool_result_with_error,
+        describe_table_arguments, describe_table_tool, describe_table_value, feedback_tool,
+        guide_resource, guide_resource_content, initial_instructions, list_catalog_arguments,
+        list_catalog_tool, list_catalog_value, list_columns_arguments, list_columns_tool,
+        list_columns_value, open_episode_arguments, open_episode_tool,
+        optional_episode_id_argument, required_queries_argument, required_string_argument,
+        search_catalog_arguments, search_catalog_tool, search_catalog_value, sql_tool,
+        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
+        tool_error_result, tool_error_value, with_episode_id_argument,
     },
     telemetry,
 };
@@ -53,6 +53,10 @@ const MAX_CONCURRENT_SQL_QUERIES: usize = 10;
 
 enum ToolCallOutcome {
     Success(Value),
+    SqlAggregate {
+        value: Value,
+        has_errors: bool,
+    },
     ToolError {
         operation: &'static str,
         status: tonic::Status,
@@ -73,7 +77,10 @@ struct SqlQueryResultValue {
     index: usize,
     sql: String,
     status: &'static str,
-    rows: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rows: Option<Vec<Value>>,
 }
 
 struct SqlQueryInput {
@@ -340,23 +347,33 @@ impl CoralMcpServer {
     async fn execute_sql_query(
         query_client: QueryClient,
         input: SqlQueryInput,
-    ) -> Result<SqlQueryResultValue, tonic::Status> {
+    ) -> SqlQueryResultValue {
         let request = Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: input.sql.clone(),
         });
-        Ok(SqlQueryResultValue {
-            index: input.index,
-            sql: input.sql,
-            status: "success",
-            rows: Self::query_rows(query_client, request).await?,
-        })
+        match Self::query_rows(query_client, request).await {
+            Ok(rows) => SqlQueryResultValue {
+                index: input.index,
+                sql: input.sql,
+                status: "success",
+                error: None,
+                rows: Some(rows),
+            },
+            Err(status) => {
+                let error = tool_error_from_status("Query", &status);
+                SqlQueryResultValue {
+                    index: input.index,
+                    sql: input.sql,
+                    status: "error",
+                    error: Some(tool_error_value(&error)),
+                    rows: None,
+                }
+            }
+        }
     }
 
-    async fn execute_sql_queries(
-        &self,
-        inputs: Vec<SqlQueryInput>,
-    ) -> Result<Vec<SqlQueryResultValue>, tonic::Status> {
+    async fn execute_sql_queries(&self, inputs: Vec<SqlQueryInput>) -> Vec<SqlQueryResultValue> {
         let mut results = stream::iter(inputs.into_iter().map(|input| {
             let query_client = self.query.clone();
             Self::execute_sql_query(query_client, input)
@@ -365,26 +382,36 @@ impl CoralMcpServer {
         .collect::<Vec<_>>()
         .await
         .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
         results.sort_by_key(|result| result.index);
-        Ok(results)
+        results
     }
 
-    async fn execute_sql_value(&self, queries: Vec<String>) -> Result<Value, tonic::Status> {
+    async fn execute_sql_value(
+        &self,
+        queries: Vec<String>,
+    ) -> Result<(Value, bool), tonic::Status> {
         let total_count = queries.len();
         let inputs = queries
             .into_iter()
             .enumerate()
             .map(|(index, sql)| SqlQueryInput { index, sql })
             .collect::<Vec<_>>();
-        let results = self.execute_sql_queries(inputs).await?;
+        let results = self.execute_sql_queries(inputs).await;
+        let success_count = results
+            .iter()
+            .filter(|result| result.status == "success")
+            .count();
+        let error_count = total_count - success_count;
+        let has_errors = error_count > 0;
         serialize_tool_value(SqlQueriesValue {
-            successful: true,
+            successful: !has_errors,
             total_count,
-            success_count: total_count,
-            error_count: 0,
+            success_count,
+            error_count,
             results,
         })
+        .map(|value| (value, has_errors))
     }
 
     async fn open_episode(
@@ -521,10 +548,11 @@ impl CoralMcpServer {
         match request.name.as_ref() {
             "sql" => {
                 let queries = required_queries_argument(request.arguments.as_ref(), "queries")?;
-                Ok(ToolCallOutcome::from_value_result(
-                    "Query",
-                    self.execute_sql_value(queries).await,
-                ))
+                let (value, has_errors) = self
+                    .execute_sql_value(queries)
+                    .await
+                    .map_err(|status| status_to_error_data(&status))?;
+                Ok(ToolCallOutcome::SqlAggregate { value, has_errors })
             }
             "list_catalog" => {
                 self.list_catalog_tool_result(request.arguments.as_ref())
@@ -793,6 +821,11 @@ fn finish_tool_call(
     match outcome {
         Ok(ToolCallOutcome::Success(value)) => {
             let result = build_tool_result(value);
+            telemetry::record_protocol_result(span, &result);
+            result
+        }
+        Ok(ToolCallOutcome::SqlAggregate { value, has_errors }) => {
+            let result = build_tool_result_with_error(value, has_errors);
             telemetry::record_protocol_result(span, &result);
             result
         }

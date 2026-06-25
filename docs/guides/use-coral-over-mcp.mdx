@@ -192,7 +192,7 @@ The agent should call `list_catalog`, `search_catalog`, or query `coral.tables` 
 
 | Type     | Name             | Description                                             |
 | -------- | ---------------- | ------------------------------------------------------- |
-| Tool     | `sql`            | Execute read-only SQL against the Coral database        |
+| Tool     | `sql`            | Execute one or more read-only SQL queries against the Coral database |
 | Tool     | `list_catalog`   | List database tables and table functions with pagination |
 | Tool     | `search_catalog` | Search database catalog metadata with a Rust regex      |
 | Tool     | `describe_table` | Show compact metadata for one database table            |
@@ -204,7 +204,7 @@ Clients see the same database catalog and query results as `coral sql`. You set 
 
 The `coral` system schema is part of that catalog. No-schema `list_catalog` and `coral://tables` include both configured source tables and Coral catalog tables: `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs`. Agents can also call `describe_table` and `list_columns` on those system tables.
 
-Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. Tool descriptions include connected source/schema names, such as `github` or `slack`, to help clients route provider-specific prompts to Coral. For data questions, prefer a single `sql` call using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over multiple tool calls that fetch rows and combine them in the agent.
+Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. Tool descriptions include connected source/schema names, such as `github` or `slack`, to help clients route provider-specific prompts to Coral. For data questions, prefer one SQL statement with `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions when one statement can answer the question. When independent reads need different result shapes, make one `sql` tool call with multiple entries in `queries[]` instead of several round trips.
 
 ### Discovery tools
 
@@ -232,7 +232,7 @@ Agents should treat the discovery tools as catalog helpers, not as replacement p
 
 ### Richer metadata when using SQL tool
 
-When the agent needs metadata it can filter, join, sort, or aggregate before writing the final SQL, query `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` through the `sql` tool instead of relying only on `list_catalog` or `coral://tables`. Use `coral.filters` as the normalized filter surface, with `coral.columns.filter_mode` available when inspecting filter-only virtual columns.
+When the agent needs metadata it can filter, join, sort, or aggregate before writing the final SQL, query `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` through the `sql` tool instead of relying only on `list_catalog` or `coral://tables`. Use `coral.filters` as the normalized filter surface, with `coral.columns.filter_mode` available when inspecting filter-only virtual columns. The MCP `sql` tool input is an object with a required `queries` array, for example `{ "queries": ["SELECT * FROM coral.tables LIMIT 5"] }`; the legacy single `sql` string argument is not supported.
 
 ### Searching a provider's data
 
@@ -240,7 +240,41 @@ Some sources expose native search endpoints (for example, GitHub issue search) a
 
 ## Query result format
 
-The `sql` tool returns rows as a JSON array of objects. To preserve exact values across JSON parsers, Coral encodes precision-sensitive numeric types as JSON **strings** rather than JSON numbers:
+The `sql` tool returns an aggregate object with counters and ordered per-query results:
+
+```json
+{
+  "successful": false,
+  "total_count": 2,
+  "success_count": 1,
+  "error_count": 1,
+  "results": [
+    {
+      "index": 0,
+      "sql": "SELECT 1 AS ok",
+      "status": "success",
+      "rows": [{ "ok": "1" }]
+    },
+    {
+      "index": 1,
+      "sql": "DELETE FROM local_messages.messages",
+      "status": "error",
+      "error": {
+        "summary": "Query request is invalid",
+        "detail": "...",
+        "hint": "...",
+        "grpc_code": "InvalidArgument",
+        "retryable": false,
+        "metadata": {}
+      }
+    }
+  ]
+}
+```
+
+Each validated query runs independently. Success items contain `rows`; error items contain a structured Coral error. The top-level MCP `is_error` flag is true whenever `error_count > 0`, but the MCP session stays open and successful rows remain available next to failures.
+
+Rows are JSON arrays of objects under each success result item. To preserve exact values across JSON parsers, Coral encodes precision-sensitive numeric types as JSON **strings** rather than JSON numbers:
 
 - `Int64` (`BIGINT`) and `UInt64`
 - `Decimal32`, `Decimal64`, `Decimal128`, and `Decimal256`

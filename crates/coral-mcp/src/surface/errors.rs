@@ -33,22 +33,8 @@ pub(crate) fn tool_error_result(error: ToolError) -> CallToolResult {
         write!(text, "\nHint: {hint}").expect("writing to String cannot fail");
     }
 
-    let metadata = error
-        .metadata
-        .iter()
-        .map(|(key, value)| (key.clone(), Value::String(value.clone())))
-        .collect::<Map<_, _>>();
-
     let structured = serde_json::to_value(StructuredToolErrorValue {
-        error: ToolErrorValue {
-            summary: &error.summary,
-            detail: &error.detail,
-            hint: error.hint.as_deref(),
-            grpc_code: &error.grpc_code,
-            reason: error.reason.as_deref(),
-            retryable: error.retryable,
-            metadata: Value::Object(metadata),
-        },
+        error: tool_error_value_struct(&error),
     })
     .expect("tool error value serializes");
     let mut result = CallToolResult::structured_error(structured);
@@ -56,8 +42,29 @@ pub(crate) fn tool_error_result(error: ToolError) -> CallToolResult {
     result
 }
 
+pub(crate) fn tool_error_value(error: &ToolError) -> Value {
+    serde_json::to_value(tool_error_value_struct(error)).expect("tool error value serializes")
+}
+
+fn tool_error_value_struct(error: &ToolError) -> ToolErrorValue<'_> {
+    let metadata = error
+        .metadata
+        .iter()
+        .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+        .collect::<Map<_, _>>();
+    ToolErrorValue {
+        summary: &error.summary,
+        detail: &error.detail,
+        hint: error.hint.as_deref(),
+        grpc_code: &error.grpc_code,
+        reason: error.reason.as_deref(),
+        retryable: error.retryable,
+        metadata: Value::Object(metadata),
+    }
+}
+
 pub(crate) fn tool_error_from_status(operation: &str, status: &tonic::Status) -> ToolError {
-    let grpc_code = status.code().to_string();
+    let grpc_code = format!("{:?}", status.code());
 
     match decode_status_error(status) {
         DecodedStatusError::Structured(error) => ToolError {
@@ -118,7 +125,7 @@ pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
         DecodedStatusError::Structured(error) => {
             let data = serde_json::to_value(StatusErrorDataValue {
                 detail: &error.detail,
-                grpc_code: status.code().to_string(),
+                grpc_code: format!("{:?}", status.code()),
                 reason: &error.reason,
                 retryable: error.retryable,
                 metadata: &error.metadata,
@@ -318,10 +325,7 @@ mod tests {
         let result = tool_error_result(error);
         let json = result.structured_content.expect("structured content");
         assert_eq!(json["error"]["retryable"], false);
-        assert_eq!(
-            json["error"]["grpc_code"],
-            Code::FailedPrecondition.to_string()
-        );
+        assert_eq!(json["error"]["grpc_code"], "FailedPrecondition");
         assert_eq!(json["error"]["reason"], "PROVIDER_REQUEST_FAILED");
         assert_eq!(json["error"]["metadata"]["retryable"], "true");
         assert_eq!(json["error"]["metadata"]["grpc_code"], "Ok");

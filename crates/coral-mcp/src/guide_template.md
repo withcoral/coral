@@ -6,7 +6,7 @@
 
 Treat Coral like a read-only SQL database. The MCP discovery tools are catalog helpers, not replacement APIs. Inspect tables, parameterized table functions, and columns first, then answer with set-based SQL.
 
-Prefer one SQL statement with `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over fetching rows and combining them in the agent. Use `CROSS JOIN` explicitly when the query needs every combination of rows from two relations. Call table functions from `FROM` with named arguments, for example `github.search_issues(q => 'repo:withcoral/coral deploy failure')`.
+Prefer one SQL statement with `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions when one statement can answer the question. Use `CROSS JOIN` explicitly when the query needs every combination of rows from two relations. When independent reads need different result shapes, call the `sql` tool once with multiple entries in its required `queries[]` argument. Call table functions from `FROM` with named arguments, for example `github.search_issues(q => 'repo:withcoral/coral deploy failure')`.
 
 ```sql
 -- List visible tables, descriptions, and required filters
@@ -64,7 +64,8 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 
 ## Query Guidance
 
-- Result values of type `Int64`/`BIGINT`, `UInt64`, and `Decimal*` are returned as JSON strings, not JSON numbers, so exact values survive JSON parsing in clients that decode numbers as IEEE-754 doubles. The declared column type is unchanged; read these values as strings.
+- The `sql` tool takes `queries[]` and returns an aggregate object with `successful`, `total_count`, `success_count`, `error_count`, and ordered `results[]`. Success items contain `rows`; error items contain structured Coral error fields. The legacy single `sql` argument is not supported.
+- Result values of type `Int64`/`BIGINT`, `UInt64`, and `Decimal*` are returned as JSON strings inside success-item `rows`, not JSON numbers, so exact values survive JSON parsing in clients that decode numbers as IEEE-754 doubles. The declared column type is unchanged; read these values as strings.
 - Use each table's `sql_reference` from `list_catalog` or `coral://tables` in `FROM` and `JOIN` clauses, for example `slack.messages`.
 - Use each table function's `sql_call_example` from `list_catalog` or `search_catalog`, filling in the required arguments before querying it.
 - Do not quote the whole `schema.table` string. Write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
