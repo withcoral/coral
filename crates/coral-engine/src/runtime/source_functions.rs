@@ -38,6 +38,8 @@ use crate::runtime::scoped_table_functions::{
     reject_settings, reject_unsupported_modifiers,
 };
 
+pub(crate) const SOURCE_FUNCTION_NODE_NAME: &str = "CoralSourceFunction";
+
 #[derive(Debug)]
 pub(crate) struct SourceFunctionRegistry {
     functions: HashMap<ScopedTableFunctionName, SourceFunction>,
@@ -291,7 +293,7 @@ impl PartialOrd for SourceFunctionNode {
 
 impl UserDefinedLogicalNodeCore for SourceFunctionNode {
     fn name(&self) -> &'static str {
-        "CoralSourceFunction"
+        SOURCE_FUNCTION_NODE_NAME
     }
 
     fn inputs(&self) -> Vec<&LogicalPlan> {

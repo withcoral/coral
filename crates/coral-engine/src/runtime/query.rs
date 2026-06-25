@@ -3,13 +3,13 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{ScalarValue, TableReference};
 use datafusion::dataframe::DataFrame;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::logical_expr::LogicalPlan;
+use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
@@ -32,7 +32,9 @@ use crate::runtime::query_planner::CoralQueryPlanner;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
-use crate::runtime::source_functions::{SourceFunctionNode, SourceFunctionRegistry};
+use crate::runtime::source_functions::{
+    SOURCE_FUNCTION_NODE_NAME, SourceFunctionNode, SourceFunctionRegistry,
+};
 use crate::{
     CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, MemorySize, QueryExecution,
     QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
@@ -642,14 +644,63 @@ fn apply_query_parameters(
     params: &QueryParameters,
 ) -> Result<DataFrame, DataFusionError> {
     if params.is_empty() {
+        reject_unbound_sql_parameters(df.logical_plan())?;
         return Ok(df);
     }
     reject_unknown_parameters(df.logical_plan(), params)?;
     let values: Vec<(String, ScalarValue)> = params
         .iter()
-        .map(|(name, value)| (name.clone(), parameter_scalar_value(value)))
+        .map(|(name, value)| (name.clone(), query_parameter_scalar_value(value)))
         .collect();
     df.with_param_values(values)
+}
+
+fn reject_unbound_sql_parameters(plan: &LogicalPlan) -> Result<(), DataFusionError> {
+    let mut placeholders = ordinary_sql_placeholders(plan)?;
+    if placeholders.is_empty() {
+        return Ok(());
+    }
+    let placeholder = placeholders
+        .pop_first()
+        .expect("empty placeholder set returned above");
+    Err(DataFusionError::Plan(format!(
+        "SQL parameter {placeholder} has no value; pass query parameters or remove the placeholder"
+    )))
+}
+
+fn ordinary_sql_placeholders(plan: &LogicalPlan) -> Result<BTreeSet<String>, DataFusionError> {
+    let mut placeholders = BTreeSet::new();
+    plan.apply_with_subqueries(|node| {
+        if is_parameterized_source_function_call(node) {
+            return Ok(TreeNodeRecursion::Jump);
+        }
+        node.apply_expressions(|expr| {
+            expr.apply(|expr| {
+                if let Expr::Placeholder(placeholder) = expr {
+                    placeholders.insert(placeholder.id.clone());
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+        })?;
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    Ok(placeholders)
+}
+
+fn is_parameterized_source_function_call(plan: &LogicalPlan) -> bool {
+    let LogicalPlan::Extension(extension) = plan else {
+        return false;
+    };
+    extension.node.name() == SOURCE_FUNCTION_NODE_NAME
+}
+
+fn query_parameter_scalar_value(value: &QueryParameterValue) -> ScalarValue {
+    match value {
+        QueryParameterValue::String(value) => ScalarValue::Utf8(value.clone()),
+        QueryParameterValue::Integer(value) => ScalarValue::Int64(*value),
+        QueryParameterValue::Float(value) => ScalarValue::Float64(*value),
+        QueryParameterValue::Boolean(value) => ScalarValue::Boolean(*value),
+    }
 }
 
 fn reject_unknown_parameters(
@@ -679,16 +730,6 @@ fn reject_unknown_parameters(
         "unknown query parameter(s): {}; {placeholder_hint}",
         unknown.join(", ")
     )))
-}
-
-fn parameter_scalar_value(value: &QueryParameterValue) -> ScalarValue {
-    match value {
-        QueryParameterValue::String(value) => ScalarValue::Utf8(Some(value.clone())),
-        QueryParameterValue::Integer(value) => ScalarValue::Int64(Some(*value)),
-        QueryParameterValue::Float(value) => ScalarValue::Float64(Some(*value)),
-        QueryParameterValue::Boolean(value) => ScalarValue::Boolean(Some(*value)),
-        QueryParameterValue::Null => ScalarValue::Null,
-    }
 }
 
 fn is_missing_required_filter_failure(error: &SqlExecutionFailure) -> bool {

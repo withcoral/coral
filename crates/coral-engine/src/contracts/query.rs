@@ -371,26 +371,145 @@ impl QueryRuntimeContext {
 
 /// Named SQL query parameters, keyed by parameter name without the `$`
 /// prefix: binding `owner` supplies `$owner` in the statement.
-pub type QueryParameters = BTreeMap<String, QueryParameterValue>;
-
-/// Value bound to one named SQL query parameter (`$name`).
 ///
-/// Values are data, never SQL text: they bind into the planned statement
-/// through `DataFusion` parameter substitution, so no quoting or escaping
-/// rules apply anywhere in the request path.
+/// Values are typed Coral scalar values. Callers should treat values as data,
+/// never SQL text.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct QueryParameters {
+    values: BTreeMap<String, QueryParameterValue>,
+}
+
+impl QueryParameters {
+    /// Builds an empty parameter set.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns true when no parameters are present.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// Inserts one named parameter value and returns the previous value.
+    pub fn insert(
+        &mut self,
+        name: impl Into<String>,
+        value: QueryParameterValue,
+    ) -> Option<QueryParameterValue> {
+        self.values.insert(name.into(), value)
+    }
+
+    /// Iterates over parameter names and values in deterministic order.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &QueryParameterValue)> {
+        self.values.iter()
+    }
+
+    /// Iterates over parameter names in deterministic order.
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.values.keys()
+    }
+}
+
+impl From<BTreeMap<String, QueryParameterValue>> for QueryParameters {
+    fn from(values: BTreeMap<String, QueryParameterValue>) -> Self {
+        Self { values }
+    }
+}
+
+impl<const N: usize> From<[(String, QueryParameterValue); N]> for QueryParameters {
+    fn from(values: [(String, QueryParameterValue); N]) -> Self {
+        Self {
+            values: BTreeMap::from(values),
+        }
+    }
+}
+
+impl FromIterator<(String, QueryParameterValue)> for QueryParameters {
+    fn from_iter<T: IntoIterator<Item = (String, QueryParameterValue)>>(iter: T) -> Self {
+        Self {
+            values: iter.into_iter().collect(),
+        }
+    }
+}
+
+/// Scalar types supported by named SQL query parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum QueryParameterType {
+    /// UTF-8 string.
+    String,
+    /// 64-bit signed integer.
+    Integer,
+    /// 64-bit floating point value.
+    Float,
+    /// Boolean.
+    Boolean,
+}
+
+/// One typed SQL query parameter value.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum QueryParameterValue {
-    /// UTF-8 string value.
-    String(String),
-    /// 64-bit signed integer value.
-    Integer(i64),
-    /// 64-bit floating point value.
-    Float(f64),
-    /// Boolean value.
-    Boolean(bool),
-    /// SQL NULL.
-    Null,
+    /// UTF-8 string value, or a typed string NULL.
+    String(Option<String>),
+    /// 64-bit signed integer value, or a typed integer NULL.
+    Integer(Option<i64>),
+    /// 64-bit floating point value, or a typed float NULL.
+    Float(Option<f64>),
+    /// Boolean value, or a typed boolean NULL.
+    Boolean(Option<bool>),
+}
+
+impl QueryParameterValue {
+    /// Builds a non-null string parameter.
+    #[must_use]
+    pub fn string(value: impl Into<String>) -> Self {
+        Self::String(Some(value.into()))
+    }
+
+    /// Builds a typed string NULL parameter.
+    #[must_use]
+    pub fn null_string() -> Self {
+        Self::String(None)
+    }
+
+    /// Builds a non-null integer parameter.
+    #[must_use]
+    pub fn integer(value: i64) -> Self {
+        Self::Integer(Some(value))
+    }
+
+    /// Builds a typed integer NULL parameter.
+    #[must_use]
+    pub fn null_integer() -> Self {
+        Self::Integer(None)
+    }
+
+    /// Builds a non-null float parameter.
+    #[must_use]
+    pub fn float(value: f64) -> Self {
+        Self::Float(Some(value))
+    }
+
+    /// Builds a typed float NULL parameter.
+    #[must_use]
+    pub fn null_float() -> Self {
+        Self::Float(None)
+    }
+
+    /// Builds a non-null boolean parameter.
+    #[must_use]
+    pub fn boolean(value: bool) -> Self {
+        Self::Boolean(Some(value))
+    }
+
+    /// Builds a typed boolean NULL parameter.
+    #[must_use]
+    pub fn null_boolean() -> Self {
+        Self::Boolean(None)
+    }
 }
 
 /// Owned runtime-build inputs needed while compiling and registering sources.

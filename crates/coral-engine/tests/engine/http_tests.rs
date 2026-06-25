@@ -3160,10 +3160,7 @@ async fn legacy_json_body_array_form_still_works() {
 }
 
 fn string_param(name: &str, value: &str) -> (String, QueryParameterValue) {
-    (
-        name.to_string(),
-        QueryParameterValue::String(value.to_string()),
-    )
+    (name.to_string(), QueryParameterValue::string(value))
 }
 
 #[tokio::test]
@@ -3266,6 +3263,25 @@ async fn source_scoped_table_function_rejects_unbound_parameter() {
 }
 
 #[tokio::test]
+async fn query_parameters_reject_unbound_sql_placeholder() {
+    let error = CoralQuery::execute_sql_with_params(
+        &[],
+        test_runtime(),
+        "SELECT $author AS author",
+        QueryParameters::new(),
+    )
+    .await
+    .expect_err("an ordinary unbound SQL placeholder should fail before physical planning");
+
+    assert!(
+        error
+            .to_string()
+            .contains("SQL parameter $author has no value"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
 async fn query_parameters_reject_unknown_names() {
     let server = MockServer::start().await;
     let source = build_source(search_function_manifest("strict_params", &server.uri()));
@@ -3311,7 +3327,7 @@ async fn null_query_parameter_is_treated_as_omitted_optional_argument() {
     let source = build_source(search_function_manifest("null_param_search", &server.uri()));
     let params = QueryParameters::from([
         string_param("q", "flaky cleanup repo:withcoral/coral"),
-        ("mode".to_string(), QueryParameterValue::Null),
+        ("mode".to_string(), QueryParameterValue::null_string()),
     ]);
 
     let rows = execution_to_rows(
@@ -3338,7 +3354,7 @@ async fn null_query_parameter_is_treated_as_omitted_optional_argument() {
 async fn null_query_parameter_for_required_argument_fails() {
     let server = MockServer::start().await;
     let source = build_source(search_function_manifest("null_required", &server.uri()));
-    let params = QueryParameters::from([("q".to_string(), QueryParameterValue::Null)]);
+    let params = QueryParameters::from([("q".to_string(), QueryParameterValue::null_string())]);
 
     let error = CoralQuery::execute_sql_with_params(
         &[source],
@@ -3360,9 +3376,9 @@ async fn null_query_parameter_for_required_argument_fails() {
 #[tokio::test]
 async fn query_parameters_bind_typed_scalar_values() {
     let params = QueryParameters::from([
-        ("count".to_string(), QueryParameterValue::Integer(7)),
-        ("score".to_string(), QueryParameterValue::Float(9.5)),
-        ("enabled".to_string(), QueryParameterValue::Boolean(true)),
+        ("count".to_string(), QueryParameterValue::integer(7)),
+        ("score".to_string(), QueryParameterValue::float(9.5)),
+        ("enabled".to_string(), QueryParameterValue::boolean(true)),
     ]);
 
     let rows = execution_to_rows(
@@ -3385,6 +3401,24 @@ async fn query_parameters_bind_typed_scalar_values() {
             "enabled": true
         })]
     );
+}
+
+#[tokio::test]
+async fn query_parameters_bind_typed_null_values() {
+    let params = QueryParameters::from([("value".to_string(), QueryParameterValue::null_string())]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql_with_params(
+            &[],
+            test_runtime(),
+            "SELECT $value IS NULL AS is_null",
+            params,
+        )
+        .await
+        .expect("typed null parameters should bind"),
+    );
+
+    assert_eq!(rows, vec![json!({ "is_null": true })]);
 }
 
 #[tokio::test]
