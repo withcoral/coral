@@ -2,7 +2,7 @@ export type DesktopMcpClientId = 'codex' | 'claude-desktop' | 'cursor' | 'vscode
 
 export interface DesktopCliInstallResult {
   commandPath: string
-  installKind: 'alias' | 'cmd'
+  installKind: 'cmd' | 'path' | 'symlink'
   shellConfigPath?: string
   targetPath: string
   onPath: boolean
@@ -97,7 +97,7 @@ function requestDesktop<T>(action: DesktopAction): Promise<T> {
   })
 }
 
-export function installDesktopCliAlias(): Promise<DesktopCliInstallResult> {
+export function installDesktopCliCommand(): Promise<DesktopCliInstallResult> {
   return requestDesktop<DesktopCliInstallResult>({ action: 'install-cli' })
 }
 

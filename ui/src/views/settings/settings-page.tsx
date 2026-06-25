@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import {
   configureDesktopMcpClient,
-  installDesktopCliAlias,
+  installDesktopCliCommand,
   isDesktopBridgeLikelyAvailable,
   listDesktopMcpClients,
   testDesktopMcpClient,
@@ -46,6 +46,13 @@ function resultPath(
     : 'configPath' in result
       ? result.configPath
       : result.launchUrl
+}
+
+function cliInstallDetail(result: DesktopCliInstallResult): string {
+  if (result.installKind === 'path' && result.shellConfigPath) {
+    return `Installed ${result.commandPath}; added PATH entry to ${result.shellConfigPath}`
+  }
+  return `Installed ${result.commandPath}`
 }
 
 function statusText(status: ActionStatus | undefined) {
@@ -107,13 +114,10 @@ export function SettingsPage() {
   const installCli = useCallback(async () => {
     setCliStatus({ state: 'running' })
     try {
-      const result = await installDesktopCliAlias()
-      const detail =
-        result.installKind === 'alias'
-          ? `Alias added to ${resultPath(result)}`
-          : `Installed at ${resultPath(result)}`
+      const result = await installDesktopCliCommand()
+      const detail = cliInstallDetail(result)
       setCliStatus({ detail, state: 'done' })
-      addToast('success', { title: 'Coral alias installed', description: detail })
+      addToast('success', { title: 'Coral command installed', description: detail })
     } catch (error) {
       const detail = errorMessage(error)
       setCliStatus({ detail, state: 'error' })
@@ -205,7 +209,7 @@ export function SettingsPage() {
               </div>
               {statusText(cliStatus) ?? (
                 <Typography.CodeSmallInline as="p" className={styles.meta} variant="tertiary">
-                  App-bundled CLI alias
+                  App-bundled CLI command
                 </Typography.CodeSmallInline>
               )}
             </div>
@@ -218,7 +222,7 @@ export function SettingsPage() {
               >
                 <ButtonIcon name={cliStatus.state === 'running' ? 'Loader' : 'Plus'} />
                 <ButtonText>
-                  {cliStatus.state === 'running' ? 'Installing' : 'Install alias'}
+                  {cliStatus.state === 'running' ? 'Installing' : 'Install command'}
                 </ButtonText>
               </Button>
             </div>

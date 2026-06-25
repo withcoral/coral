@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { McpClientId, SidecarInfo } from '../shared/types'
-import { installCliAlias } from './cli-alias'
+import { installCliCommand } from './cli-alias'
 import { configureMcpClient, mcpClients } from './mcp-config'
 import { openMcpConnectionTest } from './mcp-test'
 import { startCoralSidecar, type CoralSidecar } from './sidecar'
@@ -84,10 +84,18 @@ function registerIpcHandlers() {
     const started = await ensureSidecar()
     return { url: started.url, packaged: started.packaged }
   })
-  ipcMain.handle('coral:install-cli', () => installCliAlias())
+  ipcMain.handle('coral:install-cli', () => installCliCommand())
   ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
   ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) => configureMcpClient(clientId))
   ipcMain.handle('coral:test-mcp', (_event, clientId: McpClientId) => openMcpConnectionTest(clientId))
+}
+
+function cliInstallDetail(result: Awaited<ReturnType<typeof installCliCommand>>): string {
+  const link = `${result.commandPath} -> ${result.targetPath}`
+  if (result.installKind === 'path' && result.shellConfigPath) {
+    return `${link}\n\nAdded the command directory to PATH in ${result.shellConfigPath}. Open a new terminal.`
+  }
+  return link
 }
 
 function installMenu() {
@@ -120,14 +128,11 @@ function installMenu() {
           label: 'Install CLI Command',
           click: async () => {
             try {
-              const result = await installCliAlias()
+              const result = await installCliCommand()
               await dialog.showMessageBox({
                 type: 'info',
-                message: result.installKind === 'alias' ? 'Coral CLI alias installed' : 'Coral CLI command installed',
-                detail:
-                  result.installKind === 'alias'
-                    ? `${result.commandPath} -> ${result.targetPath}\n\nUpdated ${result.shellConfigPath}. Open a new terminal or source the file.`
-                    : result.commandPath,
+                message: 'Coral CLI command installed',
+                detail: cliInstallDetail(result),
               })
             } catch (error) {
               await dialog.showErrorBox('CLI install failed', error instanceof Error ? error.message : String(error))
