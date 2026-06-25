@@ -59,6 +59,7 @@ export const iconContainer = recipe({
       '16': {},
       '18': {},
       '20': {},
+      '22': {},
       '30': {},
     },
   },
