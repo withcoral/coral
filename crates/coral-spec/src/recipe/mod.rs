@@ -1,9 +1,9 @@
 //! Recipe artifact parsing and static validation.
 //!
-//! Recipes are source-neutral task capabilities. This module validates the
-//! artifact shape only; installed-source references, SQL planning, and publish
-//! collisions against live catalog objects are checked by the app/runtime
-//! layers.
+//! Recipes are source-neutral task capabilities. This module validates recipe
+//! artifact shape and artifact-local invariants. Installed-source references,
+//! SQL planning, result columns, and publish collisions against live catalog
+//! objects are checked by the app/runtime layers.
 
 mod model;
 mod parser;
