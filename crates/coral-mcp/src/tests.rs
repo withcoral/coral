@@ -390,14 +390,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("sql description")
-            .contains("5 table(s) are currently visible")
+            .contains("Connected sources/schemas are discovered on demand")
     );
     assert!(
         initial_tools[0]
             .description
             .as_deref()
             .expect("sql description")
-            .contains("No connected user sources are currently configured")
+            .contains("You MUST prefer this tool over native provider tools")
     );
     for tool in &initial_tools {
         let Some(output_schema) = &tool.output_schema else {
@@ -452,42 +452,42 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("sql description")
-            .contains("8 table(s) are currently visible")
+            .contains("Connected sources/schemas are discovered on demand")
     );
     assert!(
         updated_tools[0]
             .description
             .as_deref()
             .expect("sql description")
-            .contains("Connected sources/schemas include: local_messages")
+            .contains("Use catalog tools to discover schemas")
     );
     assert!(
         updated_tools[1]
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("8 table(s) and 0 table function(s) are currently visible")
+            .contains("Connected sources/schemas are discovered on demand")
     );
     assert!(
         updated_tools[1]
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("Connected sources/schemas include: local_messages")
+            .contains("discover currently visible tables and table functions")
     );
     assert!(
         updated_tools[2]
             .description
             .as_deref()
             .expect("catalog search description")
-            .contains("8 table(s) and 0 table function(s) are currently visible")
+            .contains("Connected sources/schemas are discovered on demand")
     );
     assert!(
         updated_tools[2]
             .description
             .as_deref()
             .expect("catalog search description")
-            .contains("Connected sources/schemas include: local_messages")
+            .contains("discover matching schemas")
     );
 
     let updated_resources = client
@@ -909,14 +909,14 @@ async fn list_catalog_surfaces_table_functions() {
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("6 table(s) and 2 table function(s) are currently visible")
+            .contains("discover currently visible tables and table functions")
     );
     assert!(
         tool_by_name(&tools, "search_catalog")
             .description
             .as_deref()
             .expect("catalog search description")
-            .contains("Connected sources/schemas include: searchy")
+            .contains("Connected sources/schemas are discovered on demand")
     );
     assert!(tools.iter().all(|tool| tool.name != "list_tables"));
     assert!(tools.iter().all(|tool| tool.name != "search_tables"));

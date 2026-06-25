@@ -13,6 +13,9 @@
 - `crates/coral-mcp`: MCP stdio adapter over `coral-client`.
 - `crates/coral-spec`: declarative source-spec parsing, validation,
   input discovery, and normalized source-definition models.
+- `desktop`: Electron desktop prototype. Owns Electron main/preload/renderer
+  wiring, sidecar supervision for the bundled Coral binary, CLI alias install,
+  MCP client config helpers, and desktop packaging.
 - `plugins/coral`: Agent plugin packaging. `plugins/coral/skills` is the
   canonical in-repo home for maintained Coral agent skills.
 
@@ -25,6 +28,9 @@
   workflow enforces this through its `schema-freshness` job when schema inputs
   change.
 - UI changes must pass `npm run check --prefix ui` (oxfmt + oxlint) before submitting.
+- Desktop changes must pass `npm run check --prefix desktop`; packaged-build
+  changes should also pass `npm run build --prefix desktop`, which stages the
+  embedded UI and release Coral binary before running `electron-vite build`.
 - Run `make perf-check` before submitting PRs that could affect CLI startup,
   local server bootstrap, source registration, or `coral.tables` catalog query
   latency. CI installs the bundled `github` source with fake credentials and
@@ -37,6 +43,10 @@
   Rust builds may compile without `ui/dist`, because UI development normally
   serves assets from Vite while the CLI provides the loopback API server.
 - Keep adapters thin. If CLI or MCP behavior gets complex, move it inward.
+- Keep the desktop app as an app-shell and sidecar supervisor. Coral runtime,
+  source lifecycle, SQL execution, and MCP behavior still belong in the Rust
+  crates; Electron should launch/configure those surfaces rather than
+  reimplement them.
 - Keep transport contract concerns in `coral-api`, source-spec concerns in
   `coral-spec`, app/state concerns in `coral-app`, and query/runtime
   concerns in `coral-engine`.

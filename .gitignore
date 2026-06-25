@@ -24,6 +24,7 @@ target
 # Local env files
 .envrc
 /.env
+.DS_Store
 
 # Local task files
 tasks/

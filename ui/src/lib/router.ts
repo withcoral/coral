@@ -1,17 +1,27 @@
 import { useCallback, useSyncExternalStore } from 'react'
 
-export type Route = { kind: 'traces' } | { kind: 'sources' }
+export type Route = { kind: 'traces' } | { kind: 'sources' } | { kind: 'settings' }
 
 export interface ParsedLocation {
   route: Route
+  installSource?: string
 }
 
 function parseHash(): ParsedLocation {
   const raw = window.location.hash.replace(/^#\/?/, '')
-  const segments = raw.split('?')[0].split('/').filter(Boolean)
+  const [pathPart, queryPart = ''] = raw.split('?')
+  const segments = pathPart.split('/').filter(Boolean)
 
   if (segments[0] === 'sources') {
-    return { route: { kind: 'sources' } }
+    const installSource = new URLSearchParams(queryPart).get('install')?.trim()
+    return {
+      route: { kind: 'sources' },
+      ...(installSource ? { installSource } : {}),
+    }
+  }
+
+  if (segments[0] === 'settings') {
+    return { route: { kind: 'settings' } }
   }
 
   if (segments[0] === 'traces' || segments.length === 0) {
@@ -23,7 +33,11 @@ function parseHash(): ParsedLocation {
 
 function serialise(parsed: ParsedLocation): string {
   if (parsed.route.kind === 'traces') return '#/traces'
-  return '#/sources'
+  if (parsed.route.kind === 'settings') return '#/settings'
+  const params = new URLSearchParams()
+  if (parsed.installSource) params.set('install', parsed.installSource)
+  const query = params.toString()
+  return `#/sources${query ? `?${query}` : ''}`
 }
 
 let cachedLocation: ParsedLocation = parseHash()

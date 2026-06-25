@@ -6,6 +6,7 @@ import { Typography } from '@/wax/components/typography'
 
 import { ErrorBanner } from '@/components/error-banner'
 import { providerIcon } from '@/lib/provider-icons'
+import { useRouter } from '@/lib/router'
 import { SOURCE_CATEGORY_ORDER, getCategoryForSource } from '@/lib/source-categories'
 import { discoverBundled, type CatalogEntry } from '@/lib/sources'
 
@@ -16,6 +17,7 @@ import * as styles from './sources-index.css'
 type IndexEntry = CatalogEntry
 
 export function SourcesIndex() {
+  const { location, navigate } = useRouter()
   const [bundled, setBundled] = useState<CatalogEntry[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
@@ -49,6 +51,12 @@ export function SourcesIndex() {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  useEffect(() => {
+    if (location.route.kind === 'sources' && location.installSource) {
+      setInstallingName(location.installSource)
+    }
+  }, [location])
 
   const loading = bundled === null && !error
 
@@ -100,8 +108,9 @@ export function SourcesIndex() {
 
   const onInstalled = useCallback(() => {
     setInstallingName(null)
+    navigate({ route: { kind: 'sources' } })
     void refresh()
-  }, [refresh])
+  }, [navigate, refresh])
 
   const onRemoved = useCallback(() => {
     setDetailName(null)
@@ -196,7 +205,12 @@ export function SourcesIndex() {
         name={installingName}
         open={installingName !== null}
         onOpenChange={(open) => {
-          if (!open) setInstallingName(null)
+          if (!open) {
+            setInstallingName(null)
+            if (location.route.kind === 'sources' && location.installSource) {
+              navigate({ route: { kind: 'sources' } })
+            }
+          }
         }}
         onInstalled={onInstalled}
       />

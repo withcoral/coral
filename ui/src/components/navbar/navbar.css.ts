@@ -117,8 +117,23 @@ export const nav = style({
   display: 'flex',
   flex: 1,
   flexDirection: 'column',
-  gap: '4px',
+  gap: '12px',
   marginBlockStart: '24px',
+})
+
+export const navSection = style({
+  alignItems: 'stretch',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '4px',
+})
+
+export const navFooter = style({
+  alignItems: 'stretch',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '4px',
+  marginBlockStart: 'auto',
 })
 
 export const navItemTooltipTrigger = style({

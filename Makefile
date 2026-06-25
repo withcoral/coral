@@ -1,4 +1,4 @@
-.PHONY: install ui-build rust-checks perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
+.PHONY: install ui-build desktop-check desktop-build rust-checks perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
 
 install: ui-build
 	cargo install --path crates/coral-cli --locked
@@ -7,6 +7,14 @@ ui-build:
 	npm ci --prefix ui
 	npm run build --prefix ui
 	test -s ui/dist/index.html
+
+desktop-check:
+	npm ci --prefix desktop
+	npm run check --prefix desktop
+
+desktop-build:
+	npm ci --prefix desktop
+	npm run build --prefix desktop
 
 rust-checks:
 	cargo fmt --all -- --check

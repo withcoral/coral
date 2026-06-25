@@ -1,0 +1,129 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; frame-src http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline'; script-src 'self';"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Coral</title>
+  </head>
+  <body>
+    <main id="app">
+      <section class="runtime-panel" id="runtime-panel">
+        <div class="loading-shell" role="status" aria-label="Starting Coral">
+          <span class="loader-spinner" aria-hidden="true"></span>
+          <p id="startup-detail" class="startup-detail" hidden></p>
+        </div>
+      </section>
+      <iframe id="coral-frame" title="Coral UI" class="hidden"></iframe>
+      <section class="onboarding hidden" id="onboarding-panel" aria-labelledby="onboarding-title" aria-modal="true" role="dialog">
+        <div class="onboarding__shell">
+          <div class="onboarding__intro">
+            <div class="onboarding__visual" aria-hidden="true">
+              <svg class="onboarding__reef" viewBox="0 0 220 220">
+                <circle class="onboarding__orbit onboarding__orbit--outer" cx="110" cy="110" r="86" />
+                <circle class="onboarding__orbit onboarding__orbit--inner" cx="110" cy="110" r="58" />
+                <g class="onboarding__reef-lines">
+                  <path d="M110 154C110 122 116 106 128 86C138 70 142 55 142 36" />
+                  <path d="M109 125C89 112 78 96 76 73" />
+                  <path d="M91 122C70 125 55 116 42 103" />
+                  <path d="M122 112C144 102 156 88 160 67" />
+                  <path d="M118 143C136 128 158 127 178 109" />
+                </g>
+                <g class="onboarding__nodes">
+                  <circle cx="42" cy="103" r="5" />
+                  <circle cx="76" cy="73" r="5" />
+                  <circle cx="142" cy="36" r="5" />
+                  <circle cx="160" cy="67" r="5" />
+                  <circle cx="178" cy="109" r="5" />
+                </g>
+              </svg>
+            </div>
+            <div class="onboarding__copy">
+              <p class="onboarding__kicker">Coral Desktop</p>
+              <h1 id="onboarding-title">Connect the tools your team already runs on.</h1>
+              <p>
+                Coral keeps the runtime local, connects approved sources, and turns their data into a
+                queryable workspace for investigation, reporting, and agent workflows.
+              </p>
+            </div>
+          </div>
+
+          <div class="onboarding__steps" aria-label="How Coral works">
+            <div class="onboarding__step">
+              <span>1</span>
+              <div>
+                <strong>Connect sources</strong>
+                <p>Choose the systems Coral should know about and add credentials locally.</p>
+              </div>
+            </div>
+            <div class="onboarding__step">
+              <span>2</span>
+              <div>
+                <strong>Query across them</strong>
+                <p>Use Coral's SQL surface to inspect operational data without exporting it first.</p>
+              </div>
+            </div>
+            <div class="onboarding__step">
+              <span>3</span>
+              <div>
+                <strong>Expose context to agents</strong>
+                <p>Configure MCP when you want Codex, Claude, Cursor, or VS Code to use Coral.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="onboarding__suggestions">
+            <div class="onboarding__section-head">
+              <h2>Suggested first sources</h2>
+              <p>Pick one to start the connection flow.</p>
+            </div>
+            <div class="onboarding__source-grid">
+              <button class="onboarding__source" data-source="github" type="button">
+                <span class="onboarding__source-logo">GH</span>
+                <span>
+                  <strong>GitHub</strong>
+                  <small>Repos, issues, pull requests</small>
+                </span>
+              </button>
+              <button class="onboarding__source" data-source="slack" type="button">
+                <span class="onboarding__source-logo onboarding__source-logo--warm">SL</span>
+                <span>
+                  <strong>Slack</strong>
+                  <small>Channel and workspace context</small>
+                </span>
+              </button>
+              <button class="onboarding__source" data-source="linear" type="button">
+                <span class="onboarding__source-logo onboarding__source-logo--green">LN</span>
+                <span>
+                  <strong>Linear</strong>
+                  <small>Issues, teams, roadmaps</small>
+                </span>
+              </button>
+              <button class="onboarding__source" data-source="notion" type="button">
+                <span class="onboarding__source-logo onboarding__source-logo--dark">NO</span>
+                <span>
+                  <strong>Notion</strong>
+                  <small>Docs, pages, project notes</small>
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div class="onboarding__actions">
+            <button id="onboarding-skip" class="onboarding__button onboarding__button--secondary" type="button">
+              Maybe later
+            </button>
+            <button id="onboarding-browse" class="onboarding__button onboarding__button--primary" type="button">
+              Browse all sources
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/index.ts"></script>
+  </body>
+</html>
