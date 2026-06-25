@@ -11,6 +11,7 @@ use coral_client::{
     batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
     with_episode_metadata,
 };
+use futures::{StreamExt, stream};
 use rmcp::{
     ErrorData, ServerHandler,
     model::{
@@ -48,6 +49,7 @@ const LIST_CATALOG_COUNT_LIMIT: u32 = 1;
 const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified;
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
+const MAX_CONCURRENT_SQL_QUERIES: usize = 10;
 
 enum ToolCallOutcome {
     Success(Value),
@@ -72,6 +74,11 @@ struct SqlQueryResultValue {
     sql: String,
     status: &'static str,
     rows: Vec<Value>,
+}
+
+struct SqlQueryInput {
+    index: usize,
+    sql: String,
 }
 
 #[derive(Serialize)]
@@ -320,10 +327,9 @@ impl CoralMcpServer {
     }
 
     async fn query_rows(
-        &self,
+        mut query_client: QueryClient,
         request: Request<ExecuteSqlRequest>,
     ) -> Result<Vec<Value>, tonic::Status> {
-        let mut query_client = self.query.clone();
         let response = query_client.execute_sql(request).await?.into_inner();
         let result = decode_execute_sql_response(&response)
             .map_err(|error| tonic::Status::internal(error.to_string()))?;
@@ -331,21 +337,47 @@ impl CoralMcpServer {
             .map_err(|error| tonic::Status::internal(error.to_string()))
     }
 
+    async fn execute_sql_query(
+        query_client: QueryClient,
+        input: SqlQueryInput,
+    ) -> Result<SqlQueryResultValue, tonic::Status> {
+        let request = Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: input.sql.clone(),
+        });
+        Ok(SqlQueryResultValue {
+            index: input.index,
+            sql: input.sql,
+            status: "success",
+            rows: Self::query_rows(query_client, request).await?,
+        })
+    }
+
+    async fn execute_sql_queries(
+        &self,
+        inputs: Vec<SqlQueryInput>,
+    ) -> Result<Vec<SqlQueryResultValue>, tonic::Status> {
+        let mut results = stream::iter(inputs.into_iter().map(|input| {
+            let query_client = self.query.clone();
+            Self::execute_sql_query(query_client, input)
+        }))
+        .buffer_unordered(MAX_CONCURRENT_SQL_QUERIES)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+        results.sort_by_key(|result| result.index);
+        Ok(results)
+    }
+
     async fn execute_sql_value(&self, queries: Vec<String>) -> Result<Value, tonic::Status> {
         let total_count = queries.len();
-        let mut results = Vec::with_capacity(total_count);
-        for (index, sql) in queries.into_iter().enumerate() {
-            let request = Request::new(ExecuteSqlRequest {
-                workspace: Some(default_workspace()),
-                sql: sql.clone(),
-            });
-            results.push(SqlQueryResultValue {
-                index,
-                sql,
-                status: "success",
-                rows: self.query_rows(request).await?,
-            });
-        }
+        let inputs = queries
+            .into_iter()
+            .enumerate()
+            .map(|(index, sql)| SqlQueryInput { index, sql })
+            .collect::<Vec<_>>();
+        let results = self.execute_sql_queries(inputs).await?;
         serialize_tool_value(SqlQueriesValue {
             successful: true,
             total_count,

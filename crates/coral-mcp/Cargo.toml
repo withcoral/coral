@@ -10,6 +10,7 @@ publish = false
 workspace = true
 
 [dependencies]
+futures.workspace = true
 regex.workspace = true
 rmcp.workspace = true
 serde.workspace = true

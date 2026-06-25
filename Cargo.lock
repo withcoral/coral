@@ -1379,6 +1379,7 @@ dependencies = [
  "coral-app",
  "coral-client",
  "coral-telemetry",
+ "futures",
  "jsonschema",
  "opentelemetry",
  "regex",

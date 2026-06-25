@@ -1474,6 +1474,62 @@ async fn mcp_feedback_tool_is_disabled_by_default() {
 }
 
 #[tokio::test]
+async fn mcp_sql_executes_multiple_queries_in_input_order() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let mut session = start_session(&temp).await;
+    let client = &session.client;
+
+    add_demo_source(&mut session.source_client, manifest_yaml).await;
+    let tools = client.list_all_tools().await.expect("tools");
+    let sql_tool = tool_by_name(&tools, "sql");
+
+    let first_sql = "SELECT text FROM local_messages.messages ORDER BY text LIMIT 1";
+    let second_sql = "SELECT COUNT(*) AS message_count FROM local_messages.messages";
+    let third_sql = "SELECT text FROM local_messages.messages ORDER BY text DESC LIMIT 1";
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": [first_sql, second_sql, third_sql]
+            }))),
+        )
+        .await
+        .expect("multi-query sql");
+    assert_eq!(sql.is_error, Some(false));
+
+    let text = sql.content[0]
+        .as_text()
+        .expect("text content")
+        .text
+        .as_str();
+    let sql_value = sql.structured_content.expect("structured content");
+    assert_eq!(
+        serde_json::to_string(&sql_value).expect("compact json"),
+        text
+    );
+    assert_eq!(sql_value["successful"], true);
+    assert_eq!(sql_value["total_count"], 3);
+    assert_eq!(sql_value["success_count"], 3);
+    assert_eq!(sql_value["error_count"], 0);
+    assert_eq!(sql_value["results"][0]["index"], 0);
+    assert_eq!(sql_value["results"][0]["sql"], first_sql);
+    assert_eq!(sql_value["results"][0]["status"], "success");
+    assert_eq!(sql_result_rows(&sql_value, 0)[0]["text"], "hello");
+    assert_eq!(sql_value["results"][1]["index"], 1);
+    assert_eq!(sql_value["results"][1]["sql"], second_sql);
+    assert_eq!(sql_value["results"][1]["status"], "success");
+    assert_eq!(sql_result_rows(&sql_value, 1)[0]["message_count"], "2");
+    assert_eq!(sql_value["results"][2]["index"], 2);
+    assert_eq!(sql_value["results"][2]["sql"], third_sql);
+    assert_eq!(sql_value["results"][2]["status"], "success");
+    assert_eq!(sql_result_rows(&sql_value, 2)[0]["text"], "world");
+    assert_matches_output_schema(sql_tool, &sql_value);
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn mcp_tool_error_does_not_end_session() {
     let temp = TempDir::new().expect("temp dir");
     let manifest_path = write_fixture_manifest(temp.path());

@@ -910,6 +910,51 @@ async fn assert_sql_tool(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_sql_executes_multiple_queries() -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client(&server).await?;
+
+    let first_sql = "SELECT 1 AS value";
+    let second_sql = "SELECT 2 AS value";
+    let sql = structured_tool_content(
+        &client,
+        CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+            "queries": [first_sql, second_sql]
+        }))),
+    )
+    .await?;
+    assert_eq!(sql["successful"], true);
+    assert_eq!(sql["total_count"], 2);
+    assert_eq!(sql["success_count"], 2);
+    assert_eq!(sql["error_count"], 0);
+    assert_eq!(sql["results"][0]["index"], 0);
+    assert_eq!(sql["results"][0]["sql"], first_sql);
+    assert_eq!(sql["results"][0]["rows"][0]["value"], "1");
+    assert_eq!(sql["results"][1]["index"], 1);
+    assert_eq!(sql["results"][1]["sql"], second_sql);
+    assert_eq!(sql["results"][1]["rows"][0]["value"], "1");
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 2);
+    let mut captured_sql = requests
+        .iter()
+        .map(|request| {
+            assert_eq!(
+                request.workspace.as_ref().expect("workspace").name,
+                "default"
+            );
+            request.sql.as_str()
+        })
+        .collect::<Vec<_>>();
+    captured_sql.sort_unstable();
+    assert_eq!(captured_sql, vec![first_sql, second_sql]);
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     let client = start_mcp_client(&server).await?;
