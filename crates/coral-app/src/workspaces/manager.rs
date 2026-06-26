@@ -70,8 +70,14 @@ impl WorkspaceManager {
 
         match self.store.delete_workspace(workspace_name) {
             Ok(Some(record)) => {
-                if backup.exists() {
-                    std::fs::remove_dir_all(&backup)?;
+                if backup.exists()
+                    && let Err(error) = std::fs::remove_dir_all(&backup)
+                {
+                    warn!(
+                        workspace = %workspace_name,
+                        backup_path = %backup.display(),
+                        "workspace deleted, but failed to remove workspace artifact backup: {error}"
+                    );
                 }
                 Ok(record)
             }
