@@ -15,6 +15,34 @@ This state includes installed-source metadata and non-secret source variables. S
   Prefer the `coral source` commands for source state instead of editing workspace entries manually.
 </Note>
 
+## Workspaces
+
+Workspace metadata is stored under `[workspaces]`. The `default` workspace
+exists automatically, and additional workspaces can be managed with
+`coral workspace`.
+
+```toml
+[workspaces.default]
+
+[workspaces.work]
+
+[workspaces.work.sources.github]
+version = "1.0.0"
+variables = {}
+secrets = ["GITHUB_TOKEN"]
+origin = "bundled"
+```
+
+An empty workspace is represented by an explicit `[workspaces.<name>]` table.
+Installed sources for that workspace live under
+`[workspaces.<name>.sources.<source>]`.
+
+There is no separate active-workspace key in `config.toml`; use
+`CORAL_WORKSPACE` for a shell default or `--workspace <NAME>` for one command.
+Source specs imported from files and source credential material remain scoped
+to the source installation in a workspace. Reusable global source specs and
+reusable credential references are not config objects today.
+
 ## Runtime features
 
 Experimental runtime features are configured under `[features]`.

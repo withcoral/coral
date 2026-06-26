@@ -20,6 +20,7 @@ pub fn bootstrap_endpoint() -> Option<String> {
 }
 
 const CORAL_TRACE_PARENT_ENV: &str = "CORAL_TRACE_PARENT";
+const CORAL_WORKSPACE_ENV: &str = "CORAL_WORKSPACE";
 
 /// Reads the optional W3C `traceparent` used to link CLI spans to a parent trace.
 #[expect(
@@ -29,4 +30,14 @@ const CORAL_TRACE_PARENT_ENV: &str = "CORAL_TRACE_PARENT";
 #[must_use]
 pub fn trace_parent() -> Option<String> {
     std::env::var(CORAL_TRACE_PARENT_ENV).ok()
+}
+
+/// Reads the optional default workspace for CLI commands.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CORAL_WORKSPACE is a CLI-owned per-invocation workspace selector."
+)]
+#[must_use]
+pub fn workspace() -> Option<String> {
+    std::env::var(CORAL_WORKSPACE_ENV).ok()
 }
