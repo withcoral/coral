@@ -27,12 +27,15 @@ use clap::{
     Parser, Subcommand, ValueEnum,
 };
 use clap_complete::{Shell, generate};
-use coral_api::v1::ExecuteSqlRequest;
+use coral_api::v1::{
+    CreateWorkspaceRequest, DeleteWorkspaceRequest, ExecuteSqlRequest, ListWorkspacesRequest,
+    Workspace,
+};
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
 use coral_client::{
-    AppClient, decode_execute_sql_response, default_workspace, format_batches_json,
-    format_batches_table, manifest_input_from_proto,
+    AppClient, DEFAULT_WORKSPACE_ID, decode_execute_sql_response, format_batches_json,
+    format_batches_table, manifest_input_from_proto, workspace as workspace_resource,
 };
 use dialoguer::console::measure_text_width;
 use tonic::Request;
@@ -55,6 +58,8 @@ const DEFAULT_SERVER_PORT: u16 = 1457;
 struct Cli {
     #[command(flatten)]
     feature_overrides: FeatureOverrideArgs,
+    #[command(flatten)]
+    workspace_selection: WorkspaceSelectionArgs,
     #[command(subcommand)]
     command: Command,
 }
@@ -65,6 +70,8 @@ enum Command {
     Sql(SqlArgs),
     /// Manage data sources
     Source(SourceArgs),
+    /// Manage workspaces
+    Workspace(WorkspaceArgs),
     /// Interactive wizard to set up Coral and explore use cases
     Onboard,
     /// Start the MCP server over stdio
@@ -112,6 +119,13 @@ struct SqlArgs {
     format: OutputFormat,
     /// SQL query to execute
     sql: String,
+}
+
+#[derive(Debug, Args)]
+struct WorkspaceSelectionArgs {
+    /// Workspace to target. Overrides `CORAL_WORKSPACE`.
+    #[arg(long = "workspace", value_name = "NAME", global = true)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -209,6 +223,29 @@ fn add_feature_override_args(mut cmd: clap::Command) -> clap::Command {
 #[derive(Debug, Args)]
 /// Start the MCP server over stdio
 struct McpStdioArgs {}
+
+#[derive(Debug, Args)]
+/// Manage workspaces
+struct WorkspaceArgs {
+    #[command(subcommand)]
+    command: WorkspaceCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkspaceCommand {
+    /// List configured workspaces
+    List,
+    /// Create a workspace
+    Create {
+        /// Name of the workspace to create
+        name: String,
+    },
+    /// Remove a workspace and its sources/artifacts
+    Remove {
+        /// Name of the workspace to remove
+        name: String,
+    },
+}
 
 #[derive(Debug, Args)]
 /// Inspect and manage experimental runtime features
@@ -358,9 +395,11 @@ impl CliError {
 impl Command {
     fn required_runtime(&self) -> RequiredRuntime {
         match self {
-            Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
-                RequiredRuntime::AppClient
-            }
+            Command::Sql(_)
+            | Command::Source(_)
+            | Command::Workspace(_)
+            | Command::Onboard
+            | Command::McpStdio(_) => RequiredRuntime::AppClient,
             Command::Features(_) | Command::Completion(_) => RequiredRuntime::None,
             #[cfg(feature = "embedded-ui")]
             Command::Ui(_) => RequiredRuntime::None,
@@ -425,6 +464,7 @@ where
 pub async fn run_from_env() -> Result<(), CliError> {
     let Cli {
         feature_overrides,
+        workspace_selection,
         command,
     } = Cli::parse();
     let feature_overrides = feature_overrides.into_overrides();
@@ -434,6 +474,7 @@ pub async fn run_from_env() -> Result<(), CliError> {
 
     match command.required_runtime() {
         RequiredRuntime::AppClient => {
+            let workspace = selected_workspace(workspace_selection.workspace)?;
             let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
             let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
                 enable_stderr_logs: command.enables_stderr_logs(),
@@ -442,11 +483,17 @@ pub async fn run_from_env() -> Result<(), CliError> {
             .map_err(anyhow::Error::from)?;
             let app = bootstrap.app.clone();
             let result = if is_mcp_stdio {
-                run_app_command(app, command, Some(&ctx), &feature_overrides).await
+                run_app_command(app, command, Some(&ctx), &feature_overrides, &workspace).await
             } else {
                 coral_app::run_with_context(
                     &ctx,
-                    Box::pin(run_app_command(app, command, None, &feature_overrides)),
+                    Box::pin(run_app_command(
+                        app,
+                        command,
+                        None,
+                        &feature_overrides,
+                        &workspace,
+                    )),
                 )
                 .await
             };
@@ -461,6 +508,29 @@ pub async fn run_from_env() -> Result<(), CliError> {
             .await
         }
     }
+}
+
+fn selected_workspace(cli_workspace: Option<String>) -> Result<Workspace, CliError> {
+    let raw = cli_workspace
+        .or_else(env::workspace)
+        .unwrap_or_else(|| DEFAULT_WORKSPACE_ID.to_string());
+    Ok(workspace_resource(workspace_name_arg(&raw)?))
+}
+
+fn workspace_name_arg(name: &str) -> Result<String, anyhow::Error> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(anyhow::anyhow!("missing workspace name"));
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err(anyhow::anyhow!(
+            "workspace name must not contain '/' or '\\\\'"
+        ));
+    }
+    if name == "." || name == ".." {
+        return Err(anyhow::anyhow!("workspace name must not be '.' or '..'"));
+    }
+    Ok(name.to_string())
 }
 
 /// Returns the embedded Coral UI assets for the local server to serve.
@@ -520,7 +590,11 @@ async fn run_no_runtime_command(
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
         Command::Ui(args) => run_ui(args).await.map_err(Into::into),
-        Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_) => {
+        Command::Sql(_)
+        | Command::Source(_)
+        | Command::Workspace(_)
+        | Command::Onboard
+        | Command::McpStdio(_) => {
             unreachable!("app client commands are routed through app runtime startup")
         }
     }
@@ -531,13 +605,14 @@ async fn run_app_command(
     command: Command,
     ctx: Option<&coral_app::RunContext>,
     feature_overrides: &coral_app::features::FeatureOverrides,
+    workspace: &Workspace,
 ) -> Result<(), CliError> {
     match command {
         Command::Sql(args) => {
             let response = match app
                 .query_client()
                 .execute_sql(Request::new(ExecuteSqlRequest {
-                    workspace: Some(default_workspace()),
+                    workspace: Some(workspace.clone()),
                     sql: args.sql,
                 }))
                 .await
@@ -554,15 +629,16 @@ async fn run_app_command(
             let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
             print_batches(result.batches(), args.format)?;
         }
-        Command::Source(args) => run_source(&app, args).await?,
+        Command::Source(args) => run_source(&app, workspace, args).await?,
+        Command::Workspace(args) => run_workspace(&app, args).await?,
         Command::Onboard => {
-            onboard::run(&app).await?;
+            onboard::run(&app, workspace).await?;
         }
         Command::McpStdio(_) => {
             let features = coral_app::features::FeatureStore::discover(None)
                 .and_then(|store| store.load_with_overrides(feature_overrides))
                 .map_err(anyhow::Error::from)?;
-            let source_names = match coral_app::bootstrap::default_workspace_source_names() {
+            let source_names = match coral_app::bootstrap::workspace_source_names(&workspace.name) {
                 Ok(source_names) => source_names,
                 Err(error) => {
                     eprintln!(
@@ -578,6 +654,7 @@ async fn run_app_command(
                     episodes_enabled: features.enabled(coral_app::features::Feature::Episodes),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                     source_names,
+                    workspace: Some(workspace.clone()),
                 },
             ))
             .await
@@ -630,10 +707,63 @@ fn run_features(
     Ok(())
 }
 
-async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
+async fn run_workspace(app: &AppClient, args: WorkspaceArgs) -> Result<(), CliError> {
+    match args.command {
+        WorkspaceCommand::List => {
+            let workspaces = app
+                .workspace_client()
+                .list_workspaces(Request::new(ListWorkspacesRequest {}))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner()
+                .workspaces;
+            if workspaces.is_empty() {
+                println!("No workspaces configured.");
+            } else {
+                let rows = workspaces.into_iter().map(|workspace| [workspace.name]);
+                print_text_table(["Workspace"], rows);
+            }
+        }
+        WorkspaceCommand::Create { name } => {
+            let workspace = workspace_resource(workspace_name_arg(&name)?);
+            let workspace = app
+                .workspace_client()
+                .create_workspace(Request::new(CreateWorkspaceRequest {
+                    workspace: Some(workspace),
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner()
+                .workspace
+                .ok_or_else(|| anyhow::anyhow!("create workspace response missing workspace"))?;
+            println!("Created workspace {}", workspace.name);
+        }
+        WorkspaceCommand::Remove { name } => {
+            let workspace = workspace_resource(workspace_name_arg(&name)?);
+            let workspace = app
+                .workspace_client()
+                .delete_workspace(Request::new(DeleteWorkspaceRequest {
+                    workspace: Some(workspace),
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner()
+                .workspace
+                .ok_or_else(|| anyhow::anyhow!("delete workspace response missing workspace"))?;
+            println!("Removed workspace {}", workspace.name);
+        }
+    }
+    Ok(())
+}
+
+async fn run_source(
+    app: &AppClient,
+    workspace: &Workspace,
+    args: SourceArgs,
+) -> Result<(), CliError> {
     match args.command {
         SourceCommand::Discover => {
-            let sources = source_ops::discover_sources(app).await?;
+            let sources = source_ops::discover_sources(app, workspace).await?;
             if sources.is_empty() {
                 println!("No bundled sources available.");
             } else {
@@ -653,7 +783,7 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
             }
         }
         SourceCommand::List => {
-            let sources = source_ops::list_sources(app).await?;
+            let sources = source_ops::list_sources(app, workspace).await?;
             if sources.is_empty() {
                 println!("No sources configured.");
             } else {
@@ -670,9 +800,9 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
             }
         }
         SourceCommand::Info { name, verbose } => {
-            source_ops::print_source_info(app, &name, verbose).await?;
+            source_ops::print_source_info(app, workspace, &name, verbose).await?;
         }
-        SourceCommand::Add(args) => run_source_add(app, args).await?,
+        SourceCommand::Add(args) => run_source_add(app, workspace, args).await?,
         SourceCommand::Lint { file } => {
             source_ops::load_validated_manifest_file(&file)?;
             println!("Manifest is valid");
@@ -680,6 +810,7 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
         SourceCommand::Test { name } => {
             source_ops::test_and_print(
                 app,
+                workspace,
                 &name,
                 source_ops::TableDisplayLimit::All,
                 source_ops::ValidationSeverityMode::Strict,
@@ -687,7 +818,7 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
             .await?;
         }
         SourceCommand::Remove { name } => {
-            source_ops::remove_and_print(app, &name).await?;
+            source_ops::remove_and_print(app, workspace, &name).await?;
         }
     }
     Ok(())
@@ -780,7 +911,11 @@ fn pad_cell(value: &str, width: usize, pad: bool) -> String {
     format!("{value}{}", " ".repeat(padding))
 }
 
-async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliError> {
+async fn run_source_add(
+    app: &AppClient,
+    workspace: &Workspace,
+    args: SourceAddArgs,
+) -> Result<(), CliError> {
     let SourceAddArgs {
         name,
         file,
@@ -792,7 +927,7 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
     let response = match (name, file) {
         (Some(name), None) => {
             let bundled_name = source_ops::source_name_arg(Some(&name))?;
-            let discover = source_ops::discover_sources(app).await?;
+            let discover = source_ops::discover_sources(app, workspace).await?;
             let available = discover
                 .into_iter()
                 .find(|source| source.name == bundled_name)
@@ -805,14 +940,20 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
                 .map_err(anyhow::Error::from)?;
             if interactive {
                 let inputs = source_ops::prompt_for_inputs_with_credential_methods(&inputs)?;
-                source_ops::add_bundled_source_with_credentials(app, &available.name, inputs)
-                    .await?
+                source_ops::add_bundled_source_with_credentials(
+                    app,
+                    workspace,
+                    &available.name,
+                    inputs,
+                )
+                .await?
             } else {
                 let (variables, secrets) = source_ops::collect_inputs_from_env(
                     &inputs,
                     format!("coral source add --interactive {}", available.name),
                 )?;
-                source_ops::add_bundled_source(app, &available.name, variables, secrets).await?
+                source_ops::add_bundled_source(app, workspace, &available.name, variables, secrets)
+                    .await?
             }
         }
         (None, Some(file)) => {
@@ -821,7 +962,8 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
                 let inputs = source_ops::prompt_for_inputs_with_credential_methods(
                     manifest.declared_inputs(),
                 )?;
-                source_ops::import_source_with_credentials(app, manifest_yaml, inputs).await?
+                source_ops::import_source_with_credentials(app, workspace, manifest_yaml, inputs)
+                    .await?
             } else {
                 let (variables, secrets) = source_ops::collect_inputs_from_env(
                     manifest.declared_inputs(),
@@ -830,7 +972,7 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
                         source_ops::shell_quote_arg(&file.display().to_string())
                     ),
                 )?;
-                source_ops::import_source(app, manifest_yaml, variables, secrets).await?
+                source_ops::import_source(app, workspace, manifest_yaml, variables, secrets).await?
             }
         }
         _ => unreachable!("clap enforces exactly one of name or file"),
@@ -840,9 +982,14 @@ async fn run_source_add(app: &AppClient, args: SourceAddArgs) -> Result<(), CliE
         response.name,
         source_ops::source_credential_storage_label(response.credential_storage)
     );
-    source_ops::validate_and_warn(app, &response.name, source_ops::TableDisplayLimit::DEFAULT)
-        .await
-        .map_err(Into::into)
+    source_ops::validate_and_warn(
+        app,
+        workspace,
+        &response.name,
+        source_ops::TableDisplayLimit::DEFAULT,
+    )
+    .await
+    .map_err(Into::into)
 }
 
 #[cfg(test)]

@@ -23,7 +23,7 @@ pub(crate) fn discover_app_state_layout(
     env::AppEnvironment::discover().app_state_layout(config_dir_override)
 }
 
-/// Loads installed source names for the default workspace from local config only.
+/// Loads installed source names for one workspace from local config only.
 ///
 /// This is intentionally narrower than starting the local server and calling
 /// `ListSources`: startup surfaces such as MCP initialize only need source
@@ -34,8 +34,19 @@ pub(crate) fn discover_app_state_layout(
 ///
 /// Returns [`AppError`] when the app state layout cannot be discovered or
 /// created, or when local config cannot be read or decoded.
-pub fn default_workspace_source_names() -> Result<Vec<String>, AppError> {
+pub fn workspace_source_names(workspace_name: &str) -> Result<Vec<String>, AppError> {
     let layout = discover_app_state_layout(None)?;
     layout.ensure()?;
-    ConfigStore::new(layout).list_workspace_source_names(&WorkspaceName::default())
+    let workspace_name = WorkspaceName::parse(workspace_name)?;
+    ConfigStore::new(layout).list_workspace_source_names(&workspace_name)
+}
+
+/// Loads installed source names for the default workspace from local config only.
+///
+/// # Errors
+///
+/// Returns [`AppError`] when the app state layout cannot be discovered or
+/// created, or when local config cannot be read or decoded.
+pub fn default_workspace_source_names() -> Result<Vec<String>, AppError> {
+    workspace_source_names(WorkspaceName::default().as_str())
 }

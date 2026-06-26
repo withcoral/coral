@@ -14,6 +14,7 @@ use std::process::{Command as StdCommand, Stdio};
 use std::time::Duration;
 use std::{fs, io};
 
+use coral_api::v1::Workspace;
 use harness::MockServer;
 use jsonschema::JSONSchema;
 use rmcp::{
@@ -38,6 +39,14 @@ fn json_object(value: &Value) -> Map<String, Value> {
 fn write_config(server: &MockServer, raw: &str) -> Result<(), io::Error> {
     fs::create_dir_all(server.config_dir())?;
     fs::write(server.config_dir().join("config.toml"), raw)
+}
+
+fn assert_workspace_name(workspace: Option<&Workspace>, expected: &str) {
+    assert_eq!(
+        workspace.map(|workspace| workspace.name.as_str()),
+        Some(expected),
+        "expected workspace {expected:?}, got {workspace:?}"
+    );
 }
 
 fn run_features_command(
@@ -270,6 +279,106 @@ origin = "bundled"
     .await?;
     let tools_list = read_jsonrpc_response(&mut stdout, 2).await?;
     assert_raw_tools_list_contract(&tools_list);
+
+    drop(stdin);
+    if timeout(Duration::from_secs(5), child.wait()).await.is_err() {
+        child.start_kill()?;
+        child.wait().await?;
+    }
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_workspace_flag_scopes_server_instance() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = MockServer::start().await;
+    write_config(
+        &server,
+        r#"
+[workspaces.default.sources.github]
+origin = "bundled"
+
+[workspaces.work.sources.jira]
+origin = "bundled"
+"#,
+    )?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
+        .arg("mcp-stdio")
+        .args(["--workspace", "work"])
+        .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env("CORAL_CONFIG_DIR", server.config_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("mcp stdio stdin");
+    let stdout = child.stdout.take().expect("mcp stdio stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "coral-cli-workspace-stdio-test",
+                    "version": "0.0.0"
+                }
+            }
+        }),
+    )
+    .await?;
+    let initialize = read_jsonrpc_response(&mut stdout, 1).await?;
+    let instructions = initialize
+        .pointer("/result/instructions")
+        .and_then(Value::as_str)
+        .expect("initialize response should include instructions");
+    assert!(
+        instructions.contains("Current Coral workspace: work."),
+        "initialize instructions should include selected workspace: {instructions}"
+    );
+    assert!(
+        instructions.contains("Connected Coral sources: jira."),
+        "initialize instructions should include selected workspace source names: {instructions}"
+    );
+    assert!(
+        !instructions.contains("Connected Coral sources: github."),
+        "initialize instructions should not use default workspace source names: {instructions}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }),
+    )
+    .await?;
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }),
+    )
+    .await?;
+    let tools_list = read_jsonrpc_response(&mut stdout, 2).await?;
+    assert_raw_tools_list_contract(&tools_list);
+
+    let catalog_requests = server.list_catalog_requests();
+    let count_request = catalog_requests
+        .last()
+        .expect("tools/list should request catalog counts");
+    assert_workspace_name(count_request.workspace.as_ref(), "work");
 
     drop(stdin);
     if timeout(Duration::from_secs(5), child.wait()).await.is_err() {

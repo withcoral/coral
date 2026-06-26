@@ -16,6 +16,12 @@ pub enum AppError {
     /// A requested source was not found in config.
     #[error("source '{0}' not found")]
     SourceNotFound(String),
+    /// A requested workspace was not found in config.
+    #[error("workspace '{0}' not found")]
+    WorkspaceNotFound(String),
+    /// A requested workspace already exists in config.
+    #[error("workspace '{0}' already exists")]
+    WorkspaceAlreadyExists(String),
     /// Caller-supplied input was invalid.
     #[error("invalid input: {0}")]
     InvalidInput(String),
@@ -194,7 +200,8 @@ fn grpc_code(status: StatusCode) -> Code {
 
 fn app_code(error: &AppError) -> Code {
     match error {
-        AppError::SourceNotFound(_) => Code::NotFound,
+        AppError::SourceNotFound(_) | AppError::WorkspaceNotFound(_) => Code::NotFound,
+        AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
         | AppError::MissingOrIncompatibleV4Materialization { .. }

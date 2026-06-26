@@ -30,6 +30,7 @@ mod telemetry;
 #[cfg(test)]
 mod tests;
 
+use coral_api::v1::Workspace;
 use coral_client::AppClient;
 use rmcp::ServiceExt;
 
@@ -47,6 +48,8 @@ pub struct McpOptions {
     pub trace_parent: Option<String>,
     /// Installed source names to include in MCP initialize instructions.
     pub source_names: Vec<String>,
+    /// Workspace scoped to this MCP server instance.
+    pub workspace: Option<Workspace>,
 }
 
 /// Runs the `MCP` stdio server using an existing Coral client.

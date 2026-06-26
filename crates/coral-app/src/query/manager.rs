@@ -248,6 +248,11 @@ impl QueryManager {
             .config_store
             .load_config()
             .map_err(QueryManagerError::App)?;
+        if !config.has_workspace(workspace_name) {
+            return Err(QueryManagerError::App(AppError::WorkspaceNotFound(
+                workspace_name.to_string(),
+            )));
+        }
         let source = config
             .get_source(workspace_name, source_name)
             .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
@@ -280,6 +285,9 @@ impl QueryManager {
         );
         let _guard = span.enter();
         let mut query_sources = Vec::new();
+        if !config.has_workspace(workspace_name) {
+            return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
+        }
         for source in config.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
                 Ok((query_source, _version)) => query_sources.push(query_source),
@@ -549,6 +557,8 @@ fn query_error_message(error: &QueryManagerError) -> String {
 fn app_error_type(error: &AppError) -> &'static str {
     match error {
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
+        AppError::WorkspaceNotFound(_) => "WORKSPACE_NOT_FOUND",
+        AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
         AppError::MissingOrIncompatibleV4Materialization { .. } => {
