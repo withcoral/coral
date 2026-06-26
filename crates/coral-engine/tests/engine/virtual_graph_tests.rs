@@ -884,6 +884,57 @@ async fn cypher_count_property_projection_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_numeric_aggregate_projections_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier IS NOT NULL \
+         RETURN service.tier AS tier, \
+                sum(service.risk) AS total_risk, \
+                avg(service.risk) AS average_risk, \
+                min(service.risk) AS lowest_risk, \
+                max(service.risk) AS highest_risk \
+         ORDER BY average_risk DESC, tier",
+    )
+    .await
+    .expect("numeric aggregate Cypher query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("SUM(\"n0\".\"risk_score\") AS \"total_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({
+                "tier": "prod",
+                "total_risk": 1.4,
+                "average_risk": 0.7,
+                "lowest_risk": 0.5,
+                "highest_risk": 0.9
+            }),
+            json!({
+                "tier": "dev",
+                "total_risk": 0.25,
+                "average_risk": 0.25,
+                "lowest_risk": 0.25,
+                "highest_risk": 0.25
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_count_node_projection_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

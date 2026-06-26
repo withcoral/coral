@@ -580,6 +580,10 @@ fn render_operator(operator: ComparisonOperator) -> &'static str {
 fn render_aggregate_function(function: AggregateFunction) -> &'static str {
     match function {
         AggregateFunction::Count => "COUNT",
+        AggregateFunction::Sum => "SUM",
+        AggregateFunction::Avg => "AVG",
+        AggregateFunction::Min => "MIN",
+        AggregateFunction::Max => "MAX",
     }
 }
 
@@ -1434,6 +1438,68 @@ relationships: []
             translation
                 .sql()
                 .contains("COUNT(DISTINCT \"n1\".\"tier\") AS \"tier_count\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation.sql().contains(" GROUP BY "),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_numeric_aggregate_projections() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.projections.push(Projection::Aggregate {
+            function: AggregateFunction::Sum,
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "risk".to_string(),
+            }),
+            distinct: false,
+            alias: "total_risk".to_string(),
+        });
+        plan.projections.push(Projection::Aggregate {
+            function: AggregateFunction::Avg,
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "risk".to_string(),
+            }),
+            distinct: false,
+            alias: "average_risk".to_string(),
+        });
+        plan.projections.push(Projection::Aggregate {
+            function: AggregateFunction::Min,
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "risk".to_string(),
+            }),
+            distinct: false,
+            alias: "lowest_risk".to_string(),
+        });
+        plan.projections.push(Projection::Aggregate {
+            function: AggregateFunction::Max,
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "risk".to_string(),
+            }),
+            distinct: true,
+            alias: "highest_risk".to_string(),
+        });
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("numeric aggregate projections should lower");
+
+        assert!(
+            translation.sql().contains(
+                "SUM(\"n1\".\"risk_score\") AS \"total_risk\", \
+                 AVG(\"n1\".\"risk_score\") AS \"average_risk\", \
+                 MIN(\"n1\".\"risk_score\") AS \"lowest_risk\", \
+                 MAX(DISTINCT \"n1\".\"risk_score\") AS \"highest_risk\""
+            ),
             "{}",
             translation.sql()
         );

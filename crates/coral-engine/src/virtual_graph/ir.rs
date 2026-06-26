@@ -143,6 +143,14 @@ impl Projection {
 pub enum AggregateFunction {
     /// `COUNT(property)`.
     Count,
+    /// `SUM(property)`.
+    Sum,
+    /// `AVG(property)`.
+    Avg,
+    /// `MIN(property)`.
+    Min,
+    /// `MAX(property)`.
+    Max,
 }
 
 /// Aggregate argument in the shared graph IR.

@@ -521,8 +521,8 @@ fn compile_projection(
                 .as_ref()
                 .map_or_else(|| "count".to_string(), variable_name),
         }),
-        Expression::FunctionCall(function) if is_count_function(function) => {
-            compile_count_projection(function, item, path, context)
+        Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
+            compile_aggregate_projection(function, item, path, context)
         }
         Expression::FunctionCall(function) => Err(unsupported(
             format!("{path}.expression"),
@@ -538,44 +538,61 @@ fn compile_projection(
     }
 }
 
-fn compile_count_projection(
+fn compile_aggregate_projection(
     function: &FunctionInvocation,
     item: &ProjectionItem,
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    let target = match function.arguments.as_slice() {
-        [argument] => {
-            compile_aggregate_target(argument, format!("{path}.expression.arguments[0]"))?
-        }
-        [] => {
+    let function_kind = compile_aggregate_function(function).ok_or_else(|| {
+        unsupported(
+            format!("{path}.expression"),
+            format!(
+                "RETURN function '{}' is not supported yet",
+                qualified_function_name(function)
+            ),
+        )
+    })?;
+    let target = compile_function_aggregate_target(function, function_kind, &path, context)?;
+    Ok(Projection::Aggregate {
+        function: function_kind,
+        target,
+        distinct: function.distinct,
+        alias: item.alias.as_ref().map_or_else(
+            || aggregate_function_name(function_kind).to_string(),
+            variable_name,
+        ),
+    })
+}
+
+fn compile_function_aggregate_target(
+    function: &FunctionInvocation,
+    function_kind: AggregateFunction,
+    path: &str,
+    context: &CypherCompileContext,
+) -> Result<AggregateTarget, CoreError> {
+    match function.arguments.as_slice() {
+        [argument] => compile_aggregate_target(argument, format!("{path}.expression.arguments[0]")),
+        [] if function_kind == AggregateFunction::Count => {
             let variable = context.count_variable_argument(function).ok_or_else(|| {
                 unsupported(
                     format!("{path}.expression.arguments"),
                     "count() supports exactly one graph property or node variable argument; use count(*) to count rows",
                 )
             })?;
-            AggregateTarget::Node {
+            Ok(AggregateTarget::Node {
                 variable: variable.to_string(),
-            }
+            })
         }
-        _ => {
-            return Err(unsupported(
-                format!("{path}.expression.arguments"),
-                "count() supports exactly one graph property or node variable argument; use count(*) to count rows",
-            ));
-        }
-    };
-    Ok(Projection::Aggregate {
-        function: AggregateFunction::Count,
-        target,
-        distinct: function.distinct,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "count".to_string(), variable_name),
-    })
+        _ => Err(unsupported(
+            format!("{path}.expression.arguments"),
+            format!(
+                "{}() supports exactly one graph property argument",
+                aggregate_function_name(function_kind)
+            ),
+        )),
+    }
 }
 
 fn collect_count_variable_arguments(cypher: &str) -> BTreeMap<(usize, usize), String> {
@@ -636,11 +653,33 @@ fn compile_aggregate_target(
     }
 }
 
-fn is_count_function(function: &FunctionInvocation) -> bool {
-    matches!(
-        function.name.as_slice(),
-        [name] if name.name.eq_ignore_ascii_case("count")
-    )
+fn compile_aggregate_function(function: &FunctionInvocation) -> Option<AggregateFunction> {
+    let [name] = function.name.as_slice() else {
+        return None;
+    };
+    if name.name.eq_ignore_ascii_case("count") {
+        Some(AggregateFunction::Count)
+    } else if name.name.eq_ignore_ascii_case("sum") {
+        Some(AggregateFunction::Sum)
+    } else if name.name.eq_ignore_ascii_case("avg") {
+        Some(AggregateFunction::Avg)
+    } else if name.name.eq_ignore_ascii_case("min") {
+        Some(AggregateFunction::Min)
+    } else if name.name.eq_ignore_ascii_case("max") {
+        Some(AggregateFunction::Max)
+    } else {
+        None
+    }
+}
+
+fn aggregate_function_name(function: AggregateFunction) -> &'static str {
+    match function {
+        AggregateFunction::Count => "count",
+        AggregateFunction::Sum => "sum",
+        AggregateFunction::Avg => "avg",
+        AggregateFunction::Min => "min",
+        AggregateFunction::Max => "max",
+    }
 }
 
 fn qualified_function_name(function: &FunctionInvocation) -> String {
@@ -1911,6 +1950,76 @@ mod tests {
     }
 
     #[test]
+    fn compiles_numeric_aggregate_projections() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN service.tier AS tier, \
+                    sum(service.risk) AS total_risk, \
+                    avg(service.risk) AS average_risk, \
+                    min(service.risk) AS lowest_risk, \
+                    max(DISTINCT service.risk) AS highest_risk \
+             ORDER BY average_risk DESC",
+        )
+        .expect("numeric aggregate query should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("tier".to_string()),
+                },
+                Projection::Aggregate {
+                    function: super::AggregateFunction::Sum,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "total_risk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: super::AggregateFunction::Avg,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "average_risk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: super::AggregateFunction::Min,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "lowest_risk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: super::AggregateFunction::Max,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: true,
+                    alias: "highest_risk".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("average_risk".to_string()),
+                direction: OrderDirection::Descending,
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_count_node_projection() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -1956,7 +2065,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_return_functions() {
-        assert_unsupported("MATCH (service:Service) RETURN sum(service.id) AS total");
+        assert_unsupported("MATCH (service:Service) RETURN stdev(service.id) AS total");
     }
 
     #[test]

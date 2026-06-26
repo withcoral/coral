@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::declaration::{Declaration, Node, Relationship};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateTarget, ComparisonOperator, GraphPlan, Literal, OrderExpression, PredicateExpression,
-    PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+    AggregateFunction, AggregateTarget, ComparisonOperator, GraphPlan, Literal, OrderExpression,
+    PredicateExpression, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
+    RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -301,8 +302,14 @@ impl<'a> GraphPlanValidator<'a> {
                 Projection::Property { property, .. } => {
                     self.validate_property_ref(property, format!("projections[{index}].property"))?;
                 }
-                Projection::Aggregate { target, .. } => {
-                    self.validate_aggregate_target(target, format!("projections[{index}].target"))?;
+                Projection::Aggregate {
+                    function, target, ..
+                } => {
+                    self.validate_aggregate_target(
+                        *function,
+                        target,
+                        format!("projections[{index}].target"),
+                    )?;
                 }
                 Projection::CountAll { .. } => {}
             }
@@ -496,6 +503,7 @@ impl<'a> GraphPlanValidator<'a> {
 
     fn validate_aggregate_target(
         &self,
+        function: AggregateFunction,
         target: &AggregateTarget,
         path: impl Into<String>,
     ) -> Result<(), CoreError> {
@@ -503,6 +511,17 @@ impl<'a> GraphPlanValidator<'a> {
         match target {
             AggregateTarget::Property(property) => self.validate_property_ref(property, path),
             AggregateTarget::Node { variable } => {
+                if function != AggregateFunction::Count {
+                    return Err(Diagnostic::new(
+                        "INVALID_AGGREGATE_TARGET",
+                        path,
+                        format!(
+                            "{}({variable}) requires a graph property argument; only count(node) can aggregate a node variable",
+                            aggregate_function_name(function)
+                        ),
+                    )
+                    .into_core_error());
+                }
                 validate_variable(path.clone(), variable)?;
                 let binding = self.bindings.get(variable.as_str()).ok_or_else(|| {
                     Diagnostic::new(
@@ -712,6 +731,16 @@ fn validate_variable(path: impl Into<String>, variable: &str) -> Result<(), Core
     Ok(())
 }
 
+fn aggregate_function_name(function: AggregateFunction) -> &'static str {
+    match function {
+        AggregateFunction::Count => "count",
+        AggregateFunction::Sum => "sum",
+        AggregateFunction::Avg => "avg",
+        AggregateFunction::Min => "min",
+        AggregateFunction::Max => "max",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,6 +850,29 @@ relationships:
         let error = graph
             .validate_graph_plan(&plan)
             .expect_err("relationship aggregate target should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_non_count_node_aggregate_targets() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Aggregate {
+            function: AggregateFunction::Sum,
+            target: AggregateTarget::Node {
+                variable: "service".to_string(),
+            },
+            distinct: false,
+            alias: "service_sum".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("non-count node aggregate target should fail validation");
 
         assert!(
             error.to_string().contains("INVALID_AGGREGATE_TARGET"),
