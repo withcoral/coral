@@ -275,6 +275,41 @@ async fn cypher_transparent_with_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_multiple_match_clauses_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person) \
+         WHERE owner.team = 'platform' \
+         MATCH (owner)-[:OWNS]->(service:Service) \
+         MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+         RETURN owner.name AS owner, service.name AS service, dependency.name AS dependency \
+         ORDER BY owner, service, dependency",
+    )
+    .await
+    .expect("multiple MATCH Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains("JOIN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "dependency": "deployments"}),
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "dependency": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_reverse_multihop_paths_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

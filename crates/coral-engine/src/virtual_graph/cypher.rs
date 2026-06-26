@@ -101,15 +101,10 @@ fn compile_single_part(
     query: &SinglePartQuery,
     context: &CypherCompileContext,
 ) -> Result<GraphPlan, CoreError> {
-    let match_clause = single_match_clause(&query.reading_clauses, "match")?;
-
     let return_clause = return_clause_from_single_part(query, "query")?;
 
-    let mut plan = compile_match(match_clause)?;
-    if let Some(where_clause) = &match_clause.where_clause {
-        let predicate = compile_predicate_expression(where_clause, "where")?;
-        append_predicate_expression(predicate, &mut plan);
-    }
+    let mut plan = GraphPlan::default();
+    compile_reading_clauses_into(&query.reading_clauses, "match", &mut plan)?;
     compile_return(return_clause, &mut plan, context)?;
     Ok(plan)
 }
@@ -154,13 +149,9 @@ fn compile_terminal_with_projection(
         ));
     }
 
-    let match_clause = single_match_clause(&part.reading_clauses, "parts[0].match")?;
     let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
-    let mut plan = compile_match(match_clause)?;
-    if let Some(where_clause) = &match_clause.where_clause {
-        let predicate = compile_predicate_expression(where_clause, "parts[0].where")?;
-        append_predicate_expression(predicate, &mut plan);
-    }
+    let mut plan = GraphPlan::default();
+    compile_reading_clauses_into(&part.reading_clauses, "parts[0].match", &mut plan)?;
 
     compile_terminal_with_clause(&part.with, &mut plan, context)?;
     validate_terminal_return_aliases(return_clause, &plan.projections)?;
@@ -345,14 +336,7 @@ fn compile_transparent_multi_part(
 
     match query.final_part.reading_clauses.as_slice() {
         [] => {}
-        clauses => {
-            let match_clause = single_match_clause(clauses, "final_part.match")?;
-            compile_match_into(match_clause, &mut plan)?;
-            if let Some(where_clause) = &match_clause.where_clause {
-                let predicate = compile_predicate_expression(where_clause, "final_part.where")?;
-                append_predicate_expression(predicate, &mut plan);
-            }
-        }
+        clauses => compile_reading_clauses_into(clauses, "final_part.match", &mut plan)?,
     }
     let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
     compile_return(return_clause, &mut plan, context)?;
@@ -370,13 +354,7 @@ fn compile_transparent_multi_part_part(
             "write clauses are not supported by Coral virtual graphs",
         ));
     }
-    let match_clause = single_match_clause(&part.reading_clauses, format!("parts[{index}].match"))?;
-    compile_match_into(match_clause, plan)?;
-    if let Some(where_clause) = &match_clause.where_clause {
-        let predicate =
-            compile_predicate_expression(where_clause, format!("parts[{index}].where"))?;
-        append_predicate_expression(predicate, plan);
-    }
+    compile_reading_clauses_into(&part.reading_clauses, format!("parts[{index}].match"), plan)?;
     validate_transparent_with(&part.with, plan, format!("parts[{index}].with"))
 }
 
@@ -457,27 +435,41 @@ fn bound_graph_variables(plan: &GraphPlan) -> BTreeSet<String> {
         .collect()
 }
 
-fn single_match_clause(
+fn compile_reading_clauses_into(
     reading_clauses: &[ReadingClause],
     path: impl Into<String>,
-) -> Result<&Match, CoreError> {
+    plan: &mut GraphPlan,
+) -> Result<(), CoreError> {
     let path = path.into();
-    match reading_clauses {
-        [ReadingClause::Match(match_clause)] => Ok(match_clause),
-        [] => Err(unsupported(
+    if reading_clauses.is_empty() {
+        return Err(unsupported(
             path,
-            "exactly one MATCH clause is required before RETURN",
-        )),
-        [ReadingClause::Unwind(_)] => Err(unsupported(path, "UNWIND is not supported")),
-        [ReadingClause::InQueryCall(_) | ReadingClause::CallSubquery(_)] => {
-            Err(unsupported(path, "CALL is not supported"))
-        }
-        [ReadingClause::LoadCsv(_)] => Err(unsupported(path, "LOAD CSV is not supported")),
-        _ => Err(unsupported(
-            path,
-            "only one MATCH clause is supported per query",
-        )),
+            "at least one MATCH clause is required before RETURN",
+        ));
     }
+
+    for (index, clause) in reading_clauses.iter().enumerate() {
+        match clause {
+            ReadingClause::Match(match_clause) => {
+                compile_match_into(match_clause, plan)?;
+                if let Some(where_clause) = &match_clause.where_clause {
+                    let predicate = compile_predicate_expression(
+                        where_clause,
+                        format!("{path}[{index}].where"),
+                    )?;
+                    append_predicate_expression(predicate, plan);
+                }
+            }
+            ReadingClause::Unwind(_) => return Err(unsupported(path, "UNWIND is not supported")),
+            ReadingClause::InQueryCall(_) | ReadingClause::CallSubquery(_) => {
+                return Err(unsupported(path, "CALL is not supported"));
+            }
+            ReadingClause::LoadCsv(_) => {
+                return Err(unsupported(path, "LOAD CSV is not supported"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn return_clause_from_single_part(
@@ -496,12 +488,6 @@ fn return_clause_from_single_part(
             "FINISH is not supported because virtual graph queries must return rows",
         )),
     }
-}
-
-fn compile_match(match_clause: &Match) -> Result<GraphPlan, CoreError> {
-    let mut plan = GraphPlan::default();
-    compile_match_into(match_clause, &mut plan)?;
-    Ok(plan)
 }
 
 fn compile_match_into(match_clause: &Match, plan: &mut GraphPlan) -> Result<(), CoreError> {
@@ -1686,6 +1672,34 @@ mod tests {
         assert_eq!(plan.nodes.len(), 1);
         assert_eq!(plan.relationships.len(), 0);
         assert_eq!(plan.projections.len(), 1);
+    }
+
+    #[test]
+    fn compiles_multiple_match_clauses() {
+        let plan = compile_cypher(
+            "MATCH (person:Person) \
+             WHERE person.team = 'platform' \
+             MATCH (person)-[:OWNS]->(service:Service) \
+             WHERE service.tier = 'prod' \
+             RETURN person.name AS owner, service.name AS service",
+        )
+        .expect("multiple MATCH clauses should compile");
+
+        assert_eq!(
+            plan.nodes,
+            vec![
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+            ]
+        );
+        assert_eq!(plan.relationships.len(), 1);
+        assert_eq!(plan.predicates.len(), 2);
     }
 
     #[test]
