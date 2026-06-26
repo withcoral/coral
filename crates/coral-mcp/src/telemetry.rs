@@ -54,6 +54,7 @@ pub(crate) fn call_tool_span(tool_name: &str, trace_parent: Option<&str>) -> tra
         otel.kind = "server",
         otel.name = "coral.mcp.call_tool",
         episode.id = field::Empty,
+        tool.intent = field::Empty,
         status = field::Empty,
     );
     apply_trace_parent(&span, trace_parent);
@@ -124,6 +125,10 @@ pub(crate) fn record_success(span: &tracing::Span) {
 
 pub(crate) fn record_episode_id(span: &tracing::Span, episode_id: &str) {
     span.record("episode.id", episode_id);
+}
+
+pub(crate) fn record_tool_intent(span: &tracing::Span, intent: &str) {
+    span.record("tool.intent", intent);
 }
 
 fn record_error(span: &tracing::Span, error_type: &str, message: impl std::fmt::Display) {

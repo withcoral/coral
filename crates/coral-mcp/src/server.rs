@@ -35,10 +35,10 @@ use crate::{
         guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_tool,
         list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
         open_episode_arguments, open_episode_tool, optional_episode_id_argument,
-        required_string_argument, search_catalog_arguments, search_catalog_tool,
-        search_catalog_value, sql_tool, status_to_error_data, tables_resource,
+        optional_intent_argument, required_string_argument, search_catalog_arguments,
+        search_catalog_tool, search_catalog_value, sql_tool, status_to_error_data, tables_resource,
         tables_resource_content, tool_error_from_status, tool_error_result,
-        with_episode_id_argument,
+        with_episode_id_argument, with_intent_argument,
     },
     telemetry,
 };
@@ -489,6 +489,7 @@ impl CoralMcpServer {
             }
             "open_episode" if self.options.episodes_enabled => {
                 let arguments = open_episode_arguments(request.arguments.as_ref())?;
+                telemetry::record_tool_intent(span, &arguments.intent);
                 match self
                     .open_episode(&arguments.intent, arguments.parent_episode_id.as_deref())
                     .await
@@ -621,13 +622,16 @@ impl ServerHandler for CoralMcpServer {
                 search_catalog_tool(&tool_context),
                 describe_table_tool(),
                 list_columns_tool(),
-            ];
+            ]
+            .into_iter()
+            .map(with_intent_argument)
+            .collect::<Vec<_>>();
             if self.options.episodes_enabled {
                 tools = tools.into_iter().map(with_episode_id_argument).collect();
                 tools.push(open_episode_tool());
             }
             if self.options.feedback_enabled {
-                let feedback = feedback_tool();
+                let feedback = with_intent_argument(feedback_tool());
                 let feedback = if self.options.episodes_enabled {
                     with_episode_id_argument(feedback)
                 } else {
@@ -648,9 +652,17 @@ impl ServerHandler for CoralMcpServer {
         let span =
             telemetry::call_tool_span(request.name.as_ref(), self.options.trace_parent.as_deref());
         let inject_episode_metadata = request.name.as_ref() != "open_episode";
+        let tool_intent = if self.tool_accepts_optional_intent(request.name.as_ref()) {
+            optional_intent_argument(request.arguments.as_ref(), "intent")
+        } else {
+            Ok(None)
+        };
         let episode_tag = EpisodeTag::from_tool_request(&self.options, request.arguments.as_ref());
-        let outcome = match episode_tag {
-            Ok(episode_tag) => {
+        let outcome = match (tool_intent, episode_tag) {
+            (Ok(tool_intent), Ok(episode_tag)) => {
+                if let Some(intent) = tool_intent.as_deref() {
+                    telemetry::record_tool_intent(&span, intent);
+                }
                 episode_tag.record_telemetry(&span);
                 let episode_id_metadata = inject_episode_metadata
                     .then(|| episode_tag.into_metadata())
@@ -661,7 +673,7 @@ impl ServerHandler for CoralMcpServer {
                 )
                 .await
             }
-            Err(error) => Err(error),
+            (Err(error), _) | (_, Err(error)) => Err(error),
         };
         finish_tool_call(&span, outcome)
     }
@@ -728,6 +740,15 @@ impl ServerHandler for CoralMcpServer {
             }
         })
         .await
+    }
+}
+
+impl CoralMcpServer {
+    fn tool_accepts_optional_intent(&self, tool_name: &str) -> bool {
+        matches!(
+            tool_name,
+            "sql" | "list_catalog" | "search_catalog" | "describe_table" | "list_columns"
+        ) || (tool_name == "feedback" && self.options.feedback_enabled)
     }
 }
 

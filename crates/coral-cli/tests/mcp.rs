@@ -14,6 +14,7 @@ use std::process::{Command as StdCommand, Stdio};
 use std::time::Duration;
 use std::{fs, io};
 
+use coral_api::CORAL_EPISODE_INTENT_MAX_CHARS;
 use harness::MockServer;
 use jsonschema::JSONSchema;
 use rmcp::{
@@ -94,6 +95,18 @@ fn tool_input_properties(tool: &rmcp::model::Tool) -> &Map<String, Value> {
         .get("properties")
         .and_then(Value::as_object)
         .unwrap_or_else(|| panic!("tool '{}' should advertise input properties", tool.name))
+}
+
+fn assert_tool_advertises_intent(tool: &rmcp::model::Tool) {
+    let intent_schema = tool_input_properties(tool)
+        .get("intent")
+        .unwrap_or_else(|| panic!("tool '{}' should advertise optional intent", tool.name));
+    assert_eq!(intent_schema["type"], json!("string"));
+    assert_eq!(intent_schema["minLength"], json!(1));
+    assert_eq!(
+        intent_schema["maxLength"],
+        json!(CORAL_EPISODE_INTENT_MAX_CHARS)
+    );
 }
 
 async fn structured_tool_content(
@@ -320,6 +333,9 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .expect("search_catalog description")
             .contains("3 table(s) and 0 table function(s) are currently visible")
     );
+    for tool in &tools {
+        assert_tool_advertises_intent(tool);
+    }
     let catalog_requests = server.list_catalog_requests();
     let count_request = catalog_requests
         .last()
@@ -383,6 +399,9 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
             "feedback"
         ]
     );
+    for tool in &tools {
+        assert_tool_advertises_intent(tool);
+    }
 
     client.cancel().await?;
     server.shutdown().await;
@@ -414,6 +433,7 @@ async fn mcp_stdio_enable_episodes_flag_lists_open_episode_tool()
         .iter()
         .filter(|tool| tool.name.as_ref() != "open_episode")
     {
+        assert_tool_advertises_intent(tool);
         assert!(
             tool_input_properties(tool).contains_key("episode_id"),
             "tool '{}' should advertise optional episode_id",
@@ -424,6 +444,7 @@ async fn mcp_stdio_enable_episodes_flag_lists_open_episode_tool()
         .iter()
         .find(|tool| tool.name.as_ref() == "open_episode")
         .expect("open_episode tool should be listed");
+    assert_tool_advertises_intent(open_episode);
     assert!(
         tool_input_properties(open_episode).contains_key("parent_episode_id"),
         "open_episode should accept an optional parent_episode_id"

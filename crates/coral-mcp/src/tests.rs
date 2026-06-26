@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_api::{
-    CORAL_EPISODE_ID_MAX_LEN,
+    CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_INTENT_MAX_CHARS,
     v1::{ImportSourceRequest, import_source_response},
 };
 use coral_client::{
@@ -275,6 +275,18 @@ fn assert_tool_advertises_episode_id(tool: &Tool) {
     assert_nullable_episode_id_schema(episode_id_schema, tool.name.as_ref());
 }
 
+fn assert_tool_advertises_intent(tool: &Tool) {
+    let intent_schema = tool_input_properties(tool)
+        .get("intent")
+        .unwrap_or_else(|| panic!("tool '{}' should advertise optional intent", tool.name));
+    assert_eq!(intent_schema["type"], json!("string"));
+    assert_eq!(intent_schema["minLength"], json!(1));
+    assert_eq!(
+        intent_schema["maxLength"],
+        json!(CORAL_EPISODE_INTENT_MAX_CHARS)
+    );
+}
+
 fn assert_nullable_episode_id_schema(schema: &Value, label: &str) {
     let any_of = schema
         .get("anyOf")
@@ -363,9 +375,12 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
         "describe_table",
         "list_columns",
     ] {
-        assert_tool_advertises_episode_id(tool_by_name(&tools, name));
+        let tool = tool_by_name(&tools, name);
+        assert_tool_advertises_intent(tool);
+        assert_tool_advertises_episode_id(tool);
     }
     let open_episode_tool = tool_by_name(&tools, "open_episode");
+    assert_tool_advertises_intent(open_episode_tool);
     assert!(!tool_input_properties(open_episode_tool).contains_key("episode_id"));
     let parent_episode_id_schema = tool_input_properties(open_episode_tool)
         .get("parent_episode_id")
@@ -428,7 +443,8 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
                 "sql": "SELECT 1 AS ok",
-                "episode_id": child_episode_id
+                "episode_id": child_episode_id,
+                "intent": "Verify the child episode can run a SQL probe"
             }))),
         )
         .await
@@ -452,6 +468,21 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
         invalid_episode_id
             .to_string()
             .contains("argument 'episode_id' must be graphic ASCII")
+    );
+
+    let invalid_intent = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": "SELECT 1",
+                "intent": " "
+            }))),
+        )
+        .await
+        .expect_err("blank tool intent should fail before query dispatch");
+    assert!(
+        invalid_intent
+            .to_string()
+            .contains("argument 'intent' must not be blank")
     );
 
     let invalid_open_episode_id = client
@@ -526,6 +557,7 @@ async fn mcp_episode_tool_is_disabled_by_default() {
         "open_episode should not be listed by default"
     );
     for tool in &tools {
+        assert_tool_advertises_intent(tool);
         assert_tool_omits_episode_id(tool);
     }
 

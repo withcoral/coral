@@ -13,6 +13,7 @@ use super::{
 };
 
 const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by open_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
+const TOOL_INTENT_ARGUMENT_DESCRIPTION: &str = "Optional natural-language description of what this tool call is trying to accomplish. Supplying intent helps Coral attribute and learn from tool-use traces without changing query behavior.";
 const EPISODE_ID_JSON_SCHEMA_PATTERN: &str = "^[!-~]+$";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -385,8 +386,17 @@ pub(crate) fn required_string_argument(
 pub(crate) fn open_episode_arguments(
     arguments: Option<&Map<String, Value>>,
 ) -> Result<OpenEpisodeArguments, ErrorData> {
+    let intent = required_string_argument(arguments, "intent")?;
+    if intent.chars().count() > CORAL_EPISODE_INTENT_MAX_CHARS {
+        return Err(ErrorData::invalid_params(
+            format!(
+                "argument 'intent' must be at most {CORAL_EPISODE_INTENT_MAX_CHARS} characters"
+            ),
+            None,
+        ));
+    }
     Ok(OpenEpisodeArguments {
-        intent: required_string_argument(arguments, "intent")?,
+        intent,
         parent_episode_id: optional_episode_id_argument(arguments, "parent_episode_id")?,
     })
 }
@@ -485,6 +495,35 @@ pub(crate) fn optional_episode_id_argument(
     Ok(Some(value.to_string()))
 }
 
+pub(crate) fn optional_intent_argument(
+    arguments: Option<&Map<String, Value>>,
+    key: &str,
+) -> Result<Option<String>, ErrorData> {
+    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let value = value.as_str().ok_or_else(|| {
+        ErrorData::invalid_params(format!("argument '{key}' must be a string"), None)
+    })?;
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must not be blank"),
+            None,
+        ));
+    }
+    if value.chars().count() > CORAL_EPISODE_INTENT_MAX_CHARS {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must be at most {CORAL_EPISODE_INTENT_MAX_CHARS} characters"),
+            None,
+        ));
+    }
+    Ok(Some(value.to_string()))
+}
+
 pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
     let compact = serde_json::to_string(&value)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -520,6 +559,28 @@ fn search_catalog_description(context: &ToolDescriptionContext) -> String {
 pub(crate) fn with_episode_id_argument(mut tool: Tool) -> Tool {
     add_episode_id_property(Arc::make_mut(&mut tool.input_schema));
     tool
+}
+
+pub(crate) fn with_intent_argument(mut tool: Tool) -> Tool {
+    add_intent_property(Arc::make_mut(&mut tool.input_schema));
+    tool
+}
+
+fn add_intent_property(schema: &mut Map<String, Value>) {
+    schema
+        .entry("properties")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("tool input properties are an object")
+        .entry("intent".to_string())
+        .or_insert_with(|| {
+            json!({
+                "type": "string",
+                "description": TOOL_INTENT_ARGUMENT_DESCRIPTION,
+                "minLength": 1,
+                "maxLength": CORAL_EPISODE_INTENT_MAX_CHARS
+            })
+        });
 }
 
 fn add_episode_id_property(schema: &mut Map<String, Value>) {
@@ -984,7 +1045,7 @@ mod tests {
     use super::{
         EPISODE_ID_ARGUMENT_DESCRIPTION, ToolDescriptionContext, build_tool_result,
         connected_source_names_text, list_catalog_arguments, search_catalog_arguments,
-        search_catalog_tool, sql_tool, with_episode_id_argument,
+        search_catalog_tool, sql_tool, with_episode_id_argument, with_intent_argument,
     };
 
     #[test]
@@ -1081,6 +1142,32 @@ mod tests {
         assert_eq!(
             episode_id_schema.get("description").and_then(Value::as_str),
             Some(EPISODE_ID_ARGUMENT_DESCRIPTION)
+        );
+    }
+
+    #[test]
+    fn with_intent_argument_decorates_tool_schema() {
+        let context = ToolDescriptionContext::new(1, 0, Vec::new());
+        let tool = sql_tool(&context);
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("input properties");
+        assert!(!properties.contains_key("intent"));
+
+        let tool = with_intent_argument(tool);
+        let intent_schema = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|properties| properties.get("intent"))
+            .expect("intent schema");
+
+        assert_eq!(intent_schema.get("type"), Some(&json!("string")));
+        assert_eq!(
+            intent_schema.get("maxLength"),
+            Some(&json!(coral_api::CORAL_EPISODE_INTENT_MAX_CHARS))
         );
     }
 
