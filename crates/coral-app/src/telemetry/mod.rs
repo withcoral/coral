@@ -313,6 +313,13 @@ fn add_local_trace_exporter(
     Ok(builder.with_span_processor(BatchSpanProcessor::builder(exporter).build()))
 }
 
+pub(crate) fn list_local_query_history(
+    dir: PathBuf,
+    retention: Duration,
+) -> Result<Vec<TraceQueryHistoryEntry>, TraceStoreError> {
+    local_store::TraceStore::with_retention(dir, retention).list_query_history_sync()
+}
+
 fn build_otlp_logger_provider(
     resource: &Resource,
     endpoint: &str,
