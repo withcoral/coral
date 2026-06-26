@@ -478,21 +478,37 @@ impl<'a> Lowerer<'a> {
 
         let mut predicates = Vec::with_capacity(self.plan.predicates.len());
         for predicate in &self.plan.predicates {
-            let property = self.render_property_ref(&predicate.property)?;
-            predicates.push(match (predicate.operator, &predicate.literal) {
-                (ComparisonOperator::Equal, Literal::Null) => format!("{property} IS NULL"),
-                (ComparisonOperator::NotEqual, Literal::Null) => {
-                    format!("{property} IS NOT NULL")
-                }
-                _ => format!(
-                    "{} {} {}",
-                    property,
-                    render_operator(predicate.operator),
-                    render_literal(&predicate.literal)
-                ),
-            });
+            predicates.push(self.render_predicate(predicate)?);
         }
         Ok(format!(" WHERE {}", predicates.join(" AND ")))
+    }
+
+    fn render_predicate(
+        &self,
+        predicate: &super::ir::PropertyPredicate,
+    ) -> Result<String, CoreError> {
+        let property = self.render_property_ref(&predicate.property)?;
+        match (&predicate.operator, &predicate.literal) {
+            (ComparisonOperator::Equal, Literal::Null) => Ok(format!("{property} IS NULL")),
+            (ComparisonOperator::NotEqual, Literal::Null) => Ok(format!("{property} IS NOT NULL")),
+            (
+                ComparisonOperator::GreaterThan
+                | ComparisonOperator::GreaterThanOrEqual
+                | ComparisonOperator::LessThan
+                | ComparisonOperator::LessThanOrEqual,
+                Literal::Null,
+            ) => Err(Diagnostic::new(
+                "INVALID_NULL_COMPARISON",
+                "predicates",
+                "null can only be compared with equality or inequality",
+            )
+            .into_core_error()),
+            _ => Ok(format!(
+                "{property} {} {}",
+                render_operator(predicate.operator),
+                render_literal(&predicate.literal)
+            )),
+        }
     }
 
     fn render_order_by(&self) -> Result<String, CoreError> {
@@ -815,26 +831,70 @@ relationships: []
     #[test]
     fn lower_graph_plan_renders_null_predicates() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
-        let mut plan = ownership_plan(Direction::Outgoing);
-        plan.predicates = vec![PropertyPredicate {
-            property: PropertyRef {
+        let plan = GraphPlan {
+            nodes: vec![NodePattern {
                 variable: "service".to_string(),
-                property: "tier".to_string(),
-            },
-            operator: ComparisonOperator::Equal,
-            literal: Literal::Null,
-        }];
-        plan.order_by = Vec::new();
-        plan.limit = None;
+                label: "Service".to_string(),
+            }],
+            relationships: Vec::new(),
+            projections: vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("service".to_string()),
+            }],
+            predicates: vec![
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    literal: Literal::Null,
+                },
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    operator: ComparisonOperator::NotEqual,
+                    literal: Literal::Null,
+                },
+            ],
+            order_by: Vec::new(),
+            limit: None,
+        };
 
         let translation = graph
             .lower_graph_plan(&plan)
-            .expect("null predicate should lower");
+            .expect("null predicate plan should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n0\".\"service_name\" AS \"service\" FROM \"ops\".\"services\" AS \"n0\" \
+             WHERE \"n0\".\"tier\" IS NULL AND \"n0\".\"service_name\" IS NOT NULL"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_rejects_ordered_null_comparisons() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        let predicate = plan
+            .predicates
+            .get_mut(0)
+            .expect("ownership fixture should include a predicate");
+        predicate.operator = ComparisonOperator::GreaterThan;
+        predicate.literal = Literal::Null;
+
+        let error = graph
+            .lower_graph_plan(&plan)
+            .expect_err("ordered null comparison should fail");
 
         assert!(
-            translation.sql().contains("\"n1\".\"tier\" IS NULL"),
-            "{}",
-            translation.sql()
+            error.to_string().contains("INVALID_NULL_COMPARISON"),
+            "{error:?}"
         );
     }
 

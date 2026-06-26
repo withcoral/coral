@@ -64,6 +64,8 @@ The supported foundation subset is intentionally narrow:
 - one non-optional `MATCH` path with named, single-label nodes;
 - directed, typed relationships;
 - `WHERE` comparisons joined by `AND`;
+- inline node property maps normalized to equality predicates;
+- `IS NULL` and `IS NOT NULL` predicates lowered with SQL null semantics;
 - property projections, standalone `count(*)`, property `ORDER BY`, and
   integer `LIMIT`.
 

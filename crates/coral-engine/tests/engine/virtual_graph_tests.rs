@@ -92,6 +92,62 @@ async fn cypher_translation_executes_against_synthetic_file_sources() {
 }
 
 #[tokio::test]
+async fn cypher_inline_node_property_maps_execute_as_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {tier: 'prod'}) \
+         RETURN service.name AS service \
+         ORDER BY service.name",
+    )
+    .await
+    .expect("Cypher query should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_is_null_predicates_execute_with_sql_null_semantics() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier IS NULL \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect("Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" IS NULL"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "legacy-sync"})]
+    );
+}
+
+#[tokio::test]
 async fn explain_cypher_preserves_translated_sql_and_datafusion_plan() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -296,6 +352,7 @@ fn write_ops_fixture(dir: &Path) {
             json!({"id": 10, "service_name": "billing-api", "tier": "prod"}),
             json!({"id": 20, "service_name": "deployments", "tier": "prod"}),
             json!({"id": 30, "service_name": "experiments", "tier": "dev"}),
+            json!({"id": 40, "service_name": "legacy-sync", "tier": null}),
         ],
     );
     write_jsonl_file(

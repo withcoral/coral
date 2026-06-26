@@ -5,7 +5,7 @@ use decypher::ast::expr::{
 };
 use decypher::ast::names::Variable;
 use decypher::ast::pattern::{
-    LabelExpression, NodePattern as CypherNodePattern, PatternElement,
+    LabelExpression, NodePattern as CypherNodePattern, PatternElement, Properties,
     RelationshipDirection as CypherRelationshipDirection,
     RelationshipPattern as CypherRelationshipPattern,
 };
@@ -19,6 +19,12 @@ use super::ir::{
     Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
+
+#[derive(Debug)]
+struct CompiledNode {
+    pattern: NodePattern,
+    predicates: Vec<PropertyPredicate>,
+}
 
 /// Parses and compiles the Coral-supported read-only Cypher subset into a shared graph plan.
 ///
@@ -147,8 +153,9 @@ fn compile_match(match_clause: &Match) -> Result<GraphPlan, CoreError> {
 
     let mut plan = GraphPlan::default();
     let start_node = compile_node(start, "match.pattern.nodes[0]")?;
-    let mut previous_variable = start_node.variable.clone();
-    plan.nodes.push(start_node);
+    let mut previous_variable = start_node.pattern.variable.clone();
+    plan.predicates.extend(start_node.predicates);
+    plan.nodes.push(start_node.pattern);
 
     for (index, chain) in chains.iter().enumerate() {
         let node_path = format!("match.pattern.nodes[{}]", index + 1);
@@ -157,11 +164,12 @@ fn compile_match(match_clause: &Match) -> Result<GraphPlan, CoreError> {
         let relationship = compile_relationship(
             &chain.relationship,
             &previous_variable,
-            &next_node.variable,
+            &next_node.pattern.variable,
             relationship_path,
         )?;
-        previous_variable.clone_from(&next_node.variable);
-        plan.nodes.push(next_node);
+        previous_variable.clone_from(&next_node.pattern.variable);
+        plan.predicates.extend(next_node.predicates);
+        plan.nodes.push(next_node.pattern);
         plan.relationships.push(relationship);
     }
 
@@ -171,19 +179,46 @@ fn compile_match(match_clause: &Match) -> Result<GraphPlan, CoreError> {
 fn compile_node(
     pattern: &CypherNodePattern,
     path: impl Into<String>,
-) -> Result<NodePattern, CoreError> {
+) -> Result<CompiledNode, CoreError> {
     let path = path.into();
-    if pattern.properties.is_some() {
-        return Err(unsupported(
-            format!("{path}.properties"),
-            "inline node property maps are not supported yet; use WHERE predicates",
-        ));
-    }
+    let variable = required_variable(pattern.variable.as_ref(), format!("{path}.variable"))?;
+    let label = single_static_label(&pattern.labels, format!("{path}.labels"))?;
+    let predicates = pattern.properties.as_ref().map_or_else(
+        || Ok(Vec::new()),
+        |properties| compile_inline_properties(properties, &variable, format!("{path}.properties")),
+    )?;
 
-    Ok(NodePattern {
-        variable: required_variable(pattern.variable.as_ref(), format!("{path}.variable"))?,
-        label: single_static_label(&pattern.labels, format!("{path}.labels"))?,
+    Ok(CompiledNode {
+        pattern: NodePattern { variable, label },
+        predicates,
     })
+}
+
+fn compile_inline_properties(
+    properties: &Properties,
+    variable: &str,
+    path: impl Into<String>,
+) -> Result<Vec<PropertyPredicate>, CoreError> {
+    let path = path.into();
+    let Properties::Map(map) = properties else {
+        return Err(unsupported(
+            path,
+            "parameterized property maps are not supported yet",
+        ));
+    };
+
+    let mut predicates = Vec::with_capacity(map.entries.len());
+    for (index, (key, expression)) in map.entries.iter().enumerate() {
+        predicates.push(PropertyPredicate {
+            property: PropertyRef {
+                variable: variable.to_string(),
+                property: key.name.name.clone(),
+            },
+            operator: ComparisonOperator::Equal,
+            literal: compile_literal(expression, format!("{path}.entries[{index}].value"))?,
+        });
+    }
+    Ok(predicates)
 }
 
 fn compile_relationship(
@@ -357,6 +392,20 @@ fn append_predicates(
         )),
         Expression::Comparison { lhs, operators, .. } => {
             predicates.push(compile_comparison(lhs, operators.as_slice(), path)?);
+            Ok(())
+        }
+        Expression::IsNull {
+            operand, negated, ..
+        } => {
+            predicates.push(PropertyPredicate {
+                property: compile_property_ref(operand, format!("{path}.operand"))?,
+                operator: if *negated {
+                    ComparisonOperator::NotEqual
+                } else {
+                    ComparisonOperator::Equal
+                },
+                literal: Literal::Null,
+            });
             Ok(())
         }
         _ => Err(unsupported(
@@ -615,6 +664,56 @@ mod tests {
             plan.projections,
             vec![Projection::CountAll {
                 alias: "services".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_inline_node_property_maps_as_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service {tier: 'prod', active: true}) RETURN service.name",
+        )
+        .expect("query should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    literal: Literal::String("prod".to_string()),
+                },
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "active".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    literal: Literal::Boolean(true),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_is_null_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) WHERE service.tier IS NULL RETURN service.name",
+        )
+        .expect("query should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                literal: Literal::Null,
             }]
         );
     }
