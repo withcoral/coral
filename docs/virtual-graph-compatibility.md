@@ -25,6 +25,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `COUNT(*)` | Supported foundation | Standalone aggregate projection only |
 | Ordering and limit | Supported foundation | Property order keys and row limit |
 | Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
+| Declaration-aware plan validation | Supported foundation | Resolves variables/properties and rejects unsupported plan shapes before SQL rendering |
 | Optional matches | Deferred | Requires nullability-aware IR |
 | Variable-length paths | Deferred | Requires recursive/path expansion semantics |
 | Path values | Deferred | Requires graph value representation |

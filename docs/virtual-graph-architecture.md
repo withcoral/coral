@@ -15,6 +15,9 @@ string rendering.
   into the shared graph IR.
 - **Shared graph IR**: typed nodes, relationships, predicates, projections,
   ordering, aggregation, and limits.
+- **Plan validation**: resolves IR variables to declaration mappings, checks
+  endpoint labels, property references, aggregate restrictions, and connected
+  join shape before any SQL is rendered.
 - **SQL lowering**: the only layer that renders DataFusion SQL. It owns
   identifier quoting, join shape, predicate placement, and translated SQL.
 - **Execution integration**: graph declarations are validated against the
@@ -40,6 +43,8 @@ The foundation slice establishes:
 - declaration validation against Coral catalog snapshots for mapped tables,
   columns, and required-filter constraints.
 - a typed shared graph query plan.
+- a declaration-aware graph plan validator that frontloads user-facing semantic
+  diagnostics before SQL lowering.
 - SQL lowering for node scans, directed relationship traversals, property
   projections, connected multi-hop paths, property predicates, ordering,
   `COUNT(*)`, and `LIMIT`.

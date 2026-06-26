@@ -10,6 +10,7 @@ mod diagnostic;
 mod execution;
 mod ir;
 mod sql;
+mod validation;
 
 pub use cypher::compile_cypher;
 pub use declaration::{Declaration, Endpoint, Node, Relationship, TableRef};

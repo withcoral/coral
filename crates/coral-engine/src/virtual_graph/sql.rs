@@ -1,11 +1,12 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use super::declaration::{Declaration, Node, Relationship, TableRef};
+use super::declaration::{Declaration, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     ComparisonOperator, Direction, GraphPlan, Literal, OrderDirection, Projection, PropertyRef,
 };
+use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
 
 /// Result of lowering a graph query plan to `DataFusion` SQL.
@@ -13,18 +14,6 @@ use crate::CoreError;
 pub struct SqlTranslation {
     sql: String,
     diagnostics: Vec<Diagnostic>,
-}
-
-#[derive(Debug, Clone)]
-enum BindingKind<'a> {
-    Node(&'a Node),
-    Relationship(&'a Relationship),
-}
-
-#[derive(Debug, Clone)]
-struct Binding<'a> {
-    alias: String,
-    kind: BindingKind<'a>,
 }
 
 impl SqlTranslation {
@@ -56,42 +45,35 @@ impl Declaration {
     /// unknown labels, relationship types, variables, or properties, or when
     /// the plan uses a relationship shape not yet supported by the lowerer.
     pub fn lower_graph_plan(&self, plan: &GraphPlan) -> Result<SqlTranslation, CoreError> {
-        Lowerer::new(self, plan).lower()
+        let validated = self.validate_graph_plan(plan)?;
+        Lowerer::new(validated).lower()
     }
 }
 
 struct Lowerer<'a> {
-    graph: &'a Declaration,
-    plan: &'a GraphPlan,
-    bindings: BTreeMap<&'a str, Binding<'a>>,
+    validated: ValidatedGraphPlan<'a>,
     joined_nodes: BTreeSet<&'a str>,
-    joined_relationships: BTreeSet<&'a str>,
     from_clause: String,
 }
 
 impl<'a> Lowerer<'a> {
-    fn new(graph: &'a Declaration, plan: &'a GraphPlan) -> Self {
+    fn new(validated: ValidatedGraphPlan<'a>) -> Self {
         Self {
-            graph,
-            plan,
-            bindings: BTreeMap::new(),
+            validated,
             joined_nodes: BTreeSet::new(),
-            joined_relationships: BTreeSet::new(),
             from_clause: String::new(),
         }
     }
 
     fn lower(mut self) -> Result<SqlTranslation, CoreError> {
-        self.bind_nodes()?;
-        self.bind_relationships()?;
-        self.validate_aggregation()?;
         self.build_from_clause()?;
 
         let select = self.render_select()?;
         let where_clause = self.render_where()?;
         let order_by = self.render_order_by()?;
         let limit = self
-            .plan
+            .validated
+            .plan()
             .limit
             .map(|limit| format!(" LIMIT {limit}"))
             .unwrap_or_default();
@@ -105,267 +87,94 @@ impl<'a> Lowerer<'a> {
         ))
     }
 
-    fn validate_aggregation(&self) -> Result<(), CoreError> {
-        let count_all_count = self
-            .plan
-            .projections
-            .iter()
-            .filter(|projection| matches!(projection, Projection::CountAll { .. }))
-            .count();
-        if count_all_count == 0 {
-            return Ok(());
-        }
-        if self.plan.projections.len() != 1 {
-            return Err(Diagnostic::new(
-                "UNSUPPORTED_AGGREGATION",
-                "projections",
-                "COUNT(*) cannot be mixed with property projections until grouping is supported",
-            )
-            .into_core_error());
-        }
-        if !self.plan.order_by.is_empty() {
-            return Err(Diagnostic::new(
-                "UNSUPPORTED_AGGREGATION",
-                "order_by",
-                "ORDER BY with COUNT(*) is not supported until aggregate ordering is supported",
-            )
-            .into_core_error());
-        }
-        Ok(())
-    }
-
-    fn bind_nodes(&mut self) -> Result<(), CoreError> {
-        if self.plan.nodes.is_empty() {
-            return Err(Diagnostic::new(
-                "EMPTY_PLAN",
-                "nodes",
-                "at least one node pattern is required",
-            )
-            .into_core_error());
-        }
-
-        for (index, pattern) in self.plan.nodes.iter().enumerate() {
-            if self.bindings.contains_key(pattern.variable.as_str()) {
-                return Err(Diagnostic::new(
-                    "DUPLICATE_VARIABLE",
-                    format!("nodes[{index}].variable"),
-                    format!("variable '{}' is bound more than once", pattern.variable),
-                )
-                .into_core_error());
-            }
-            let node = self.graph.node(&pattern.label).ok_or_else(|| {
-                Diagnostic::new(
-                    "UNKNOWN_NODE_LABEL",
-                    format!("nodes[{index}].label"),
-                    format!("unknown node label '{}'", pattern.label),
-                )
-                .into_core_error()
-            })?;
-            self.bindings.insert(
-                pattern.variable.as_str(),
-                Binding {
-                    alias: format!("n{index}"),
-                    kind: BindingKind::Node(node),
-                },
-            );
-        }
-        Ok(())
-    }
-
-    fn bind_relationships(&mut self) -> Result<(), CoreError> {
-        for (index, pattern) in self.plan.relationships.iter().enumerate() {
-            let relationship = self
-                .graph
-                .relationship(&pattern.relationship_type)
-                .ok_or_else(|| {
-                    Diagnostic::new(
-                        "UNKNOWN_RELATIONSHIP_TYPE",
-                        format!("relationships[{index}].type"),
-                        format!("unknown relationship type '{}'", pattern.relationship_type),
-                    )
-                    .into_core_error()
-                })?;
-            self.relationship_endpoint_nodes(
-                index,
-                relationship,
-                pattern.direction,
-                &pattern.left,
-                &pattern.right,
-            )?;
-            if let Some(variable) = &pattern.variable {
-                if self.bindings.contains_key(variable.as_str()) {
-                    return Err(Diagnostic::new(
-                        "DUPLICATE_VARIABLE",
-                        format!("relationships[{index}].variable"),
-                        format!("variable '{variable}' is bound more than once"),
-                    )
-                    .into_core_error());
-                }
-                self.bindings.insert(
-                    variable.as_str(),
-                    Binding {
-                        alias: format!("r{index}"),
-                        kind: BindingKind::Relationship(relationship),
-                    },
-                );
-            }
-        }
-        Ok(())
-    }
-
-    fn relationship_endpoint_nodes(
-        &self,
-        index: usize,
-        relationship: &Relationship,
-        direction: Direction,
-        left: &str,
-        right: &str,
-    ) -> Result<(&Node, &Node), CoreError> {
-        let left_node = self.node_binding(left).ok_or_else(|| {
-            Diagnostic::new(
-                "UNKNOWN_VARIABLE",
-                format!("relationships[{index}].left"),
-                format!("relationship references unknown left node variable '{left}'"),
-            )
-            .into_core_error()
-        })?;
-        let right_node = self.node_binding(right).ok_or_else(|| {
-            Diagnostic::new(
-                "UNKNOWN_VARIABLE",
-                format!("relationships[{index}].right"),
-                format!("relationship references unknown right node variable '{right}'"),
-            )
-            .into_core_error()
-        })?;
-
-        let (expected_left, expected_right) = match direction {
-            Direction::Outgoing => (&relationship.from.label, &relationship.to.label),
-            Direction::Incoming => (&relationship.to.label, &relationship.from.label),
-        };
-        if left_node.label != *expected_left || right_node.label != *expected_right {
-            return Err(Diagnostic::new(
-                "RELATIONSHIP_ENDPOINT_MISMATCH",
-                format!("relationships[{index}]"),
-                format!(
-                    "relationship type '{}' expects {} -> {}, got {} -> {}",
-                    relationship.relationship_type,
-                    relationship.from.label,
-                    relationship.to.label,
-                    left_node.label,
-                    right_node.label
-                ),
-            )
-            .into_core_error());
-        }
-
-        Ok((left_node, right_node))
-    }
-
     fn build_from_clause(&mut self) -> Result<(), CoreError> {
-        let first_node = self.plan.nodes.first().ok_or_else(|| {
-            Diagnostic::new(
-                "EMPTY_PLAN",
-                "nodes",
-                "at least one node pattern is required",
-            )
-            .into_core_error()
-        })?;
-        let first_binding = self.binding(first_node.variable.as_str())?;
-        let BindingKind::Node(first_node_mapping) = first_binding.kind else {
+        let plan = self.validated.plan();
+        let validated = &self.validated;
+        let first_node = plan
+            .nodes
+            .first()
+            .ok_or_else(|| CoreError::internal("validated graph plan had no nodes"))?;
+        let first_binding = validated.binding(first_node.variable.as_str())?;
+        let ValidatedBindingKind::Node(first_node_mapping) = first_binding.kind() else {
             return Err(CoreError::internal("first graph binding was not a node"));
         };
         self.from_clause = format!(
             "FROM {} AS {}",
             render_table_ref(&first_node_mapping.table),
-            quote_ident(&first_binding.alias)
+            quote_ident(first_binding.alias())
         );
         self.joined_nodes.insert(first_node.variable.as_str());
 
-        let mut remaining_relationships =
-            (0..self.plan.relationships.len()).collect::<BTreeSet<_>>();
+        let mut remaining_relationships = (0..plan.relationships.len()).collect::<BTreeSet<_>>();
         while !remaining_relationships.is_empty() {
             let mut progressed = false;
             for index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
-                let pattern = self.plan.relationships.get(index).ok_or_else(|| {
+                let pattern = plan.relationships.get(index).ok_or_else(|| {
                     CoreError::internal("validated relationship index was out of bounds")
                 })?;
                 let left_joined = self.joined_nodes.contains(pattern.left.as_str());
                 let right_joined = self.joined_nodes.contains(pattern.right.as_str());
                 if left_joined || right_joined {
-                    let relationship = self
-                        .graph
-                        .relationship(&pattern.relationship_type)
-                        .ok_or_else(|| {
-                            CoreError::internal("relationship binding missing during lowering")
-                        })?;
-                    self.join_relationship(index, pattern, relationship)?;
+                    let relationship = validated.relationship_mapping(index)?;
+                    Self::join_relationship(
+                        validated,
+                        &mut self.joined_nodes,
+                        &mut self.from_clause,
+                        index,
+                        pattern,
+                        relationship,
+                    )?;
                     remaining_relationships.remove(&index);
                     progressed = true;
                 }
             }
             if !progressed {
-                return Err(Diagnostic::new(
-                    "DISCONNECTED_PATTERN",
-                    "relationships",
-                    "remaining relationships do not connect to an already joined node",
-                )
-                .into_core_error());
+                return Err(CoreError::internal(
+                    "validated graph plan contained an unjoinable relationship",
+                ));
             }
         }
 
-        for node in &self.plan.nodes {
+        for node in &plan.nodes {
             if !self.joined_nodes.contains(node.variable.as_str()) {
-                return Err(Diagnostic::new(
-                    "DISCONNECTED_PATTERN",
-                    "nodes",
-                    format!(
-                        "node variable '{}' is not connected to the first node pattern",
-                        node.variable
-                    ),
-                )
-                .into_core_error());
+                return Err(CoreError::internal(
+                    "validated graph plan contained a disconnected node",
+                ));
             }
         }
         Ok(())
     }
 
     fn join_relationship(
-        &mut self,
+        validated: &ValidatedGraphPlan<'a>,
+        joined_nodes: &mut BTreeSet<&'a str>,
+        from_clause: &mut String,
         index: usize,
         pattern: &'a super::ir::RelationshipPattern,
         relationship: &Relationship,
     ) -> Result<(), CoreError> {
-        let left_joined = self.joined_nodes.contains(pattern.left.as_str());
-        let right_joined = self.joined_nodes.contains(pattern.right.as_str());
+        let left_joined = joined_nodes.contains(pattern.left.as_str());
+        let right_joined = joined_nodes.contains(pattern.right.as_str());
         if !left_joined && !right_joined {
-            return Err(Diagnostic::new(
-                "DISCONNECTED_PATTERN",
-                format!("relationships[{index}]"),
-                "relationship does not connect to an already joined node",
-            )
-            .into_core_error());
+            return Err(CoreError::internal(
+                "validated graph relationship was not joinable",
+            ));
         }
 
-        let relationship_alias = pattern
-            .variable
-            .as_deref()
-            .and_then(|variable| {
-                self.bindings
-                    .get(variable)
-                    .map(|binding| binding.alias.clone())
-            })
-            .unwrap_or_else(|| format!("r{index}"));
+        let relationship_alias = validated.relationship_alias(index, pattern);
         let quoted_relationship_alias = quote_ident(&relationship_alias);
 
         if left_joined && right_joined {
-            let left_condition = self.relationship_join_condition(
+            let left_condition = Self::relationship_join_condition(
+                validated,
                 relationship,
                 pattern.direction,
                 &relationship_alias,
                 &pattern.left,
                 true,
             )?;
-            let right_condition = self.relationship_join_condition(
+            let right_condition = Self::relationship_join_condition(
+                validated,
                 relationship,
                 pattern.direction,
                 &relationship_alias,
@@ -373,7 +182,7 @@ impl<'a> Lowerer<'a> {
                 false,
             )?;
             write!(
-                &mut self.from_clause,
+                from_clause,
                 " JOIN {} AS {} ON {} AND {}",
                 render_table_ref(&relationship.table),
                 quoted_relationship_alias,
@@ -382,19 +191,34 @@ impl<'a> Lowerer<'a> {
             )
             .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
         } else if left_joined {
-            self.join_from_known_node(relationship, pattern, &relationship_alias, true)?;
+            Self::join_from_known_node(
+                validated,
+                joined_nodes,
+                from_clause,
+                relationship,
+                pattern,
+                &relationship_alias,
+                true,
+            )?;
         } else {
-            self.join_from_known_node(relationship, pattern, &relationship_alias, false)?;
+            Self::join_from_known_node(
+                validated,
+                joined_nodes,
+                from_clause,
+                relationship,
+                pattern,
+                &relationship_alias,
+                false,
+            )?;
         }
 
-        if let Some(variable) = &pattern.variable {
-            self.joined_relationships.insert(variable.as_str());
-        }
         Ok(())
     }
 
     fn join_from_known_node(
-        &mut self,
+        validated: &ValidatedGraphPlan<'a>,
+        joined_nodes: &mut BTreeSet<&'a str>,
+        from_clause: &mut String,
         relationship: &Relationship,
         pattern: &'a super::ir::RelationshipPattern,
         relationship_alias: &str,
@@ -405,10 +229,9 @@ impl<'a> Lowerer<'a> {
         } else {
             (pattern.right.as_str(), pattern.left.as_str(), false)
         };
-        let unknown_node = self.node_binding(unknown_variable).ok_or_else(|| {
-            CoreError::internal("unknown node binding missing after relationship validation")
-        })?;
-        let relationship_join = self.relationship_join_condition(
+        let unknown_node = validated.node_binding(unknown_variable)?;
+        let relationship_join = Self::relationship_join_condition(
+            validated,
             relationship,
             pattern.direction,
             relationship_alias,
@@ -416,8 +239,9 @@ impl<'a> Lowerer<'a> {
             known_is_left,
         )?;
         let unknown_table_ref = render_table_ref(&unknown_node.table);
-        let unknown_alias = self.binding(unknown_variable)?.alias.clone();
-        let unknown_join = self.relationship_join_condition(
+        let unknown_alias = validated.binding(unknown_variable)?.alias().to_string();
+        let unknown_join = Self::relationship_join_condition(
+            validated,
             relationship,
             pattern.direction,
             relationship_alias,
@@ -426,7 +250,7 @@ impl<'a> Lowerer<'a> {
         )?;
 
         write!(
-            &mut self.from_clause,
+            from_clause,
             " JOIN {} AS {} ON {}",
             render_table_ref(&relationship.table),
             quote_ident(relationship_alias),
@@ -434,27 +258,27 @@ impl<'a> Lowerer<'a> {
         )
         .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
         write!(
-            &mut self.from_clause,
+            from_clause,
             " JOIN {} AS {} ON {}",
             unknown_table_ref,
             quote_ident(&unknown_alias),
             unknown_join
         )
         .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
-        self.joined_nodes.insert(unknown_variable);
+        joined_nodes.insert(unknown_variable);
         Ok(())
     }
 
     fn relationship_join_condition(
-        &self,
+        validated: &ValidatedGraphPlan<'a>,
         relationship: &Relationship,
         direction: Direction,
         relationship_alias: &str,
         node_variable: &str,
         node_is_left: bool,
     ) -> Result<String, CoreError> {
-        let node_binding = self.binding(node_variable)?;
-        let BindingKind::Node(node) = node_binding.kind else {
+        let node_binding = validated.binding(node_variable)?;
+        let ValidatedBindingKind::Node(node) = node_binding.kind() else {
             return Err(CoreError::internal(
                 "relationship endpoint was not a node binding",
             ));
@@ -468,23 +292,14 @@ impl<'a> Lowerer<'a> {
             "{}.{} = {}.{}",
             quote_ident(relationship_alias),
             quote_ident(endpoint_column),
-            quote_ident(&node_binding.alias),
+            quote_ident(node_binding.alias()),
             quote_ident(&node.key)
         ))
     }
 
     fn render_select(&self) -> Result<String, CoreError> {
-        if self.plan.projections.is_empty() {
-            return Err(Diagnostic::new(
-                "EMPTY_PROJECTION",
-                "projections",
-                "at least one projection is required",
-            )
-            .into_core_error());
-        }
-
-        let mut rendered = Vec::with_capacity(self.plan.projections.len());
-        for projection in &self.plan.projections {
+        let mut rendered = Vec::with_capacity(self.validated.plan().projections.len());
+        for projection in &self.validated.plan().projections {
             match projection {
                 Projection::Property { property, alias } => {
                     let expression = self.render_property_ref(property)?;
@@ -502,12 +317,12 @@ impl<'a> Lowerer<'a> {
     }
 
     fn render_where(&self) -> Result<String, CoreError> {
-        if self.plan.predicates.is_empty() {
+        if self.validated.plan().predicates.is_empty() {
             return Ok(String::new());
         }
 
-        let mut predicates = Vec::with_capacity(self.plan.predicates.len());
-        for predicate in &self.plan.predicates {
+        let mut predicates = Vec::with_capacity(self.validated.plan().predicates.len());
+        for predicate in &self.validated.plan().predicates {
             predicates.push(self.render_predicate(predicate)?);
         }
         Ok(format!(" WHERE {}", predicates.join(" AND ")))
@@ -527,12 +342,9 @@ impl<'a> Lowerer<'a> {
                 | ComparisonOperator::LessThan
                 | ComparisonOperator::LessThanOrEqual,
                 Literal::Null,
-            ) => Err(Diagnostic::new(
-                "INVALID_NULL_COMPARISON",
-                "predicates",
-                "null can only be compared with equality or inequality",
-            )
-            .into_core_error()),
+            ) => Err(CoreError::internal(
+                "validated graph predicate contained an invalid null comparison",
+            )),
             _ => Ok(format!(
                 "{property} {} {}",
                 render_operator(predicate.operator),
@@ -542,12 +354,12 @@ impl<'a> Lowerer<'a> {
     }
 
     fn render_order_by(&self) -> Result<String, CoreError> {
-        if self.plan.order_by.is_empty() {
+        if self.validated.plan().order_by.is_empty() {
             return Ok(String::new());
         }
 
-        let mut keys = Vec::with_capacity(self.plan.order_by.len());
-        for key in &self.plan.order_by {
+        let mut keys = Vec::with_capacity(self.validated.plan().order_by.len());
+        for key in &self.validated.plan().order_by {
             keys.push(format!(
                 "{} {}",
                 self.render_property_ref(&key.property)?,
@@ -561,48 +373,22 @@ impl<'a> Lowerer<'a> {
     }
 
     fn render_property_ref(&self, property: &PropertyRef) -> Result<String, CoreError> {
-        let binding = self.binding(&property.variable)?;
-        let column = match binding.kind {
-            BindingKind::Node(node) => node.column_for_property(&property.property),
-            BindingKind::Relationship(relationship) => {
+        let binding = self.validated.binding(&property.variable)?;
+        let column = match binding.kind() {
+            ValidatedBindingKind::Node(node) => node.column_for_property(&property.property),
+            ValidatedBindingKind::Relationship(relationship) => {
                 relationship.column_for_property(&property.property)
             }
         }
         .ok_or_else(|| {
-            Diagnostic::new(
-                "UNKNOWN_PROPERTY",
-                "property",
-                format!(
-                    "variable '{}' does not expose property '{}'",
-                    property.variable, property.property
-                ),
-            )
-            .into_core_error()
+            CoreError::internal("validated graph property reference was not resolvable")
         })?;
 
         Ok(format!(
             "{}.{}",
-            quote_ident(&binding.alias),
+            quote_ident(binding.alias()),
             quote_ident(column)
         ))
-    }
-
-    fn node_binding(&self, variable: &str) -> Option<&Node> {
-        match self.bindings.get(variable).map(|binding| &binding.kind) {
-            Some(BindingKind::Node(node)) => Some(node),
-            _ => None,
-        }
-    }
-
-    fn binding(&self, variable: &str) -> Result<&Binding<'a>, CoreError> {
-        self.bindings.get(variable).ok_or_else(|| {
-            Diagnostic::new(
-                "UNKNOWN_VARIABLE",
-                "variable",
-                format!("unknown graph variable '{variable}'"),
-            )
-            .into_core_error()
-        })
     }
 }
 
