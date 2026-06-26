@@ -5,6 +5,7 @@ use serde_json::Value;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrType, SemanticIr};
 use crate::v4::manifest::{V4SourceManifest, V4Surface};
+use crate::v4::surfaces::json_schema::{RefError, resolve_local_ref};
 use crate::v4::{OPENAPI_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
 use crate::{ManifestError, Result};
 
@@ -96,29 +97,26 @@ impl<'a> OpenApiImporter<'a> {
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<Value> {
-        let Some(reference) = value.get("$ref").and_then(Value::as_str) else {
-            return Some(value.clone());
-        };
-        if !reference.starts_with("#/") {
-            diagnostics.push(Diagnostic::warning(
-                "OPENAPI_EXTERNAL_REF_UNSUPPORTED",
-                format!("external reference '{reference}' is unsupported"),
-                self.surface.id.clone(),
-                Some(operation_id.to_string()),
-            ));
-            return None;
-        }
-        let pointer = reference.strip_prefix('#').unwrap_or(reference);
-        if let Some(target) = self.document.pointer(pointer) {
-            Some(target.clone())
-        } else {
-            diagnostics.push(Diagnostic::warning(
-                "OPENAPI_REF_NOT_FOUND",
-                format!("reference '{reference}' was not found"),
-                self.surface.id.clone(),
-                Some(operation_id.to_string()),
-            ));
-            None
+        match resolve_local_ref(self.document, value) {
+            Ok(resolved) => Some(resolved.clone()),
+            Err(RefError::External(reference)) => {
+                diagnostics.push(Diagnostic::warning(
+                    "OPENAPI_EXTERNAL_REF_UNSUPPORTED",
+                    format!("external reference '{reference}' is unsupported"),
+                    self.surface.id.clone(),
+                    Some(operation_id.to_string()),
+                ));
+                None
+            }
+            Err(RefError::NotFound(reference)) => {
+                diagnostics.push(Diagnostic::warning(
+                    "OPENAPI_REF_NOT_FOUND",
+                    format!("reference '{reference}' was not found"),
+                    self.surface.id.clone(),
+                    Some(operation_id.to_string()),
+                ));
+                None
+            }
         }
     }
 }

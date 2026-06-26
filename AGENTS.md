@@ -15,6 +15,9 @@
   input discovery, and normalized source-definition models.
 - `crates/coral-telemetry`: cross-crate telemetry helpers that are independent
   of app bootstrap, query runtime, and adapter surfaces.
+- `ui`: embedded Coral app UI built into the CLI release flow.
+- `reef`: React Router/Wax frontend shell. It is validated independently from
+  `ui` and is not built by Rust crate build scripts.
 - `plugins/coral`: Agent plugin packaging. `plugins/coral/skills` is the
   canonical in-repo home for maintained Coral agent skills.
 
@@ -27,6 +30,9 @@
   workflow enforces this through its `schema-freshness` job when schema inputs
   change.
 - UI changes must pass `npm run check --prefix ui` (oxfmt + oxlint) before submitting.
+- Reef changes must pass `npm run check --prefix reef`,
+  `npm run typecheck --prefix reef`, `npm test --prefix reef`, and
+  `npm run build --prefix reef` before submitting.
 - Run `make perf-check` before submitting PRs that could affect CLI startup,
   local server bootstrap, source registration, or `coral.tables` catalog query
   latency. CI installs the bundled `github` source with fake credentials and
@@ -82,8 +88,6 @@
   `xtask/src/sources.rs`, performance checks live in `xtask/src/perf.rs`, and
   skill export lives in `xtask/src/skills.rs`. Release signing and
   notarization automation lives in `xtask/src/release.rs`.
-  `@withcoral/repo-ops` owns the whole tree; add narrower owners only for the
-  workflow-specific paths they actually maintain.
 - `make docs-check` intentionally skips the aggregate community source catalog.
   Any PR may leave that generated page stale so unrelated changes do not fail
   on aggregate community catalog drift; keep docs freshness strict for bundled
