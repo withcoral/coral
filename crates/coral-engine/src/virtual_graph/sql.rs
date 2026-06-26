@@ -393,6 +393,23 @@ impl<'a> Lowerer<'a> {
             (ComparisonOperator::In, _) => Err(CoreError::internal(
                 "validated IN predicate did not contain a literal list",
             )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                PredicateRhs::Literal(Literal::String(value)),
+            ) => Ok(format!(
+                "{property} LIKE {} ESCAPE '\\'",
+                render_like_pattern(predicate.operator, value)
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                _,
+            ) => Err(CoreError::internal(
+                "validated string predicate did not contain a string literal",
+            )),
             (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
                 Ok(format!("{property} IS NULL"))
             }
@@ -482,6 +499,9 @@ fn render_operator(operator: ComparisonOperator) -> &'static str {
         ComparisonOperator::LessThan => "<",
         ComparisonOperator::LessThanOrEqual => "<=",
         ComparisonOperator::In => "IN",
+        ComparisonOperator::StartsWith => "STARTS WITH",
+        ComparisonOperator::EndsWith => "ENDS WITH",
+        ComparisonOperator::Contains => "CONTAINS",
     }
 }
 
@@ -492,6 +512,24 @@ fn render_literal(literal: &Literal) -> String {
         Literal::Boolean(value) => value.to_string(),
         Literal::Null => "NULL".to_string(),
     }
+}
+
+fn render_like_pattern(operator: ComparisonOperator, value: &str) -> String {
+    let escaped = escape_like_literal(value);
+    let pattern = match operator {
+        ComparisonOperator::StartsWith => format!("{escaped}%"),
+        ComparisonOperator::EndsWith => format!("%{escaped}"),
+        ComparisonOperator::Contains => format!("%{escaped}%"),
+        _ => unreachable!("LIKE pattern requested for non-string predicate operator"),
+    };
+    quote_string_literal(&pattern)
+}
+
+fn escape_like_literal(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 fn quote_ident(identifier: &str) -> String {
@@ -1015,6 +1053,42 @@ relationships: []
 
         assert!(
             translation.sql().contains("WHERE FALSE"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_string_predicates_as_escaped_like() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates = vec![
+            PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                },
+                operator: ComparisonOperator::StartsWith,
+                rhs: PredicateRhs::Literal(Literal::String("bill_%".to_string())),
+            },
+            PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                },
+                operator: ComparisonOperator::Contains,
+                rhs: PredicateRhs::Literal(Literal::String("api".to_string())),
+            },
+        ];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("string predicates should lower");
+
+        assert!(
+            translation.sql().contains(
+                "WHERE \"n1\".\"service_name\" LIKE 'bill\\_\\%%' ESCAPE '\\' AND \"n1\".\"service_name\" LIKE '%api%' ESCAPE '\\'"
+            ),
             "{}",
             translation.sql()
         );

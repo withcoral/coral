@@ -765,12 +765,12 @@ fn compile_comparison_operator(
         CypherComparisonOperator::Ge => Ok(ComparisonOperator::GreaterThanOrEqual),
         CypherComparisonOperator::Lt => Ok(ComparisonOperator::LessThan),
         CypherComparisonOperator::Le => Ok(ComparisonOperator::LessThanOrEqual),
-        CypherComparisonOperator::RegexMatch
-        | CypherComparisonOperator::StartsWith
-        | CypherComparisonOperator::EndsWith
-        | CypherComparisonOperator::Contains => Err(unsupported(
+        CypherComparisonOperator::StartsWith => Ok(ComparisonOperator::StartsWith),
+        CypherComparisonOperator::EndsWith => Ok(ComparisonOperator::EndsWith),
+        CypherComparisonOperator::Contains => Ok(ComparisonOperator::Contains),
+        CypherComparisonOperator::RegexMatch => Err(unsupported(
             path,
-            "string and regex comparison operators are not supported yet",
+            "regex comparison operators are not supported yet",
         )),
     }
 }
@@ -1088,6 +1088,30 @@ mod tests {
     }
 
     #[test]
+    fn compiles_string_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service.name STARTS WITH 'bill' \
+                AND service.name ENDS WITH 'api' \
+                AND service.name CONTAINS 'ing' \
+             RETURN service.name",
+        )
+        .expect("query should compile");
+
+        assert_eq!(
+            plan.predicates
+                .iter()
+                .map(|predicate| predicate.operator)
+                .collect::<Vec<_>>(),
+            vec![
+                ComparisonOperator::StartsWith,
+                ComparisonOperator::EndsWith,
+                ComparisonOperator::Contains,
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_or_predicates_as_boolean_expression_tree() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -1384,6 +1408,13 @@ mod tests {
     fn rejects_parameterized_in_predicates() {
         assert_unsupported(
             "MATCH (service:Service) WHERE service.tier IN $tiers RETURN service.name",
+        );
+    }
+
+    #[test]
+    fn rejects_regex_predicates() {
+        assert_unsupported(
+            "MATCH (service:Service) WHERE service.name =~ '.*api' RETURN service.name",
         );
     }
 

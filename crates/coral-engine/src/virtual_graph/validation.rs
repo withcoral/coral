@@ -387,6 +387,7 @@ impl<'a> GraphPlanValidator<'a> {
                     )
                     .into_core_error());
                 }
+                Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
                 Self::validate_literal_predicate(path, predicate.operator, literal)
             }
             PredicateRhs::Property(property) => {
@@ -395,6 +396,19 @@ impl<'a> GraphPlanValidator<'a> {
                         "INVALID_PREDICATE_OPERAND",
                         path,
                         "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                if matches!(
+                    predicate.operator,
+                    ComparisonOperator::StartsWith
+                        | ComparisonOperator::EndsWith
+                        | ComparisonOperator::Contains
+                ) {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "string predicates require a string literal right-hand side",
                     )
                     .into_core_error());
                 }
@@ -412,6 +426,30 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::validate_in_list(path, literals)
             }
         }
+    }
+
+    fn validate_string_predicate(
+        path: impl Into<String>,
+        operator: ComparisonOperator,
+        literal: &Literal,
+    ) -> Result<(), CoreError> {
+        if !matches!(
+            operator,
+            ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains
+        ) {
+            return Ok(());
+        }
+        if !matches!(literal, Literal::String(_)) {
+            return Err(Diagnostic::new(
+                "INVALID_PREDICATE_OPERAND",
+                path,
+                "string predicates require a string literal right-hand side",
+            )
+            .into_core_error());
+        }
+        Ok(())
     }
 
     fn validate_in_list(path: impl Into<String>, literals: &[Literal]) -> Result<(), CoreError> {
@@ -763,6 +801,55 @@ relationships:
         let error = graph
             .validate_graph_plan(&plan)
             .expect_err("literal list without IN should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_PREDICATE_OPERAND"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_non_string_rhs_for_string_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicates = vec![PropertyPredicate {
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "name".to_string(),
+            },
+            operator: ComparisonOperator::StartsWith,
+            rhs: PredicateRhs::Literal(Literal::Integer(10)),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("non-string RHS for string predicate should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_PREDICATE_OPERAND"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_property_rhs_for_string_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicates = vec![PropertyPredicate {
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "name".to_string(),
+            },
+            operator: ComparisonOperator::Contains,
+            rhs: PredicateRhs::Property(PropertyRef {
+                variable: "person".to_string(),
+                property: "name".to_string(),
+            }),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("property RHS for string predicate should fail validation");
 
         assert!(
             error.to_string().contains("INVALID_PREDICATE_OPERAND"),

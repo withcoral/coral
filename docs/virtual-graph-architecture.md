@@ -79,6 +79,8 @@ The supported foundation subset is intentionally narrow:
 - connected multi-hop relationship chains;
   - `WHERE` comparisons combined with `AND`, `OR`, `NOT`, and parentheses;
   - `IN` predicates over scalar literal lists;
+  - string prefix, suffix, and substring predicates lowered to escaped SQL
+    `LIKE`;
 - inline node property maps normalized to equality predicates;
 - inline relationship property maps normalized to equality predicates, with
   internal relationship variables for anonymous edges;

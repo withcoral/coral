@@ -466,6 +466,42 @@ async fn cypher_in_predicates_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_string_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.name STARTS WITH 'bill' \
+            OR service.name ENDS WITH 'sync' \
+            OR service.name CONTAINS 'ploy' \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher string predicate query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LIKE "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_skip_limit_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -33,6 +33,12 @@ pub enum ComparisonOperator {
     LessThanOrEqual,
     /// List membership comparison.
     In,
+    /// String prefix comparison.
+    StartsWith,
+    /// String suffix comparison.
+    EndsWith,
+    /// String substring comparison.
+    Contains,
 }
 
 /// Literal value supported by the initial graph IR.
