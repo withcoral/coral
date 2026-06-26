@@ -8,10 +8,11 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | v1 YAML declarations | Supported foundation | Nodes, relationships, table refs, keys, properties |
-| Duplicate label/type rejection | Supported foundation | Prevents ambiguous lowering |
+| Duplicate label rejection | Supported foundation | One node table per graph label |
+| Duplicate relationship mapping rejection | Supported foundation | Relationship mappings must have a unique `type + from label + to label` signature |
 | Endpoint label validation | Supported foundation | Relationship endpoints must reference declared node labels |
 | Catalog validation | Supported foundation | Checks mapped tables, columns, and required-filter constraints during explicit validation and query execution/explain |
-| Multiple mappings per relationship type | Deferred | Needs disambiguation rules before support |
+| Multiple mappings per relationship type | Supported foundation | The validator selects the mapping by endpoint labels and direction; ambiguous undirected inverse mappings are rejected |
 
 ## Shared Graph IR
 
@@ -19,6 +20,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | --- | --- | --- |
 | Node scans | Supported foundation | One table per label |
 | Directed relationship traversals | Supported foundation | Forward and reverse traversal lower to joins |
+| Relationship type overloads | Supported foundation | A relationship type can map to multiple edge tables when endpoint labels disambiguate the pattern |
 | Connected multi-hop paths | Supported foundation | Linear and closed connected patterns lower to deterministic joins |
 | Property projections | Supported foundation | Node keys and exposed properties |
 | Property predicates | Supported foundation | Literal and property-to-property comparisons with boolean expression trees |
@@ -48,7 +50,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Comma-separated `MATCH` patterns | Supported foundation | Supported when parts are connected by reused node variables |
 | Labeled node patterns | Supported foundation | Requires named node variables; first binding needs exactly one static label, repeated bindings may omit the label |
 | Typed directed relationships | Supported foundation | Requires one static relationship type |
-| Undirected relationships | Supported foundation | Lowers to orientation-aware joins; same-label relationships use disjunctive endpoint conditions |
+| Undirected relationships | Supported foundation | Lowers to orientation-aware joins; same-label relationships use disjunctive endpoint conditions; inverse overloaded mappings that both match are rejected as ambiguous |
 | Multi-hop relationship chains | Supported foundation | Forward, reverse, and mixed chains compile through the shared graph IR |
 | Multiple `MATCH` clauses | Supported foundation | Transparent multi-part read clauses compile into one connected graph plan |
 | `WHERE` property comparisons | Supported foundation | String, integer, float, boolean, null literal, and property-to-property comparisons |

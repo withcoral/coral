@@ -92,6 +92,41 @@ async fn cypher_translation_executes_against_synthetic_file_sources() {
 }
 
 #[tokio::test]
+async fn cypher_relationship_type_overloads_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (team:Team)-[:OWNS]->(service:Service) \
+         WHERE service.tier = 'prod' \
+         RETURN team.name AS team, team.cost_center AS cost_center, service.name AS service \
+         ORDER BY team, service",
+    )
+    .await
+    .expect("overloaded relationship type Cypher query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"team_ownerships\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"team": "infra", "cost_center": "cc-infra", "service": "deployments"}),
+            json!({"team": "platform", "cost_center": "cc-platform", "service": "billing-api"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_inline_node_property_maps_execute_as_predicates() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -1743,11 +1778,30 @@ fn write_ops_fixture(dir: &Path) {
     );
     write_jsonl_file(
         dir,
+        "teams.jsonl",
+        &[
+            json!({"id": 1000, "team_name": "platform", "cost_center": "cc-platform"}),
+            json!({"id": 2000, "team_name": "infra", "cost_center": "cc-infra"}),
+            json!({"id": 3000, "team_name": "analytics", "cost_center": "cc-analytics"}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
         "ownerships.jsonl",
         &[
             json!({"ownership_id": 100, "person_id": 1, "service_id": 10, "since": "2024-01-10"}),
             json!({"ownership_id": 200, "person_id": 2, "service_id": 20, "since": "2024-02-20", "source": "pagerduty"}),
             json!({"ownership_id": 300, "person_id": 3, "service_id": 30, "since": "2024-03-15", "source": "catalog"}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
+        "team_ownerships.jsonl",
+        &[
+            json!({"team_id": 1000, "service_id": 10, "source": "catalog"}),
+            json!({"team_id": 2000, "service_id": 20, "source": "catalog"}),
+            json!({"team_id": 3000, "service_id": 30, "source": "catalog"}),
+            json!({"team_id": 1000, "service_id": 40, "source": "catalog"}),
         ],
     );
     write_jsonl_file(
@@ -1794,6 +1848,17 @@ fn ops_manifest(dir: &Path) -> Value {
                 ]
             },
             {
+                "name": "teams",
+                "description": "Synthetic teams fixture",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "teams.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "team_name", "type": "Utf8" },
+                    { "name": "cost_center", "type": "Utf8" }
+                ]
+            },
+            {
                 "name": "ownerships",
                 "description": "Synthetic ownership edges",
                 "format": "jsonl",
@@ -1803,6 +1868,17 @@ fn ops_manifest(dir: &Path) -> Value {
                     { "name": "person_id", "type": "Int64" },
                     { "name": "service_id", "type": "Int64" },
                     { "name": "since", "type": "Utf8" },
+                    { "name": "source", "type": "Utf8" }
+                ]
+            },
+            {
+                "name": "team_ownerships",
+                "description": "Synthetic team ownership edges",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "team_ownerships.jsonl" },
+                "columns": [
+                    { "name": "team_id", "type": "Int64" },
+                    { "name": "service_id", "type": "Int64" },
                     { "name": "source", "type": "Utf8" }
                 ]
             },
@@ -1843,6 +1919,12 @@ nodes:
       team: owning_team
       risk: risk_score
       active: active
+  - label: Team
+    table: { schema: ops, name: teams }
+    key: id
+    properties:
+      name: team_name
+      cost_center: cost_center
 relationships:
   - type: OWNS
     table: { schema: ops, name: ownerships }
@@ -1851,6 +1933,12 @@ relationships:
     to: { label: Service, key: service_id }
     properties:
       since: since
+      source: source
+  - type: OWNS
+    table: { schema: ops, name: team_ownerships }
+    from: { label: Team, key: team_id }
+    to: { label: Service, key: service_id }
+    properties:
       source: source
   - type: DEPENDS_ON
     table: { schema: ops, name: service_dependencies }

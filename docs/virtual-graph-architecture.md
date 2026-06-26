@@ -8,18 +8,21 @@ string rendering.
 ## Core Boundaries
 
 - **Declaration model**: versioned YAML mapping from graph labels and
-  relationship types to Coral/DataFusion table references.
+  relationship mappings to Coral/DataFusion table references. Relationship
+  types may be overloaded across distinct endpoint label pairs.
 - **Validation**: checks declaration shape, duplicate labels/types, endpoint
-  references, exposed properties, and clear path-qualified diagnostics.
+  references, duplicate relationship mapping signatures, exposed properties,
+  and clear path-qualified diagnostics.
 - **Frontend parsers**: Cypher, GraphQL, and future GQL-style frontends compile
   into the shared graph IR.
 - **Shared graph IR**: typed nodes, relationships, predicates, projections,
   distinct row selection, ordering, aggregation, offsets, and limits. Predicate
   operands can compare properties against literals or other graph properties,
   and boolean expression trees represent non-conjunctive filters.
-- **Plan validation**: resolves IR variables to declaration mappings, checks
-  endpoint labels, property references, aggregate restrictions, and connected
-  join shape before any SQL is rendered.
+- **Plan validation**: resolves IR variables to declaration mappings, selects
+  overloaded relationship mappings by type, endpoint labels, and direction,
+  checks property references, aggregate restrictions, and connected join shape
+  before any SQL is rendered.
 - **SQL lowering**: the only layer that renders DataFusion SQL. It owns
   identifier quoting, deterministic join planning for connected patterns,
   predicate placement, and translated SQL.

@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::declaration::{Declaration, Node, Relationship};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateFunction, AggregateTarget, ComparisonOperator, GraphPlan, KeyPredicate, Literal,
-    OrderExpression, PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
+    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
+    Literal, OrderExpression, PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
     RelationshipPattern,
 };
@@ -189,18 +189,7 @@ impl<'a> GraphPlanValidator<'a> {
 
     fn bind_relationships(&mut self) -> Result<(), CoreError> {
         for (index, pattern) in self.plan.relationships.iter().enumerate() {
-            let relationship = self
-                .graph
-                .relationship(&pattern.relationship_type)
-                .ok_or_else(|| {
-                    Diagnostic::new(
-                        "UNKNOWN_RELATIONSHIP_TYPE",
-                        format!("relationships[{index}].type"),
-                        format!("unknown relationship type '{}'", pattern.relationship_type),
-                    )
-                    .into_core_error()
-                })?;
-            self.validate_relationship_endpoint_nodes(index, relationship, pattern)?;
+            let relationship = self.resolve_relationship_mapping(index, pattern)?;
             if let Some(variable) = &pattern.variable {
                 validate_variable(format!("relationships[{index}].variable"), variable)?;
                 if self.bindings.contains_key(variable.as_str()) {
@@ -224,43 +213,93 @@ impl<'a> GraphPlanValidator<'a> {
         Ok(())
     }
 
-    fn validate_relationship_endpoint_nodes(
+    fn resolve_relationship_mapping(
         &self,
         index: usize,
-        relationship: &Relationship,
         pattern: &RelationshipPattern,
-    ) -> Result<(), CoreError> {
+    ) -> Result<&'a Relationship, CoreError> {
         let left_node =
             self.node_binding_for_path(&pattern.left, format!("relationships[{index}].left"))?;
         let right_node =
             self.node_binding_for_path(&pattern.right, format!("relationships[{index}].right"))?;
-
-        let matches_forward =
-            left_node.label == relationship.from.label && right_node.label == relationship.to.label;
-        let matches_reverse =
-            left_node.label == relationship.to.label && right_node.label == relationship.from.label;
-        let valid = match pattern.direction {
-            super::ir::Direction::Outgoing => matches_forward,
-            super::ir::Direction::Incoming => matches_reverse,
-            super::ir::Direction::Undirected => matches_forward || matches_reverse,
-        };
-        if !valid {
+        let candidates = self
+            .graph
+            .relationships_for_type(&pattern.relationship_type)
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
             return Err(Diagnostic::new(
-                "RELATIONSHIP_ENDPOINT_MISMATCH",
-                format!("relationships[{index}]"),
-                format!(
-                    "relationship type '{}' expects {} -> {}, got {} -> {}",
-                    relationship.relationship_type,
-                    relationship.from.label,
-                    relationship.to.label,
-                    left_node.label,
-                    right_node.label
-                ),
+                "UNKNOWN_RELATIONSHIP_TYPE",
+                format!("relationships[{index}].type"),
+                format!("unknown relationship type '{}'", pattern.relationship_type),
             )
             .into_core_error());
         }
 
-        Ok(())
+        let matches = candidates
+            .iter()
+            .copied()
+            .filter(|relationship| {
+                Self::relationship_matches_pattern(
+                    relationship,
+                    pattern.direction,
+                    &left_node.label,
+                    &right_node.label,
+                )
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [relationship] => Ok(*relationship),
+            [] => {
+                let available = candidates
+                    .iter()
+                    .map(|relationship| {
+                        format!(
+                            "{} -> {}",
+                            relationship.from.label, relationship.to.label
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Err(Diagnostic::new(
+                    "RELATIONSHIP_ENDPOINT_MISMATCH",
+                    format!("relationships[{index}]"),
+                    format!(
+                        "relationship type '{}' has no mapping for {} -> {}; available endpoint mappings: {}",
+                        pattern.relationship_type, left_node.label, right_node.label, available
+                    ),
+                )
+                .into_core_error())
+            }
+            _ => Err(Diagnostic::new(
+                "AMBIGUOUS_RELATIONSHIP_MAPPING",
+                format!("relationships[{index}]"),
+                format!(
+                    "relationship type '{}' with endpoints {} -> {} matches {} mappings; add direction or use distinct relationship types",
+                    pattern.relationship_type,
+                    left_node.label,
+                    right_node.label,
+                    matches.len()
+                ),
+            )
+            .into_core_error()),
+        }
+    }
+
+    fn relationship_matches_pattern(
+        relationship: &Relationship,
+        direction: Direction,
+        left_label: &str,
+        right_label: &str,
+    ) -> bool {
+        let matches_forward =
+            left_label == relationship.from.label && right_label == relationship.to.label;
+        let matches_reverse =
+            left_label == relationship.to.label && right_label == relationship.from.label;
+        match direction {
+            Direction::Outgoing => matches_forward,
+            Direction::Incoming => matches_reverse,
+            Direction::Undirected => matches_forward || matches_reverse,
+        }
     }
 
     fn validate_projection_shape(&self) -> Result<(), CoreError> {
@@ -1079,6 +1118,133 @@ relationships:
                 .expect("relationship mapping")
                 .relationship_type,
             "OWNS"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_selects_relationship_type_overload_by_endpoint_labels() {
+        let graph = Declaration::from_yaml(
+            r"
+version: 1
+name: overloaded-ownership
+nodes:
+  - label: Person
+    table: { schema: ops, name: people }
+    key: id
+    properties:
+      name: full_name
+  - label: Team
+    table: { schema: ops, name: teams }
+    key: id
+    properties:
+      name: team_name
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+    properties:
+      name: service_name
+relationships:
+  - type: OWNS
+    table: { schema: ops, name: person_ownerships }
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
+  - type: OWNS
+    table: { schema: ops, name: team_ownerships }
+    from: { label: Team, key: team_id }
+    to: { label: Service, key: service_id }
+",
+        )
+        .expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "team".to_string(),
+                    label: "Team".to_string(),
+                },
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: Some("owns".to_string()),
+                relationship_type: "OWNS".to_string(),
+                left: "team".to_string(),
+                direction: Direction::Outgoing,
+                right: "service".to_string(),
+            }],
+            distinct: false,
+            projections: vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "team".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("owner".to_string()),
+            }],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        let validated = graph
+            .validate_graph_plan(&plan)
+            .expect("plan should validate");
+
+        assert_eq!(
+            validated
+                .relationship_mapping(0)
+                .expect("relationship mapping")
+                .table
+                .name,
+            "team_ownerships"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_ambiguous_undirected_relationship_overloads() {
+        let graph = Declaration::from_yaml(
+            r"
+version: 1
+name: inverse-ownership
+nodes:
+  - label: Person
+    table: { schema: ops, name: people }
+    key: id
+    properties:
+      name: full_name
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+    properties:
+      name: service_name
+relationships:
+  - type: OWNS
+    table: { schema: ops, name: person_ownerships }
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
+  - type: OWNS
+    table: { schema: ops, name: service_owner_edges }
+    from: { label: Service, key: service_id }
+    to: { label: Person, key: person_id }
+",
+        )
+        .expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.relationships
+            .first_mut()
+            .expect("ownership plan should have a relationship")
+            .direction = Direction::Undirected;
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("undirected inverse overloads should be ambiguous");
+
+        assert!(
+            error.to_string().contains("AMBIGUOUS_RELATIONSHIP_MAPPING"),
+            "{error:?}"
         );
     }
 

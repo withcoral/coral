@@ -134,17 +134,23 @@ impl Declaration {
             }
         }
 
-        let mut relationship_types = BTreeSet::new();
+        let mut relationship_mappings = BTreeSet::new();
         for (index, relationship) in self.relationships.iter().enumerate() {
             let path = format!("relationships[{index}]");
             relationship.validate(&path, &labels)?;
-            if !relationship_types.insert(relationship.relationship_type.as_str()) {
+            if !relationship_mappings.insert((
+                relationship.relationship_type.as_str(),
+                relationship.from.label.as_str(),
+                relationship.to.label.as_str(),
+            )) {
                 return Err(Diagnostic::new(
-                    "DUPLICATE_RELATIONSHIP_TYPE",
-                    format!("{path}.type"),
+                    "DUPLICATE_RELATIONSHIP_MAPPING",
+                    path,
                     format!(
-                        "relationship type '{}' is declared more than once",
-                        relationship.relationship_type
+                        "relationship mapping '{}: {} -> {}' is declared more than once",
+                        relationship.relationship_type,
+                        relationship.from.label,
+                        relationship.to.label
                     ),
                 )
                 .into_core_error());
@@ -218,12 +224,14 @@ impl Declaration {
         self.nodes.iter().find(|node| node.label == label)
     }
 
-    /// Returns the relationship mapping for a type.
-    #[must_use]
-    pub fn relationship(&self, relationship_type: &str) -> Option<&Relationship> {
+    /// Returns relationship mappings for a type.
+    pub(crate) fn relationships_for_type(
+        &self,
+        relationship_type: &str,
+    ) -> impl Iterator<Item = &Relationship> {
         self.relationships
             .iter()
-            .find(|relationship| relationship.relationship_type == relationship_type)
+            .filter(move |relationship| relationship.relationship_type == relationship_type)
     }
 }
 
@@ -401,6 +409,67 @@ relationships:
                 .and_then(|node| node.column_for_property("name")),
             Some("full_name")
         );
+    }
+
+    #[test]
+    fn declaration_accepts_relationship_type_overloads_for_distinct_endpoints() {
+        let graph = Declaration::from_yaml(
+            r"
+version: 1
+name: ownership
+nodes:
+  - label: Person
+    table: { schema: ops, name: people }
+    key: id
+  - label: Team
+    table: { schema: ops, name: teams }
+    key: id
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+relationships:
+  - type: OWNS
+    table: { schema: ops, name: person_ownerships }
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
+  - type: OWNS
+    table: { schema: ops, name: team_ownerships }
+    from: { label: Team, key: team_id }
+    to: { label: Service, key: service_id }
+",
+        )
+        .expect("relationship type overloads should parse");
+
+        assert_eq!(graph.relationships_for_type("OWNS").count(), 2);
+    }
+
+    #[test]
+    fn declaration_rejects_duplicate_relationship_mapping_signatures() {
+        let graph = Declaration::from_yaml(
+            r"
+version: 1
+name: ownership
+nodes:
+  - label: Person
+    table: { schema: ops, name: people }
+    key: id
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+relationships:
+  - type: OWNS
+    table: { schema: ops, name: ownerships_a }
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
+  - type: OWNS
+    table: { schema: ops, name: ownerships_b }
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
+",
+        )
+        .expect_err("duplicate relationship mapping should fail");
+
+        assert_invalid_graph_error(graph, "DUPLICATE_RELATIONSHIP_MAPPING");
     }
 
     #[test]
