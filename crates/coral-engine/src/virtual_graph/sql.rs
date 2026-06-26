@@ -4,8 +4,8 @@ use std::fmt::Write as _;
 use super::declaration::{Declaration, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateFunction, ComparisonOperator, Direction, GraphPlan, Literal, OrderDirection,
-    OrderExpression, PredicateExpression, PredicateRhs, Projection, PropertyRef,
+    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, Literal,
+    OrderDirection, OrderExpression, PredicateExpression, PredicateRhs, Projection, PropertyRef,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -321,7 +321,7 @@ impl<'a> Lowerer<'a> {
                 }
                 Projection::Aggregate {
                     function,
-                    property,
+                    target,
                     distinct,
                     alias,
                 } => {
@@ -329,7 +329,7 @@ impl<'a> Lowerer<'a> {
                         "{}({}{}) AS {}",
                         render_aggregate_function(*function),
                         if *distinct { "DISTINCT " } else { "" },
-                        self.render_property_ref(property)?,
+                        self.render_aggregate_target(target)?,
                         quote_ident(alias)
                     ));
                 }
@@ -513,6 +513,27 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn render_aggregate_target(&self, target: &AggregateTarget) -> Result<String, CoreError> {
+        match target {
+            AggregateTarget::Property(property) => self.render_property_ref(property),
+            AggregateTarget::Node { variable } => self.render_node_key_ref(variable),
+        }
+    }
+
+    fn render_node_key_ref(&self, variable: &str) -> Result<String, CoreError> {
+        let binding = self.validated.binding(variable)?;
+        let ValidatedBindingKind::Node(node) = binding.kind() else {
+            return Err(CoreError::internal(
+                "validated aggregate node target was not a node binding",
+            ));
+        };
+        Ok(format!(
+            "{}.{}",
+            quote_ident(binding.alias()),
+            quote_ident(&node.key)
+        ))
+    }
+
     fn render_property_ref(&self, property: &PropertyRef) -> Result<String, CoreError> {
         let binding = self.validated.binding(&property.variable)?;
         let column = match binding.kind() {
@@ -601,9 +622,9 @@ fn quote_string_literal(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
-        AggregateFunction, ComparisonOperator, Direction, GraphPlan, Literal, NodePattern,
-        OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
-        PropertyPredicate, PropertyRef, RelationshipPattern,
+        AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, Literal,
+        NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
+        Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
     };
 
     const GRAPH: &str = r"
@@ -1356,10 +1377,10 @@ relationships: []
         let mut plan = ownership_plan(Direction::Outgoing);
         plan.projections.push(Projection::Aggregate {
             function: AggregateFunction::Count,
-            property: PropertyRef {
+            target: AggregateTarget::Property(PropertyRef {
                 variable: "service".to_string(),
                 property: "tier".to_string(),
-            },
+            }),
             distinct: true,
             alias: "tier_count".to_string(),
         });
@@ -1377,6 +1398,43 @@ relationships: []
         );
         assert!(
             translation.sql().contains(" GROUP BY "),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_count_node_projection() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.projections = vec![Projection::Aggregate {
+            function: AggregateFunction::Count,
+            target: AggregateTarget::Node {
+                variable: "service".to_string(),
+            },
+            distinct: true,
+            alias: "service_count".to_string(),
+        }];
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::ProjectionAlias("service_count".to_string()),
+            direction: OrderDirection::Descending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("count node projection should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("COUNT(DISTINCT \"n1\".\"id\") AS \"service_count\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains(" ORDER BY \"service_count\" DESC"),
             "{}",
             translation.sql()
         );

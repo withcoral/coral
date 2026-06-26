@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection};
 use decypher::ast::expr::{
     BinaryOperator as CypherBinaryOperator, ComparisonOperator as CypherComparisonOperator,
@@ -12,12 +14,14 @@ use decypher::ast::pattern::{
 use decypher::ast::query::{
     Query, QueryBody, ReadingClause, SinglePartBody, SinglePartQuery, SingleQueryKind,
 };
+use decypher::cst::{AstNode as _, AstToken as _, Ident};
+use decypher::syntax::{SyntaxKind, SyntaxNode};
 
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateFunction, ComparisonOperator, Direction, GraphPlan, Literal, NodePattern,
-    OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
-    PropertyPredicate, PropertyRef, RelationshipPattern,
+    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, Literal,
+    NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
+    Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -34,6 +38,25 @@ struct CompiledRelationship {
     predicates: Vec<PropertyPredicate>,
 }
 
+#[derive(Debug, Default)]
+struct CypherCompileContext {
+    count_variable_arguments: BTreeMap<(usize, usize), String>,
+}
+
+impl CypherCompileContext {
+    fn from_source(cypher: &str) -> Self {
+        Self {
+            count_variable_arguments: collect_count_variable_arguments(cypher),
+        }
+    }
+
+    fn count_variable_argument(&self, function: &FunctionInvocation) -> Option<&str> {
+        self.count_variable_arguments
+            .get(&(function.span.start, function.span.end))
+            .map(String::as_str)
+    }
+}
+
 /// Parses and compiles the Coral-supported read-only Cypher subset into a shared graph plan.
 ///
 /// # Errors
@@ -44,10 +67,11 @@ pub fn compile_cypher(cypher: &str) -> Result<GraphPlan, CoreError> {
     let query = decypher::parse(cypher).map_err(|error| {
         Diagnostic::new("CYPHER_PARSE_ERROR", "query", error.to_string()).into_core_error()
     })?;
-    compile_query(&query)
+    let context = CypherCompileContext::from_source(cypher);
+    compile_query(&query, &context)
 }
 
-fn compile_query(query: &Query) -> Result<GraphPlan, CoreError> {
+fn compile_query(query: &Query, context: &CypherCompileContext) -> Result<GraphPlan, CoreError> {
     if query.statements.len() != 1 {
         return Err(unsupported(
             "query",
@@ -72,10 +96,13 @@ fn compile_query(query: &Query) -> Result<GraphPlan, CoreError> {
         ));
     };
 
-    compile_single_part(single_part)
+    compile_single_part(single_part, context)
 }
 
-fn compile_single_part(query: &SinglePartQuery) -> Result<GraphPlan, CoreError> {
+fn compile_single_part(
+    query: &SinglePartQuery,
+    context: &CypherCompileContext,
+) -> Result<GraphPlan, CoreError> {
     let match_clause = match query.reading_clauses.as_slice() {
         [ReadingClause::Match(match_clause)] => match_clause,
         [] => {
@@ -122,7 +149,7 @@ fn compile_single_part(query: &SinglePartQuery) -> Result<GraphPlan, CoreError> 
         let predicate = compile_predicate_expression(where_clause, "where")?;
         append_predicate_expression(predicate, &mut plan);
     }
-    compile_return(return_clause, &mut plan)?;
+    compile_return(return_clause, &mut plan, context)?;
     Ok(plan)
 }
 
@@ -354,7 +381,11 @@ fn compile_relationship(
     })
 }
 
-fn compile_return(return_clause: &Return, plan: &mut GraphPlan) -> Result<(), CoreError> {
+fn compile_return(
+    return_clause: &Return,
+    plan: &mut GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<(), CoreError> {
     plan.distinct = return_clause.distinct;
     if return_clause.star {
         return Err(unsupported("return.star", "RETURN * is not supported yet"));
@@ -370,8 +401,11 @@ fn compile_return(return_clause: &Return, plan: &mut GraphPlan) -> Result<(), Co
     }
 
     for (index, item) in return_clause.items.iter().enumerate() {
-        plan.projections
-            .push(compile_projection(item, format!("return.items[{index}]"))?);
+        plan.projections.push(compile_projection(
+            item,
+            format!("return.items[{index}]"),
+            context,
+        )?);
     }
 
     if let Some(order) = &return_clause.order {
@@ -476,6 +510,7 @@ fn projection_order_expression_for_alias(
 fn compile_projection(
     item: &ProjectionItem,
     path: impl Into<String>,
+    context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
     match &item.expression {
@@ -486,7 +521,7 @@ fn compile_projection(
                 .map_or_else(|| "count".to_string(), variable_name),
         }),
         Expression::FunctionCall(function) if is_count_function(function) => {
-            compile_count_projection(function, item, path)
+            compile_count_projection(function, item, path, context)
         }
         Expression::FunctionCall(function) => Err(unsupported(
             format!("{path}.expression"),
@@ -506,23 +541,98 @@ fn compile_count_projection(
     function: &FunctionInvocation,
     item: &ProjectionItem,
     path: impl Into<String>,
+    context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    let [argument] = function.arguments.as_slice() else {
-        return Err(unsupported(
-            format!("{path}.expression.arguments"),
-            "count() supports exactly one graph property argument; use count(*) to count rows",
-        ));
+    let target = match function.arguments.as_slice() {
+        [argument] => {
+            compile_aggregate_target(argument, format!("{path}.expression.arguments[0]"))?
+        }
+        [] => {
+            let variable = context.count_variable_argument(function).ok_or_else(|| {
+                unsupported(
+                    format!("{path}.expression.arguments"),
+                    "count() supports exactly one graph property or node variable argument; use count(*) to count rows",
+                )
+            })?;
+            AggregateTarget::Node {
+                variable: variable.to_string(),
+            }
+        }
+        _ => {
+            return Err(unsupported(
+                format!("{path}.expression.arguments"),
+                "count() supports exactly one graph property or node variable argument; use count(*) to count rows",
+            ));
+        }
     };
     Ok(Projection::Aggregate {
         function: AggregateFunction::Count,
-        property: compile_property_ref(argument, format!("{path}.expression.arguments[0]"))?,
+        target,
         distinct: function.distinct,
         alias: item
             .alias
             .as_ref()
             .map_or_else(|| "count".to_string(), variable_name),
     })
+}
+
+fn collect_count_variable_arguments(cypher: &str) -> BTreeMap<(usize, usize), String> {
+    // decypher's high-level AST currently drops variable-only function
+    // arguments such as count(n); the lossless CST keeps them by span.
+    let parse = decypher::parse_cst(cypher);
+    let tree = parse.tree();
+    tree.syntax()
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::FUNCTION_INVOCATION)
+        .filter_map(|node| count_variable_argument_from_cst(&node))
+        .collect()
+}
+
+fn count_variable_argument_from_cst(node: &SyntaxNode) -> Option<((usize, usize), String)> {
+    if !function_invocation_name_is_count(node) {
+        return None;
+    }
+
+    let mut variables = node
+        .children()
+        .filter(|child| child.kind() == SyntaxKind::VARIABLE);
+    let variable = variables.next()?;
+    if variables.next().is_some() {
+        return None;
+    }
+    let variable = variable_name_from_cst(&variable)?;
+    let range = node.text_range();
+    Some(((range.start().into(), range.end().into()), variable))
+}
+
+fn function_invocation_name_is_count(node: &SyntaxNode) -> bool {
+    node.children()
+        .find(|child| child.kind() == SyntaxKind::FUNCTION_NAME)
+        .and_then(|name| name.first_token())
+        .is_some_and(|token| token.text().eq_ignore_ascii_case("count"))
+}
+
+fn variable_name_from_cst(node: &SyntaxNode) -> Option<String> {
+    node.first_token()
+        .and_then(Ident::cast)
+        .map(|ident| ident.unescape())
+}
+
+fn compile_aggregate_target(
+    expression: &Expression,
+    path: impl Into<String>,
+) -> Result<AggregateTarget, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_aggregate_target(inner, path),
+        Expression::Variable(variable) => Ok(AggregateTarget::Node {
+            variable: variable_name(variable),
+        }),
+        _ => Ok(AggregateTarget::Property(compile_property_ref(
+            expression, path,
+        )?)),
+    }
 }
 
 fn is_count_function(function: &FunctionInvocation) -> bool {
@@ -1715,10 +1825,10 @@ mod tests {
                 },
                 Projection::Aggregate {
                     function: super::AggregateFunction::Count,
-                    property: PropertyRef {
+                    target: AggregateTarget::Property(PropertyRef {
                         variable: "service".to_string(),
                         property: "name".to_string(),
-                    },
+                    }),
                     distinct: false,
                     alias: "named_services".to_string(),
                 },
@@ -1745,12 +1855,51 @@ mod tests {
             plan.projections,
             vec![Projection::Aggregate {
                 function: super::AggregateFunction::Count,
-                property: PropertyRef {
+                target: AggregateTarget::Property(PropertyRef {
                     variable: "service".to_string(),
                     property: "tier".to_string(),
-                },
+                }),
                 distinct: true,
                 alias: "tier_count".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_count_node_projection() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN count(service) AS services, count(DISTINCT service) AS distinct_services \
+             ORDER BY services DESC",
+        )
+        .expect("count node query should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Aggregate {
+                    function: super::AggregateFunction::Count,
+                    target: AggregateTarget::Node {
+                        variable: "service".to_string(),
+                    },
+                    distinct: false,
+                    alias: "services".to_string(),
+                },
+                Projection::Aggregate {
+                    function: super::AggregateFunction::Count,
+                    target: AggregateTarget::Node {
+                        variable: "service".to_string(),
+                    },
+                    distinct: true,
+                    alias: "distinct_services".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("services".to_string()),
+                direction: OrderDirection::Descending,
             }]
         );
     }

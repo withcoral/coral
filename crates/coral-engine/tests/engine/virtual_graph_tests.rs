@@ -851,6 +851,59 @@ async fn cypher_count_property_projection_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_count_node_projection_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service)-[:DEPENDS_ON]->(target:Service) \
+         RETURN count(target) AS dependency_mentions, count(DISTINCT target) AS unique_targets",
+    )
+    .await
+    .expect("count node Cypher query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COUNT(DISTINCT \"n1\".\"id\") AS \"unique_targets\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"dependency_mentions": 3, "unique_targets": 2})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_count_relationship_variables_are_rejected() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         RETURN count(owns) AS ownerships",
+    )
+    .await
+    .expect_err("counting a relationship variable should fail");
+
+    assert!(
+        error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
 async fn cypher_grouped_count_property_projection_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -117,8 +117,8 @@ pub enum Projection {
     Aggregate {
         /// Aggregate function.
         function: AggregateFunction,
-        /// Property to aggregate.
-        property: PropertyRef,
+        /// Value to aggregate.
+        target: AggregateTarget,
         /// Whether the aggregate applies distinct semantics.
         distinct: bool,
         /// Output alias.
@@ -139,6 +139,18 @@ impl Projection {
 pub enum AggregateFunction {
     /// `COUNT(property)`.
     Count,
+}
+
+/// Aggregate argument in the shared graph IR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AggregateTarget {
+    /// Aggregate a graph property.
+    Property(PropertyRef),
+    /// Aggregate a node variable by its mapped key column.
+    Node {
+        /// Node variable to aggregate.
+        variable: String,
+    },
 }
 
 /// Property comparison predicate.

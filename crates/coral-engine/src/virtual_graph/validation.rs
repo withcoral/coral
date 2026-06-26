@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::declaration::{Declaration, Node, Relationship};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    ComparisonOperator, GraphPlan, Literal, OrderExpression, PredicateExpression, PredicateRhs,
-    Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+    AggregateTarget, ComparisonOperator, GraphPlan, Literal, OrderExpression, PredicateExpression,
+    PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -298,8 +298,11 @@ impl<'a> GraphPlanValidator<'a> {
     fn validate_property_references(&self) -> Result<(), CoreError> {
         for (index, projection) in self.plan.projections.iter().enumerate() {
             match projection {
-                Projection::Property { property, .. } | Projection::Aggregate { property, .. } => {
+                Projection::Property { property, .. } => {
                     self.validate_property_ref(property, format!("projections[{index}].property"))?;
+                }
+                Projection::Aggregate { target, .. } => {
+                    self.validate_aggregate_target(target, format!("projections[{index}].target"))?;
                 }
                 Projection::CountAll { .. } => {}
             }
@@ -487,6 +490,39 @@ impl<'a> GraphPlanValidator<'a> {
                     .into_core_error());
                 }
                 Self::validate_in_list(path, literals)
+            }
+        }
+    }
+
+    fn validate_aggregate_target(
+        &self,
+        target: &AggregateTarget,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        match target {
+            AggregateTarget::Property(property) => self.validate_property_ref(property, path),
+            AggregateTarget::Node { variable } => {
+                validate_variable(path.clone(), variable)?;
+                let binding = self.bindings.get(variable.as_str()).ok_or_else(|| {
+                    Diagnostic::new(
+                        "UNKNOWN_VARIABLE",
+                        path.clone(),
+                        format!("unknown graph variable '{variable}'"),
+                    )
+                    .into_core_error()
+                })?;
+                match binding.kind() {
+                    ValidatedBindingKind::Node(_) => Ok(()),
+                    ValidatedBindingKind::Relationship(_) => Err(Diagnostic::new(
+                        "INVALID_AGGREGATE_TARGET",
+                        path,
+                        format!(
+                            "count({variable}) is only supported for node variables because relationship mappings do not define a unique key"
+                        ),
+                    )
+                    .into_core_error()),
+                }
             }
         }
     }
@@ -680,9 +716,9 @@ fn validate_variable(path: impl Into<String>, variable: &str) -> Result<(), Core
 mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
-        AggregateFunction, Direction, NodePattern, OrderDirection, OrderExpression, OrderKey,
-        PredicateExpression, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
-        RelationshipPattern,
+        AggregateFunction, AggregateTarget, Direction, NodePattern, OrderDirection,
+        OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
+        PropertyPredicate, PropertyRef, RelationshipPattern,
     };
 
     const GRAPH: &str = r"
@@ -754,10 +790,10 @@ relationships:
         let mut plan = ownership_plan();
         plan.projections.push(Projection::Aggregate {
             function: AggregateFunction::Count,
-            property: PropertyRef {
+            target: AggregateTarget::Property(PropertyRef {
                 variable: "service".to_string(),
                 property: "missing".to_string(),
-            },
+            }),
             distinct: false,
             alias: "missing_count".to_string(),
         });
@@ -767,6 +803,29 @@ relationships:
             .expect_err("unknown aggregate property should fail validation");
 
         assert!(error.to_string().contains("UNKNOWN_PROPERTY"), "{error:?}");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_relationship_aggregate_targets() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Aggregate {
+            function: AggregateFunction::Count,
+            target: AggregateTarget::Node {
+                variable: "owns".to_string(),
+            },
+            distinct: true,
+            alias: "ownership_count".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("relationship aggregate target should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+            "{error:?}"
+        );
     }
 
     #[test]
