@@ -136,6 +136,7 @@ impl<'a> GraphPlanValidator<'a> {
         self.validate_projection_shape()?;
         self.validate_aggregation()?;
         self.validate_property_references()?;
+        self.validate_distinct_ordering()?;
         self.validate_connectivity()?;
 
         Ok(ValidatedGraphPlan {
@@ -307,6 +308,33 @@ impl<'a> GraphPlanValidator<'a> {
         }
         for (index, key) in self.plan.order_by.iter().enumerate() {
             self.validate_property_ref(&key.property, format!("order_by[{index}].property"))?;
+        }
+        Ok(())
+    }
+
+    fn validate_distinct_ordering(&self) -> Result<(), CoreError> {
+        if !self.plan.distinct || self.plan.order_by.is_empty() {
+            return Ok(());
+        }
+
+        let projected_properties = self
+            .plan
+            .projections
+            .iter()
+            .filter_map(|projection| match projection {
+                Projection::Property { property, .. } => Some(property),
+                Projection::CountAll { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        for (index, order_key) in self.plan.order_by.iter().enumerate() {
+            if !projected_properties.contains(&&order_key.property) {
+                return Err(Diagnostic::new(
+                    "UNSUPPORTED_DISTINCT_ORDERING",
+                    format!("order_by[{index}].property"),
+                    "ORDER BY with DISTINCT must use a projected property",
+                )
+                .into_core_error());
+            }
         }
         Ok(())
     }
@@ -567,6 +595,29 @@ relationships:
     }
 
     #[test]
+    fn validate_graph_plan_rejects_distinct_ordering_by_unprojected_properties() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.distinct = true;
+        plan.order_by = vec![OrderKey {
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "name".to_string(),
+            },
+            direction: OrderDirection::Ascending,
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("DISTINCT should not order by unprojected properties");
+
+        assert!(
+            error.to_string().contains("UNSUPPORTED_DISTINCT_ORDERING"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn validate_graph_plan_accepts_out_of_order_connected_relationships() {
         let graph = Declaration::from_yaml(
             r"
@@ -617,6 +668,7 @@ relationships:
                     right: "middle".to_string(),
                 },
             ],
+            distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
                     variable: "target".to_string(),
@@ -673,6 +725,7 @@ relationships:
                 direction: Direction::Outgoing,
                 right: "service".to_string(),
             }],
+            distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
                     variable: "person".to_string(),

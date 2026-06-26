@@ -330,6 +330,35 @@ async fn cypher_skip_limit_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_distinct_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[:OWNS]->(service:Service) \
+         RETURN DISTINCT service.tier AS tier \
+         ORDER BY tier",
+    )
+    .await
+    .expect("Cypher query with DISTINCT should execute");
+
+    assert!(
+        execution.translated_sql().starts_with("SELECT DISTINCT "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"tier": "dev"}), json!({"tier": "prod"})]
+    );
+}
+
+#[tokio::test]
 async fn explain_cypher_preserves_translated_sql_and_datafusion_plan() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -405,6 +434,7 @@ relationships: []
             label: "Service".to_string(),
         }],
         relationships: Vec::new(),
+        distinct: false,
         projections: vec![GraphProjection::Property {
             property: GraphPropertyRef {
                 variable: "service".to_string(),
@@ -502,6 +532,7 @@ async fn virtual_graph_count_projection_executes_against_synthetic_file_sources(
             direction: GraphDirection::Outgoing,
             right: "service".to_string(),
         }],
+        distinct: false,
         projections: vec![GraphProjection::CountAll {
             alias: "ownership_count".to_string(),
         }],
@@ -566,6 +597,7 @@ fn owner_service_plan() -> GraphPlan {
             direction: GraphDirection::Outgoing,
             right: "service".to_string(),
         }],
+        distinct: false,
         projections: vec![
             GraphProjection::Property {
                 property: GraphPropertyRef {

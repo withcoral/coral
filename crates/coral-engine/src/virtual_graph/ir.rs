@@ -132,6 +132,8 @@ pub struct GraphPlan {
     pub nodes: Vec<NodePattern>,
     /// Relationship patterns between bound nodes.
     pub relationships: Vec<RelationshipPattern>,
+    /// Whether duplicate projected rows should be removed.
+    pub distinct: bool,
     /// Projected expressions.
     pub projections: Vec<Projection>,
     /// Conjunctive property predicates.

@@ -320,7 +320,15 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        Ok(format!("SELECT {}", rendered.join(", ")))
+        Ok(format!(
+            "SELECT {}{}",
+            if self.validated.plan().distinct {
+                "DISTINCT "
+            } else {
+                ""
+            },
+            rendered.join(", ")
+        ))
     }
 
     fn render_where(&self) -> Result<String, CoreError> {
@@ -525,6 +533,7 @@ relationships:
                 direction: Direction::Incoming,
                 right: "person".to_string(),
             }],
+            distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
                     variable: "person".to_string(),
@@ -651,6 +660,7 @@ relationships:
                     right: "target".to_string(),
                 },
             ],
+            distinct: false,
             projections: vec![
                 Projection::Property {
                     property: PropertyRef {
@@ -730,6 +740,7 @@ relationships:
                     right: "middle".to_string(),
                 },
             ],
+            distinct: false,
             projections: vec![
                 Projection::Property {
                     property: PropertyRef {
@@ -789,6 +800,7 @@ relationships: []
                 label: "Weird".to_string(),
             }],
             relationships: Vec::new(),
+            distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
                     variable: "weird".to_string(),
@@ -830,6 +842,7 @@ relationships: []
                 label: "Service".to_string(),
             }],
             relationships: Vec::new(),
+            distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
                     variable: "service".to_string(),
@@ -895,6 +908,40 @@ relationships: []
             translation
                 .sql()
                 .contains("WHERE \"n0\".\"team\" = \"n1\".\"tier\""),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_distinct_projection() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.distinct = true;
+        plan.projections = vec![Projection::Property {
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "tier".to_string(),
+            },
+            alias: Some("tier".to_string()),
+        }];
+        plan.order_by = vec![OrderKey {
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "tier".to_string(),
+            },
+            direction: OrderDirection::Ascending,
+        }];
+        plan.limit = None;
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("distinct plan should lower");
+
+        assert!(
+            translation
+                .sql()
+                .starts_with("SELECT DISTINCT \"n1\".\"tier\" AS \"tier\""),
             "{}",
             translation.sql()
         );
@@ -1013,6 +1060,7 @@ relationships: []
                 direction,
                 right: "service".to_string(),
             }],
+            distinct: false,
             projections: vec![
                 Projection::Property {
                     property: PropertyRef {

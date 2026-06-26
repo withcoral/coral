@@ -317,12 +317,7 @@ fn compile_relationship(
 }
 
 fn compile_return(return_clause: &Return, plan: &mut GraphPlan) -> Result<(), CoreError> {
-    if return_clause.distinct {
-        return Err(unsupported(
-            "return.distinct",
-            "RETURN DISTINCT is not supported yet",
-        ));
-    }
+    plan.distinct = return_clause.distinct;
     if return_clause.star {
         return Err(unsupported("return.star", "RETURN * is not supported yet"));
     }
@@ -845,6 +840,19 @@ mod tests {
                 alias: "services".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn compiles_return_distinct() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[:OWNS]->(service:Service) \
+             RETURN DISTINCT service.tier AS tier ORDER BY tier",
+        )
+        .expect("query should compile");
+
+        assert!(plan.distinct);
+        assert_eq!(plan.projections.len(), 1);
+        assert_eq!(plan.order_by.len(), 1);
     }
 
     #[test]

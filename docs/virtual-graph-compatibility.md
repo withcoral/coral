@@ -23,6 +23,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Property projections | Supported foundation | Node keys and exposed properties |
 | Property predicates | Supported foundation | Conjunctive literal and property-to-property comparisons |
 | `COUNT(*)` | Supported foundation | Standalone aggregate projection only |
+| Distinct projections | Supported foundation | `SELECT DISTINCT` over projected rows |
 | Ordering, skip, and limit | Supported foundation | Property order keys, row offset, and row limit |
 | Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
 | Declaration-aware plan validation | Supported foundation | Resolves variables/properties and rejects unsupported plan shapes before SQL rendering |
@@ -46,6 +47,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Inline node property maps | Supported foundation | Normalized to equality predicates, e.g. `(n:Service {tier: 'prod'})` |
 | Inline relationship property maps | Supported foundation | Anonymous relationships get internal variables for property predicates |
 | `RETURN` property projections | Supported foundation | Optional aliases are supported |
+| `RETURN DISTINCT` | Supported foundation | Supported for projected rows; `ORDER BY` with `DISTINCT` must use projected properties |
 | `RETURN count(*)` | Supported foundation | Supported as a standalone aggregate projection |
 | `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, property projection aliases, and non-negative integer offsets/limits |
 | `OPTIONAL MATCH` | Rejected | Needs nullability-aware IR and SQL lowering |
@@ -56,7 +58,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | User variables beginning with `__coral_` | Rejected | Prefix reserved for internal planner bindings |
 | `WITH`, `UNION`, subqueries, procedure calls | Rejected | Needs scope and pipeline semantics |
 | Parameters | Rejected | Needs API/runtime parameter binding contract |
-| `DISTINCT` and grouping | Rejected | Needs aggregate/grouping IR |
+| Grouping | Rejected | Needs aggregate/grouping IR |
 | `ORDER BY` aggregate aliases | Rejected | Needs aggregate/grouping IR |
 | GraphQL parser | Planned | Must compile to shared IR, not Cypher strings |
 | Writes | Rejected by product invariant | Coral virtual graph is read-only |
