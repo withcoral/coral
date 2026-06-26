@@ -357,8 +357,9 @@ fn compile_return(return_clause: &Return, plan: &mut GraphPlan) -> Result<(), Co
     if let Some(order) = &return_clause.order {
         for (index, item) in order.items.iter().enumerate() {
             plan.order_by.push(OrderKey {
-                property: compile_property_ref(
+                property: compile_order_property(
                     &item.expression,
+                    &plan.projections,
                     format!("return.order.items[{index}].expression"),
                 )?,
                 direction: match item.direction {
@@ -374,6 +375,62 @@ fn compile_return(return_clause: &Return, plan: &mut GraphPlan) -> Result<(), Co
     }
 
     Ok(())
+}
+
+fn compile_order_property(
+    expression: &Expression,
+    projections: &[Projection],
+    path: impl Into<String>,
+) -> Result<PropertyRef, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_order_property(inner, projections, path),
+        Expression::Variable(variable) => {
+            projection_property_for_alias(variable, projections, path)
+        }
+        _ => compile_property_ref(expression, path),
+    }
+}
+
+fn projection_property_for_alias(
+    variable: &Variable,
+    projections: &[Projection],
+    path: impl Into<String>,
+) -> Result<PropertyRef, CoreError> {
+    let path = path.into();
+    let alias = variable_name(variable);
+    let mut found_property = None;
+    for projection in projections {
+        match projection {
+            Projection::Property {
+                property,
+                alias: Some(projection_alias),
+            } if projection_alias == &alias => {
+                if found_property.is_some() {
+                    return Err(unsupported(
+                        path,
+                        format!("ORDER BY alias '{alias}' is ambiguous"),
+                    ));
+                }
+                found_property = Some(property.clone());
+            }
+            Projection::CountAll {
+                alias: projection_alias,
+            } if projection_alias == &alias => {
+                return Err(unsupported(
+                    path,
+                    "ORDER BY aggregate aliases is not supported until grouping is supported",
+                ));
+            }
+            _ => {}
+        }
+    }
+    found_property.ok_or_else(|| {
+        unsupported(
+            path,
+            format!("ORDER BY alias '{alias}' does not match a property projection"),
+        )
+    })
 }
 
 fn compile_projection(
@@ -831,6 +888,27 @@ mod tests {
     }
 
     #[test]
+    fn compiles_order_by_property_projection_aliases() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN service.name AS service_name \
+             ORDER BY service_name DESC",
+        )
+        .expect("query should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                },
+                direction: OrderDirection::Descending,
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_is_null_predicates() {
         let plan = compile_cypher(
             "MATCH (service:Service) WHERE service.tier IS NULL RETURN service.name",
@@ -878,6 +956,16 @@ mod tests {
     #[test]
     fn rejects_reserved_internal_variable_prefix() {
         assert_unsupported("MATCH (__coral_rel_0:Service) RETURN __coral_rel_0.name");
+    }
+
+    #[test]
+    fn rejects_order_by_unknown_aliases() {
+        assert_unsupported("MATCH (service:Service) RETURN service.name AS name ORDER BY missing");
+    }
+
+    #[test]
+    fn rejects_order_by_aggregate_aliases() {
+        assert_unsupported("MATCH (service:Service) RETURN count(*) AS services ORDER BY services");
     }
 
     fn assert_unsupported(cypher: &str) {

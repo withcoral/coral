@@ -42,7 +42,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Inline relationship property maps | Supported foundation | Anonymous relationships get internal variables for property predicates |
 | `RETURN` property projections | Supported foundation | Optional aliases are supported |
 | `RETURN count(*)` | Supported foundation | Supported as a standalone aggregate projection |
-| `ORDER BY` and `LIMIT` | Supported foundation | Property order keys and non-negative integer limits |
+| `ORDER BY` and `LIMIT` | Supported foundation | Property order keys, property projection aliases, and non-negative integer limits |
 | `OPTIONAL MATCH` | Rejected | Needs nullability-aware IR and SQL lowering |
 | Multiple `MATCH` clauses | Rejected | Needs multi-pattern planning and join ordering rules |
 | Undirected or bidirectional relationships | Rejected | Needs explicit graph-expansion semantics |
@@ -52,6 +52,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `WITH`, `UNION`, subqueries, procedure calls | Rejected | Needs scope and pipeline semantics |
 | Parameters | Rejected | Needs API/runtime parameter binding contract |
 | `DISTINCT`, `SKIP`, grouping | Rejected | Needs aggregate/grouping IR |
+| `ORDER BY` aggregate aliases | Rejected | Needs aggregate/grouping IR |
 | GraphQL parser | Planned | Must compile to shared IR, not Cypher strings |
 | Writes | Rejected by product invariant | Coral virtual graph is read-only |
 

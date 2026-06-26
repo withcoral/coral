@@ -104,7 +104,7 @@ async fn cypher_inline_node_property_maps_execute_as_predicates() {
         &graph,
         "MATCH (service:Service {tier: 'prod'}) \
          RETURN service.name AS service \
-         ORDER BY service.name",
+         ORDER BY service",
     )
     .await
     .expect("Cypher query should execute");
