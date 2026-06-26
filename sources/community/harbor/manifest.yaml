@@ -38,13 +38,6 @@ tables:
     request:
       method: GET
       path: /projects
-      query:
-        - name: page
-          from: pagination
-          key: page
-        - name: page_size
-          from: pagination
-          key: limit
     response:
       row_strategy: direct
     pagination:
@@ -53,6 +46,8 @@ tables:
       page_param: page
       page_size:
         query_param: page_size
+        default: 100
+        max: 100
     columns:
       - name: project_id
         type: Int64
@@ -101,13 +96,6 @@ tables:
     request:
       method: GET
       path: /projects/{{filter.project_name}}/repositories
-      query:
-        - name: page
-          from: pagination
-          key: page
-        - name: page_size
-          from: pagination
-          key: limit
     response:
       row_strategy: direct
     pagination:
@@ -116,6 +104,8 @@ tables:
       page_param: page
       page_size:
         query_param: page_size
+        default: 100
+        max: 100
     columns:
       - name: project_name
         type: Utf8
@@ -169,13 +159,6 @@ tables:
     request:
       method: GET
       path: /projects/{{filter.project_name}}/repositories/{{filter.encoded_repository_name}}/artifacts
-      query:
-        - name: page
-          from: pagination
-          key: page
-        - name: page_size
-          from: pagination
-          key: limit
     response:
       row_strategy: direct
     pagination:
@@ -184,6 +167,8 @@ tables:
       page_param: page
       page_size:
         query_param: page_size
+        default: 100
+        max: 100
     columns:
       - name: project_name
         type: Utf8

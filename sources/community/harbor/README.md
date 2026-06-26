@@ -52,6 +52,12 @@ export HARBOR_PASSWORD='your_secret_here'
 
 ---
 
+# Authentication
+
+Harbor uses HTTP Basic authentication. Supply either a regular Harbor user or, preferably, a **robot account** scoped to read-only project/repository/artifact pulls. Coral sends `HARBOR_USERNAME` / `HARBOR_PASSWORD` as Basic credentials on every request; entities not visible to that account are not returned.
+
+---
+
 # Tables Overview
 
 | Table | API Endpoint | Required Filters | Pagination |
@@ -59,6 +65,8 @@ export HARBOR_PASSWORD='your_secret_here'
 | `projects` | `GET /api/v2.0/projects` | — | Page pagination |
 | `repositories` | `GET /api/v2.0/projects/{project_name}/repositories` | `project_name` | Page pagination |
 | `artifacts` | `GET /api/v2.0/projects/{project_name}/repositories/{encoded_repository_name}/artifacts` | `project_name`, `encoded_repository_name` | Page pagination |
+
+All tables page through results with Harbor's `page` / `page_size` query parameters (1-indexed, capped at Harbor's maximum `page_size` of 100). Coral injects these automatically; queries do not need to set them. Use a SQL `LIMIT` to bound large scans.
 
 ---
 
@@ -181,17 +189,21 @@ coral source lint sources/community/harbor/manifest.yaml
 ## Execute Live Connection Test
 
 ```bash
-export HARBOR_BASE_URL=https://harbor.internal.infra
+export HARBOR_BASE_URL=https://harbor.example.com
 export HARBOR_USERNAME='robot$coral-auditor'
 export HARBOR_PASSWORD='your_robot_secret_here'
 
 coral source add --file sources/community/harbor/manifest.yaml
 coral source test harbor
+coral sql "SELECT project_id, name FROM harbor.projects LIMIT 5"
 ```
 
 ---
 
-# Representative Live Output
+# Live Output
+
+> Replace the block below with the actual output from your own `coral source test harbor`
+> run against this manifest. Do not ship placeholder output.
 
 ```text
 $ coral source test harbor
@@ -207,14 +219,7 @@ $ coral source test harbor
   1 declared · 1 passed · 0 failed
 
 ✓ SELECT project_id, name FROM harbor.projects LIMIT 1
-
-+------------+-------------+
-| project_id | name        |
-+------------+-------------+
-|          7 | core-infra  |
-+------------+-------------+
-
-1 row
+  1 row
 ```
 
 ---
