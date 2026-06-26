@@ -93,9 +93,7 @@ fn compile_query(query: &Query, context: &CypherCompileContext) -> Result<GraphP
     };
     match &single_query.kind {
         SingleQueryKind::SinglePart(single_part) => compile_single_part(single_part, context),
-        SingleQueryKind::MultiPart(multi_part) => {
-            compile_transparent_multi_part(multi_part, context)
-        }
+        SingleQueryKind::MultiPart(multi_part) => compile_multi_part(multi_part, context),
     }
 }
 
@@ -114,6 +112,226 @@ fn compile_single_part(
     }
     compile_return(return_clause, &mut plan, context)?;
     Ok(plan)
+}
+
+fn compile_multi_part(
+    query: &MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<GraphPlan, CoreError> {
+    if let Some(plan) = compile_terminal_with_projection(query, context)? {
+        return Ok(plan);
+    }
+    compile_transparent_multi_part(query, context)
+}
+
+fn compile_terminal_with_projection(
+    query: &MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<GraphPlan>, CoreError> {
+    let terminal_projection_candidate = query
+        .parts
+        .iter()
+        .any(|part| with_requires_terminal_projection(&part.with));
+    if !terminal_projection_candidate {
+        return Ok(None);
+    }
+    let [part] = query.parts.as_slice() else {
+        return Err(unsupported(
+            "query.parts",
+            "terminal WITH projections currently support exactly one MATCH ... WITH ... RETURN query part",
+        ));
+    };
+    if !part.updating_clauses.is_empty() {
+        return Err(unsupported(
+            "parts[0].updating_clauses",
+            "write clauses are not supported by Coral virtual graphs",
+        ));
+    }
+    if !query.final_part.reading_clauses.is_empty() {
+        return Err(unsupported(
+            "final_part.reading_clauses",
+            "WITH projection boundaries before another MATCH require staged query planning and are not supported yet",
+        ));
+    }
+
+    let match_clause = single_match_clause(&part.reading_clauses, "parts[0].match")?;
+    let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
+    let mut plan = compile_match(match_clause)?;
+    if let Some(where_clause) = &match_clause.where_clause {
+        let predicate = compile_predicate_expression(where_clause, "parts[0].where")?;
+        append_predicate_expression(predicate, &mut plan);
+    }
+
+    compile_terminal_with_clause(&part.with, &mut plan, context)?;
+    validate_terminal_return_aliases(return_clause, &plan.projections)?;
+    apply_terminal_return_modifiers(return_clause, &mut plan)?;
+    Ok(Some(plan))
+}
+
+fn with_requires_terminal_projection(with: &With) -> bool {
+    with.items
+        .iter()
+        .any(|item| item.alias.is_some() || !matches!(&item.expression, Expression::Variable(_)))
+}
+
+fn compile_terminal_with_clause(
+    with: &With,
+    plan: &mut GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<(), CoreError> {
+    plan.distinct = with.distinct;
+    if with.star {
+        return Err(unsupported(
+            "with.star",
+            "WITH * requires scoped query planning and is not supported yet",
+        ));
+    }
+    if with.where_clause.is_some() {
+        return Err(unsupported(
+            "with.where",
+            "WITH WHERE requires staged query planning and is not supported yet",
+        ));
+    }
+    if with.order.is_some() || with.skip.is_some() || with.limit.is_some() {
+        return Err(unsupported(
+            "with",
+            "WITH ORDER BY, SKIP, and LIMIT require staged query planning and are not supported yet",
+        ));
+    }
+    if with.items.is_empty() {
+        return Err(unsupported(
+            "with.items",
+            "WITH must include at least one projection",
+        ));
+    }
+
+    for (index, item) in with.items.iter().enumerate() {
+        if item.alias.is_none() {
+            return Err(unsupported(
+                format!("with.items[{index}].alias"),
+                "terminal WITH projections require explicit aliases",
+            ));
+        }
+        if matches!(&item.expression, Expression::Variable(_)) {
+            return Err(unsupported(
+                format!("with.items[{index}].expression"),
+                "terminal WITH projections support graph properties and aggregates, not graph variable aliases",
+            ));
+        }
+        plan.projections.push(compile_projection(
+            item,
+            format!("with.items[{index}]"),
+            context,
+        )?);
+    }
+    Ok(())
+}
+
+fn validate_terminal_return_aliases(
+    return_clause: &Return,
+    projections: &[Projection],
+) -> Result<(), CoreError> {
+    if return_clause.star {
+        return Err(unsupported(
+            "final_part.return.star",
+            "RETURN * after WITH requires scoped query planning and is not supported yet",
+        ));
+    }
+    if return_clause.items.len() != projections.len() {
+        return Err(unsupported(
+            "final_part.return.items",
+            "terminal RETURN after WITH must pass through every WITH alias in the same order",
+        ));
+    }
+    for (index, (item, projection)) in return_clause
+        .items
+        .iter()
+        .zip(projections.iter())
+        .enumerate()
+    {
+        if item.alias.is_some() {
+            return Err(unsupported(
+                format!("final_part.return.items[{index}].alias"),
+                "terminal RETURN alias renaming after WITH is not supported yet",
+            ));
+        }
+        let Expression::Variable(variable) = &item.expression else {
+            return Err(unsupported(
+                format!("final_part.return.items[{index}].expression"),
+                "terminal RETURN after WITH must project WITH aliases",
+            ));
+        };
+        let alias = variable_name(variable);
+        let expected = projection_output_alias(projection).ok_or_else(|| {
+            unsupported(
+                format!("final_part.return.items[{index}]"),
+                "terminal WITH projections require aliases",
+            )
+        })?;
+        if alias != expected {
+            return Err(unsupported(
+                format!("final_part.return.items[{index}].expression"),
+                format!("terminal RETURN expected WITH alias '{expected}', got '{alias}'"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn apply_terminal_return_modifiers(
+    return_clause: &Return,
+    plan: &mut GraphPlan,
+) -> Result<(), CoreError> {
+    plan.distinct |= return_clause.distinct;
+    if let Some(skip) = &return_clause.skip {
+        plan.skip = Some(compile_skip(skip, "final_part.return.skip")?);
+    }
+    if let Some(order) = &return_clause.order {
+        for (index, item) in order.items.iter().enumerate() {
+            plan.order_by.push(OrderKey {
+                expression: compile_terminal_alias_order_expression(
+                    &item.expression,
+                    &plan.projections,
+                    format!("final_part.return.order.items[{index}].expression"),
+                )?,
+                direction: match item.direction {
+                    Some(SortDirection::Descending) => OrderDirection::Descending,
+                    Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
+                },
+            });
+        }
+    }
+    if let Some(limit) = &return_clause.limit {
+        plan.limit = Some(compile_limit(limit, "final_part.return.limit")?);
+    }
+    Ok(())
+}
+
+fn compile_terminal_alias_order_expression(
+    expression: &Expression,
+    projections: &[Projection],
+    path: impl Into<String>,
+) -> Result<OrderExpression, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_terminal_alias_order_expression(inner, projections, path)
+        }
+        Expression::Variable(variable) => {
+            projection_order_expression_for_alias(variable, projections, path)
+        }
+        _ => Err(unsupported(
+            path,
+            "ORDER BY after terminal WITH only supports projected aliases",
+        )),
+    }
+}
+
+fn projection_output_alias(projection: &Projection) -> Option<&str> {
+    match projection {
+        Projection::Property { alias, .. } => alias.as_deref(),
+        Projection::CountAll { alias } | Projection::Aggregate { alias, .. } => Some(alias),
+    }
 }
 
 fn compile_transparent_multi_part(
@@ -1471,6 +1689,89 @@ mod tests {
     }
 
     #[test]
+    fn compiles_terminal_with_projection_aliases() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[:OWNS]->(service:Service) \
+             WITH person.name AS owner, count(service) AS services \
+             RETURN owner, services \
+             ORDER BY services DESC, owner \
+             LIMIT 10",
+        )
+        .expect("terminal WITH projection query should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "person".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("owner".to_string()),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Count,
+                    target: AggregateTarget::VariableKey {
+                        variable: "service".to_string(),
+                    },
+                    distinct: false,
+                    alias: "services".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("services".to_string()),
+                    direction: OrderDirection::Descending,
+                },
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "person".to_string(),
+                        property: "name".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                },
+            ]
+        );
+        assert_eq!(plan.limit, Some(10));
+    }
+
+    #[test]
+    fn compiles_terminal_with_distinct_property_projection() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH DISTINCT service.tier AS tier \
+             RETURN tier \
+             ORDER BY tier",
+        )
+        .expect("terminal WITH DISTINCT projection query should compile");
+
+        assert!(plan.distinct);
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                alias: Some("tier".to_string()),
+            }]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                }),
+                direction: OrderDirection::Ascending,
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_reverse_relationship_direction() {
         let plan = compile_cypher(
             "MATCH (service:Service)<-[ownership:OWNS]-(person:Person) \
@@ -2129,13 +2430,34 @@ mod tests {
     fn rejects_non_transparent_with_boundaries() {
         assert_unsupported("MATCH (service:Service) WITH DISTINCT service RETURN service.name");
         assert_unsupported("MATCH (service:Service) WITH * RETURN service.name");
-        assert_unsupported("MATCH (service:Service) WITH service.name AS name RETURN name");
         assert_unsupported("MATCH (service:Service) WITH service LIMIT 1 RETURN service.name");
         assert_unsupported(
             "MATCH (service:Service) WITH service WHERE service.tier = 'prod' RETURN service.name",
         );
         assert_unsupported(
             "MATCH (person:Person)-[:OWNS]->(service:Service) WITH service RETURN service.name",
+        );
+    }
+
+    #[test]
+    fn rejects_terminal_with_projection_boundaries_requiring_staging() {
+        assert_unsupported("MATCH (service:Service) WITH service.name RETURN service.name");
+        assert_unsupported("MATCH (service:Service) WITH service AS renamed RETURN renamed");
+        assert_unsupported("MATCH (service:Service) WITH service.name AS service RETURN missing");
+        assert_unsupported(
+            "MATCH (service:Service) WITH service.name AS service RETURN service AS renamed",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) WITH service.name AS service ORDER BY service RETURN service",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) WITH service.name AS service WHERE service = 'billing-api' RETURN service",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) WITH service.name AS service MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN service, target.name",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) WITH service.name AS service RETURN service ORDER BY service.name",
         );
     }
 

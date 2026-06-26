@@ -1032,6 +1032,40 @@ async fn cypher_grouped_count_projection_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_terminal_with_projection_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier IS NOT NULL \
+         WITH service.tier AS tier, count(service) AS services, avg(service.risk) AS average_risk \
+         RETURN tier, services, average_risk \
+         ORDER BY services DESC, tier",
+    )
+    .await
+    .expect("terminal WITH projection Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" GROUP BY "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"tier": "prod", "services": 2, "average_risk": 0.7}),
+            json!({"tier": "dev", "services": 1, "average_risk": 0.25}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_count_property_projection_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
