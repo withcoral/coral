@@ -205,11 +205,18 @@ impl CoralMcpServer {
         }
     }
 
+    fn workspace(&self) -> coral_api::v1::Workspace {
+        self.options
+            .workspace
+            .clone()
+            .unwrap_or_else(default_workspace)
+    }
+
     async fn load_sources(&self) -> Result<Vec<Source>, tonic::Status> {
         let mut source_client = self.source.clone();
         Ok(source_client
             .list_sources(Request::new(ListSourcesRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(self.workspace()),
             }))
             .await?
             .into_inner()
@@ -225,7 +232,7 @@ impl CoralMcpServer {
         let mut catalog_client = self.catalog.clone();
         Ok(catalog_client
             .list_catalog(Request::new(ListCatalogRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(self.workspace()),
                 schema_name: schema_name.unwrap_or_default().to_string(),
                 kind: kind as i32,
                 pagination: Some(pagination),
@@ -279,7 +286,7 @@ impl CoralMcpServer {
         let mut catalog_client = self.catalog.clone();
         Ok(catalog_client
             .describe_table(Request::new(DescribeTableRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(self.workspace()),
                 schema_name: schema_name.to_string(),
                 table_name: table_name.to_string(),
             }))
@@ -338,7 +345,7 @@ impl CoralMcpServer {
 
     async fn execute_one_sql_query(&self, index: usize, sql: String) -> SqlQueryResultValue {
         let request = Request::new(ExecuteSqlRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(self.workspace()),
             sql,
         });
         match self.query_rows(request).await {
@@ -384,7 +391,7 @@ impl CoralMcpServer {
         let mut episode_client = self.episode.clone();
         episode_client
             .open_episode(Request::new(OpenEpisodeRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(self.workspace()),
                 episode_id: episode_id.clone(),
                 intent: intent.to_string(),
                 parent_episode_id: parent_episode_id.unwrap_or_default().to_string(),
@@ -407,7 +414,7 @@ impl CoralMcpServer {
         let mut feedback_client = self.feedback.clone();
         let response = feedback_client
             .submit_feedback(Request::new(SubmitFeedbackRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(self.workspace()),
                 trying_to_do: trying_to_do.to_string(),
                 tried: tried.to_string(),
                 stuck: stuck.to_string(),
@@ -432,7 +439,7 @@ impl CoralMcpServer {
         let mut catalog_client = self.catalog.clone();
         match catalog_client
             .search_catalog(Request::new(SearchCatalogRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(self.workspace()),
                 pattern: arguments.pattern,
                 ignore_case: arguments.ignore_case,
                 schema_name: arguments.schema.unwrap_or_default(),
@@ -464,7 +471,7 @@ impl CoralMcpServer {
         let mut catalog_client = self.catalog.clone();
         let result = catalog_client
             .list_catalog(Request::new(ListCatalogRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(self.workspace()),
                 schema_name: arguments.schema.unwrap_or_default(),
                 kind: catalog_item_kind_from_tool(arguments.kind) as i32,
                 pagination: Some(PaginationRequest {
@@ -582,7 +589,7 @@ impl CoralMcpServer {
         let mut catalog_client = self.catalog.clone();
         match catalog_client
             .list_columns(Request::new(ListColumnsRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(self.workspace()),
                 schema_name: arguments.schema.clone(),
                 table_name: arguments.table.clone(),
                 pattern: arguments.pattern.clone(),
@@ -637,6 +644,7 @@ impl ServerHandler for CoralMcpServer {
         )
         .with_server_info(Implementation::new("coral", env!("CARGO_PKG_VERSION")))
         .with_instructions(initial_instructions(
+            &self.workspace().name,
             self.startup_context.source_names(),
             self.startup_context.query_examples(),
         ))

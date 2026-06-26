@@ -26,6 +26,7 @@ unless you select another workspace.
 ```shellscript
 coral --workspace work source list
 coral source add github --workspace work
+coral mcp-stdio --workspace work
 CORAL_WORKSPACE=work coral sql "select * from coral.tables"
 ```
 
@@ -290,6 +291,7 @@ Expose the local Coral runtime as an MCP stdio server.
 
 ```shellscript
 coral mcp-stdio
+coral mcp-stdio --workspace work
 ```
 
 This command is intended to be launched by an MCP-capable client rather than used directly in an interactive shell.
