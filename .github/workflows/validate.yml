@@ -132,6 +132,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.rust_checks == 'true' }}
+    env:
+      # Rust 1.95's bundled rust-lld has crashed linking the large coral-app
+      # test binary on hosted Ubuntu runners. Disable the lld linker feature
+      # only for the broad workspace test job; the focused virtual-graph
+      # workflow keeps its default linker because it only builds coral-engine.
+      RUSTFLAGS: -C linker-features=-lld
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -232,30 +238,48 @@ jobs:
         id: coral-release
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          PRIMARY_RELEASE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          version="$(
-            curl -fsSL \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -H "User-Agent: withcoral-install-ci" \
-              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/${{ github.repository }}/releases/latest" |
-              sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' |
-              head -n 1
-          )"
+          release_repo=""
+          version=""
+          for candidate_repo in "$PRIMARY_RELEASE_REPO" withcoral/coral; do
+            if [ -n "$release_repo" ]; then
+              break
+            fi
+
+            response="$(
+              curl -fsSL \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -H "User-Agent: withcoral-install-ci" \
+                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                "https://api.github.com/repos/${candidate_repo}/releases/latest" || true
+            )"
+            candidate_version="$(
+              printf '%s' "$response" |
+                sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' |
+                head -n 1
+            )"
+            if [ -n "$candidate_version" ]; then
+              release_repo="$candidate_repo"
+              version="$candidate_version"
+            fi
+          done
 
           if [ -z "$version" ]; then
             echo "Could not determine latest Coral release version" >&2
             exit 1
           fi
 
+          echo "repo=$release_repo" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Run install script
         env:
-          # Keep tokens out of PR-controlled installer code; pass only the resolved release version.
+          # Keep tokens out of PR-controlled installer code; pass only resolved release metadata.
+          CORAL_REPO: ${{ steps.coral-release.outputs.repo }}
           CORAL_VERSION: ${{ steps.coral-release.outputs.version }}
           GITHUB_TOKEN: ""
         run: |
