@@ -418,12 +418,6 @@ fn validate_transparent_with(
             "WITH DISTINCT requires staged query planning and is not supported yet",
         ));
     }
-    if with.star {
-        return Err(unsupported(
-            format!("{path}.star"),
-            "WITH * requires scoped query planning and is not supported yet",
-        ));
-    }
     if with.order.is_some() || with.skip.is_some() || with.limit.is_some() {
         return Err(unsupported(
             path.clone(),
@@ -435,6 +429,15 @@ fn validate_transparent_with(
             format!("{path}.where"),
             "WITH WHERE requires staged query planning and is not supported yet",
         ));
+    }
+    if with.star {
+        if !with.items.is_empty() {
+            return Err(unsupported(
+                format!("{path}.items"),
+                "WITH * mixed with explicit projections requires scoped query planning and is not supported yet",
+            ));
+        }
+        return Ok(());
     }
     if with.items.is_empty() {
         return Err(unsupported(
@@ -2032,6 +2035,21 @@ mod tests {
     }
 
     #[test]
+    fn compiles_transparent_with_star_pass_through() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH * \
+             MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+             RETURN service.name AS source, target.name AS target",
+        )
+        .expect("transparent WITH * query should compile");
+
+        assert_eq!(plan.nodes.len(), 2);
+        assert_eq!(plan.relationships.len(), 1);
+        assert_eq!(plan.projections.len(), 2);
+    }
+
+    #[test]
     fn compiles_transparent_with_before_return() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -2995,7 +3013,7 @@ mod tests {
     #[test]
     fn rejects_non_transparent_with_boundaries() {
         assert_unsupported("MATCH (service:Service) WITH DISTINCT service RETURN service.name");
-        assert_unsupported("MATCH (service:Service) WITH * RETURN service.name");
+        assert_unsupported("MATCH (service:Service) WITH *, service.name AS name RETURN name");
         assert_unsupported("MATCH (service:Service) WITH service LIMIT 1 RETURN service.name");
         assert_unsupported(
             "MATCH (service:Service) WITH service WHERE service.tier = 'prod' RETURN service.name",
