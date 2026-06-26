@@ -275,7 +275,7 @@ impl ServerBuilder {
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
             credential_manager.clone(),
-            layout.clone(),
+            layout.workspaces_root(),
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
@@ -790,7 +790,7 @@ enabled = false
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
             credential_manager.clone(),
-            layout.clone(),
+            layout.workspaces_root(),
         );
         let query_manager = QueryManager::new(
             config_store,
@@ -1176,7 +1176,7 @@ tables:
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
             credential_manager.clone(),
-            layout.clone(),
+            layout.workspaces_root(),
         );
         let query_manager = QueryManager::new(
             config_store,
@@ -1286,7 +1286,7 @@ tables:
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
             credential_manager.clone(),
-            layout.clone(),
+            layout.workspaces_root(),
         );
         let query_manager = QueryManager::new(
             config_store,
@@ -1393,7 +1393,7 @@ tables:
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
             credential_manager.clone(),
-            layout.clone(),
+            layout.workspaces_root(),
         );
         let query_manager = QueryManager::new(
             config_store,

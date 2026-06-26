@@ -1,10 +1,10 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tracing::warn;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId};
-use crate::state::AppStateLayout;
 use crate::storage::fs::DirectoryBackup;
 use crate::workspaces::{DeletedWorkspace, WorkspaceName, WorkspaceRecord, WorkspaceStore};
 
@@ -13,19 +13,19 @@ use crate::workspaces::{DeletedWorkspace, WorkspaceName, WorkspaceRecord, Worksp
 pub(crate) struct WorkspaceManager {
     store: Arc<dyn WorkspaceStore>,
     credential_manager: CredentialManager,
-    layout: AppStateLayout,
+    workspaces_root: PathBuf,
 }
 
 impl WorkspaceManager {
     pub(crate) fn new(
         store: impl WorkspaceStore,
         credential_manager: CredentialManager,
-        layout: AppStateLayout,
+        workspaces_root: impl Into<PathBuf>,
     ) -> Self {
         Self {
             store: Arc::new(store),
             credential_manager,
-            layout,
+            workspaces_root: workspaces_root.into(),
         }
     }
 
@@ -98,7 +98,7 @@ impl WorkspaceManager {
     }
 
     fn remove_deleted_workspace_dir(&self, workspace_name: &WorkspaceName) {
-        let workspace_dir = self.layout.workspace_dir(workspace_name);
+        let workspace_dir = self.workspace_dir(workspace_name);
         let backup = match DirectoryBackup::move_for_delete(&workspace_dir, workspace_name) {
             Ok(backup) => backup,
             Err(error) => {
@@ -117,6 +117,10 @@ impl WorkspaceManager {
                 "workspace deleted, but failed to remove workspace artifact backup: {error}"
             );
         }
+    }
+
+    fn workspace_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.workspaces_root.join(workspace_name.as_str())
     }
 }
 
@@ -155,8 +159,11 @@ mod tests {
         let store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            WorkspaceManager::new(store.clone(), credential_manager.clone(), layout.clone());
+        let manager = WorkspaceManager::new(
+            store.clone(),
+            credential_manager.clone(),
+            layout.workspaces_root(),
+        );
         let workspace_name = WorkspaceName::parse("work").expect("workspace");
         let source = installed_source("github");
         let credential_set_id = CredentialSetId::for_source(&source.name);
