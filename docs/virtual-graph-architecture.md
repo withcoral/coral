@@ -39,4 +39,7 @@ The foundation slice establishes:
 - a typed shared graph query plan.
 - SQL lowering for node scans, directed relationship traversals, property
   projections, property predicates, ordering, `COUNT(*)`, and `LIMIT`.
+- `CoralQuery::execute_graph_plan` and `CoralQuery::explain_graph_plan`
+  wrappers that preserve translated SQL and diagnostics while reusing the
+  existing SQL execution path.
 - synthetic tests that execute translated SQL through Coral's existing engine.

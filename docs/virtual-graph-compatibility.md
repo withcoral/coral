@@ -22,6 +22,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Property predicates | Supported foundation | Conjunctive comparisons |
 | `COUNT(*)` | Supported foundation | SQL lowering only in first slice |
 | Ordering and limit | Supported foundation | Property order keys and row limit |
+| Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
 | Optional matches | Deferred | Requires nullability-aware IR |
 | Variable-length paths | Deferred | Requires recursive/path expansion semantics |
 | Path values | Deferred | Requires graph value representation |

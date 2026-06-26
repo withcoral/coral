@@ -77,10 +77,11 @@ pub use contracts::{
 };
 pub use virtual_graph::{
     ComparisonOperator, Declaration as GraphDeclaration, Diagnostic as GraphDiagnostic,
-    Direction as GraphDirection, GraphPlan, Literal as GraphLiteral, NodePattern,
-    OrderDirection as GraphOrderDirection, OrderKey as GraphOrderKey,
-    Projection as GraphProjection, PropertyPredicate as GraphPropertyPredicate,
-    PropertyRef as GraphPropertyRef, RelationshipPattern, SqlTranslation as GraphSqlTranslation,
+    Direction as GraphDirection, GraphExecution, GraphPlan, GraphQueryPlan,
+    Literal as GraphLiteral, NodePattern, OrderDirection as GraphOrderDirection,
+    OrderKey as GraphOrderKey, Projection as GraphProjection,
+    PropertyPredicate as GraphPropertyPredicate, PropertyRef as GraphPropertyRef,
+    RelationshipPattern, SqlTranslation as GraphSqlTranslation,
 };
 
 /// High-level query operations for the local query engine.
@@ -194,6 +195,48 @@ impl CoralQuery {
             .await?
             .explain_sql(sql)
             .await
+    }
+
+    /// Executes one virtual graph plan over the provided source set.
+    ///
+    /// The graph plan is lowered to `DataFusion` SQL and then executed through
+    /// the same runtime path as [`Self::execute_sql`]. The returned wrapper
+    /// preserves the translated SQL and virtual graph diagnostics for callers
+    /// that need to display or audit the generated relational query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if graph lowering fails, source compilation fails,
+    /// or the generated SQL cannot execute.
+    pub async fn execute_graph_plan(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        plan: &GraphPlan,
+    ) -> Result<GraphExecution, CoreError> {
+        let translation = graph.lower_graph_plan(plan)?;
+        let execution = Self::execute_sql(sources, runtime, translation.sql()).await?;
+        Ok(GraphExecution::new(translation, execution))
+    }
+
+    /// Explains one virtual graph plan over the provided source set.
+    ///
+    /// The graph plan is lowered to `DataFusion` SQL and then explained through
+    /// the same runtime path as [`Self::explain_sql`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if graph lowering fails, source compilation fails,
+    /// or the generated SQL cannot be planned.
+    pub async fn explain_graph_plan(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        plan: &GraphPlan,
+    ) -> Result<GraphQueryPlan, CoreError> {
+        let translation = graph.lower_graph_plan(plan)?;
+        let query_plan = Self::explain_sql(sources, runtime, translation.sql()).await?;
+        Ok(GraphQueryPlan::new(translation, query_plan))
     }
 
     /// Validates that a single source can be initialized and queried.

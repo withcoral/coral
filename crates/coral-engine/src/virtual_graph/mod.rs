@@ -6,11 +6,13 @@
 
 mod declaration;
 mod diagnostic;
+mod execution;
 mod ir;
 mod sql;
 
 pub use declaration::{Declaration, Endpoint, Node, Relationship, TableRef};
 pub use diagnostic::Diagnostic;
+pub use execution::{GraphExecution, GraphQueryPlan};
 pub use ir::{
     ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection, OrderKey,
     Projection, PropertyPredicate, PropertyRef, RelationshipPattern,

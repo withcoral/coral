@@ -18,17 +18,16 @@ async fn virtual_graph_translation_executes_against_synthetic_file_sources() {
     let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
     let plan = owner_service_plan();
 
-    let translation = graph
-        .lower_graph_plan(&plan)
-        .expect("graph plan should lower");
     let graph_rows = execution_to_rows(
-        &CoralQuery::execute_sql(
+        CoralQuery::execute_graph_plan(
             std::slice::from_ref(&source),
             test_runtime(),
-            translation.sql(),
+            &graph,
+            &plan,
         )
         .await
-        .expect("translated SQL should execute"),
+        .expect("graph plan should execute")
+        .execution(),
     );
     let sql_rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -88,16 +87,40 @@ async fn virtual_graph_count_projection_executes_against_synthetic_file_sources(
         limit: None,
     };
 
-    let translation = graph
-        .lower_graph_plan(&plan)
-        .expect("count plan should lower");
     let rows = execution_to_rows(
-        &CoralQuery::execute_sql(&[source], test_runtime(), translation.sql())
+        CoralQuery::execute_graph_plan(&[source], test_runtime(), &graph, &plan)
             .await
-            .expect("translated count SQL should execute"),
+            .expect("translated count SQL should execute")
+            .execution(),
     );
 
     assert_eq!(rows, vec![json!({"ownership_count": 3})]);
+}
+
+#[tokio::test]
+async fn explain_graph_plan_preserves_translated_sql_and_datafusion_plan() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let plan = owner_service_plan();
+
+    let graph_plan = CoralQuery::explain_graph_plan(&[source], test_runtime(), &graph, &plan)
+        .await
+        .expect("graph plan should explain");
+
+    assert!(
+        graph_plan
+            .translated_sql()
+            .contains("JOIN \"ops\".\"ownerships\""),
+        "{}",
+        graph_plan.translated_sql()
+    );
+    assert!(
+        graph_plan.plan().optimized_logical_plan().contains("ops"),
+        "{}",
+        graph_plan.plan().optimized_logical_plan()
+    );
 }
 
 fn owner_service_plan() -> GraphPlan {
