@@ -1476,6 +1476,41 @@ async fn cypher_id_and_type_projections_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_order_by_id_functions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         RETURN person.name AS owner, service.name AS service \
+         ORDER BY id(owns) DESC \
+         LIMIT 2",
+    )
+    .await
+    .expect("ORDER BY id() should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ORDER BY \"r0\".\"ownership_id\" DESC"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Katherine Johnson", "service": "experiments"}),
+            json!({"owner": "Grace Hopper", "service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_count_keyless_relationship_variables_are_rejected() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

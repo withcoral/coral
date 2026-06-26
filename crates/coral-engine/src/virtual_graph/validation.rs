@@ -437,6 +437,10 @@ impl<'a> GraphPlanValidator<'a> {
             OrderExpression::Property(property) => {
                 self.validate_property_ref(property, format!("{path}.property"))
             }
+            OrderExpression::Key { variable } => {
+                self.validate_key_projection(variable, format!("{path}.variable"))
+            }
+            OrderExpression::Literal(_) => Ok(()),
             OrderExpression::ProjectionAlias(alias) => {
                 if self.projection_alias_exists(alias) {
                     Ok(())
@@ -459,6 +463,16 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> bool {
         match expression {
             OrderExpression::Property(property) => projected_properties.contains(&property),
+            OrderExpression::Key { variable } => {
+                self.plan.projections.iter().any(|projection| {
+                    matches!(projection, Projection::Key { variable: projected, .. } if projected == variable)
+                })
+            }
+            OrderExpression::Literal(literal) => {
+                self.plan.projections.iter().any(|projection| {
+                    matches!(projection, Projection::Literal { literal: projected, .. } if projected == literal)
+                })
+            }
             OrderExpression::ProjectionAlias(alias) => self.projection_alias_exists(alias),
         }
     }

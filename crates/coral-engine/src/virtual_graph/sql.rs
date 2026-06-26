@@ -767,6 +767,8 @@ impl<'a> Lowerer<'a> {
     fn render_order_expression(&self, expression: &OrderExpression) -> Result<String, CoreError> {
         match expression {
             OrderExpression::Property(property) => self.render_property_ref(property),
+            OrderExpression::Key { variable } => self.render_binding_key_ref(variable),
+            OrderExpression::Literal(literal) => Ok(render_literal(literal)),
             OrderExpression::ProjectionAlias(alias) => Ok(quote_ident(alias)),
         }
     }

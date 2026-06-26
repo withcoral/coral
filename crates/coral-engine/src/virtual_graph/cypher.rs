@@ -794,6 +794,8 @@ fn compile_return(
                 expression: compile_order_expression(
                     &item.expression,
                     &plan.projections,
+                    plan,
+                    context,
                     format!("return.order.items[{index}].expression"),
                 )?,
                 direction: match item.direction {
@@ -814,18 +816,78 @@ fn compile_return(
 fn compile_order_expression(
     expression: &Expression,
     projections: &[Projection],
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
     path: impl Into<String>,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_order_expression(inner, projections, path),
+        Expression::Parenthesized(inner) => {
+            compile_order_expression(inner, projections, plan, context, path)
+        }
         Expression::Variable(variable) => {
             projection_order_expression_for_alias(variable, projections, path)
+        }
+        Expression::FunctionCall(function) if is_id_function(function) => {
+            compile_id_order_expression(function, path, plan, context)
+        }
+        Expression::FunctionCall(function) if is_type_function(function) => {
+            compile_type_order_expression(function, path, plan, context)
         }
         _ => Ok(OrderExpression::Property(compile_property_ref(
             expression, path,
         )?)),
     }
+}
+
+fn compile_id_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    let path = path.into();
+    let variable = compile_single_variable_function_argument(
+        function,
+        format!("{path}.arguments"),
+        "id() supports exactly one graph variable argument",
+        context,
+    )?;
+    if !plan_uses_variable(plan, &variable) {
+        return Err(unsupported(
+            format!("{path}.arguments[0]"),
+            format!("id() argument '{variable}' is not a bound graph variable"),
+        ));
+    }
+    Ok(OrderExpression::Key { variable })
+}
+
+fn compile_type_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    let path = path.into();
+    let variable = compile_single_variable_function_argument(
+        function,
+        format!("{path}.arguments"),
+        "type() supports exactly one relationship variable argument",
+        context,
+    )?;
+    let relationship = plan
+        .relationships
+        .iter()
+        .find(|relationship| relationship.variable.as_deref() == Some(variable.as_str()))
+        .ok_or_else(|| {
+            unsupported(
+                format!("{path}.arguments[0]"),
+                format!("type() argument '{variable}' is not a named relationship variable"),
+            )
+        })?;
+    Ok(OrderExpression::Literal(Literal::String(
+        relationship.relationship_type.clone(),
+    )))
 }
 
 fn projection_order_expression_for_alias(
@@ -2352,6 +2414,38 @@ mod tests {
                 expression: OrderExpression::ProjectionAlias("ownership_id".to_string()),
                 direction: OrderDirection::Ascending,
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_order_by_id_and_type_functions() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             RETURN person.name AS owner \
+             ORDER BY id(person), id(owns) DESC, type(owns)",
+        )
+        .expect("id() and type() order expressions should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::Key {
+                        variable: "person".to_string(),
+                    },
+                    direction: OrderDirection::Ascending,
+                },
+                OrderKey {
+                    expression: OrderExpression::Key {
+                        variable: "owns".to_string(),
+                    },
+                    direction: OrderDirection::Descending,
+                },
+                OrderKey {
+                    expression: OrderExpression::Literal(Literal::String("OWNS".to_string())),
+                    direction: OrderDirection::Ascending,
+                },
+            ]
         );
     }
 

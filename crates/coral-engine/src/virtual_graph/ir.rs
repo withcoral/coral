@@ -275,6 +275,13 @@ pub enum ProjectionPredicateExpression {
 pub enum OrderExpression {
     /// Order by a graph property.
     Property(PropertyRef),
+    /// Order by the stable mapped key for a graph variable.
+    Key {
+        /// Graph variable.
+        variable: String,
+    },
+    /// Order by a literal value.
+    Literal(Literal),
     /// Order by a projected output alias.
     ProjectionAlias(String),
 }
