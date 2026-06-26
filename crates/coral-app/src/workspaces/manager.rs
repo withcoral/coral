@@ -6,7 +6,6 @@ use uuid::Uuid;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialMaterialSnapshot, CredentialSetId};
-use crate::state::AppStateLayout;
 use crate::workspaces::{DEFAULT_WORKSPACE_ID, WorkspaceName, WorkspaceRecord, WorkspaceStore};
 
 /// App-owned workspace lifecycle behavior.
@@ -14,19 +13,19 @@ use crate::workspaces::{DEFAULT_WORKSPACE_ID, WorkspaceName, WorkspaceRecord, Wo
 pub(crate) struct WorkspaceManager {
     store: Arc<dyn WorkspaceStore>,
     credential_manager: CredentialManager,
-    layout: AppStateLayout,
+    workspaces_root: PathBuf,
 }
 
 impl WorkspaceManager {
     pub(crate) fn new(
         store: impl WorkspaceStore,
         credential_manager: CredentialManager,
-        layout: AppStateLayout,
+        workspaces_root: impl Into<PathBuf>,
     ) -> Self {
         Self {
             store: Arc::new(store),
             credential_manager,
-            layout,
+            workspaces_root: workspaces_root.into(),
         }
     }
 
@@ -52,7 +51,7 @@ impl WorkspaceManager {
         }
 
         let credential_snapshots = self.remove_workspace_credentials(workspace_name)?;
-        let workspace_dir = self.layout.workspace_dir(workspace_name);
+        let workspace_dir = self.workspace_dir(workspace_name);
         let backup = workspace_delete_backup_path(&workspace_dir, workspace_name);
         let had_workspace_dir = workspace_dir.exists();
         if had_workspace_dir {
@@ -157,6 +156,10 @@ impl WorkspaceManager {
             }
         }
     }
+
+    fn workspace_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.workspaces_root.join(workspace_name.as_str())
+    }
 }
 
 struct WorkspaceCredentialSnapshot {
@@ -217,7 +220,7 @@ mod tests {
         let workspace_manager = WorkspaceManager::new(
             ConfigWorkspaceStore::new(config_store.clone()),
             credential_manager.clone(),
-            layout,
+            layout.workspaces_root(),
         );
         let workspace_name = WorkspaceName::parse("work").expect("workspace");
         let source_name = SourceName::parse("secured_messages").expect("source");
