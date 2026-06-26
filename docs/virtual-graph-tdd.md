@@ -31,3 +31,14 @@ A feature is not production-ready until:
 - equivalent SQL result checks pass on synthetic data;
 - diagnostics are stable enough for API/CLI callers;
 - performance risks are either measured or explicitly deferred in Linear.
+
+## Cypher Frontend Checklist
+
+For each added Cypher/GQL feature:
+
+1. Add acceptance tests that assert the exact `GraphPlan` shape.
+2. Add rejection tests for adjacent unsupported syntax so the subset boundary
+   stays reviewable.
+3. Add SQL-lowering assertions when the feature changes generated SQL.
+4. Add synthetic `execute_cypher` or `explain_cypher` integration coverage.
+5. Update the compatibility matrix before broadening the parser.

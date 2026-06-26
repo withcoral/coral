@@ -4,12 +4,14 @@
 //! and GraphQL should compile into [`GraphPlan`], and only the SQL lowerer knows
 //! how to turn graph semantics into relational `DataFusion` SQL.
 
+mod cypher;
 mod declaration;
 mod diagnostic;
 mod execution;
 mod ir;
 mod sql;
 
+pub use cypher::compile_cypher;
 pub use declaration::{Declaration, Endpoint, Node, Relationship, TableRef};
 pub use diagnostic::Diagnostic;
 pub use execution::{GraphExecution, GraphQueryPlan};

@@ -44,4 +44,30 @@ The foundation slice establishes:
 - `CoralQuery::execute_graph_plan` and `CoralQuery::explain_graph_plan`
   wrappers that preserve translated SQL and diagnostics while reusing the
   existing SQL execution path.
+- a strict read-only Cypher frontend based on `decypher` that accepts the first
+  supported `MATCH ... RETURN` subset, rejects writes and unsupported GQL
+  features structurally, and feeds the same shared graph query plan.
+- `CoralQuery::execute_cypher` and `CoralQuery::explain_cypher` wrappers for
+  text queries that preserve translated SQL and diagnostics.
 - synthetic tests that execute translated SQL through Coral's existing engine.
+
+## Cypher Frontend Boundary
+
+The Cypher frontend is only a parser and compiler. It must not render SQL and
+must not inspect source manifests or runtime state. Its output is a
+`GraphPlan`; declaration validation, catalog validation, SQL lowering, and
+execution remain separate layers.
+
+The supported foundation subset is intentionally narrow:
+
+- exactly one read-only single-part query;
+- one non-optional `MATCH` path with named, single-label nodes;
+- directed, typed relationships;
+- `WHERE` comparisons joined by `AND`;
+- property projections, standalone `count(*)`, property `ORDER BY`, and
+  integer `LIMIT`.
+
+Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.
+This includes writes, multi-part queries, optional matches, path variables,
+variable-length paths, undirected relationships, parameters, grouping,
+subqueries, procedure calls, and broad expression semantics.

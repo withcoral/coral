@@ -32,7 +32,23 @@ unsupported behavior should be rejected clearly instead of guessed.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Cypher parser | Planned | Must compile to shared IR, not directly to SQL |
+| Cypher parser | Supported foundation | `decypher` AST frontend compiles to shared IR, not directly to SQL |
+| Single `MATCH ... RETURN` | Supported foundation | One non-optional MATCH clause with one connected path pattern |
+| Labeled node patterns | Supported foundation | Requires named node variables and exactly one static label |
+| Typed directed relationships | Supported foundation | Requires one static relationship type and one arrowhead |
+| `WHERE` property comparisons | Supported foundation | String, integer, boolean, and null literals; comparisons joined by `AND` |
+| `RETURN` property projections | Supported foundation | Optional aliases are supported |
+| `RETURN count(*)` | Supported foundation | Supported as a standalone aggregate projection |
+| `ORDER BY` and `LIMIT` | Supported foundation | Property order keys and non-negative integer limits |
+| `OPTIONAL MATCH` | Rejected | Needs nullability-aware IR and SQL lowering |
+| Multiple `MATCH` clauses | Rejected | Needs multi-pattern planning and join ordering rules |
+| Undirected or bidirectional relationships | Rejected | Needs explicit graph-expansion semantics |
+| Variable-length paths | Rejected | Needs recursive/path expansion semantics |
+| Path variables and path values | Rejected | Needs graph value representation |
+| Inline property maps | Rejected | Use `WHERE`; inline maps need a shared property-normalization pass |
+| `WITH`, `UNION`, subqueries, procedure calls | Rejected | Needs scope and pipeline semantics |
+| Parameters | Rejected | Needs API/runtime parameter binding contract |
+| `DISTINCT`, `SKIP`, grouping | Rejected | Needs aggregate/grouping IR |
 | GraphQL parser | Planned | Must compile to shared IR, not Cypher strings |
 | Writes | Rejected by product invariant | Coral virtual graph is read-only |
 

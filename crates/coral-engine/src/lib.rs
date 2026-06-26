@@ -81,7 +81,7 @@ pub use virtual_graph::{
     Literal as GraphLiteral, NodePattern, OrderDirection as GraphOrderDirection,
     OrderKey as GraphOrderKey, Projection as GraphProjection,
     PropertyPredicate as GraphPropertyPredicate, PropertyRef as GraphPropertyRef,
-    RelationshipPattern, SqlTranslation as GraphSqlTranslation,
+    RelationshipPattern, SqlTranslation as GraphSqlTranslation, compile_cypher,
 };
 
 /// High-level query operations for the local query engine.
@@ -237,6 +237,56 @@ impl CoralQuery {
         let translation = graph.lower_graph_plan(plan)?;
         let query_plan = Self::explain_sql(sources, runtime, translation.sql()).await?;
         Ok(GraphQueryPlan::new(translation, query_plan))
+    }
+
+    /// Executes one supported read-only Cypher query over a virtual graph declaration.
+    ///
+    /// The Cypher text is parsed and compiled into Coral's shared graph plan,
+    /// then lowered to `DataFusion` SQL and executed through the normal SQL
+    /// runtime. The returned wrapper preserves the translated SQL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if parsing or subset validation fails, graph
+    /// lowering fails, source compilation fails, or the generated SQL cannot
+    /// execute.
+    pub async fn execute_cypher(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        cypher: &str,
+    ) -> Result<GraphExecution, CoreError> {
+        if cypher.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "Cypher query must not be empty".to_string(),
+            ));
+        }
+
+        let plan = compile_cypher(cypher)?;
+        Self::execute_graph_plan(sources, runtime, graph, &plan).await
+    }
+
+    /// Explains one supported read-only Cypher query over a virtual graph declaration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if parsing or subset validation fails, graph
+    /// lowering fails, source compilation fails, or the generated SQL cannot be
+    /// planned.
+    pub async fn explain_cypher(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        cypher: &str,
+    ) -> Result<GraphQueryPlan, CoreError> {
+        if cypher.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "Cypher query must not be empty".to_string(),
+            ));
+        }
+
+        let plan = compile_cypher(cypher)?;
+        Self::explain_graph_plan(sources, runtime, graph, &plan).await
     }
 
     /// Validates that a single source can be initialized and queried.

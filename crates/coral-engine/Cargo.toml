@@ -20,6 +20,7 @@ datafusion-datasource.workspace = true
 datafusion-datasource-json.workspace = true
 datafusion-functions-json.workspace = true
 datafusion-tracing.workspace = true
+decypher.workspace = true
 futures.workspace = true
 httpdate.workspace = true
 object_store.workspace = true
