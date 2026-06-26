@@ -175,6 +175,10 @@ jobs:
         run: |
           set -euo pipefail
           packages=(
+            # coral-cli links the largest test harness. Run it first while the
+            # target directory is clean so hosted runners have maximum disk
+            # headroom for the linker.
+            coral-cli
             coral-api
             coral-app
             coral-auth-aws
@@ -182,7 +186,6 @@ jobs:
             coral-spec
             coral-telemetry
             coral-client
-            coral-cli
             coral-mcp
             xtask
           )
