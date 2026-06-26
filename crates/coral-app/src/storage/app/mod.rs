@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::state::AppStateLayout;
 
 pub(crate) mod config;
+mod legacy;
 mod sqlite;
 
 pub(crate) use config::{AppStorageBackend, AppStorageConfig};
@@ -23,6 +24,8 @@ pub(crate) enum AppStorageError {
     Config(#[from] toml::de::Error),
     #[error("app storage sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("app storage json: {0}")]
+    Json(#[from] serde_json::Error),
     #[error("app storage mutex poisoned")]
     Poisoned,
     #[error("unsupported app storage backend '{backend}'")]
@@ -70,12 +73,14 @@ impl AppStore {
         layout: &AppStateLayout,
         config: &AppStorageConfig,
     ) -> Result<Self, AppStorageError> {
-        match config.backend {
-            AppStorageBackend::Sqlite => Self::sqlite(config.sqlite_path(layout)),
+        let store = match config.backend {
+            AppStorageBackend::Sqlite => Self::sqlite(config.sqlite_path(layout))?,
             AppStorageBackend::Postgres => Err(AppStorageError::UnsupportedBackend {
                 backend: AppStorageBackend::Postgres.as_config_value().to_string(),
-            }),
-        }
+            })?,
+        };
+        legacy::migrate_jsonl(&store, layout)?;
+        Ok(store)
     }
 
     pub(crate) fn sqlite(path: PathBuf) -> Result<Self, AppStorageError> {
@@ -88,6 +93,10 @@ impl AppStore {
         Ok(AppWriteUnitOfWork {
             transaction: Some(self.backend.begin_write()?),
         })
+    }
+
+    fn migration_applied(&self, name: &str) -> Result<bool, AppStorageError> {
+        self.backend.migration_applied(name)
     }
 
     #[cfg(test)]
@@ -149,6 +158,10 @@ impl<'a> AppWriteUnitOfWork<'a> {
         transaction.commit()
     }
 
+    fn mark_migration_applied(&mut self, name: &str) -> Result<(), AppStorageError> {
+        self.transaction().mark_migration_applied(name)
+    }
+
     fn transaction(&mut self) -> &mut (dyn AppStoreWriteTransaction + 'a) {
         self.transaction
             .as_deref_mut()
@@ -168,6 +181,10 @@ impl EpisodeRepository<'_> {
     ) -> Result<OpenEpisodeResult, AppStorageError> {
         self.transaction.open_episode(episode, max_bytes)
     }
+
+    fn import_episode(&mut self, episode: &StoredEpisode) -> Result<(), AppStorageError> {
+        self.transaction.import_episode(episode)
+    }
 }
 
 pub(crate) struct FeedbackRepository<'a> {
@@ -181,10 +198,16 @@ impl FeedbackRepository<'_> {
     ) -> Result<(), AppStorageError> {
         self.transaction.append_feedback_report(report)
     }
+
+    fn import_report(&mut self, report: &StoredFeedbackReport) -> Result<(), AppStorageError> {
+        self.transaction.import_feedback_report(report)
+    }
 }
 
 trait AppStoreBackend: Send + Sync {
     fn begin_write(&self) -> Result<Box<dyn AppStoreWriteTransaction + '_>, AppStorageError>;
+
+    fn migration_applied(&self, name: &str) -> Result<bool, AppStorageError>;
 
     #[cfg(test)]
     fn test_read_episode(
@@ -213,10 +236,19 @@ trait AppStoreWriteTransaction {
         max_bytes: u64,
     ) -> Result<OpenEpisodeResult, AppStorageError>;
 
+    fn import_episode(&mut self, episode: &StoredEpisode) -> Result<(), AppStorageError>;
+
     fn append_feedback_report(
         &mut self,
         report: &StoredFeedbackReport,
     ) -> Result<(), AppStorageError>;
+
+    fn import_feedback_report(
+        &mut self,
+        report: &StoredFeedbackReport,
+    ) -> Result<(), AppStorageError>;
+
+    fn mark_migration_applied(&mut self, name: &str) -> Result<(), AppStorageError>;
 
     fn commit(self: Box<Self>) -> Result<(), AppStorageError>;
 }

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -8,10 +8,16 @@ use super::{
     AppStorageError, AppStoreBackend, AppStoreWriteTransaction, OpenEpisodeResult, StoredEpisode,
     StoredFeedbackReport,
 };
+use crate::storage::fs as storage_fs;
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS app_schema_migrations (
     version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS app_data_migrations (
+    name TEXT PRIMARY KEY,
     applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -42,15 +48,14 @@ INSERT OR IGNORE INTO app_schema_migrations (version) VALUES (1);
 ";
 
 pub(super) struct SqliteAppStore {
+    path: PathBuf,
     connection: Mutex<Connection>,
 }
 
 impl SqliteAppStore {
     pub(super) fn open(path: PathBuf) -> Result<Self, AppStorageError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let connection = Connection::open(path)?;
+        storage_fs::ensure_file_private(&path)?;
+        let connection = Connection::open(&path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.execute_batch(
             r"
@@ -60,7 +65,9 @@ PRAGMA synchronous = NORMAL;
 ",
         )?;
         connection.execute_batch(SCHEMA)?;
+        set_sqlite_file_permissions(&path)?;
         Ok(Self {
+            path,
             connection: Mutex::new(connection),
         })
     }
@@ -77,9 +84,15 @@ impl AppStoreBackend for SqliteAppStore {
         let connection = self.lock()?;
         connection.execute_batch("BEGIN IMMEDIATE")?;
         Ok(Box::new(SqliteWriteTransaction {
+            path: self.path.clone(),
             connection,
             completed: false,
         }))
+    }
+
+    fn migration_applied(&self, name: &str) -> Result<bool, AppStorageError> {
+        let connection = self.lock()?;
+        migration_applied(&connection, name)
     }
 
     #[cfg(test)]
@@ -141,6 +154,7 @@ ORDER BY rowid ASC
 }
 
 struct SqliteWriteTransaction<'a> {
+    path: PathBuf,
     connection: MutexGuard<'a, Connection>,
     completed: bool,
 }
@@ -185,6 +199,30 @@ INSERT INTO episodes (
         Ok(OpenEpisodeResult::Opened)
     }
 
+    fn import_episode(&mut self, episode: &StoredEpisode) -> Result<(), AppStorageError> {
+        self.connection.execute(
+            r"
+INSERT OR IGNORE INTO episodes (
+    workspace,
+    episode_id,
+    intent,
+    parent_episode_id,
+    created_at_unix_nanos,
+    record_bytes
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+",
+            params![
+                episode.workspace.as_str(),
+                episode.id.as_str(),
+                episode.intent.as_str(),
+                episode.parent_episode_id.as_deref(),
+                episode.created_at_unix_nanos,
+                sqlite_i64("record_bytes", episode.record_bytes)?
+            ],
+        )?;
+        Ok(())
+    }
+
     fn append_feedback_report(
         &mut self,
         report: &StoredFeedbackReport,
@@ -212,8 +250,44 @@ INSERT INTO feedback_reports (
         Ok(())
     }
 
+    fn import_feedback_report(
+        &mut self,
+        report: &StoredFeedbackReport,
+    ) -> Result<(), AppStorageError> {
+        self.connection.execute(
+            r"
+INSERT OR IGNORE INTO feedback_reports (
+    workspace,
+    report_id,
+    created_at,
+    trying_to_do,
+    tried,
+    stuck
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+",
+            params![
+                report.workspace.as_str(),
+                report.id.as_str(),
+                report.created_at_rfc3339.as_str(),
+                report.trying_to_do.as_str(),
+                report.tried.as_str(),
+                report.stuck.as_str()
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn mark_migration_applied(&mut self, name: &str) -> Result<(), AppStorageError> {
+        self.connection.execute(
+            "INSERT OR IGNORE INTO app_data_migrations (name) VALUES (?1)",
+            params![name],
+        )?;
+        Ok(())
+    }
+
     fn commit(mut self: Box<Self>) -> Result<(), AppStorageError> {
         self.connection.execute_batch("COMMIT")?;
+        set_sqlite_file_permissions(&self.path)?;
         self.completed = true;
         Ok(())
     }
@@ -262,6 +336,18 @@ WHERE workspace = ?1 AND episode_id = ?2
         )
         .optional()?;
     row.map(stored_episode).transpose()
+}
+
+fn migration_applied(connection: &Connection, name: &str) -> Result<bool, AppStorageError> {
+    let present = connection
+        .query_row(
+            "SELECT 1 FROM app_data_migrations WHERE name = ?1",
+            params![name],
+            |_row| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    Ok(present)
 }
 
 fn stored_episode(row: SqlEpisodeRow) -> Result<StoredEpisode, AppStorageError> {
@@ -334,4 +420,114 @@ fn sqlite_i64(field: &'static str, value: u64) -> Result<i64, AppStorageError> {
         field,
         value: value.to_string(),
     })
+}
+
+fn set_sqlite_file_permissions(path: &Path) -> Result<(), AppStorageError> {
+    storage_fs::set_file_permissions_private_if_exists(path)?;
+    for sidecar in sqlite_sidecar_paths(path) {
+        storage_fs::set_file_permissions_private_if_exists(&sidecar)?;
+    }
+    Ok(())
+}
+
+fn sqlite_sidecar_paths(path: &Path) -> [PathBuf; 2] {
+    [
+        sqlite_sidecar_path(path, "-wal"),
+        sqlite_sidecar_path(path, "-shm"),
+    ]
+}
+
+fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut raw = path.as_os_str().to_os_string();
+    raw.push(suffix);
+    PathBuf::from(raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[cfg(unix)]
+    #[test]
+    fn creates_database_and_wal_sidecars_with_private_permissions() {
+        let temp = TempDir::new().expect("temp dir");
+        let database = temp.path().join("nested").join("state.sqlite3");
+        let store = SqliteAppStore::open(database.clone()).expect("sqlite app store");
+        append_feedback_report(&store, "feedback-1");
+
+        assert_eq!(mode(database.parent().expect("database parent")), 0o700);
+        assert_eq!(mode(&database), 0o600);
+        for sidecar in sqlite_sidecar_paths(&database) {
+            assert!(
+                sidecar.exists(),
+                "sidecar should exist: {}",
+                sidecar.display()
+            );
+            assert_eq!(mode(&sidecar), 0o600, "sidecar: {}", sidecar.display());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tightens_existing_database_and_wal_sidecar_permissions() {
+        let temp = TempDir::new().expect("temp dir");
+        let database = temp.path().join("state.sqlite3");
+        std::fs::write(&database, b"").expect("precreate database");
+        set_mode(&database, 0o666);
+
+        let store = SqliteAppStore::open(database.clone()).expect("sqlite app store");
+        assert_eq!(mode(&database), 0o600);
+        append_feedback_report(&store, "feedback-1");
+
+        set_mode(&database, 0o666);
+        for sidecar in sqlite_sidecar_paths(&database) {
+            assert!(
+                sidecar.exists(),
+                "sidecar should exist before loosening: {}",
+                sidecar.display()
+            );
+            set_mode(&sidecar, 0o666);
+        }
+        append_feedback_report(&store, "feedback-2");
+
+        assert_eq!(mode(&database), 0o600);
+        for sidecar in sqlite_sidecar_paths(&database) {
+            assert_eq!(mode(&sidecar), 0o600, "sidecar: {}", sidecar.display());
+        }
+    }
+
+    #[cfg(unix)]
+    fn append_feedback_report(store: &SqliteAppStore, id: &str) {
+        let mut transaction = store.begin_write().expect("begin write");
+        transaction
+            .append_feedback_report(&StoredFeedbackReport {
+                id: id.to_string(),
+                workspace: "default".to_string(),
+                created_at_rfc3339: "2026-06-26T00:00:00Z".to_string(),
+                trying_to_do: "trying".to_string(),
+                tried: "tried".to_string(),
+                stuck: "stuck".to_string(),
+            })
+            .expect("append feedback");
+        transaction.commit().expect("commit");
+    }
+
+    #[cfg(unix)]
+    fn set_mode(path: &Path, mode: u32) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .expect("set permissions");
+    }
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    }
 }

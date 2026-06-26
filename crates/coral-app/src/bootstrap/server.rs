@@ -763,6 +763,93 @@ enabled = false
     }
 
     #[tokio::test]
+    async fn server_uses_configured_sqlite_app_storage_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("mkdir config");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+version = 1
+
+[trace_history]
+enabled = false
+
+[storage]
+sqlite_path = "db/app-state.sqlite3"
+"#,
+        )
+        .expect("write config");
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        let workspace = WorkspaceName::default();
+        let legacy_episode_path = layout.episodes_file(&workspace);
+        std::fs::create_dir_all(legacy_episode_path.parent().expect("episode parent"))
+            .expect("mkdir episodes");
+        std::fs::write(
+            &legacy_episode_path,
+            r#"{"id":"ep_legacy_configured","workspace":"default","intent":"legacy configured db import","parent_episode_id":null,"created_at_unix_nanos":321}
+"#,
+        )
+        .expect("write legacy episode");
+        let legacy_feedback_path = layout.feedback_reports_file(&workspace);
+        std::fs::create_dir_all(legacy_feedback_path.parent().expect("feedback parent"))
+            .expect("mkdir feedback");
+        std::fs::write(
+            &legacy_feedback_path,
+            r#"{"id":"fb_legacy_configured","workspace":"default","created_at":"2026-06-26T00:00:00Z","trying_to_do":"trying configured","tried":"tried configured","stuck":"stuck configured"}
+"#,
+        )
+        .expect("write legacy feedback");
+
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir.clone())
+            .start()
+            .await
+            .expect("start server");
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut episode_client = EpisodeServiceClient::new(channel);
+
+        episode_client
+            .open_episode(Request::new(OpenEpisodeRequest {
+                workspace: Some(default_workspace()),
+                episode_id: "ep_configured_storage".to_string(),
+                intent: "persist into configured sqlite path".to_string(),
+                parent_episode_id: String::new(),
+            }))
+            .await
+            .expect("OpenEpisode is served");
+
+        let configured_database = layout.config_dir().join("db/app-state.sqlite3");
+        assert!(configured_database.exists());
+        assert!(
+            !layout.app_database_file().exists(),
+            "server should not create the default app database when sqlite_path is configured"
+        );
+        let app_store = AppStore::sqlite(configured_database).expect("sqlite app store");
+        let episode = app_store
+            .test_read_episode(WorkspaceName::default().as_str(), "ep_configured_storage")
+            .expect("read episode")
+            .expect("episode id should be persisted");
+        assert_eq!(episode.intent, "persist into configured sqlite path");
+        let legacy_episode = app_store
+            .test_read_episode(workspace.as_str(), "ep_legacy_configured")
+            .expect("read legacy episode")
+            .expect("legacy episode should be imported into configured database");
+        assert_eq!(legacy_episode.intent, "legacy configured db import");
+        let feedback = app_store
+            .test_read_feedback_reports(workspace.as_str())
+            .expect("read legacy feedback");
+        assert_eq!(feedback.len(), 1);
+        assert_eq!(feedback[0].id, "fb_legacy_configured");
+        assert_eq!(feedback[0].stuck, "stuck configured");
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
     async fn trace_service_lists_empty_store() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");

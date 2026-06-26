@@ -82,18 +82,18 @@ impl AppStateLayout {
         self.workspace_dir(workspace_name).join("sources")
     }
 
-    #[cfg(test)]
     pub(crate) fn feedback_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.workspace_dir(workspace_name).join("feedback")
     }
 
-    #[cfg(test)]
+    /// Legacy per-workspace feedback report path used for one-way import into
+    /// app storage.
     pub(crate) fn feedback_reports_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.feedback_dir(workspace_name).join("reports.jsonl")
     }
 
-    /// Legacy per-workspace episode log path kept for layout regression tests.
-    #[cfg(test)]
+    /// Legacy per-workspace episode log path used for one-way import into app
+    /// storage.
     pub(crate) fn episodes_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.workspace_dir(workspace_name)
             .join("episodes")

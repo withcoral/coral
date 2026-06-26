@@ -33,6 +33,32 @@ pub(crate) fn create_new_file_private(path: &Path) -> io::Result<File> {
     open_create_new_file_private(path)
 }
 
+pub(crate) fn ensure_file_private(path: &Path) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        ensure_dir(parent)?;
+    }
+    match open_create_new_file_private(path) {
+        Ok(file) => {
+            drop(file);
+            sync_parent(path);
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            set_file_permissions_private_if_exists(path)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn set_file_permissions_private_if_exists(path: &Path) -> io::Result<()> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => set_file_permissions_private(path),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Write to a temp file then rename to avoid partial writes on crash.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temp_path = temp_path_for(path);
@@ -45,11 +71,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 pub(crate) fn replace_atomic(from: &Path, to: &Path) -> io::Result<()> {
     rename_with_fallback(from, to)?;
 
-    if let Some(parent) = to.parent()
-        && let Ok(dir) = fs::File::open(parent)
-    {
-        drop(dir.sync_all());
-    }
+    sync_parent(to);
 
     Ok(())
 }
@@ -103,6 +125,14 @@ fn open_lock_file(path: &Path) -> io::Result<File> {
         .read(true)
         .write(true)
         .open(path)
+}
+
+fn sync_parent(path: &Path) {
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        drop(dir.sync_all());
+    }
 }
 
 #[cfg(unix)]
