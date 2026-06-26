@@ -36,6 +36,8 @@ string rendering.
 The foundation slice establishes:
 
 - v1 graph declaration parsing and validation.
+- declaration validation against Coral catalog snapshots for mapped tables,
+  columns, and required-filter constraints.
 - a typed shared graph query plan.
 - SQL lowering for node scans, directed relationship traversals, property
   projections, property predicates, ordering, `COUNT(*)`, and `LIMIT`.

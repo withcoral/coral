@@ -56,6 +56,21 @@ async fn virtual_graph_translation_executes_against_synthetic_file_sources() {
 }
 
 #[tokio::test]
+async fn virtual_graph_declaration_validates_against_synthetic_catalog() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let catalog = CoralQuery::list_catalog(&[source], test_runtime(), Some("ops"))
+        .await
+        .expect("catalog should load");
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    graph
+        .validate_against_catalog(&catalog)
+        .expect("synthetic catalog should satisfy graph declaration");
+}
+
+#[tokio::test]
 async fn virtual_graph_count_projection_executes_against_synthetic_file_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Deserialize;
 
 use super::diagnostic::Diagnostic;
-use crate::CoreError;
+use crate::{CatalogInfo, CoreError, TableInfo};
 
 /// Versioned virtual graph declaration.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -151,6 +151,61 @@ impl Declaration {
         Ok(())
     }
 
+    /// Validates this declaration against a query runtime catalog snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::InvalidInput`] when a mapped table or column is
+    /// missing, or when a mapped table requires filters that virtual graph
+    /// scans cannot currently supply.
+    pub fn validate_against_catalog(&self, catalog: &CatalogInfo) -> Result<(), CoreError> {
+        self.validate()?;
+        for (index, node) in self.nodes.iter().enumerate() {
+            let path = format!("nodes[{index}]");
+            let table = find_table(catalog, &node.table).ok_or_else(|| {
+                Diagnostic::new(
+                    "MAPPED_TABLE_NOT_FOUND",
+                    format!("{path}.table"),
+                    format!(
+                        "node label '{}' maps to missing table {}.{}",
+                        node.label, node.table.schema, node.table.name
+                    ),
+                )
+                .into_core_error()
+            })?;
+            validate_table_scan_supported(table, &format!("{path}.table"))?;
+            validate_column(table, &node.key, &format!("{path}.key"))?;
+            for (property, column) in &node.properties {
+                validate_column(table, column, &format!("{path}.properties.{property}"))?;
+            }
+        }
+
+        for (index, relationship) in self.relationships.iter().enumerate() {
+            let path = format!("relationships[{index}]");
+            let table = find_table(catalog, &relationship.table).ok_or_else(|| {
+                Diagnostic::new(
+                    "MAPPED_TABLE_NOT_FOUND",
+                    format!("{path}.table"),
+                    format!(
+                        "relationship type '{}' maps to missing table {}.{}",
+                        relationship.relationship_type,
+                        relationship.table.schema,
+                        relationship.table.name
+                    ),
+                )
+                .into_core_error()
+            })?;
+            validate_table_scan_supported(table, &format!("{path}.table"))?;
+            validate_column(table, &relationship.from.key, &format!("{path}.from.key"))?;
+            validate_column(table, &relationship.to.key, &format!("{path}.to.key"))?;
+            for (property, column) in &relationship.properties {
+                validate_column(table, column, &format!("{path}.properties.{property}"))?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Returns the node mapping for a label.
     #[must_use]
     pub fn node(&self, label: &str) -> Option<&Node> {
@@ -240,10 +295,53 @@ fn require_non_empty(path: impl Into<String>, value: &str) -> Result<(), CoreErr
     Ok(())
 }
 
+fn find_table<'a>(catalog: &'a CatalogInfo, table_ref: &TableRef) -> Option<&'a TableInfo> {
+    catalog
+        .tables
+        .iter()
+        .find(|table| table.schema_name == table_ref.schema && table.table_name == table_ref.name)
+}
+
+fn validate_table_scan_supported(table: &TableInfo, path: &str) -> Result<(), CoreError> {
+    if !table.required_filters.is_empty() {
+        return Err(Diagnostic::new(
+            "MAPPED_TABLE_REQUIRES_FILTERS",
+            path,
+            format!(
+                "table {}.{} requires filters [{}], which virtual graph scans do not support yet",
+                table.schema_name,
+                table.table_name,
+                table.required_filters.join(", ")
+            ),
+        )
+        .into_core_error());
+    }
+    Ok(())
+}
+
+fn validate_column(table: &TableInfo, column: &str, path: &str) -> Result<(), CoreError> {
+    if table
+        .columns
+        .iter()
+        .any(|candidate| candidate.name == column)
+    {
+        return Ok(());
+    }
+    Err(Diagnostic::new(
+        "MAPPED_COLUMN_NOT_FOUND",
+        path,
+        format!(
+            "mapped column '{}' was not found on table {}.{}",
+            column, table.schema_name, table.table_name
+        ),
+    )
+    .into_core_error())
+}
+
 #[cfg(test)]
 mod tests {
     use super::Declaration;
-    use crate::{CoreError, StatusCode};
+    use crate::{CatalogInfo, ColumnInfo, CoreError, StatusCode, TableInfo};
 
     const VALID_GRAPH: &str = r"
 version: 1
@@ -345,6 +443,51 @@ relationships: []
         );
     }
 
+    #[test]
+    fn declaration_catalog_validation_accepts_mapped_tables_and_columns() {
+        let graph = Declaration::from_yaml(VALID_GRAPH).expect("graph should parse");
+
+        graph
+            .validate_against_catalog(&ownership_catalog())
+            .expect("catalog should satisfy graph declaration");
+    }
+
+    #[test]
+    fn declaration_catalog_validation_rejects_missing_columns() {
+        let graph = Declaration::from_yaml(VALID_GRAPH).expect("graph should parse");
+        let mut catalog = ownership_catalog();
+        let people = catalog
+            .tables
+            .iter_mut()
+            .find(|table| table.table_name == "people")
+            .expect("people table should exist");
+        people.columns.retain(|column| column.name != "full_name");
+
+        let error = graph
+            .validate_against_catalog(&catalog)
+            .expect_err("missing property column should fail");
+
+        assert_invalid_graph_error(error, "MAPPED_COLUMN_NOT_FOUND");
+    }
+
+    #[test]
+    fn declaration_catalog_validation_rejects_required_filter_tables() {
+        let graph = Declaration::from_yaml(VALID_GRAPH).expect("graph should parse");
+        let mut catalog = ownership_catalog();
+        let people = catalog
+            .tables
+            .iter_mut()
+            .find(|table| table.table_name == "people")
+            .expect("people table should exist");
+        people.required_filters.push("tenant_id".to_string());
+
+        let error = graph
+            .validate_against_catalog(&catalog)
+            .expect_err("required filter table should fail");
+
+        assert_invalid_graph_error(error, "MAPPED_TABLE_REQUIRES_FILTERS");
+    }
+
     fn assert_invalid_graph_error(error: CoreError, expected_code: &str) {
         assert_eq!(error.status_code(), StatusCode::InvalidArgument);
         match error {
@@ -355,6 +498,40 @@ relationships: []
                 );
             }
             other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
+
+    fn ownership_catalog() -> CatalogInfo {
+        CatalogInfo {
+            tables: vec![
+                table("ops", "people", &["id", "full_name", "team"]),
+                table("ops", "services", &["id", "service_name"]),
+                table("ops", "ownerships", &["person_id", "service_id", "since"]),
+            ],
+            table_functions: Vec::new(),
+        }
+    }
+
+    fn table(schema: &str, name: &str, columns: &[&str]) -> TableInfo {
+        TableInfo {
+            schema_name: schema.to_string(),
+            table_name: name.to_string(),
+            description: String::new(),
+            guide: String::new(),
+            columns: columns
+                .iter()
+                .enumerate()
+                .map(|(position, column)| ColumnInfo {
+                    name: (*column).to_string(),
+                    data_type: "Utf8".to_string(),
+                    nullable: true,
+                    is_virtual: false,
+                    is_required_filter: false,
+                    description: String::new(),
+                    ordinal_position: u32::try_from(position).unwrap_or(u32::MAX),
+                })
+                .collect(),
+            required_filters: Vec::new(),
         }
     }
 }
