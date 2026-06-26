@@ -119,6 +119,34 @@ async fn cypher_inline_node_property_maps_execute_as_predicates() {
 }
 
 #[tokio::test]
+async fn cypher_inline_relationship_property_maps_execute_as_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[:OWNS {source: 'pagerduty'}]->(service:Service) \
+         RETURN person.name AS owner, service.name AS service",
+    )
+    .await
+    .expect("Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains("\"r0\".\"source\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"owner": "Grace Hopper", "service": "deployments"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_is_null_predicates_execute_with_sql_null_semantics() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -360,8 +388,8 @@ fn write_ops_fixture(dir: &Path) {
         "ownerships.jsonl",
         &[
             json!({"person_id": 1, "service_id": 10, "since": "2024-01-10"}),
-            json!({"person_id": 2, "service_id": 20, "since": "2024-02-20"}),
-            json!({"person_id": 3, "service_id": 30, "since": "2024-03-15"}),
+            json!({"person_id": 2, "service_id": 20, "since": "2024-02-20", "source": "pagerduty"}),
+            json!({"person_id": 3, "service_id": 30, "since": "2024-03-15", "source": "catalog"}),
         ],
     );
 }
@@ -403,7 +431,8 @@ fn ops_manifest(dir: &Path) -> Value {
                 "columns": [
                     { "name": "person_id", "type": "Int64" },
                     { "name": "service_id", "type": "Int64" },
-                    { "name": "since", "type": "Utf8" }
+                    { "name": "since", "type": "Utf8" },
+                    { "name": "source", "type": "Utf8" }
                 ]
             }
         ]
@@ -434,4 +463,5 @@ relationships:
     to: { label: Service, key: service_id }
     properties:
       since: since
+      source: source
 ";

@@ -26,6 +26,12 @@ struct CompiledNode {
     predicates: Vec<PropertyPredicate>,
 }
 
+#[derive(Debug)]
+struct CompiledRelationship {
+    pattern: RelationshipPattern,
+    predicates: Vec<PropertyPredicate>,
+}
+
 /// Parses and compiles the Coral-supported read-only Cypher subset into a shared graph plan.
 ///
 /// # Errors
@@ -165,12 +171,15 @@ fn compile_match(match_clause: &Match) -> Result<GraphPlan, CoreError> {
             &chain.relationship,
             &previous_variable,
             &next_node.pattern.variable,
+            index,
+            &plan,
             relationship_path,
         )?;
         previous_variable.clone_from(&next_node.pattern.variable);
         plan.predicates.extend(next_node.predicates);
         plan.nodes.push(next_node.pattern);
-        plan.relationships.push(relationship);
+        plan.predicates.extend(relationship.predicates);
+        plan.relationships.push(relationship.pattern);
     }
 
     Ok(plan)
@@ -225,8 +234,10 @@ fn compile_relationship(
     pattern: &CypherRelationshipPattern,
     left: &str,
     right: &str,
+    index: usize,
+    plan: &GraphPlan,
     path: impl Into<String>,
-) -> Result<RelationshipPattern, CoreError> {
+) -> Result<CompiledRelationship, CoreError> {
     let path = path.into();
     if pattern.quantifier.is_some() {
         return Err(unsupported(
@@ -258,29 +269,47 @@ fn compile_relationship(
             "variable-length relationship ranges are not supported yet",
         ));
     }
-    if detail.properties.is_some() {
-        return Err(unsupported(
-            format!("{path}.properties"),
-            "inline relationship property maps are not supported yet; use WHERE predicates",
-        ));
-    }
-
     let relationship_type = detail.types.as_ref().ok_or_else(|| {
         unsupported(
             format!("{path}.types"),
             "relationship type is required for virtual graph queries",
         )
     })?;
+    let variable = detail
+        .variable
+        .as_ref()
+        .map(validate_variable)
+        .transpose()?
+        .or_else(|| {
+            detail
+                .properties
+                .as_ref()
+                .map(|_| fresh_internal_relationship_variable(plan, right, index))
+        });
+    let predicates = match (&detail.properties, &variable) {
+        (Some(properties), Some(variable)) => {
+            compile_inline_properties(properties, variable, format!("{path}.properties"))?
+        }
+        (Some(_), None) => {
+            return Err(CoreError::internal(
+                "relationship property predicates require a relationship variable",
+            ));
+        }
+        (None, _) => Vec::new(),
+    };
 
-    Ok(RelationshipPattern {
-        variable: detail.variable.as_ref().map(variable_name),
-        relationship_type: single_static_label(
-            std::slice::from_ref(relationship_type),
-            format!("{path}.types"),
-        )?,
-        left: left.to_string(),
-        direction,
-        right: right.to_string(),
+    Ok(CompiledRelationship {
+        pattern: RelationshipPattern {
+            variable,
+            relationship_type: single_static_label(
+                std::slice::from_ref(relationship_type),
+                format!("{path}.types"),
+            )?,
+            left: left.to_string(),
+            direction,
+            right: right.to_string(),
+        },
+        predicates,
     })
 }
 
@@ -541,8 +570,47 @@ fn required_variable(
     path: impl Into<String>,
 ) -> Result<String, CoreError> {
     variable
-        .map(variable_name)
+        .map(validate_variable)
+        .transpose()?
         .ok_or_else(|| unsupported(path, "node variables are required"))
+}
+
+fn validate_variable(variable: &Variable) -> Result<String, CoreError> {
+    let name = variable_name(variable);
+    if name.starts_with("__coral_") {
+        return Err(unsupported(
+            "variable",
+            "variables beginning with __coral_ are reserved for virtual graph planning",
+        ));
+    }
+    Ok(name)
+}
+
+fn fresh_internal_relationship_variable(
+    plan: &GraphPlan,
+    next_node_variable: &str,
+    index: usize,
+) -> String {
+    let mut suffix = 0;
+    loop {
+        let candidate = if suffix == 0 {
+            format!("__coral_rel_{index}")
+        } else {
+            format!("__coral_rel_{index}_{suffix}")
+        };
+        if !plan_uses_variable(plan, &candidate) && next_node_variable != candidate {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+fn plan_uses_variable(plan: &GraphPlan, candidate: &str) -> bool {
+    plan.nodes.iter().any(|node| node.variable == candidate)
+        || plan
+            .relationships
+            .iter()
+            .any(|relationship| relationship.variable.as_deref() == Some(candidate))
 }
 
 fn single_static_label(
@@ -699,6 +767,70 @@ mod tests {
     }
 
     #[test]
+    fn compiles_named_inline_relationship_property_maps_as_predicates() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[ownership:OWNS {source: 'catalog'}]->(service:Service) \
+             RETURN service.name",
+        )
+        .expect("query should compile");
+
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: Some("ownership".to_string()),
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "service".to_string(),
+            }]
+        );
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "ownership".to_string(),
+                    property: "source".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                literal: Literal::String("catalog".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_anonymous_inline_relationship_property_maps_with_internal_variable() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[:OWNS {source: 'catalog'}]->(service:Service) \
+             RETURN service.name",
+        )
+        .expect("query should compile");
+        let relationship = plan
+            .relationships
+            .first()
+            .expect("query should contain a relationship");
+        let internal_variable = relationship
+            .variable
+            .as_ref()
+            .expect("anonymous property map relationship should get an internal variable");
+
+        assert!(
+            internal_variable.starts_with("__coral_rel_"),
+            "{internal_variable}"
+        );
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: internal_variable.clone(),
+                    property: "source".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                literal: Literal::String("catalog".to_string()),
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_is_null_predicates() {
         let plan = compile_cypher(
             "MATCH (service:Service) WHERE service.tier IS NULL RETURN service.name",
@@ -741,6 +873,11 @@ mod tests {
     #[test]
     fn rejects_mixed_count_and_property_projection() {
         assert_unsupported("MATCH (service:Service) RETURN service.name, count(*) AS services");
+    }
+
+    #[test]
+    fn rejects_reserved_internal_variable_prefix() {
+        assert_unsupported("MATCH (__coral_rel_0:Service) RETURN __coral_rel_0.name");
     }
 
     fn assert_unsupported(cypher: &str) {

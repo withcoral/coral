@@ -39,6 +39,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `WHERE` property comparisons | Supported foundation | String, integer, boolean, and null literals; comparisons joined by `AND` |
 | `WHERE ... IS NULL` / `IS NOT NULL` | Supported foundation | Lowers to SQL `IS NULL` / `IS NOT NULL` |
 | Inline node property maps | Supported foundation | Normalized to equality predicates, e.g. `(n:Service {tier: 'prod'})` |
+| Inline relationship property maps | Supported foundation | Anonymous relationships get internal variables for property predicates |
 | `RETURN` property projections | Supported foundation | Optional aliases are supported |
 | `RETURN count(*)` | Supported foundation | Supported as a standalone aggregate projection |
 | `ORDER BY` and `LIMIT` | Supported foundation | Property order keys and non-negative integer limits |
@@ -47,7 +48,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Undirected or bidirectional relationships | Rejected | Needs explicit graph-expansion semantics |
 | Variable-length paths | Rejected | Needs recursive/path expansion semantics |
 | Path variables and path values | Rejected | Needs graph value representation |
-| Inline relationship property maps | Rejected | Needs relationship variable synthesis for anonymous relationships |
+| User variables beginning with `__coral_` | Rejected | Prefix reserved for internal planner bindings |
 | `WITH`, `UNION`, subqueries, procedure calls | Rejected | Needs scope and pipeline semantics |
 | Parameters | Rejected | Needs API/runtime parameter binding contract |
 | `DISTINCT`, `SKIP`, grouping | Rejected | Needs aggregate/grouping IR |
