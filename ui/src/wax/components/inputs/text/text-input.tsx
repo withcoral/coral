@@ -13,6 +13,7 @@ export interface TextInputProps {
   name?: string
   onBlur?: () => void
   onChange?: (value: string) => void
+  onFocus?: () => void
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
   placeholder?: string
   ref?: React.Ref<HTMLInputElement>
@@ -28,6 +29,7 @@ export function TextInput({
   name,
   onBlur,
   onChange,
+  onFocus,
   onKeyDown,
   placeholder,
   ref,
@@ -42,7 +44,12 @@ export function TextInput({
     <Field.Root disabled={disabled}>
       <div className={styles.container}>
         {icon && (
-          <Icon className={styles.iconWrapper} color={disabled ? 'disabled' : 'placeholder'} name={icon} size="20" />
+          <Icon
+            className={styles.iconWrapper}
+            color={disabled ? 'disabled' : 'placeholder'}
+            name={icon}
+            size="20"
+          />
         )}
         <Field.Control
           autoFocus={autoFocus}
@@ -50,6 +57,7 @@ export function TextInput({
           name={name}
           onBlur={onBlur}
           onChange={handleChange}
+          onFocus={onFocus}
           onKeyDown={onKeyDown}
           placeholder={placeholder}
           ref={ref}

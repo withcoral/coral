@@ -2,10 +2,13 @@
 
 use std::collections::BTreeMap;
 
+use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig, MemorySize, QueryMemoryConfig};
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
+use tracing::{info_span, warn};
 
 use crate::bootstrap::AppError;
+use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
@@ -13,8 +16,9 @@ use crate::storage::fs::{self as storage_fs, FileLock};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, Clone)]
-struct AppConfig {
+pub(crate) struct AppConfig {
     version: u32,
+    engine: PersistedEngineConfig,
     catalog: SourceCatalog,
 }
 
@@ -22,8 +26,37 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             version: default_config_version(),
+            engine: PersistedEngineConfig::default(),
             catalog: SourceCatalog::default(),
         }
+    }
+}
+
+impl AppConfig {
+    pub(crate) fn workspace_sources(&self, workspace_name: &WorkspaceName) -> Vec<InstalledSource> {
+        self.catalog.workspace_sources(workspace_name)
+    }
+
+    pub(crate) fn get_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Option<InstalledSource> {
+        self.catalog.get_source(workspace_name, source_name)
+    }
+
+    pub(crate) fn dependent_join_config(
+        &self,
+        selected_source_names: &[String],
+    ) -> Result<DependentJoinConfig, AppError> {
+        self.engine
+            .dependent_join
+            .clone()
+            .try_into_runtime_config(selected_source_names)
+    }
+
+    pub(crate) fn memory_config(&self) -> Result<QueryMemoryConfig, AppError> {
+        self.engine.memory.clone().try_into_runtime_config()
     }
 }
 
@@ -36,7 +69,106 @@ struct PersistedAppConfig {
     #[serde(default = "default_config_version")]
     version: u32,
     #[serde(default)]
+    engine: PersistedEngineConfig,
+    #[serde(default)]
     workspaces: BTreeMap<String, PersistedWorkspaceConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedEngineConfig {
+    #[serde(default)]
+    dependent_join: PersistedDependentJoinConfig,
+    #[serde(default)]
+    memory: PersistedMemoryConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedMemoryConfig {
+    #[serde(default)]
+    limit: Option<toml::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedDependentJoinConfig {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    max_bindings: Option<usize>,
+    #[serde(default)]
+    max_resolver_rows: Option<usize>,
+    #[serde(default)]
+    max_rows_per_binding: Option<usize>,
+    #[serde(default)]
+    max_resolver_rows_per_binding: Option<usize>,
+    #[serde(default)]
+    max_concurrency: Option<usize>,
+    #[serde(default)]
+    per_source: BTreeMap<String, PersistedDependentJoinSourceConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedDependentJoinSourceConfig {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    max_bindings: Option<usize>,
+    #[serde(default)]
+    max_resolver_rows: Option<usize>,
+    #[serde(default)]
+    max_rows_per_binding: Option<usize>,
+    #[serde(default)]
+    max_resolver_rows_per_binding: Option<usize>,
+    #[serde(default)]
+    max_concurrency: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RawFeatureOverrides {
+    entries: BTreeMap<String, RawFeatureValue>,
+    container: RawFeatureContainerState,
+}
+
+impl RawFeatureOverrides {
+    pub(crate) fn container(&self) -> RawFeatureContainerState {
+        self.container
+    }
+
+    pub(crate) fn get(&self, key: &str) -> Option<RawFeatureValue> {
+        self.entries.get(key).copied()
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, RawFeatureValue)> + '_ {
+        self.entries
+            .iter()
+            .map(|(key, value)| (key.as_str(), *value))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_entries_for_tests(
+        entries: impl IntoIterator<Item = (&'static str, RawFeatureValue)>,
+    ) -> Self {
+        Self {
+            entries: entries
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect(),
+            container: RawFeatureContainerState::Table,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum RawFeatureContainerState {
+    #[default]
+    Missing,
+    Table,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RawFeatureValue {
+    Bool(bool),
+    UnsupportedType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -53,6 +185,8 @@ struct PersistedInstalledSource {
     variables: BTreeMap<String, String>,
     #[serde(default)]
     secrets: Vec<String>,
+    #[serde(default)]
+    credential_storage: Option<CredentialStorageKind>,
     origin: SourceOrigin,
 }
 
@@ -63,6 +197,7 @@ impl PersistedInstalledSource {
             version: self.version,
             variables: self.variables,
             secrets: self.secrets,
+            credential_storage: self.credential_storage,
             origin: self.origin,
         }
     }
@@ -74,6 +209,7 @@ impl From<&InstalledSource> for PersistedInstalledSource {
             version: value.version.clone(),
             variables: value.variables.clone(),
             secrets: value.secrets.clone(),
+            credential_storage: value.credential_storage,
             origin: value.origin,
         }
     }
@@ -87,6 +223,18 @@ impl SourceCatalog {
         self.0
             .get(workspace_name)
             .map(|sources| sources.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn workspace_source_names(&self, workspace_name: &WorkspaceName) -> Vec<String> {
+        self.0
+            .get(workspace_name)
+            .map(|sources| {
+                sources
+                    .keys()
+                    .map(|source_name| source_name.as_str().to_string())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -144,6 +292,89 @@ impl SourceCatalog {
     }
 }
 
+pub(crate) fn load_raw_feature_overrides(
+    layout: &AppStateLayout,
+) -> Result<RawFeatureOverrides, AppError> {
+    if !layout.config_file().exists() {
+        return Ok(RawFeatureOverrides::default());
+    }
+
+    let _lock = FileLock::shared(layout.state_lock())?;
+    if !layout.config_file().exists() {
+        return Ok(RawFeatureOverrides::default());
+    }
+
+    let raw = std::fs::read_to_string(layout.config_file())?;
+    let doc = raw.parse::<DocumentMut>()?;
+    Ok(raw_feature_overrides_from_document(&doc))
+}
+
+pub(crate) fn set_raw_feature_override(
+    layout: &AppStateLayout,
+    key: &str,
+    enabled: bool,
+) -> Result<(), AppError> {
+    let _lock = FileLock::exclusive(layout.state_lock())?;
+    let mut doc = read_config_document(layout)?;
+    if doc.get("features").is_none() {
+        doc.insert("features", toml_edit::table());
+    }
+    let Some(feature_table) = doc.get_mut("features").and_then(Item::as_table_mut) else {
+        return Err(AppError::InvalidInput(
+            "unsupported [features] config; expected a table".to_string(),
+        ));
+    };
+    feature_table.insert(key, value(enabled));
+    if doc.get("version").is_none() {
+        doc.insert("version", value(i64::from(default_config_version())));
+    }
+    write_config_document(layout, &doc)
+}
+
+fn raw_feature_overrides_from_document(doc: &DocumentMut) -> RawFeatureOverrides {
+    let Some(features) = doc.get("features") else {
+        return RawFeatureOverrides::default();
+    };
+
+    let Some(table) = features.as_table() else {
+        warn!("ignoring unsupported [features] config; expected a table");
+        return RawFeatureOverrides {
+            entries: BTreeMap::new(),
+            container: RawFeatureContainerState::Unsupported,
+        };
+    };
+
+    let entries = table
+        .iter()
+        .map(|(key, item)| {
+            let value = item
+                .as_bool()
+                .map_or(RawFeatureValue::UnsupportedType, RawFeatureValue::Bool);
+            (key.to_string(), value)
+        })
+        .collect();
+    RawFeatureOverrides {
+        entries,
+        container: RawFeatureContainerState::Table,
+    }
+}
+
+fn read_config_document(layout: &AppStateLayout) -> Result<DocumentMut, AppError> {
+    if !layout.config_file().exists() {
+        return Ok(DocumentMut::new());
+    }
+    let raw = std::fs::read_to_string(layout.config_file())?;
+    Ok(raw.parse::<DocumentMut>()?)
+}
+
+fn write_config_document(layout: &AppStateLayout, doc: &DocumentMut) -> Result<(), AppError> {
+    if let Some(parent) = layout.config_file().parent() {
+        storage_fs::ensure_dir(parent)?;
+    }
+    storage_fs::write_atomic(layout.config_file(), doc.to_string().as_bytes())?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ConfigStore {
     layout: AppStateLayout,
@@ -185,9 +416,15 @@ impl ConfigStore {
         FileLock::exclusive(self.layout.state_lock()).map_err(Into::into)
     }
 
-    pub(crate) fn load_catalog(&self) -> Result<SourceCatalog, AppError> {
+    pub(crate) fn load_config(&self) -> Result<AppConfig, AppError> {
         let _lock = self.lock_shared()?;
-        self.load_unlocked().map(|config| config.catalog)
+        self.load_unlocked()
+    }
+
+    pub(crate) fn load_catalog(&self) -> Result<SourceCatalog, AppError> {
+        let span = info_span!("coral.app.config.load_catalog");
+        let _guard = span.enter();
+        self.load_config().map(|config| config.catalog)
     }
 
     fn update_catalog<T>(
@@ -207,6 +444,14 @@ impl ConfigStore {
     ) -> Result<Vec<InstalledSource>, AppError> {
         self.load_catalog()
             .map(|catalog| catalog.workspace_sources(workspace_name))
+    }
+
+    pub(crate) fn list_workspace_source_names(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<String>, AppError> {
+        self.load_catalog()
+            .map(|catalog| catalog.workspace_source_names(workspace_name))
     }
 
     pub(crate) fn get_source(
@@ -248,6 +493,7 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
         .unwrap_or_default();
 
     doc["version"] = value(i64::from(config.version));
+    render_engine_config(&mut doc, &config.engine);
 
     // Remove and fully rebuild the workspaces section so removed sources don't linger.
     doc.remove("workspaces");
@@ -273,11 +519,74 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
             }
             source_item["variables"] = Item::Value(render_inline_table(&source.variables));
             source_item["secrets"] = Item::Value(render_string_array(&source.secrets));
+            if let Some(credential_storage) = source.credential_storage {
+                source_item["credential_storage"] = value(credential_storage.as_config_value());
+            } else {
+                let source_table = source_item
+                    .as_table_mut()
+                    .expect("source config entry should be a table after initialization");
+                source_table.remove("credential_storage");
+            }
             source_item["origin"] = value(source.origin.as_config_value());
         }
     }
 
     doc.to_string()
+}
+
+fn render_engine_config(doc: &mut DocumentMut, engine: &PersistedEngineConfig) {
+    let Some(limit) = &engine.memory.limit else {
+        remove_engine_memory_limit(doc);
+        return;
+    };
+
+    let engine_item = doc
+        .as_table_mut()
+        .entry("engine")
+        .or_insert_with(toml_edit::table);
+    if !engine_item.is_table() {
+        *engine_item = toml_edit::table();
+    }
+    ensure_implicit_table(engine_item);
+
+    let engine_table = engine_item
+        .as_table_mut()
+        .expect("engine config entry should be a table after initialization");
+    let memory_item = engine_table
+        .entry("memory")
+        .or_insert_with(toml_edit::table);
+    if !memory_item.is_table() {
+        *memory_item = toml_edit::table();
+    }
+    memory_item
+        .as_table_mut()
+        .expect("engine memory config entry should be a table after initialization")["limit"] =
+        render_memory_limit_value(limit);
+}
+
+fn render_memory_limit_value(limit: &toml::Value) -> Item {
+    match limit {
+        toml::Value::String(raw) => value(raw.clone()),
+        toml::Value::Integer(raw) => value(*raw),
+        toml::Value::Float(raw) => value(*raw),
+        toml::Value::Boolean(raw) => value(*raw),
+        toml::Value::Datetime(raw) => value(raw.to_string()),
+        toml::Value::Array(_) | toml::Value::Table(_) => value(limit.to_string()),
+    }
+}
+
+fn remove_engine_memory_limit(doc: &mut DocumentMut) {
+    let Some(engine) = doc
+        .as_table_mut()
+        .get_mut("engine")
+        .and_then(Item::as_table_mut)
+    else {
+        return;
+    };
+    let Some(memory) = engine.get_mut("memory").and_then(Item::as_table_mut) else {
+        return;
+    };
+    memory.remove("limit");
 }
 
 fn ensure_implicit_table(item: &mut Item) {
@@ -303,6 +612,7 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
         }
         Ok(Self {
             version: value.version,
+            engine: value.engine,
             catalog,
         })
     }
@@ -324,8 +634,150 @@ impl From<&AppConfig> for PersistedAppConfig {
         }
         Self {
             version: value.version,
+            engine: value.engine.clone(),
             workspaces,
         }
+    }
+}
+
+impl PersistedMemoryConfig {
+    fn try_into_runtime_config(self) -> Result<QueryMemoryConfig, AppError> {
+        let limit = self
+            .limit
+            .as_ref()
+            .map(parse_memory_limit_value)
+            .transpose()?;
+        Ok(QueryMemoryConfig::with_limit(limit))
+    }
+}
+
+fn parse_memory_limit_value(value: &toml::Value) -> Result<MemorySize, AppError> {
+    match value {
+        toml::Value::String(raw) => raw
+            .parse::<MemorySize>()
+            .map_err(|error| AppError::InvalidInput(format!("engine.memory.limit: {error}"))),
+        toml::Value::Integer(bytes) if *bytes > 0 => {
+            let bytes = usize::try_from(*bytes).map_err(|_error| {
+                AppError::InvalidInput("engine.memory.limit: memory limit is too large".to_string())
+            })?;
+            MemorySize::from_bytes(bytes)
+                .map_err(|error| AppError::InvalidInput(format!("engine.memory.limit: {error}")))
+        }
+        toml::Value::Integer(_) => Err(AppError::InvalidInput(
+            "engine.memory.limit: memory limit must be greater than 0".to_string(),
+        )),
+        _ => Err(AppError::InvalidInput(
+            "engine.memory.limit: memory limit must be a string with binary unit Ki, Mi, Gi, or Ti, or a positive integer byte count".to_string(),
+        )),
+    }
+}
+
+impl PersistedDependentJoinConfig {
+    fn try_into_runtime_config(
+        self,
+        selected_source_names: &[String],
+    ) -> Result<DependentJoinConfig, AppError> {
+        let default = DependentJoinConfig::default();
+        let mut per_source = BTreeMap::new();
+        for (source_name, source_config) in self.per_source {
+            let source_name = SourceName::parse(&source_name)?;
+            if !selected_source_names
+                .iter()
+                .any(|selected_source_name| selected_source_name == source_name.as_str())
+            {
+                continue;
+            }
+            per_source.insert(
+                source_name.as_str().to_string(),
+                source_config.try_into_runtime_config(source_name.as_str())?,
+            );
+        }
+        Ok(DependentJoinConfig {
+            enabled: self.enabled.unwrap_or(default.enabled),
+            max_bindings: positive_or_default(
+                "engine.dependent_join.max_bindings",
+                self.max_bindings,
+                default.max_bindings,
+            )?,
+            max_resolver_rows: positive_or_default(
+                "engine.dependent_join.max_resolver_rows",
+                self.max_resolver_rows,
+                default.max_resolver_rows,
+            )?,
+            max_rows_per_binding: positive_or_default(
+                "engine.dependent_join.max_rows_per_binding",
+                self.max_rows_per_binding,
+                default.max_rows_per_binding,
+            )?,
+            max_resolver_rows_per_binding: positive_or_default(
+                "engine.dependent_join.max_resolver_rows_per_binding",
+                self.max_resolver_rows_per_binding,
+                default.max_resolver_rows_per_binding,
+            )?,
+            max_concurrency: positive_or_default(
+                "engine.dependent_join.max_concurrency",
+                self.max_concurrency,
+                default.max_concurrency,
+            )?,
+            per_source,
+        })
+    }
+}
+
+impl PersistedDependentJoinSourceConfig {
+    fn try_into_runtime_config(
+        self,
+        source_name: &str,
+    ) -> Result<DependentJoinSourceConfig, AppError> {
+        Ok(DependentJoinSourceConfig {
+            enabled: self.enabled,
+            max_bindings: positive_optional(
+                &format!("engine.dependent_join.per_source.{source_name}.max_bindings"),
+                self.max_bindings,
+            )?,
+            max_resolver_rows: positive_optional(
+                &format!("engine.dependent_join.per_source.{source_name}.max_resolver_rows"),
+                self.max_resolver_rows,
+            )?,
+            max_rows_per_binding: positive_optional(
+                &format!("engine.dependent_join.per_source.{source_name}.max_rows_per_binding"),
+                self.max_rows_per_binding,
+            )?,
+            max_resolver_rows_per_binding: positive_optional(
+                &format!(
+                    "engine.dependent_join.per_source.{source_name}.max_resolver_rows_per_binding"
+                ),
+                self.max_resolver_rows_per_binding,
+            )?,
+            max_concurrency: positive_optional(
+                &format!("engine.dependent_join.per_source.{source_name}.max_concurrency"),
+                self.max_concurrency,
+            )?,
+        })
+    }
+}
+
+fn positive_or_default(
+    field: &str,
+    value: Option<usize>,
+    default: usize,
+) -> Result<usize, AppError> {
+    match value {
+        Some(0) => Err(AppError::InvalidInput(format!(
+            "{field} must be greater than 0"
+        ))),
+        Some(value) => Ok(value),
+        None => Ok(default),
+    }
+}
+
+fn positive_optional(field: &str, value: Option<usize>) -> Result<Option<usize>, AppError> {
+    match value {
+        Some(0) => Err(AppError::InvalidInput(format!(
+            "{field} must be greater than 0"
+        ))),
+        Some(value) => Ok(Some(value)),
+        None => Ok(None),
     }
 }
 
@@ -351,9 +803,18 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use super::{AppConfig, PersistedAppConfig, SourceCatalog, render_config};
+    use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig};
+    use tempfile::TempDir;
+
+    use super::{
+        AppConfig, PersistedAppConfig, PersistedEngineConfig, PersistedMemoryConfig,
+        RawFeatureContainerState, RawFeatureValue, SourceCatalog, load_raw_feature_overrides,
+        render_config, set_raw_feature_override,
+    };
+    use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
+    use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
 
     fn default_workspace() -> WorkspaceName {
@@ -369,8 +830,42 @@ mod tests {
                 "https://api.github.com".to_string(),
             )]),
             secrets: vec!["GITHUB_TOKEN".to_string()],
+            credential_storage: None,
             origin: SourceOrigin::Imported,
         }
+    }
+
+    fn test_layout(temp: &TempDir) -> AppStateLayout {
+        AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout")
+    }
+
+    fn write_config(layout: &AppStateLayout, raw: &str) {
+        std::fs::create_dir_all(
+            layout
+                .config_file()
+                .parent()
+                .expect("config file should have parent"),
+        )
+        .expect("create config dir");
+        std::fs::write(layout.config_file(), raw).expect("write config");
+    }
+
+    fn raw_feature_entries(layout: &AppStateLayout) -> BTreeMap<String, RawFeatureValue> {
+        load_raw_feature_overrides(layout)
+            .expect("feature overrides")
+            .iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect()
+    }
+
+    fn raw_feature_container(layout: &AppStateLayout) -> RawFeatureContainerState {
+        load_raw_feature_overrides(layout)
+            .expect("feature overrides")
+            .container()
+    }
+
+    fn selected_sources(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
     }
 
     #[test]
@@ -385,6 +880,7 @@ mod tests {
         catalog.upsert_source(&workspace_name, installed_source("github"));
         let config = AppConfig {
             version: 1,
+            engine: PersistedEngineConfig::default(),
             catalog,
         };
 
@@ -408,6 +904,7 @@ mod tests {
         catalog.upsert_source(&workspace_name, source);
         let config = AppConfig {
             version: 1,
+            engine: PersistedEngineConfig::default(),
             catalog,
         };
 
@@ -441,6 +938,357 @@ origin = "bundled"
             Some(&"https://api.github.com".to_string())
         );
         assert_eq!(sources[0].secrets, vec!["GITHUB_TOKEN".to_string()]);
+        assert_eq!(sources[0].credential_storage, None);
+        assert_eq!(
+            sources[0].effective_credential_storage(),
+            CredentialStorageKind::File
+        );
+    }
+
+    #[test]
+    fn lists_workspace_source_names_in_lexical_order() {
+        let workspace_name = default_workspace();
+        let mut catalog = SourceCatalog::default();
+        catalog.upsert_source(&workspace_name, installed_source("slack"));
+        catalog.upsert_source(&workspace_name, installed_source("github"));
+        catalog.upsert_source(&workspace_name, installed_source("linear"));
+
+        assert_eq!(
+            catalog.workspace_source_names(&workspace_name),
+            vec![
+                "github".to_string(),
+                "linear".to_string(),
+                "slack".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn loads_dependent_join_engine_config() {
+        let raw = r"
+version = 1
+
+[engine.dependent_join]
+enabled = false
+max_bindings = 7
+max_resolver_rows = 11
+max_rows_per_binding = 13
+max_resolver_rows_per_binding = 17
+max_concurrency = 19
+
+[engine.dependent_join.per_source.github]
+enabled = true
+max_bindings = 21
+max_concurrency = 4
+";
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&selected_sources(&["github"]))
+            .expect("dependent join config should be valid");
+
+        assert_eq!(
+            config,
+            DependentJoinConfig {
+                enabled: false,
+                max_bindings: 7,
+                max_resolver_rows: 11,
+                max_rows_per_binding: 13,
+                max_resolver_rows_per_binding: 17,
+                max_concurrency: 19,
+                per_source: BTreeMap::from([(
+                    "github".to_string(),
+                    DependentJoinSourceConfig {
+                        enabled: Some(true),
+                        max_bindings: Some(21),
+                        max_concurrency: Some(4),
+                        ..DependentJoinSourceConfig::default()
+                    },
+                )]),
+            }
+        );
+    }
+
+    #[test]
+    fn matches_dependent_join_source_config_after_source_name_normalization() {
+        let raw = r#"
+version = 1
+
+[engine.dependent_join.per_source." github "]
+enabled = false
+"#;
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&selected_sources(&["github"]))
+            .expect("dependent join config should be valid");
+
+        assert_eq!(
+            config.per_source.get("github"),
+            Some(&DependentJoinSourceConfig {
+                enabled: Some(false),
+                ..DependentJoinSourceConfig::default()
+            })
+        );
+    }
+
+    #[test]
+    fn loads_engine_memory_config() {
+        let raw = r#"
+version = 1
+
+[engine.memory]
+limit = "2Gi"
+"#;
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("memory config should parse")
+            .engine
+            .memory
+            .try_into_runtime_config()
+            .expect("memory config should be valid");
+
+        assert_eq!(
+            config.limit.expect("memory limit should be set").as_bytes(),
+            2 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn loads_engine_memory_config_from_integer_bytes() {
+        let raw = r"
+version = 1
+
+[engine.memory]
+limit = 2147483648
+";
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("memory config should parse")
+            .engine
+            .memory
+            .try_into_runtime_config()
+            .expect("memory config should be valid");
+
+        assert_eq!(
+            config.limit.expect("memory limit should be set").as_bytes(),
+            2 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn renders_engine_memory_config() {
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig {
+                memory: PersistedMemoryConfig {
+                    limit: Some(toml::Value::String("2Gi".to_string())),
+                },
+                ..PersistedEngineConfig::default()
+            },
+            catalog: SourceCatalog::default(),
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+
+        assert!(raw.contains("[engine.memory]"));
+        assert!(raw.contains("limit = \"2Gi\""));
+    }
+
+    #[test]
+    fn rendering_engine_memory_preserves_unrelated_engine_sections() {
+        let existing_raw = r"
+version = 1
+
+[engine.other]
+flag = true
+";
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig {
+                memory: PersistedMemoryConfig {
+                    limit: Some(toml::Value::String("2Gi".to_string())),
+                },
+                ..PersistedEngineConfig::default()
+            },
+            catalog: SourceCatalog::default(),
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), Some(existing_raw));
+
+        assert!(raw.contains("[engine.memory]"));
+        assert!(raw.contains("limit = \"2Gi\""));
+        assert!(raw.contains("[engine.other]"));
+        assert!(raw.contains("flag = true"));
+    }
+
+    #[test]
+    fn rendering_without_engine_memory_limit_removes_stale_limit() {
+        let existing_raw = r#"
+version = 1
+
+[engine.memory]
+limit = "2Gi"
+
+[engine.other]
+flag = true
+"#;
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            catalog: SourceCatalog::default(),
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), Some(existing_raw));
+
+        assert!(!raw.contains("limit = \"2Gi\""));
+        assert!(raw.contains("[engine.memory]"));
+        assert!(raw.contains("[engine.other]"));
+        assert!(raw.contains("flag = true"));
+    }
+
+    #[test]
+    fn rejects_invalid_engine_memory_config() {
+        let raw = r#"
+version = 1
+
+[engine.memory]
+limit = "2GiB"
+"#;
+
+        let error = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("memory config should parse")
+            .engine
+            .memory
+            .try_into_runtime_config()
+            .expect_err("invalid memory limit should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("engine.memory.limit: memory limit must use binary unit")
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_engine_memory_value_without_toml_decode_failure() {
+        let raw = r"
+version = 1
+
+[engine.memory]
+limit = true
+";
+
+        let error = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("memory config should parse")
+            .engine
+            .memory
+            .try_into_runtime_config()
+            .expect_err("unsupported memory limit should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("engine.memory.limit: memory limit must be a string")
+        );
+    }
+
+    #[test]
+    fn rejects_zero_dependent_join_limits() {
+        let raw = r"
+version = 1
+
+[engine.dependent_join]
+max_concurrency = 0
+";
+
+        let error = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&[])
+            .expect_err("zero limit should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("engine.dependent_join.max_concurrency must be greater than 0")
+        );
+    }
+
+    #[test]
+    fn rejects_zero_dependent_join_source_limits() {
+        let raw = r"
+version = 1
+
+[engine.dependent_join.per_source.github]
+max_concurrency = 0
+";
+
+        let error = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&selected_sources(&["github"]))
+            .expect_err("zero source limit should fail");
+
+        assert!(error.to_string().contains(
+            "engine.dependent_join.per_source.github.max_concurrency must be greater than 0"
+        ));
+    }
+
+    #[test]
+    fn ignores_dependent_join_source_limits_for_unselected_sources() {
+        let raw = r"
+version = 1
+
+[engine.dependent_join.per_source.github]
+max_concurrency = 4
+
+[engine.dependent_join.per_source.linear]
+max_concurrency = 0
+";
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&selected_sources(&["github"]))
+            .expect("unselected source override should not be validated");
+
+        assert!(config.per_source.contains_key("github"));
+        assert!(!config.per_source.contains_key("linear"));
+    }
+
+    #[test]
+    fn round_trips_source_credential_storage() {
+        let workspace_name = default_workspace();
+        let mut source = installed_source("github");
+        source.credential_storage = Some(CredentialStorageKind::Keychain);
+        let mut catalog = SourceCatalog::default();
+        catalog.upsert_source(&workspace_name, source);
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            catalog,
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+        assert!(raw.contains("credential_storage = \"keychain\""));
+
+        let loaded = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(&raw).expect("config should parse"),
+        )
+        .expect("config");
+        let sources = loaded.catalog.workspace_sources(&workspace_name);
+        assert_eq!(
+            sources[0].credential_storage,
+            Some(CredentialStorageKind::Keychain)
+        );
     }
 
     #[test]
@@ -506,11 +1354,19 @@ version = 1
 endpoint = "http://localhost:4318"
 headers = "from=config"
 
-[trace_history]
-enabled = false
-retention_days = 3
+	[trace_history]
+	enabled = false
+	retention_days = 3
 
-[workspaces.default.sources.github]
+	[features]
+	feedback = true
+	future_feature = "not-yet-known"
+
+[engine.dependent_join]
+enabled = false
+max_bindings = 250
+
+	[workspaces.default.sources.github]
 version = "1.0.0"
 variables = {}
 secrets = []
@@ -522,6 +1378,7 @@ origin = "bundled"
         catalog.upsert_source(&workspace_name, installed_source("slack"));
         let config = AppConfig {
             version: 1,
+            engine: PersistedEngineConfig::default(),
             catalog,
         };
 
@@ -548,6 +1405,26 @@ origin = "bundled"
         assert!(
             raw.contains("retention_days = 3"),
             "trace history retention should be preserved"
+        );
+        assert!(
+            raw.contains("[features]"),
+            "features section should be preserved"
+        );
+        assert!(
+            raw.contains("feedback = true"),
+            "known feature override should be preserved"
+        );
+        assert!(
+            raw.contains("future_feature = \"not-yet-known\""),
+            "future feature override should be preserved"
+        );
+        assert!(
+            raw.contains("[engine.dependent_join]"),
+            "dependent join config should be preserved"
+        );
+        assert!(
+            raw.contains("max_bindings = 250"),
+            "dependent join limit should be preserved"
         );
 
         // The newly added source must be present.
@@ -584,5 +1461,145 @@ origin = "bundled"
         )
         .expect_err("invalid source key should fail");
         assert!(error.to_string().contains("source name"));
+    }
+
+    #[test]
+    fn raw_feature_overrides_default_when_config_file_is_missing_without_creating_state() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("missing-config");
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+
+        let entries = raw_feature_entries(&layout);
+
+        assert!(entries.is_empty());
+        assert!(
+            !config_dir.exists(),
+            "read-only feature loading should not create config state"
+        );
+    }
+
+    #[test]
+    fn raw_feature_overrides_load_supported_table_entries() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        write_config(
+            &layout,
+            r#"
+version = 1
+
+[features]
+feedback = true
+future_flag = false
+wrong_type = "yes"
+
+[features.nested]
+enabled = true
+"#,
+        );
+
+        let entries = raw_feature_entries(&layout);
+
+        assert_eq!(entries.get("feedback"), Some(&RawFeatureValue::Bool(true)));
+        assert_eq!(
+            entries.get("future_flag"),
+            Some(&RawFeatureValue::Bool(false))
+        );
+        assert_eq!(
+            entries.get("wrong_type"),
+            Some(&RawFeatureValue::UnsupportedType)
+        );
+        assert_eq!(
+            entries.get("nested"),
+            Some(&RawFeatureValue::UnsupportedType)
+        );
+    }
+
+    #[test]
+    fn raw_feature_overrides_accept_dotted_feature_table() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        write_config(&layout, "features.feedback = false\n");
+
+        let entries = raw_feature_entries(&layout);
+
+        assert_eq!(entries.get("feedback"), Some(&RawFeatureValue::Bool(false)));
+    }
+
+    #[test]
+    fn raw_feature_overrides_ignore_inline_feature_table() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        write_config(&layout, "features = { feedback = true }\n");
+
+        let entries = raw_feature_entries(&layout);
+
+        assert!(entries.is_empty());
+        assert_eq!(
+            raw_feature_container(&layout),
+            RawFeatureContainerState::Unsupported
+        );
+    }
+
+    #[test]
+    fn raw_feature_overrides_fail_for_invalid_toml() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        write_config(&layout, "[features\nfeedback = true\n");
+
+        let error = load_raw_feature_overrides(&layout).expect_err("invalid TOML should fail");
+
+        assert!(error.to_string().contains("TOML parse error"));
+    }
+
+    #[test]
+    fn set_raw_feature_override_creates_config_file_with_features_table() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+
+        set_raw_feature_override(&layout, "feedback", true).expect("set feature");
+
+        let raw = std::fs::read_to_string(layout.config_file()).expect("config file");
+        assert!(raw.contains("version = 1"));
+        assert!(raw.contains("[features]"));
+        assert!(raw.contains("feedback = true"));
+    }
+
+    #[test]
+    fn set_raw_feature_override_preserves_unrelated_feature_entries() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        write_config(
+            &layout,
+            r#"
+[features]
+future_flag = "yes"
+feedback = true
+"#,
+        );
+
+        set_raw_feature_override(&layout, "feedback", false).expect("set feature");
+        let raw = std::fs::read_to_string(layout.config_file()).expect("config file");
+        assert!(raw.contains("feedback = false"));
+        assert!(raw.contains("future_flag = \"yes\""));
+
+        set_raw_feature_override(&layout, "feedback", true).expect("set feature");
+        let raw = std::fs::read_to_string(layout.config_file()).expect("config file");
+        assert!(raw.contains("feedback = true"));
+        assert!(raw.contains("future_flag = \"yes\""));
+    }
+
+    #[test]
+    fn feature_mutations_reject_inline_feature_container_without_rewriting_file() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        let original = "features = { feedback = true }\n";
+        write_config(&layout, original);
+
+        let error =
+            set_raw_feature_override(&layout, "feedback", true).expect_err("inline features");
+
+        assert!(error.to_string().contains("unsupported [features] config"));
+        let raw = std::fs::read_to_string(layout.config_file()).expect("config file");
+        assert_eq!(raw, original);
     }
 }

@@ -46,12 +46,18 @@ export function buildTimelineTree(spans: TraceSpan[], rootSpanId?: string): Time
   for (const node of nodesById.values()) node.children.sort(compareTimelineNodes)
 
   const rootNode = rootSpanId ? nodesById.get(rootSpanId) : undefined
-  if (!rootNode) return roots.sort(compareTimelineNodes)
+  if (!rootNode) return roots.toSorted(compareTimelineNodes)
 
-  return [rootNode, ...roots.filter((node) => node.span.spanId !== rootSpanId).sort(compareTimelineNodes)]
+  return [
+    rootNode,
+    ...roots.filter((node) => node.span.spanId !== rootSpanId).toSorted(compareTimelineNodes),
+  ]
 }
 
-export function flattenVisibleTimelineTree(nodes: TimelineNode[], collapsedSpanIds: Set<string>): TimelineRow[] {
+export function flattenVisibleTimelineTree(
+  nodes: TimelineNode[],
+  collapsedSpanIds: Set<string>,
+): TimelineRow[] {
   const rows: TimelineRow[] = []
   const visited = new Set<string>()
 
@@ -82,7 +88,10 @@ export function useTimelineTree(spans: TraceSpan[], rootSpanId?: string, traceId
   }, [])
 
   const tree = useMemo(() => buildTimelineTree(spans, rootSpanId), [rootSpanId, spans])
-  const rows = useMemo(() => flattenVisibleTimelineTree(tree, collapsedSpanIds), [collapsedSpanIds, tree])
+  const rows = useMemo(
+    () => flattenVisibleTimelineTree(tree, collapsedSpanIds),
+    [collapsedSpanIds, tree],
+  )
 
   return { collapsedSpanIds, rows, toggleSpan, tree }
 }

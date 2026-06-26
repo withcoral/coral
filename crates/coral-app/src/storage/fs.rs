@@ -17,6 +17,22 @@ pub(crate) fn ensure_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
+    if path.as_os_str().is_empty() || path == Path::new(".") {
+        return Ok(());
+    }
+    fs::create_dir_all(path)?;
+    set_dir_permissions_private(path)?;
+    Ok(())
+}
+
+pub(crate) fn create_new_file_private(path: &Path) -> io::Result<File> {
+    if let Some(parent) = path.parent() {
+        ensure_private_dir(parent)?;
+    }
+    open_create_new_file_private(path)
+}
+
 /// Write to a temp file then rename to avoid partial writes on crash.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temp_path = temp_path_for(path);
@@ -33,7 +49,18 @@ pub(crate) fn append_file_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = open_append_file_private(path)?;
     set_file_permissions_private(path)?;
     file.write_all(bytes)?;
-    file.sync_all()
+    file.sync_all()?;
+    // Best-effort: try to durably link the (possibly freshly created) file into
+    // its directory so a crash is less likely to lose it. Like `replace_atomic`,
+    // the parent-directory fsync is best-effort — opening or fsyncing a directory
+    // is not portable (e.g. it fails on Windows), so a failure here is ignored
+    // rather than surfaced.
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        drop(dir.sync_all());
+    }
+    Ok(())
 }
 
 pub(crate) fn replace_atomic(from: &Path, to: &Path) -> io::Result<()> {
@@ -113,6 +140,22 @@ fn open_append_file_private(path: &Path) -> io::Result<File> {
 #[cfg(not(unix))]
 fn open_append_file_private(path: &Path) -> io::Result<File> {
     OpenOptions::new().create(true).append(true).open(path)
+}
+
+#[cfg(unix)]
+fn open_create_new_file_private(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_create_new_file_private(path: &Path) -> io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).open(path)
 }
 
 fn temp_path_for(path: &Path) -> PathBuf {

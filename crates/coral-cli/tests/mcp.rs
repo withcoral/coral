@@ -10,8 +10,9 @@
 
 mod harness;
 
-use std::process::Stdio;
+use std::process::{Command as StdCommand, Stdio};
 use std::time::Duration;
+use std::{fs, io};
 
 use harness::MockServer;
 use jsonschema::JSONSchema;
@@ -28,8 +29,33 @@ use tokio::{
     time::timeout,
 };
 
+const RAW_JSONRPC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+
 fn json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
+}
+
+fn write_config(server: &MockServer, raw: &str) -> Result<(), io::Error> {
+    fs::create_dir_all(server.config_dir())?;
+    fs::write(server.config_dir().join("config.toml"), raw)
+}
+
+fn run_features_command(
+    server: &MockServer,
+    args: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let output = StdCommand::new(env!("CARGO_BIN_EXE_coral"))
+        .arg("features")
+        .args(args)
+        .env("CORAL_CONFIG_DIR", server.config_dir())
+        .output()?;
+    assert!(
+        output.status.success(),
+        "features command failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
 }
 
 async fn start_mcp_client(
@@ -46,7 +72,8 @@ async fn start_mcp_client_with_args(
         tokio::process::Command::new(env!("CARGO_BIN_EXE_coral")).configure(|cmd| {
             cmd.arg("mcp-stdio")
                 .args(args)
-                .env("CORAL_ENDPOINT", server.endpoint_uri());
+                .env("CORAL_ENDPOINT", server.endpoint_uri())
+                .env("CORAL_CONFIG_DIR", server.config_dir());
         }),
     )?;
     let client = ().serve(transport).await?;
@@ -60,6 +87,13 @@ fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
             panic!("unexpected resource contents: {other:?}")
         }
     }
+}
+
+fn tool_input_properties(tool: &rmcp::model::Tool) -> &Map<String, Value> {
+    tool.input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("tool '{}' should advertise input properties", tool.name))
 }
 
 async fn structured_tool_content(
@@ -89,7 +123,11 @@ async fn read_jsonrpc_response(
     let mut line = String::new();
     loop {
         line.clear();
-        let bytes_read = timeout(Duration::from_secs(5), stdout.read_line(&mut line)).await??;
+        let bytes_read = timeout(RAW_JSONRPC_RESPONSE_TIMEOUT, stdout.read_line(&mut line))
+            .await
+            .map_err(|error| {
+                format!("timed out waiting for JSON-RPC response id {id}: {error}")
+            })??;
         if bytes_read == 0 {
             return Err(format!("mcp stdio closed before response id {id}").into());
         }
@@ -157,12 +195,23 @@ fn assert_raw_tools_list_contract(response: &Value) {
 async fn mcp_stdio_raw_tools_list_advertises_client_compatible_schemas()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
+    write_config(
+        &server,
+        r#"
+[workspaces.default.sources.jira]
+origin = "bundled"
+
+[workspaces.default.sources.github]
+origin = "bundled"
+"#,
+    )?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
         .arg("mcp-stdio")
         .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env("CORAL_CONFIG_DIR", server.config_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
     let mut stdin = child.stdin.take().expect("mcp stdio stdin");
@@ -190,6 +239,14 @@ async fn mcp_stdio_raw_tools_list_advertises_client_compatible_schemas()
     assert!(
         initialize.pointer("/result/protocolVersion").is_some(),
         "initialize response should include protocolVersion: {initialize}"
+    );
+    let instructions = initialize
+        .pointer("/result/instructions")
+        .and_then(Value::as_str)
+        .expect("initialize response should include instructions");
+    assert!(
+        instructions.contains("Connected Coral sources: github, jira."),
+        "initialize instructions should include connected source names: {instructions}"
     );
 
     write_jsonrpc_message(
@@ -263,6 +320,17 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .expect("search_catalog description")
             .contains("3 table(s) and 0 table function(s) are currently visible")
     );
+    let catalog_requests = server.list_catalog_requests();
+    let count_request = catalog_requests
+        .last()
+        .expect("tools/list should request catalog counts");
+    assert_eq!(count_request.kind, 0);
+    let count_pagination = count_request
+        .pagination
+        .as_ref()
+        .expect("count request pagination");
+    assert_eq!(count_pagination.limit, 1);
+    assert_eq!(count_pagination.offset, 0);
 
     let resources = client.list_all_resources().await?;
     assert_eq!(
@@ -295,7 +363,8 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_enable_feedback_lists_feedback_tool() -> Result<(), Box<dyn std::error::Error>> {
+async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
+-> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     let client = start_mcp_client_with_args(&server, &["--enable-feedback"]).await?;
 
@@ -316,6 +385,299 @@ async fn mcp_stdio_enable_feedback_lists_feedback_tool() -> Result<(), Box<dyn s
     );
 
     client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_enable_episodes_flag_lists_open_episode_tool()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client_with_args(&server, &["--enable-episodes"]).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec![
+            "sql",
+            "list_catalog",
+            "search_catalog",
+            "describe_table",
+            "list_columns",
+            "open_episode"
+        ]
+    );
+    for tool in tools
+        .iter()
+        .filter(|tool| tool.name.as_ref() != "open_episode")
+    {
+        assert!(
+            tool_input_properties(tool).contains_key("episode_id"),
+            "tool '{}' should advertise optional episode_id",
+            tool.name
+        );
+    }
+    let open_episode = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "open_episode")
+        .expect("open_episode tool should be listed");
+    assert!(
+        tool_input_properties(open_episode).contains_key("parent_episode_id"),
+        "open_episode should accept an optional parent_episode_id"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_feature_config_enables_feedback_tool() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = MockServer::start().await;
+    write_config(
+        &server,
+        r"
+[features]
+feedback = true
+",
+    )?;
+    let client = start_mcp_client(&server).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert!(
+        tools.iter().any(|tool| tool.name.as_ref() == "feedback"),
+        "feedback tool should be listed when [features].feedback is true"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_feature_config_enables_open_episode_tool()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    write_config(
+        &server,
+        r"
+[features]
+episodes = true
+",
+    )?;
+    let client = start_mcp_client(&server).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == "open_episode"),
+        "open_episode tool should be listed when [features].episodes is true"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_features_enable_command_enables_feedback_tool()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    run_features_command(&server, &["enable", "feedback"])?;
+    let client = start_mcp_client(&server).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert!(
+        tools.iter().any(|tool| tool.name.as_ref() == "feedback"),
+        "feedback tool should be listed after `coral features enable feedback`"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_features_disable_command_removes_feedback_tool()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    run_features_command(&server, &["enable", "feedback"])?;
+    run_features_command(&server, &["disable", "feedback"])?;
+    let client = start_mcp_client(&server).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert!(
+        tools.iter().all(|tool| tool.name.as_ref() != "feedback"),
+        "feedback tool should not be listed after `coral features disable feedback`"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_feature_config_can_leave_feedback_disabled()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    write_config(
+        &server,
+        r"
+[features]
+feedback = false
+",
+    )?;
+    let client = start_mcp_client(&server).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert!(
+        tools.iter().all(|tool| tool.name.as_ref() != "feedback"),
+        "feedback tool should not be listed when [features].feedback is false"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_enable_feedback_override_overrides_config_disabled()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    write_config(
+        &server,
+        r"
+[features]
+feedback = false
+",
+    )?;
+    let client = start_mcp_client_with_args(&server, &["--enable-feedback"]).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert!(
+        tools.iter().any(|tool| tool.name.as_ref() == "feedback"),
+        "feedback tool should be listed when --enable-feedback is set"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_disable_feedback_override_overrides_config_enabled()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    write_config(
+        &server,
+        r"
+[features]
+feedback = true
+",
+    )?;
+    let client = start_mcp_client_with_args(&server, &["--disable-feedback"]).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert!(
+        tools.iter().all(|tool| tool.name.as_ref() != "feedback"),
+        "feedback tool should not be listed when --disable-feedback is set"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_invalid_feature_entries_do_not_corrupt_stdout()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    write_config(
+        &server,
+        r#"
+[features]
+feedback = "yes"
+future_flag = true
+"#,
+    )?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
+        .arg("mcp-stdio")
+        .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env("CORAL_CONFIG_DIR", server.config_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("mcp stdio stdin");
+    let stdout = child.stdout.take().expect("mcp stdio stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "coral-cli-invalid-feature-test",
+                    "version": "0.0.0"
+                }
+            }
+        }),
+    )
+    .await?;
+    let initialize = read_jsonrpc_response(&mut stdout, 1).await?;
+    assert!(
+        initialize.pointer("/result/protocolVersion").is_some(),
+        "initialize response should include protocolVersion: {initialize}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }),
+    )
+    .await?;
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }),
+    )
+    .await?;
+    let tools_list = read_jsonrpc_response(&mut stdout, 2).await?;
+    assert_raw_tools_list_contract(&tools_list);
+    let tools = tools_list
+        .pointer("/result/tools")
+        .and_then(Value::as_array)
+        .expect("tools/list result");
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.get("name").and_then(Value::as_str) != Some("feedback")),
+        "invalid feature config must not enable feedback: {tools_list}"
+    );
+
+    drop(stdin);
+    if timeout(Duration::from_secs(5), child.wait()).await.is_err() {
+        child.start_kill()?;
+        child.wait().await?;
+    }
     server.shutdown().await;
     Ok(())
 }

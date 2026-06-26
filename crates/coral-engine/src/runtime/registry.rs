@@ -1,18 +1,21 @@
 //! Registers compiled backend sources into a shared `DataFusion` session.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::prelude::SessionContext;
+use tracing::{Instrument as _, info_span};
 
 use crate::backends::{
-    BackendRegistration, CompiledBackendSource, RegisteredSource, SourceTableFunctions,
+    BackendRegistration, BackendRegistrationContext, BackendSchemaRegistration,
+    CompiledBackendSource, RegisteredSource,
 };
 use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{CoreError, QuerySource, SourceDecorator, SourceFailurePolicy};
 
-const RESERVED_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin"];
+const RESERVED_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "public"];
 
 /// One selected query source together with its compiled backend artifact.
 ///
@@ -58,12 +61,18 @@ pub(crate) struct SourceRegistrationResult {
 }
 
 fn check_reserved_schema(schema: &str) -> DataFusionResult<()> {
-    if RESERVED_SCHEMA_NAMES.contains(&schema) {
-        return Err(DataFusionError::Execution(format!(
-            "source schema '{schema}' is reserved and cannot be used by manifests"
-        )));
+    if is_reserved_schema(schema) {
+        return Err(DataFusionError::Execution(reserved_schema_detail(schema)));
     }
     Ok(())
+}
+
+fn is_reserved_schema(schema: &str) -> bool {
+    RESERVED_SCHEMA_NAMES.contains(&schema)
+}
+
+fn reserved_schema_detail(schema: &str) -> String {
+    format!("source schema '{schema}' is reserved and cannot be used by manifests")
 }
 
 /// Register all configured source manifests into the active `SessionContext`.
@@ -78,6 +87,20 @@ pub(crate) async fn register_sources(
     sources: Vec<SourceRegistrationCandidate>,
     source_decorators: &mut [Box<dyn SourceDecorator>],
 ) -> std::result::Result<SourceRegistrationResult, CoreError> {
+    let span = info_span!(
+        "coral.engine.sources.register",
+        source.count = sources.len(),
+    );
+    register_sources_inner(ctx, sources, source_decorators)
+        .instrument(span)
+        .await
+}
+
+async fn register_sources_inner(
+    ctx: &SessionContext,
+    sources: Vec<SourceRegistrationCandidate>,
+    source_decorators: &mut [Box<dyn SourceDecorator>],
+) -> std::result::Result<SourceRegistrationResult, CoreError> {
     let catalog = ctx.catalog("datafusion").ok_or_else(|| {
         let plan_err = DataFusionError::Plan("catalog 'datafusion' not found".to_string());
         datafusion_to_core(&plan_err, &[])
@@ -87,53 +110,37 @@ pub(crate) async fn register_sources(
         .iter()
         .map(|selected| selected.source().clone())
         .collect::<Vec<_>>();
+    validate_selected_source_schema_names(&selected_sources)?;
     prepare_source_decorators(source_decorators, &selected_sources)?;
 
     let mut result = SourceRegistrationResult::default();
-    let mut seen_schemas = std::collections::HashSet::new();
+    let mut seen_schemas = catalog.schema_names().into_iter().collect();
+    let registration_context = BackendRegistrationContext::default();
 
     for source in sources {
         match source {
             SourceRegistrationCandidate::Compiled(selected_source) => {
                 let query_source = &selected_source.source;
                 let compiled_source = selected_source.compiled;
-                let schema_name = compiled_source.schema_name().to_string();
                 let source_name = compiled_source.source_name().to_string();
 
-                match register_source(ctx, &mut seen_schemas, compiled_source.as_ref()).await {
+                match register_source(
+                    ctx,
+                    &registration_context,
+                    &mut seen_schemas,
+                    compiled_source.as_ref(),
+                )
+                .await
+                {
                     Ok(registration) => {
-                        let BackendRegistration {
-                            tables,
-                            table_functions,
-                            source: registered_source,
-                        } = registration;
-                        let decorated_tables =
-                            decorate_source_tables(source_decorators, query_source, tables)?;
-                        match catalog.register_schema(
-                            compiled_source.schema_name(),
-                            Arc::new(StaticSchemaProvider::new(decorated_tables)),
-                        ) {
-                            Ok(_) => {
-                                register_table_functions(ctx, table_functions);
-                                result.active_sources.push(registered_source);
-                            }
-                            Err(error) => {
-                                let core_error = datafusion_to_core(&error, &[]);
-                                if handle_source_registration_failure(
-                                    source_decorators,
-                                    query_source,
-                                    &core_error,
-                                )? {
-                                    return Err(core_error);
-                                }
-                                push_source_failure(
-                                    &mut result,
-                                    &source_name,
-                                    &schema_name,
-                                    core_error.to_string(),
-                                );
-                            }
-                        }
+                        register_backend_registration(
+                            catalog.as_ref(),
+                            source_decorators,
+                            query_source,
+                            &source_name,
+                            registration,
+                            &mut result,
+                        )?;
                     }
                     Err(error) => {
                         let core_error = datafusion_to_core(&error, &[]);
@@ -147,7 +154,7 @@ pub(crate) async fn register_sources(
                         push_source_failure(
                             &mut result,
                             &source_name,
-                            &schema_name,
+                            compiled_source.schema_name(),
                             core_error.to_string(),
                         );
                     }
@@ -172,6 +179,28 @@ pub(crate) async fn register_sources(
     Ok(result)
 }
 
+fn validate_selected_source_schema_names(
+    sources: &[QuerySource],
+) -> std::result::Result<(), CoreError> {
+    let mut owner_by_schema = HashMap::new();
+    for source in sources {
+        for schema_name in source.schema_names() {
+            if is_reserved_schema(schema_name) {
+                return Err(CoreError::InvalidInput(reserved_schema_detail(schema_name)));
+            }
+            if let Some(existing_source) =
+                owner_by_schema.insert(schema_name.to_string(), source.source_name().to_string())
+            {
+                return Err(CoreError::InvalidInput(format!(
+                    "source '{}' runtime schema name '{schema_name}' conflicts with selected source '{existing_source}'",
+                    source.source_name()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) fn register_sources_blocking(
     ctx: &SessionContext,
@@ -190,19 +219,88 @@ pub(crate) fn register_sources_blocking(
 
 async fn register_source(
     ctx: &SessionContext,
+    registration_context: &BackendRegistrationContext,
     seen_schemas: &mut std::collections::HashSet<String>,
     source: &dyn CompiledBackendSource,
 ) -> DataFusionResult<BackendRegistration> {
-    check_reserved_schema(source.schema_name())?;
+    source.validate_runtime_capabilities()?;
+    let registration = source.register(ctx, registration_context).await?;
+    let mut registration_schemas = std::collections::HashSet::new();
+    for schema in &registration.schemas {
+        let schema_name = &schema.source.schema_name;
+        check_reserved_schema(schema_name)?;
 
-    if !seen_schemas.insert(source.schema_name().to_string()) {
-        return Err(DataFusionError::Execution(format!(
-            "duplicate source schema '{}'",
-            source.schema_name()
-        )));
+        if !registration_schemas.insert(schema_name.clone()) || seen_schemas.contains(schema_name) {
+            return Err(DataFusionError::Execution(format!(
+                "duplicate source schema '{schema_name}'"
+            )));
+        }
+    }
+    seen_schemas.extend(registration_schemas);
+
+    Ok(registration)
+}
+
+fn register_backend_registration(
+    catalog: &dyn datafusion::catalog::CatalogProvider,
+    source_decorators: &mut [Box<dyn SourceDecorator>],
+    query_source: &QuerySource,
+    source_name: &str,
+    registration: BackendRegistration,
+    result: &mut SourceRegistrationResult,
+) -> std::result::Result<(), CoreError> {
+    let mut staged = Vec::with_capacity(registration.schemas.len());
+    for schema_registration in registration.schemas {
+        let BackendSchemaRegistration {
+            tables,
+            source: registered_source,
+        } = schema_registration;
+        let schema_name = registered_source.schema_name.clone();
+        let decorated_tables = decorate_source_tables(source_decorators, query_source, tables)?;
+        staged.push((schema_name, decorated_tables, registered_source));
     }
 
-    source.register(ctx).await
+    let mut registered_schema_names = Vec::with_capacity(staged.len());
+    for (schema_name, decorated_tables, _registered_source) in &mut staged {
+        match catalog.register_schema(
+            schema_name,
+            Arc::new(StaticSchemaProvider::new(std::mem::take(decorated_tables))),
+        ) {
+            Ok(_) => {
+                registered_schema_names.push(schema_name.clone());
+            }
+            Err(error) => {
+                rollback_registered_schemas(catalog, &registered_schema_names);
+                let core_error = datafusion_to_core(&error, &[]);
+                if handle_source_registration_failure(source_decorators, query_source, &core_error)?
+                {
+                    return Err(core_error);
+                }
+                push_source_failure(result, source_name, schema_name, core_error.to_string());
+                return Ok(());
+            }
+        }
+    }
+
+    for (_schema_name, _decorated_tables, registered_source) in staged {
+        result.active_sources.push(registered_source);
+    }
+    Ok(())
+}
+
+fn rollback_registered_schemas(
+    catalog: &dyn datafusion::catalog::CatalogProvider,
+    schema_names: &[String],
+) {
+    for schema_name in schema_names.iter().rev() {
+        if let Err(error) = catalog.deregister_schema(schema_name, true) {
+            tracing::warn!(
+                schema_name,
+                detail = %error,
+                "failed to roll back source schema registration"
+            );
+        }
+    }
 }
 
 fn push_source_failure(
@@ -222,12 +320,6 @@ fn push_source_failure(
         "skipping source"
     );
     result.failures.push(failure);
-}
-
-fn register_table_functions(ctx: &SessionContext, table_functions: SourceTableFunctions) {
-    for (internal_name, function) in table_functions {
-        ctx.register_udtf(&internal_name, function);
-    }
 }
 
 fn prepare_source_decorators(
@@ -299,7 +391,11 @@ fn source_decorator_error(name: &str, error: &crate::SourceDecoratorError) -> Co
 
 #[cfg(test)]
 mod tests {
-    use super::check_reserved_schema;
+    use std::collections::BTreeMap;
+
+    use crate::{CoreError, QuerySource, RuntimeSourcePackage};
+
+    use super::{check_reserved_schema, validate_selected_source_schema_names};
 
     #[test]
     fn reserved_schema_coral_is_rejected() {
@@ -313,9 +409,48 @@ mod tests {
     }
 
     #[test]
+    fn reserved_schema_public_is_rejected() {
+        let result = check_reserved_schema("public");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("public"),
+            "error message should mention the schema name"
+        );
+    }
+
+    #[test]
     fn non_reserved_schema_is_accepted() {
         check_reserved_schema("github").expect("github is not reserved");
         check_reserved_schema("pagerduty").expect("pagerduty is not reserved");
         check_reserved_schema("slack").expect("slack is not reserved");
+    }
+
+    #[test]
+    fn selected_sources_reject_reserved_schema_before_backend_registration() {
+        let source = QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "public".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                components: Vec::new(),
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("runtime package");
+
+        let error = validate_selected_source_schema_names(&[source])
+            .expect_err("reserved source schema should fail selected-source preflight");
+
+        let CoreError::InvalidInput(detail) = error else {
+            panic!("expected invalid input, got {error:?}");
+        };
+        assert!(
+            detail.contains("source schema 'public' is reserved"),
+            "unexpected error: {detail}"
+        );
     }
 }

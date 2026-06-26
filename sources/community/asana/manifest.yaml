@@ -1,0 +1,604 @@
+name: asana
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query workspaces, projects, tasks, and sections from Asana via the
+  Asana REST API. Authenticate with OAuth authorization-code or a
+  Personal Access Token.
+base_url: https://app.asana.com/api/1.0
+
+inputs:
+  ASANA_TOKEN:
+    kind: secret
+    hint: |
+      Connect via "Sign in with Asana" below, or paste a Personal Access Token
+      from https://app.asana.com/0/my-apps → "Create new token".
+      For OAuth: create an app at https://app.asana.com/0/my-apps,
+      set redirect URI to http://127.0.0.1:53682/oauth/callback,
+      and enable the "default" scope under Permission scopes in your app
+      settings, then provide your Client ID and Client Secret below.
+      The OAuth flow requests the "default" scope (Full Permissions)
+      because the Sections API has no granular OAuth scope in Asana's
+      current scope list.
+    credential:
+      methods:
+        - type: oauth
+          label: Sign in with Asana
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: disabled
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            endpoints:
+              authorization_url: https://app.asana.com/-/oauth_authorize
+              token_url: https://app.asana.com/-/oauth_token
+            client:
+              id:
+                input: ASANA_CLIENT_ID
+              secret:
+                input: ASANA_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - default
+        - type: source_config
+          label: Paste personal access token
+          description: Paste an existing Asana Personal Access Token.
+
+  ASANA_CLIENT_ID:
+    kind: variable
+    hint: |
+      OAuth Client ID from your Asana app at https://app.asana.com/0/my-apps.
+      Set redirect URI to http://127.0.0.1:53682/oauth/callback during registration.
+      This is a non-secret app identifier, not a password.
+
+  ASANA_CLIENT_SECRET:
+    kind: secret
+    hint: |
+      OAuth Client Secret from the same Asana app as ASANA_CLIENT_ID.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.ASANA_TOKEN}}
+
+request_headers:
+  - name: Asana-Enable
+    from: literal
+    value: new_user_task_lists
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT * FROM asana.workspaces LIMIT 5
+  - SELECT gid, name, archived, created_at FROM asana.projects WHERE workspace_gid = 'your-workspace-gid' LIMIT 10
+  - SELECT gid, name, completed, due_on, assignee_name FROM asana.tasks WHERE project_gid = 'your-project-gid' AND completed_since = 'now' LIMIT 10
+  - SELECT gid, name FROM asana.sections WHERE project_gid = 'your-project-gid' LIMIT 10
+
+tables:
+  # ────────────────────────────────────────────────────────────────────────────
+  # workspaces — all workspaces visible to the authenticated user
+  # ────────────────────────────────────────────────────────────────────────────
+  - name: workspaces
+    description: >-
+      Workspaces visible to the authenticated user. Each row is one workspace.
+      Use gid as the workspace_gid filter for the projects table.
+    guide: |
+      Start here to discover workspace GIDs. Pass gid as workspace_gid when
+      filtering projects. email_domains is a comma-separated list of the
+      domains auto-associated with the workspace.
+    request:
+      method: GET
+      path: /workspaces
+      query:
+        - name: opt_fields
+          from: literal
+          value: gid,name,is_organization,email_domains
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: cursor_query
+      cursor_param: offset
+      response_cursor_path:
+        - next_page
+        - offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: gid
+        type: Utf8
+        nullable: false
+        description: Globally unique identifier for the workspace.
+        expr:
+          kind: path
+          path:
+            - gid
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The name of the workspace.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: is_organization
+        type: Boolean
+        nullable: true
+        description: Whether the workspace is an Asana Organization (true) or a personal workspace (false).
+        expr:
+          kind: path
+          path:
+            - is_organization
+      - name: email_domains
+        type: Utf8
+        nullable: true
+        description: >-
+          Comma-separated list of email domains auto-associated with the
+          workspace. Null when no domains are configured.
+        expr:
+          kind: join_array
+          path:
+            - email_domains
+          separator: ", "
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # projects — projects within an optional workspace scope
+  # ────────────────────────────────────────────────────────────────────────────
+  - name: projects
+    description: >-
+      Projects within a specific Asana workspace. Each row is one project.
+      Requires workspace_gid from the workspaces table. Use gid as the
+      project_gid filter for tasks and sections.
+    guide: |
+      Requires workspace_gid (gid from asana.workspaces). The Asana API
+      warns that GET /projects may timeout for large domains without a
+      workspace filter, so this source always requires one.
+      gid is the project identifier to pass as project_gid in tasks and
+      sections. owner_gid and workspace_gid can be used to join back to the
+      workspaces table.
+    filters:
+      - name: workspace_gid
+        required: true
+    request:
+      method: GET
+      path: /projects
+      query:
+        - name: workspace
+          from: filter
+          key: workspace_gid
+        - name: opt_fields
+          from: literal
+          value: gid,name,archived,color,created_at,modified_at,due_on,start_on,notes,owner.gid,owner.name,workspace.gid,workspace.name,current_status_update.status_type,current_status_update.title
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: cursor_query
+      cursor_param: offset
+      response_cursor_path:
+        - next_page
+        - offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: gid
+        type: Utf8
+        nullable: false
+        description: Globally unique identifier for the project.
+        expr:
+          kind: path
+          path:
+            - gid
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The name of the project.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the project is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Color of the project (e.g. light-green, light-red).
+        expr:
+          kind: path
+          path:
+            - color
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the project was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: modified_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the project was last modified.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modified_at
+      - name: due_on
+        type: Utf8
+        nullable: true
+        description: Due date of the project in YYYY-MM-DD format.
+        expr:
+          kind: path
+          path:
+            - due_on
+      - name: start_on
+        type: Utf8
+        nullable: true
+        description: Start date of the project in YYYY-MM-DD format.
+        expr:
+          kind: path
+          path:
+            - start_on
+      - name: notes
+        type: Utf8
+        nullable: true
+        description: Free-form text description of the project.
+        expr:
+          kind: path
+          path:
+            - notes
+      - name: owner_gid
+        type: Utf8
+        nullable: true
+        description: GID of the project owner.
+        expr:
+          kind: path
+          path:
+            - owner
+            - gid
+      - name: owner_name
+        type: Utf8
+        nullable: true
+        description: Display name of the project owner.
+        expr:
+          kind: path
+          path:
+            - owner
+            - name
+      - name: workspace_gid
+        type: Utf8
+        nullable: true
+        description: GID of the workspace this project belongs to. Echoed from filter when supplied.
+        expr:
+          kind: path
+          path:
+            - workspace
+            - gid
+      - name: workspace_name
+        type: Utf8
+        nullable: true
+        description: Name of the workspace this project belongs to.
+        expr:
+          kind: path
+          path:
+            - workspace
+            - name
+      - name: status_type
+        type: Utf8
+        nullable: true
+        description: >-
+          Current status update type (on_track, at_risk, off_track, on_hold,
+          complete). Null if no status has been set.
+        expr:
+          kind: path
+          path:
+            - current_status_update
+            - status_type
+      - name: status_title
+        type: Utf8
+        nullable: true
+        description: Title of the most recent status update.
+        expr:
+          kind: path
+          path:
+            - current_status_update
+            - title
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # tasks — tasks within a specific project
+  # ────────────────────────────────────────────────────────────────────────────
+  - name: tasks
+    description: >-
+      Tasks in a specific Asana project. Each row is one task. Requires
+      project_gid from the projects table. Use the optional completed_since
+      filter to avoid fetching the full task history.
+    guide: |
+      Requires project_gid (gid from asana.projects). Use completed_since
+      to push a time-window filter to the Asana API — the server returns
+      only incomplete tasks and tasks completed after that timestamp.
+      Pass the keyword 'now' to fetch only incomplete tasks without any
+      completed ones, or an ISO 8601 timestamp to bound the window.
+      Without completed_since, the API returns the full task history of
+      the project, which can be large and hit rate limits (150 req/min
+      on Asana free tier). due_on and due_at are independent — due_on
+      is for date-only due dates while due_at carries a time component.
+    filters:
+      - name: project_gid
+        required: true
+      - name: completed_since
+        required: false
+    request:
+      method: GET
+      path: /projects/{{filter.project_gid}}/tasks
+      query:
+        - name: opt_fields
+          from: literal
+          value: gid,name,completed,completed_at,due_on,due_at,start_on,start_at,created_at,modified_at,notes,assignee.gid,assignee.name,resource_type,resource_subtype
+        - name: completed_since
+          from: filter
+          key: completed_since
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: cursor_query
+      cursor_param: offset
+      response_cursor_path:
+        - next_page
+        - offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: gid
+        type: Utf8
+        nullable: false
+        description: Globally unique identifier for the task.
+        expr:
+          kind: path
+          path:
+            - gid
+      - name: project_gid
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project GID passed as the required filter; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: project_gid
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The name of the task.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: completed
+        type: Boolean
+        nullable: true
+        description: Whether the task is completed.
+        expr:
+          kind: path
+          path:
+            - completed
+      - name: completed_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the task was completed. Null if not yet completed.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - completed_at
+      - name: due_on
+        type: Utf8
+        nullable: true
+        description: Date-only due date in YYYY-MM-DD format. Null when a time-specific due_at is set.
+        expr:
+          kind: path
+          path:
+            - due_on
+      - name: due_at
+        type: Timestamp
+        nullable: true
+        description: Due date with time component. Null when only a date-level due_on is set.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - due_at
+      - name: start_on
+        type: Utf8
+        nullable: true
+        description: Date-only start date in YYYY-MM-DD format.
+        expr:
+          kind: path
+          path:
+            - start_on
+      - name: start_at
+        type: Timestamp
+        nullable: true
+        description: Start date with time component.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start_at
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the task was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: modified_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the task was last modified.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modified_at
+      - name: notes
+        type: Utf8
+        nullable: true
+        description: Free-form text description of the task.
+        expr:
+          kind: path
+          path:
+            - notes
+      - name: assignee_gid
+        type: Utf8
+        nullable: true
+        description: GID of the user assigned to this task. Null if unassigned.
+        expr:
+          kind: path
+          path:
+            - assignee
+            - gid
+      - name: assignee_name
+        type: Utf8
+        nullable: true
+        description: Display name of the assigned user. Null if unassigned.
+        expr:
+          kind: path
+          path:
+            - assignee
+            - name
+      - name: resource_type
+        type: Utf8
+        nullable: true
+        description: Resource type (always "task" for this table).
+        expr:
+          kind: path
+          path:
+            - resource_type
+      - name: resource_subtype
+        type: Utf8
+        nullable: true
+        description: >-
+          Task subtype (default_task, milestone, section, or approval).
+          Filter on this column to isolate milestones or approvals.
+        expr:
+          kind: path
+          path:
+            - resource_subtype
+      - name: completed_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Server-side filter: only return tasks that are incomplete or completed
+          after this ISO 8601 timestamp. Pass 'now' to fetch only open tasks.
+          Pushed to the Asana API as the completed_since query parameter.
+        expr:
+          kind: "null"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # sections — sections within a specific project
+  # ────────────────────────────────────────────────────────────────────────────
+  - name: sections
+    description: >-
+      Sections (columns or swim-lanes) within a specific Asana project.
+      Each row is one section. Requires project_gid from the projects table.
+    guide: |
+      Requires project_gid (gid from asana.projects). Sections represent
+      the grouping columns within a project board or list view. created_at
+      can be used to order sections chronologically.
+    filters:
+      - name: project_gid
+        required: true
+    request:
+      method: GET
+      path: /projects/{{filter.project_gid}}/sections
+      query:
+        - name: opt_fields
+          from: literal
+          value: gid,name,created_at
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: cursor_query
+      cursor_param: offset
+      response_cursor_path:
+        - next_page
+        - offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: gid
+        type: Utf8
+        nullable: false
+        description: Globally unique identifier for the section.
+        expr:
+          kind: path
+          path:
+            - gid
+      - name: project_gid
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Project GID passed as the required filter; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: project_gid
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The name of the section.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the section was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
