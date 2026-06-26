@@ -16,6 +16,7 @@ use decypher::ast::query::{
 };
 use decypher::cst::{AstNode as _, AstToken as _, Ident};
 use decypher::syntax::{SyntaxKind, SyntaxNode};
+use ordered_float::OrderedFloat;
 
 use super::diagnostic::Diagnostic;
 use super::ir::{
@@ -948,10 +949,9 @@ fn compile_literal(expression: &Expression, path: impl Into<String>) -> Result<L
         Expression::Literal(CypherLiteral::Number(NumberLiteral::Integer(value))) => {
             Ok(Literal::Integer(*value))
         }
-        Expression::Literal(CypherLiteral::Number(NumberLiteral::Float(_))) => Err(unsupported(
-            path,
-            "floating-point literals are not supported yet",
-        )),
+        Expression::Literal(CypherLiteral::Number(NumberLiteral::Float(value))) => {
+            compile_float_literal(*value, path)
+        }
         Expression::Literal(CypherLiteral::Boolean(value)) => Ok(Literal::Boolean(*value)),
         Expression::Literal(CypherLiteral::Null) => Ok(Literal::Null),
         Expression::UnaryOp {
@@ -960,9 +960,10 @@ fn compile_literal(expression: &Expression, path: impl Into<String>) -> Result<L
             ..
         } => match compile_literal(operand, path)? {
             Literal::Integer(value) => Ok(Literal::Integer(-value)),
+            Literal::Float(value) => Ok(Literal::Float(OrderedFloat(-value.into_inner()))),
             _ => Err(unsupported(
                 "literal",
-                "only integer literals can be negated",
+                "only numeric literals can be negated",
             )),
         },
         Expression::Parameter(_) => Err(unsupported(
@@ -971,8 +972,20 @@ fn compile_literal(expression: &Expression, path: impl Into<String>) -> Result<L
         )),
         _ => Err(unsupported(
             path,
-            "only string, integer, boolean, and null literals are supported",
+            "only string, numeric, boolean, and null literals are supported",
         )),
+    }
+}
+
+fn compile_float_literal(value: f64, path: impl Into<String>) -> Result<Literal, CoreError> {
+    let path = path.into();
+    if value.is_finite() {
+        Ok(Literal::Float(OrderedFloat(value)))
+    } else {
+        Err(unsupported(
+            path,
+            "non-finite floating-point literals are not supported",
+        ))
     }
 }
 
@@ -1360,6 +1373,38 @@ mod tests {
                     },
                     operator: ComparisonOperator::GreaterThan,
                     rhs: PredicateRhs::Literal(Literal::Integer(10)),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_float_literals() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service.risk >= 0.75 AND -1.5 < service.margin \
+             RETURN service.name",
+        )
+        .expect("query should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    },
+                    operator: ComparisonOperator::GreaterThanOrEqual,
+                    rhs: PredicateRhs::Literal(Literal::Float(OrderedFloat(0.75_f64))),
+                },
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "margin".to_string(),
+                    },
+                    operator: ComparisonOperator::GreaterThan,
+                    rhs: PredicateRhs::Literal(Literal::Float(OrderedFloat(-1.5_f64))),
                 },
             ]
         );

@@ -1,3 +1,5 @@
+use ordered_float::OrderedFloat;
+
 /// Direction of a relationship pattern relative to its left and right nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -48,6 +50,8 @@ pub enum Literal {
     String(String),
     /// Signed integer literal.
     Integer(i64),
+    /// Floating-point literal.
+    Float(OrderedFloat<f64>),
     /// Boolean literal.
     Boolean(bool),
     /// Null literal.

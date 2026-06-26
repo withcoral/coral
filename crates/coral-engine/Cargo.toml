@@ -25,6 +25,7 @@ futures.workspace = true
 httpdate.workspace = true
 object_store.workspace = true
 opentelemetry.workspace = true
+ordered-float.workspace = true
 parquet.workspace = true
 reqwest.workspace = true
 rmcp.workspace = true

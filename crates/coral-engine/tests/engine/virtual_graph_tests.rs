@@ -466,6 +466,39 @@ async fn cypher_in_predicates_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_float_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.risk >= 0.75 AND service.risk IN [0.9, 0.95] \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher float predicate query should execute");
+
+    assert!(
+        execution.translated_sql().contains("0.75"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_string_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -1033,10 +1066,10 @@ fn write_ops_fixture(dir: &Path) {
         dir,
         "services.jsonl",
         &[
-            json!({"id": 10, "service_name": "billing-api", "tier": "prod", "owning_team": "platform"}),
-            json!({"id": 20, "service_name": "deployments", "tier": "prod", "owning_team": "infra"}),
-            json!({"id": 30, "service_name": "experiments", "tier": "dev", "owning_team": "analytics"}),
-            json!({"id": 40, "service_name": "legacy-sync", "tier": null, "owning_team": "platform"}),
+            json!({"id": 10, "service_name": "billing-api", "tier": "prod", "owning_team": "platform", "risk_score": 0.9}),
+            json!({"id": 20, "service_name": "deployments", "tier": "prod", "owning_team": "infra", "risk_score": 0.5}),
+            json!({"id": 30, "service_name": "experiments", "tier": "dev", "owning_team": "analytics", "risk_score": 0.25}),
+            json!({"id": 40, "service_name": "legacy-sync", "tier": null, "owning_team": "platform", "risk_score": 0.95}),
         ],
     );
     write_jsonl_file(
@@ -1086,7 +1119,8 @@ fn ops_manifest(dir: &Path) -> Value {
                     { "name": "id", "type": "Int64" },
                     { "name": "service_name", "type": "Utf8" },
                     { "name": "tier", "type": "Utf8" },
-                    { "name": "owning_team", "type": "Utf8" }
+                    { "name": "owning_team", "type": "Utf8" },
+                    { "name": "risk_score", "type": "Float64" }
                 ]
             },
             {
@@ -1136,6 +1170,7 @@ nodes:
       name: service_name
       tier: tier
       team: owning_team
+      risk: risk_score
 relationships:
   - type: OWNS
     table: { schema: ops, name: ownerships }

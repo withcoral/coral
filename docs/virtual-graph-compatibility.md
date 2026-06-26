@@ -22,6 +22,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Connected multi-hop paths | Supported foundation | Linear and closed connected patterns lower to deterministic joins |
 | Property projections | Supported foundation | Node keys and exposed properties |
 | Property predicates | Supported foundation | Literal and property-to-property comparisons with boolean expression trees |
+| Numeric literals | Supported foundation | Integer and finite floating-point literals, including negated values |
 | `COUNT(*)` | Supported foundation | Standalone or grouped by projected properties |
 | `COUNT(property)` | Supported foundation | Counts non-null mapped property values; optional `DISTINCT` is supported |
 | `COUNT(node)` | Supported foundation | Counts node key occurrences; `COUNT(DISTINCT node)` counts distinct declared node keys |
@@ -46,11 +47,11 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Labeled node patterns | Supported foundation | Requires named node variables; first binding needs exactly one static label, repeated bindings may omit the label |
 | Typed directed relationships | Supported foundation | Requires one static relationship type and one arrowhead |
 | Multi-hop relationship chains | Supported foundation | Forward, reverse, and mixed chains compile through the shared graph IR |
-| `WHERE` property comparisons | Supported foundation | String, integer, boolean, null literal, and property-to-property comparisons |
+| `WHERE` property comparisons | Supported foundation | String, integer, float, boolean, null literal, and property-to-property comparisons |
 | Chained comparisons | Supported foundation | Normalized to conjunctions, e.g. `10 <= n.score < 20` |
 | Literal-left comparisons | Supported foundation | Operators are inverted around the property operand where possible |
 | `WHERE` boolean logic | Supported foundation | `AND`, `OR`, `NOT`, and parentheses lower to SQL boolean predicates |
-| `WHERE ... IN [...]` | Supported foundation | Literal scalar lists lower to SQL `IN`; empty lists lower to `FALSE` |
+| `WHERE ... IN [...]` | Supported foundation | Literal scalar lists, including numeric lists, lower to SQL `IN`; empty lists lower to `FALSE` |
 | `WHERE ... STARTS WITH` / `ENDS WITH` / `CONTAINS` | Supported foundation | String-literal RHS lowers to escaped SQL `LIKE` |
 | `WHERE ... IS NULL` / `IS NOT NULL` | Supported foundation | Lowers to SQL `IS NULL` / `IS NOT NULL` |
 | Inline node property maps | Supported foundation | Normalized to equality predicates, e.g. `(n:Service {tier: 'prod'})` |

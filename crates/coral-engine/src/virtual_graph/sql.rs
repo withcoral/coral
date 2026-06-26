@@ -587,6 +587,7 @@ fn render_literal(literal: &Literal) -> String {
     match literal {
         Literal::String(value) => quote_string_literal(value),
         Literal::Integer(value) => value.to_string(),
+        Literal::Float(value) => (*value).into_inner().to_string(),
         Literal::Boolean(value) => value.to_string(),
         Literal::Null => "NULL".to_string(),
     }
@@ -643,6 +644,7 @@ nodes:
     properties:
       name: service_name
       tier: tier
+      risk: risk_score
 relationships:
   - type: OWNS
     table: { schema: ops, name: ownerships }
@@ -1107,6 +1109,45 @@ relationships: []
             translation
                 .sql()
                 .contains("WHERE \"n1\".\"tier\" IN ('prod', 'dev')"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_float_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates = vec![
+            PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "risk".to_string(),
+                },
+                operator: ComparisonOperator::GreaterThanOrEqual,
+                rhs: PredicateRhs::Literal(Literal::Float(ordered_float::OrderedFloat(0.75_f64))),
+            },
+            PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "risk".to_string(),
+                },
+                operator: ComparisonOperator::In,
+                rhs: PredicateRhs::List(vec![
+                    Literal::Float(ordered_float::OrderedFloat(0.5_f64)),
+                    Literal::Float(ordered_float::OrderedFloat(0.75_f64)),
+                ]),
+            },
+        ];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("float predicates should lower");
+
+        assert!(
+            translation.sql().contains(
+                "WHERE \"n1\".\"risk_score\" >= 0.75 AND \"n1\".\"risk_score\" IN (0.5, 0.75)"
+            ),
             "{}",
             translation.sql()
         );
