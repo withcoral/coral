@@ -747,6 +747,13 @@ fn compile_predicate_expression(
             },
             rhs: PredicateRhs::Literal(Literal::Null),
         })),
+        Expression::PropertyLookup { .. } => {
+            Ok(PredicateExpression::Comparison(PropertyPredicate {
+                property: compile_property_ref(expression, path)?,
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::Boolean(true)),
+            }))
+        }
         _ => Err(unsupported(
             path,
             "WHERE only supports property comparisons combined with AND, OR, and NOT",
@@ -1575,6 +1582,39 @@ mod tests {
         assert!(plan.predicates.is_empty());
         assert!(matches!(
             plan.predicate,
+            Some(PredicateExpression::Not { .. })
+        ));
+    }
+
+    #[test]
+    fn compiles_bare_boolean_property_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service.active \
+             RETURN service.name",
+        )
+        .expect("bare boolean property query should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "active".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::Boolean(true)),
+            }]
+        );
+
+        let negated = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE NOT service.active \
+             RETURN service.name",
+        )
+        .expect("negated bare boolean property query should compile");
+        assert!(matches!(
+            negated.predicate,
             Some(PredicateExpression::Not { .. })
         ));
     }

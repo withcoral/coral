@@ -432,6 +432,64 @@ async fn cypher_not_predicates_execute_with_sql_null_semantics() {
 }
 
 #[tokio::test]
+async fn cypher_bare_boolean_property_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let active = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.active \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("bare boolean property predicate query should execute");
+
+    assert!(
+        active.translated_sql().contains("\"n0\".\"active\" = true"),
+        "{}",
+        active.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(active.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+
+    let inactive = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE NOT service.active \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("negated bare boolean property predicate query should execute");
+
+    assert!(
+        inactive.translated_sql().contains("NOT ("),
+        "{}",
+        inactive.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(inactive.execution()),
+        vec![
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_in_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -1117,10 +1175,10 @@ fn write_ops_fixture(dir: &Path) {
         dir,
         "services.jsonl",
         &[
-            json!({"id": 10, "service_name": "billing-api", "tier": "prod", "owning_team": "platform", "risk_score": 0.9}),
-            json!({"id": 20, "service_name": "deployments", "tier": "prod", "owning_team": "infra", "risk_score": 0.5}),
-            json!({"id": 30, "service_name": "experiments", "tier": "dev", "owning_team": "analytics", "risk_score": 0.25}),
-            json!({"id": 40, "service_name": "legacy-sync", "tier": null, "owning_team": "platform", "risk_score": 0.95}),
+            json!({"id": 10, "service_name": "billing-api", "tier": "prod", "owning_team": "platform", "risk_score": 0.9, "active": true}),
+            json!({"id": 20, "service_name": "deployments", "tier": "prod", "owning_team": "infra", "risk_score": 0.5, "active": true}),
+            json!({"id": 30, "service_name": "experiments", "tier": "dev", "owning_team": "analytics", "risk_score": 0.25, "active": false}),
+            json!({"id": 40, "service_name": "legacy-sync", "tier": null, "owning_team": "platform", "risk_score": 0.95, "active": false}),
         ],
     );
     write_jsonl_file(
@@ -1171,7 +1229,8 @@ fn ops_manifest(dir: &Path) -> Value {
                     { "name": "service_name", "type": "Utf8" },
                     { "name": "tier", "type": "Utf8" },
                     { "name": "owning_team", "type": "Utf8" },
-                    { "name": "risk_score", "type": "Float64" }
+                    { "name": "risk_score", "type": "Float64" },
+                    { "name": "active", "type": "Boolean" }
                 ]
             },
             {
@@ -1222,6 +1281,7 @@ nodes:
       tier: tier
       team: owning_team
       risk: risk_score
+      active: active
 relationships:
   - type: OWNS
     table: { schema: ops, name: ownerships }
