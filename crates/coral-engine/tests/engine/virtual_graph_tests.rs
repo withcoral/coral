@@ -492,6 +492,41 @@ async fn cypher_undirected_relationships_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_optional_match_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, person.name AS owner \
+         ORDER BY service",
+    )
+    .await
+    .expect("OPTIONAL MATCH Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LEFT JOIN "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "owner": "Ada Lovelace"}),
+            json!({"service": "deployments", "owner": "Grace Hopper"}),
+            json!({"service": "experiments", "owner": "Katherine Johnson"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_disconnected_comma_patterns_are_rejected_before_sql_planning() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -1072,6 +1107,7 @@ relationships: []
             label: "Service".to_string(),
         }],
         relationships: Vec::new(),
+        optional_relationships: Vec::new(),
         distinct: false,
         projections: vec![GraphProjection::Property {
             property: GraphPropertyRef {
@@ -1172,6 +1208,7 @@ async fn virtual_graph_count_projection_executes_against_synthetic_file_sources(
             direction: GraphDirection::Outgoing,
             right: "service".to_string(),
         }],
+        optional_relationships: Vec::new(),
         distinct: false,
         projections: vec![GraphProjection::CountAll {
             alias: "ownership_count".to_string(),
@@ -1773,6 +1810,7 @@ fn owner_service_plan() -> GraphPlan {
             direction: GraphDirection::Outgoing,
             right: "service".to_string(),
         }],
+        optional_relationships: Vec::new(),
         distinct: false,
         projections: vec![
             GraphProjection::Property {

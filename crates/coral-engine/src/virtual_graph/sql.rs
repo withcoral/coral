@@ -64,6 +64,12 @@ struct RelationshipOrientation {
     right_relationship_key: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct JoinFromKnownNodeOptions {
+    left_is_known: bool,
+    optional: bool,
+}
+
 impl<'a> Lowerer<'a> {
     fn new(validated: ValidatedGraphPlan<'a>) -> Self {
         Self {
@@ -121,7 +127,25 @@ impl<'a> Lowerer<'a> {
         );
         self.joined_nodes.insert(first_node.variable.as_str());
 
-        let mut remaining_relationships = (0..plan.relationships.len()).collect::<BTreeSet<_>>();
+        self.join_relationships(false)?;
+        self.join_relationships(true)?;
+
+        for node in &plan.nodes {
+            if !self.joined_nodes.contains(node.variable.as_str()) {
+                return Err(CoreError::internal(
+                    "validated graph plan contained a disconnected node",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn join_relationships(&mut self, optional: bool) -> Result<(), CoreError> {
+        let plan = self.validated.plan();
+        let validated = &self.validated;
+        let mut remaining_relationships = (0..plan.relationships.len())
+            .filter(|index| validated.relationship_is_optional(*index) == optional)
+            .collect::<BTreeSet<_>>();
         while !remaining_relationships.is_empty() {
             let mut progressed = false;
             for index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
@@ -139,6 +163,7 @@ impl<'a> Lowerer<'a> {
                         index,
                         pattern,
                         relationship,
+                        optional,
                     )?;
                     remaining_relationships.remove(&index);
                     progressed = true;
@@ -147,14 +172,6 @@ impl<'a> Lowerer<'a> {
             if !progressed {
                 return Err(CoreError::internal(
                     "validated graph plan contained an unjoinable relationship",
-                ));
-            }
-        }
-
-        for node in &plan.nodes {
-            if !self.joined_nodes.contains(node.variable.as_str()) {
-                return Err(CoreError::internal(
-                    "validated graph plan contained a disconnected node",
                 ));
             }
         }
@@ -168,6 +185,7 @@ impl<'a> Lowerer<'a> {
         index: usize,
         pattern: &'a super::ir::RelationshipPattern,
         relationship: &Relationship,
+        optional: bool,
     ) -> Result<(), CoreError> {
         let left_joined = joined_nodes.contains(pattern.left.as_str());
         let right_joined = joined_nodes.contains(pattern.right.as_str());
@@ -179,6 +197,7 @@ impl<'a> Lowerer<'a> {
 
         let relationship_alias = validated.relationship_alias(index, pattern);
         let quoted_relationship_alias = quote_ident(&relationship_alias);
+        let join_operator = if optional { " LEFT JOIN " } else { " JOIN " };
 
         if left_joined && right_joined {
             let condition = Self::relationship_pair_condition(
@@ -189,7 +208,8 @@ impl<'a> Lowerer<'a> {
             )?;
             write!(
                 from_clause,
-                " JOIN {} AS {} ON {}",
+                "{}{} AS {} ON {}",
+                join_operator,
                 render_table_ref(&relationship.table),
                 quoted_relationship_alias,
                 condition
@@ -203,7 +223,10 @@ impl<'a> Lowerer<'a> {
                 relationship,
                 pattern,
                 &relationship_alias,
-                true,
+                JoinFromKnownNodeOptions {
+                    left_is_known: true,
+                    optional,
+                },
             )?;
         } else {
             Self::join_from_known_node(
@@ -213,7 +236,10 @@ impl<'a> Lowerer<'a> {
                 relationship,
                 pattern,
                 &relationship_alias,
-                false,
+                JoinFromKnownNodeOptions {
+                    left_is_known: false,
+                    optional,
+                },
             )?;
         }
 
@@ -227,9 +253,9 @@ impl<'a> Lowerer<'a> {
         relationship: &Relationship,
         pattern: &'a super::ir::RelationshipPattern,
         relationship_alias: &str,
-        left_is_known: bool,
+        options: JoinFromKnownNodeOptions,
     ) -> Result<(), CoreError> {
-        let (known_variable, unknown_variable, known_is_left) = if left_is_known {
+        let (known_variable, unknown_variable, known_is_left) = if options.left_is_known {
             (pattern.left.as_str(), pattern.right.as_str(), true)
         } else {
             (pattern.right.as_str(), pattern.left.as_str(), false)
@@ -245,10 +271,16 @@ impl<'a> Lowerer<'a> {
         )?;
         let unknown_table_ref = render_table_ref(&unknown_node.table);
         let unknown_alias = validated.binding(unknown_variable)?.alias().to_string();
+        let join_operator = if options.optional {
+            " LEFT JOIN "
+        } else {
+            " JOIN "
+        };
 
         write!(
             from_clause,
-            " JOIN {} AS {} ON {}",
+            "{}{} AS {} ON {}",
+            join_operator,
             render_table_ref(&relationship.table),
             quote_ident(relationship_alias),
             relationship_join
@@ -270,7 +302,8 @@ impl<'a> Lowerer<'a> {
         };
         write!(
             from_clause,
-            " JOIN {} AS {} ON {}",
+            "{}{} AS {} ON {}",
+            join_operator,
             unknown_table_ref,
             quote_ident(&unknown_alias),
             unknown_join
@@ -1071,6 +1104,7 @@ relationships:
                 direction: Direction::Incoming,
                 right: "person".to_string(),
             }],
+            optional_relationships: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1100,6 +1134,66 @@ relationships:
     }
 
     #[test]
+    fn lower_graph_plan_renders_optional_relationship_sql() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "service".to_string(),
+            }],
+            optional_relationships: vec![0],
+            distinct: false,
+            projections: vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "person".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("owner".to_string()),
+                },
+            ],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("optional relationship should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n0\".\"service_name\" AS \"service\", \"n1\".\"full_name\" AS \"owner\" \
+             FROM \"ops\".\"services\" AS \"n0\" \
+             LEFT JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"service_id\" = \"n0\".\"id\" \
+             LEFT JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"person_id\" = \"n1\".\"id\""
+        );
+    }
+
+    #[test]
     fn lower_graph_plan_renders_undirected_distinct_label_relationship_sql() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let plan = GraphPlan {
@@ -1120,6 +1214,7 @@ relationships:
                 direction: Direction::Undirected,
                 right: "person".to_string(),
             }],
+            optional_relationships: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1169,6 +1264,7 @@ relationships:
                 direction: Direction::Undirected,
                 right: "neighbor".to_string(),
             }],
+            optional_relationships: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1345,6 +1441,7 @@ relationships:
                     right: "target".to_string(),
                 },
             ],
+            optional_relationships: Vec::new(),
             distinct: false,
             projections: vec![
                 Projection::Property {
@@ -1427,6 +1524,7 @@ relationships:
                     right: "middle".to_string(),
                 },
             ],
+            optional_relationships: Vec::new(),
             distinct: false,
             projections: vec![
                 Projection::Property {
@@ -1489,6 +1587,7 @@ relationships: []
                 label: "Weird".to_string(),
             }],
             relationships: Vec::new(),
+            optional_relationships: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1545,6 +1644,7 @@ relationships: []
                 direction: Direction::Outgoing,
                 right: "service".to_string(),
             }],
+            optional_relationships: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1606,6 +1706,7 @@ relationships: []
                 direction: Direction::Outgoing,
                 right: "target".to_string(),
             }],
+            optional_relationships: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1650,6 +1751,7 @@ relationships: []
                 label: "Service".to_string(),
             }],
             relationships: Vec::new(),
+            optional_relationships: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -2320,6 +2422,7 @@ relationships: []
                 direction,
                 right: "service".to_string(),
             }],
+            optional_relationships: Vec::new(),
             distinct: false,
             projections: vec![
                 Projection::Property {

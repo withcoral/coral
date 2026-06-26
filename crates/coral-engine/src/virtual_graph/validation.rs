@@ -84,6 +84,13 @@ impl<'a> ValidatedGraphPlan<'a> {
             .ok_or_else(|| CoreError::internal("validated relationship mapping missing"))
     }
 
+    pub(crate) fn relationship_is_optional(&self, index: usize) -> bool {
+        self.plan
+            .optional_relationships
+            .binary_search(&index)
+            .is_ok()
+    }
+
     pub(crate) fn relationship_alias(&self, index: usize, pattern: &RelationshipPattern) -> String {
         pattern
             .variable
@@ -135,9 +142,11 @@ impl<'a> GraphPlanValidator<'a> {
     fn validate(mut self) -> Result<ValidatedGraphPlan<'a>, CoreError> {
         self.bind_nodes()?;
         self.bind_relationships()?;
+        self.validate_optional_relationship_indices()?;
         self.validate_projection_shape()?;
         self.validate_aggregation()?;
         self.validate_property_references()?;
+        self.validate_optional_predicates()?;
         self.validate_distinct_ordering()?;
         self.validate_connectivity()?;
 
@@ -314,6 +323,45 @@ impl<'a> GraphPlanValidator<'a> {
         Ok(())
     }
 
+    fn validate_optional_relationship_indices(&self) -> Result<(), CoreError> {
+        let mut seen = BTreeSet::new();
+        for (position, index) in self.plan.optional_relationships.iter().copied().enumerate() {
+            if index >= self.plan.relationships.len() {
+                return Err(Diagnostic::new(
+                    "INVALID_OPTIONAL_RELATIONSHIP",
+                    format!("optional_relationships[{position}]"),
+                    format!(
+                        "optional relationship index {index} is out of bounds for {} relationships",
+                        self.plan.relationships.len()
+                    ),
+                )
+                .into_core_error());
+            }
+            if !seen.insert(index) {
+                return Err(Diagnostic::new(
+                    "DUPLICATE_OPTIONAL_RELATIONSHIP",
+                    format!("optional_relationships[{position}]"),
+                    format!("optional relationship index {index} is listed more than once"),
+                )
+                .into_core_error());
+            }
+        }
+        if self
+            .plan
+            .optional_relationships
+            .windows(2)
+            .any(|pair| matches!(pair, [left, right] if left > right))
+        {
+            return Err(Diagnostic::new(
+                "UNSORTED_OPTIONAL_RELATIONSHIPS",
+                "optional_relationships",
+                "optional relationship indices must be sorted in ascending order",
+            )
+            .into_core_error());
+        }
+        Ok(())
+    }
+
     fn validate_aggregation(&self) -> Result<(), CoreError> {
         let aggregate_count = self
             .plan
@@ -376,6 +424,141 @@ impl<'a> GraphPlanValidator<'a> {
         }
         for (index, key) in self.plan.order_by.iter().enumerate() {
             self.validate_order_expression(&key.expression, format!("order_by[{index}]"))?;
+        }
+        Ok(())
+    }
+
+    fn validate_optional_predicates(&self) -> Result<(), CoreError> {
+        if self.plan.optional_relationships.is_empty() {
+            return Ok(());
+        }
+        let mandatory_nodes = self.mandatory_reachable_nodes()?;
+        let optional_variables = self.optional_variables(&mandatory_nodes);
+
+        for (index, predicate) in self.plan.predicates.iter().enumerate() {
+            Self::validate_property_predicate_not_optional(
+                predicate,
+                &optional_variables,
+                format!("predicates[{index}]"),
+            )?;
+        }
+        if let Some(predicate) = &self.plan.predicate {
+            Self::validate_predicate_expression_not_optional(
+                predicate,
+                &optional_variables,
+                "predicate",
+            )?;
+        }
+        if self.plan.post_projection_predicate.is_some() {
+            return Err(Diagnostic::new(
+                "UNSUPPORTED_OPTIONAL_PREDICATE",
+                "post_projection_predicate",
+                "post-projection predicates with optional matches require null-preserving predicate placement",
+            )
+            .into_core_error());
+        }
+        Ok(())
+    }
+
+    fn validate_predicate_expression_not_optional(
+        predicate: &PredicateExpression,
+        optional_variables: &BTreeSet<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        match predicate {
+            PredicateExpression::Comparison(predicate) => {
+                Self::validate_property_predicate_not_optional(predicate, optional_variables, path)
+            }
+            PredicateExpression::KeyComparison(predicate) => {
+                Self::validate_key_predicate_not_optional(predicate, optional_variables, path)
+            }
+            PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
+                Self::validate_predicate_expression_not_optional(
+                    left,
+                    optional_variables,
+                    format!("{path}.left"),
+                )?;
+                Self::validate_predicate_expression_not_optional(
+                    right,
+                    optional_variables,
+                    format!("{path}.right"),
+                )
+            }
+            PredicateExpression::Not { expression } => {
+                Self::validate_predicate_expression_not_optional(
+                    expression,
+                    optional_variables,
+                    format!("{path}.expression"),
+                )
+            }
+            PredicateExpression::Boolean(_) => Ok(()),
+        }
+    }
+
+    fn validate_property_predicate_not_optional(
+        predicate: &PropertyPredicate,
+        optional_variables: &BTreeSet<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        Self::validate_variable_not_optional(
+            &predicate.property.variable,
+            optional_variables,
+            format!("{path}.property.variable"),
+        )?;
+        Self::validate_predicate_rhs_not_optional(&predicate.rhs, optional_variables, path)
+    }
+
+    fn validate_key_predicate_not_optional(
+        predicate: &KeyPredicate,
+        optional_variables: &BTreeSet<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        Self::validate_variable_not_optional(
+            &predicate.variable,
+            optional_variables,
+            format!("{path}.variable"),
+        )?;
+        Self::validate_predicate_rhs_not_optional(&predicate.rhs, optional_variables, path)
+    }
+
+    fn validate_predicate_rhs_not_optional(
+        rhs: &PredicateRhs,
+        optional_variables: &BTreeSet<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        match rhs {
+            PredicateRhs::Property(property) => Self::validate_variable_not_optional(
+                &property.variable,
+                optional_variables,
+                format!("{path}.rhs.variable"),
+            ),
+            PredicateRhs::Key { variable } => Self::validate_variable_not_optional(
+                variable,
+                optional_variables,
+                format!("{path}.rhs.variable"),
+            ),
+            PredicateRhs::Literal(_) | PredicateRhs::List(_) => Ok(()),
+        }
+    }
+
+    fn validate_variable_not_optional(
+        variable: &str,
+        optional_variables: &BTreeSet<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        if optional_variables.contains(variable) {
+            return Err(Diagnostic::new(
+                "UNSUPPORTED_OPTIONAL_PREDICATE",
+                path,
+                format!(
+                    "predicate references optional binding '{variable}', which requires null-preserving predicate placement"
+                ),
+            )
+            .into_core_error());
         }
         Ok(())
     }
@@ -967,6 +1150,46 @@ impl<'a> GraphPlanValidator<'a> {
     }
 
     fn validate_connectivity(&self) -> Result<(), CoreError> {
+        let mandatory_nodes = self.mandatory_reachable_nodes()?;
+        for (index, relationship) in self.plan.relationships.iter().enumerate() {
+            if self
+                .plan
+                .optional_relationships
+                .binary_search(&index)
+                .is_ok()
+            {
+                continue;
+            }
+            if !mandatory_nodes.contains(relationship.left.as_str())
+                || !mandatory_nodes.contains(relationship.right.as_str())
+            {
+                return Err(Diagnostic::new(
+                    "MANDATORY_RELATIONSHIP_DEPENDS_ON_OPTIONAL_BINDING",
+                    format!("relationships[{index}]"),
+                    "mandatory relationships cannot depend on bindings introduced only by OPTIONAL MATCH",
+                )
+                .into_core_error());
+            }
+        }
+
+        let all_joined_nodes = self.optional_reachable_nodes(&mandatory_nodes)?;
+        for node in &self.plan.nodes {
+            if !all_joined_nodes.contains(node.variable.as_str()) {
+                return Err(Diagnostic::new(
+                    "DISCONNECTED_PATTERN",
+                    "nodes",
+                    format!(
+                        "node variable '{}' is not connected to the first node pattern",
+                        node.variable
+                    ),
+                )
+                .into_core_error());
+            }
+        }
+        Ok(())
+    }
+
+    fn mandatory_reachable_nodes(&self) -> Result<BTreeSet<&'a str>, CoreError> {
         let first_node = self.plan.nodes.first().ok_or_else(|| {
             Diagnostic::new(
                 "EMPTY_PLAN",
@@ -978,8 +1201,14 @@ impl<'a> GraphPlanValidator<'a> {
         let mut joined_nodes = BTreeSet::new();
         joined_nodes.insert(first_node.variable.as_str());
 
-        let mut remaining_relationships =
-            (0..self.plan.relationships.len()).collect::<BTreeSet<_>>();
+        let mut remaining_relationships = (0..self.plan.relationships.len())
+            .filter(|index| {
+                self.plan
+                    .optional_relationships
+                    .binary_search(index)
+                    .is_err()
+            })
+            .collect::<BTreeSet<_>>();
         while !remaining_relationships.is_empty() {
             let mut progressed = false;
             for index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
@@ -1007,21 +1236,64 @@ impl<'a> GraphPlanValidator<'a> {
                 .into_core_error());
             }
         }
+        Ok(joined_nodes)
+    }
 
-        for node in &self.plan.nodes {
-            if !joined_nodes.contains(node.variable.as_str()) {
+    fn optional_reachable_nodes(
+        &self,
+        mandatory_nodes: &BTreeSet<&'a str>,
+    ) -> Result<BTreeSet<&'a str>, CoreError> {
+        let mut joined_nodes = mandatory_nodes.clone();
+        let mut remaining_relationships = self
+            .plan
+            .optional_relationships
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        while !remaining_relationships.is_empty() {
+            let mut progressed = false;
+            for index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
+                let pattern = self.plan.relationships.get(index).ok_or_else(|| {
+                    CoreError::internal("validated relationship index was out of bounds")
+                })?;
+                let left_joined = joined_nodes.contains(pattern.left.as_str());
+                let right_joined = joined_nodes.contains(pattern.right.as_str());
+                if left_joined || right_joined {
+                    joined_nodes.insert(pattern.left.as_str());
+                    joined_nodes.insert(pattern.right.as_str());
+                    remaining_relationships.remove(&index);
+                    progressed = true;
+                }
+            }
+            if !progressed {
+                let index = *remaining_relationships.first().ok_or_else(|| {
+                    CoreError::internal("remaining optional relationship set was empty")
+                })?;
                 return Err(Diagnostic::new(
-                    "DISCONNECTED_PATTERN",
-                    "nodes",
-                    format!(
-                        "node variable '{}' is not connected to the first node pattern",
-                        node.variable
-                    ),
+                    "OPTIONAL_MATCH_NOT_ANCHORED",
+                    format!("optional_relationships[{index}]"),
+                    "optional relationship is not anchored to a mandatory or earlier optional binding",
                 )
                 .into_core_error());
             }
         }
-        Ok(())
+        Ok(joined_nodes)
+    }
+
+    fn optional_variables(&self, mandatory_nodes: &BTreeSet<&'a str>) -> BTreeSet<&'a str> {
+        let optional_relationships = self
+            .plan
+            .optional_relationships
+            .iter()
+            .filter_map(|index| self.plan.relationships.get(*index))
+            .filter_map(|relationship| relationship.variable.as_deref());
+        self.plan
+            .nodes
+            .iter()
+            .map(|node| node.variable.as_str())
+            .filter(|variable| !mandatory_nodes.contains(variable))
+            .chain(optional_relationships)
+            .collect()
     }
 
     fn node_binding_for_path(
@@ -1173,6 +1445,7 @@ relationships:
                 direction: Direction::Outgoing,
                 right: "service".to_string(),
             }],
+            optional_relationships: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1269,6 +1542,7 @@ relationships:
                 direction: Direction::Undirected,
                 right: "person".to_string(),
             }],
+            optional_relationships: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1410,6 +1684,30 @@ relationships:
 
         assert!(
             error.to_string().contains("INVALID_KEY_PROJECTION"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_predicates_on_optional_bindings() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.optional_relationships = vec![0];
+        plan.predicates = vec![PropertyPredicate {
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "tier".to_string(),
+            },
+            operator: ComparisonOperator::Equal,
+            rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("optional binding predicate should fail validation");
+
+        assert!(
+            error.to_string().contains("UNSUPPORTED_OPTIONAL_PREDICATE"),
             "{error:?}"
         );
     }
@@ -1706,6 +2004,7 @@ relationships:
                     right: "middle".to_string(),
                 },
             ],
+            optional_relationships: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1765,6 +2064,7 @@ relationships:
                 direction: Direction::Outgoing,
                 right: "service".to_string(),
             }],
+            optional_relationships: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {

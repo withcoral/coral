@@ -320,6 +320,9 @@ pub struct GraphPlan {
     pub nodes: Vec<NodePattern>,
     /// Relationship patterns between bound nodes.
     pub relationships: Vec<RelationshipPattern>,
+    /// Relationship indices that should be lowered as null-preserving optional
+    /// matches.
+    pub optional_relationships: Vec<usize>,
     /// Whether duplicate projected rows should be removed.
     pub distinct: bool,
     /// Projected expressions.

@@ -37,7 +37,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Ordering, skip, and limit | Supported foundation | Property order keys, identity order keys, direct projected aggregate expressions, projection aliases including aggregate aliases, row offset, and row limit |
 | Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
 | Declaration-aware plan validation | Supported foundation | Resolves variables/properties and rejects unsupported plan shapes before SQL rendering |
-| Optional matches | Deferred | Requires nullability-aware IR |
+| Optional matches | Supported foundation | Anchored optional relationships lower to `LEFT JOIN`; optional-local predicates and inline optional property maps are still rejected |
 | Variable-length paths | Deferred | Requires recursive/path expansion semantics |
 | Path values | Deferred | Requires graph value representation |
 
@@ -77,7 +77,8 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, identity expressions, direct aggregate expressions that match `RETURN` projections, projection aliases including aggregate aliases, and non-negative integer offsets/limits |
 | `WITH` pass-through | Supported foundation | Transparent `WITH var, ...` and `WITH *` preserve bound graph variables |
 | Terminal `WITH` projections | Supported foundation | Terminal projection, alias filtering, ordering, skip, and limit are supported without staging another `MATCH` |
-| `OPTIONAL MATCH` | Rejected | Needs nullability-aware IR and SQL lowering |
+| `OPTIONAL MATCH` | Supported foundation | Requires an already-bound node anchor and one connected pattern part; preserves unmatched rows with nullable optional bindings |
+| Optional-local `WHERE` and inline property maps | Rejected | Needs predicate placement inside null-preserving join conditions |
 | `WHERE XOR` | Rejected | Not portable across target SQL dialects |
 | `WHERE ... IN` with null list values | Rejected | Needs explicit Cypher null-membership semantics |
 | `WHERE ... =~` regex matching | Rejected | Needs regex dialect compatibility across DataFusion targets |

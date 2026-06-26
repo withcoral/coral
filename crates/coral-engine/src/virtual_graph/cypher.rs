@@ -558,9 +558,25 @@ fn compile_reading_clauses_into(
         ));
     }
 
+    let mut saw_optional_match = false;
     for (index, clause) in reading_clauses.iter().enumerate() {
         match clause {
             ReadingClause::Match(match_clause) => {
+                if saw_optional_match && !match_clause.optional {
+                    return Err(unsupported(
+                        format!("{path}[{index}]"),
+                        "MATCH after OPTIONAL MATCH requires staged query planning and is not supported yet",
+                    ));
+                }
+                if match_clause.optional {
+                    saw_optional_match = true;
+                    if match_clause.where_clause.is_some() {
+                        return Err(unsupported(
+                            format!("{path}[{index}].where"),
+                            "OPTIONAL MATCH WHERE requires null-preserving predicate placement and is not supported yet",
+                        ));
+                    }
+                }
                 compile_match_into(match_clause, plan, context)?;
                 if let Some(where_clause) = &match_clause.where_clause {
                     let predicate = compile_predicate_expression(
@@ -607,14 +623,34 @@ fn compile_match_into(
     plan: &mut GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
-    if match_clause.optional {
-        return Err(unsupported("match", "OPTIONAL MATCH is not supported yet"));
-    }
-
     if match_clause.pattern.parts.is_empty() {
         return Err(unsupported(
             "match.pattern",
             "MATCH pattern must not be empty",
+        ));
+    }
+    if match_clause.optional && match_clause.pattern.parts.len() != 1 {
+        return Err(unsupported(
+            "match.pattern.parts",
+            "OPTIONAL MATCH currently supports one connected pattern part",
+        ));
+    }
+
+    let initially_bound_nodes = plan
+        .nodes
+        .iter()
+        .map(|node| node.variable.as_str())
+        .collect::<BTreeSet<_>>();
+    if match_clause.optional
+        && !match_clause
+            .pattern
+            .parts
+            .iter()
+            .any(|part| pattern_part_uses_bound_node(part, &initially_bound_nodes))
+    {
+        return Err(unsupported(
+            "match.pattern",
+            "OPTIONAL MATCH must be anchored to a previously bound node variable",
         ));
     }
 
@@ -638,6 +674,7 @@ fn compile_match_into(
             plan,
             format!("match.pattern.parts[{part_index}].nodes[0]"),
             context,
+            match_clause.optional,
         )?;
         let mut previous_variable = start_node.variable.clone();
         plan.predicates.extend(start_node.predicates);
@@ -650,19 +687,20 @@ fn compile_match_into(
                 "match.pattern.parts[{part_index}].nodes[{}]",
                 chain_index + 1
             );
-            let next_node = compile_node(&chain.node, plan, node_path, context)?;
+            let next_node =
+                compile_node(&chain.node, plan, node_path, context, match_clause.optional)?;
             let next_variable = next_node.variable.clone();
             let relationship_index = plan.relationships.len();
             let relationship_path =
                 format!("match.pattern.parts[{part_index}].relationships[{chain_index}]");
             let relationship = compile_relationship(
                 &chain.relationship,
-                &previous_variable,
-                &next_variable,
+                (&previous_variable, &next_variable),
                 relationship_index,
                 plan,
                 relationship_path,
                 context,
+                match_clause.optional,
             )?;
             previous_variable = next_variable;
             plan.predicates.extend(next_node.predicates);
@@ -670,6 +708,9 @@ fn compile_match_into(
                 plan.nodes.push(pattern);
             }
             plan.predicates.extend(relationship.predicates);
+            if match_clause.optional {
+                plan.optional_relationships.push(relationship_index);
+            }
             plan.relationships.push(relationship.pattern);
         }
     }
@@ -677,15 +718,45 @@ fn compile_match_into(
     Ok(())
 }
 
+fn pattern_part_uses_bound_node(
+    pattern_part: &decypher::ast::pattern::PatternPart,
+    bound_nodes: &BTreeSet<&str>,
+) -> bool {
+    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+        return false;
+    };
+    node_pattern_uses_bound_variable(start, bound_nodes)
+        || chains
+            .iter()
+            .any(|chain| node_pattern_uses_bound_variable(&chain.node, bound_nodes))
+}
+
+fn node_pattern_uses_bound_variable(
+    pattern: &CypherNodePattern,
+    bound_nodes: &BTreeSet<&str>,
+) -> bool {
+    pattern
+        .variable
+        .as_ref()
+        .is_some_and(|variable| bound_nodes.contains(variable_name(variable).as_str()))
+}
+
 fn compile_node(
     pattern: &CypherNodePattern,
     plan: &GraphPlan,
     path: impl Into<String>,
     context: &CypherCompileContext,
+    optional: bool,
 ) -> Result<CompiledNode, CoreError> {
     let path = path.into();
     let variable = required_variable(pattern.variable.as_ref(), format!("{path}.variable"))?;
     let label = optional_single_static_label(&pattern.labels, format!("{path}.labels"))?;
+    if optional && pattern.properties.is_some() {
+        return Err(unsupported(
+            format!("{path}.properties"),
+            "inline property maps in OPTIONAL MATCH require null-preserving predicate placement and are not supported yet",
+        ));
+    }
     let predicates = pattern.properties.as_ref().map_or_else(
         || Ok(Vec::new()),
         |properties| {
@@ -758,14 +829,15 @@ fn compile_inline_properties(
 
 fn compile_relationship(
     pattern: &CypherRelationshipPattern,
-    left: &str,
-    right: &str,
+    endpoints: (&str, &str),
     index: usize,
     plan: &GraphPlan,
     path: impl Into<String>,
     context: &CypherCompileContext,
+    optional: bool,
 ) -> Result<CompiledRelationship, CoreError> {
     let path = path.into();
+    let (left, right) = endpoints;
     if pattern.quantifier.is_some() {
         return Err(unsupported(
             format!("{path}.quantifier"),
@@ -791,6 +863,12 @@ fn compile_relationship(
         return Err(unsupported(
             format!("{path}.range"),
             "variable-length relationship ranges are not supported yet",
+        ));
+    }
+    if optional && detail.properties.is_some() {
+        return Err(unsupported(
+            format!("{path}.properties"),
+            "inline relationship property maps in OPTIONAL MATCH require null-preserving predicate placement and are not supported yet",
         ));
     }
     let relationship_type = detail.types.as_ref().ok_or_else(|| {
@@ -3658,8 +3736,52 @@ mod tests {
     }
 
     #[test]
-    fn rejects_optional_match() {
+    fn compiles_anchored_optional_match() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN service.name AS service, person.name AS owner",
+        )
+        .expect("anchored OPTIONAL MATCH should compile");
+
+        assert_eq!(plan.optional_relationships, vec![0]);
+        assert_eq!(
+            plan.nodes,
+            vec![
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "service".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_optional_match_shapes() {
         assert_unsupported("OPTIONAL MATCH (service:Service) RETURN service.name");
+        assert_unsupported(
+            "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service) WHERE target.tier = 'prod' RETURN service.name",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON {source: 'catalog'}]->(target:Service) RETURN service.name",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service) MATCH (target)-[:DEPENDS_ON]->(next:Service) RETURN next.name",
+        );
     }
 
     #[test]
