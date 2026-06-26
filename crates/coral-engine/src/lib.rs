@@ -76,14 +76,14 @@ pub use contracts::{
     TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 pub use virtual_graph::{
-    ComparisonOperator, Declaration as GraphDeclaration, Diagnostic as GraphDiagnostic,
-    Direction as GraphDirection, GraphExecution, GraphPlan, GraphQueryPlan,
-    Literal as GraphLiteral, NodePattern, OrderDirection as GraphOrderDirection,
-    OrderExpression as GraphOrderExpression, OrderKey as GraphOrderKey,
-    PredicateExpression as GraphPredicateExpression, PredicateRhs as GraphPredicateRhs,
-    Projection as GraphProjection, PropertyPredicate as GraphPropertyPredicate,
-    PropertyRef as GraphPropertyRef, RelationshipPattern, SqlTranslation as GraphSqlTranslation,
-    compile_cypher,
+    AggregateFunction as GraphAggregateFunction, ComparisonOperator,
+    Declaration as GraphDeclaration, Diagnostic as GraphDiagnostic, Direction as GraphDirection,
+    GraphExecution, GraphPlan, GraphQueryPlan, Literal as GraphLiteral, NodePattern,
+    OrderDirection as GraphOrderDirection, OrderExpression as GraphOrderExpression,
+    OrderKey as GraphOrderKey, PredicateExpression as GraphPredicateExpression,
+    PredicateRhs as GraphPredicateRhs, Projection as GraphProjection,
+    PropertyPredicate as GraphPropertyPredicate, PropertyRef as GraphPropertyRef,
+    RelationshipPattern, SqlTranslation as GraphSqlTranslation, compile_cypher,
 };
 
 /// High-level query operations for the local query engine.

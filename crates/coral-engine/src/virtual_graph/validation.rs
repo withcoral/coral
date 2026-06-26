@@ -269,13 +269,13 @@ impl<'a> GraphPlanValidator<'a> {
     }
 
     fn validate_aggregation(&self) -> Result<(), CoreError> {
-        let count_all_count = self
+        let aggregate_count = self
             .plan
             .projections
             .iter()
-            .filter(|projection| matches!(projection, Projection::CountAll { .. }))
+            .filter(|projection| projection.is_aggregate())
             .count();
-        if count_all_count == 0 {
+        if aggregate_count == 0 {
             return Ok(());
         }
         let projected_properties = self.projected_properties();
@@ -287,7 +287,7 @@ impl<'a> GraphPlanValidator<'a> {
                 return Err(Diagnostic::new(
                     "UNSUPPORTED_AGGREGATION",
                     format!("order_by[{index}]"),
-                    "ORDER BY with COUNT(*) must use a projected property or projection alias",
+                    "ORDER BY with aggregate projections must use a projected property or projection alias",
                 )
                 .into_core_error());
             }
@@ -297,8 +297,11 @@ impl<'a> GraphPlanValidator<'a> {
 
     fn validate_property_references(&self) -> Result<(), CoreError> {
         for (index, projection) in self.plan.projections.iter().enumerate() {
-            if let Projection::Property { property, .. } = projection {
-                self.validate_property_ref(property, format!("projections[{index}].property"))?;
+            match projection {
+                Projection::Property { property, .. } | Projection::Aggregate { property, .. } => {
+                    self.validate_property_ref(property, format!("projections[{index}].property"))?;
+                }
+                Projection::CountAll { .. } => {}
             }
         }
         for (index, predicate) in self.plan.predicates.iter().enumerate() {
@@ -341,7 +344,7 @@ impl<'a> GraphPlanValidator<'a> {
             .iter()
             .filter_map(|projection| match projection {
                 Projection::Property { property, .. } => Some(property),
-                Projection::CountAll { .. } => None,
+                Projection::CountAll { .. } | Projection::Aggregate { .. } => None,
             })
             .collect()
     }
@@ -421,6 +424,10 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 | Projection::CountAll {
                     alias: projection_alias,
+                }
+                | Projection::Aggregate {
+                    alias: projection_alias,
+                    ..
                 } => projection_alias == alias,
                 Projection::Property { alias: None, .. } => false,
             })
@@ -673,8 +680,9 @@ fn validate_variable(path: impl Into<String>, variable: &str) -> Result<(), Core
 mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
-        Direction, NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
-        PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+        AggregateFunction, Direction, NodePattern, OrderDirection, OrderExpression, OrderKey,
+        PredicateExpression, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
+        RelationshipPattern,
     };
 
     const GRAPH: &str = r"
@@ -736,6 +744,27 @@ relationships:
         let error = graph
             .validate_graph_plan(&plan)
             .expect_err("unknown property should fail validation");
+
+        assert!(error.to_string().contains("UNKNOWN_PROPERTY"), "{error:?}");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_unknown_aggregate_properties_before_lowering() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections.push(Projection::Aggregate {
+            function: AggregateFunction::Count,
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "missing".to_string(),
+            },
+            distinct: false,
+            alias: "missing_count".to_string(),
+        });
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("unknown aggregate property should fail validation");
 
         assert!(error.to_string().contains("UNKNOWN_PROPERTY"), "{error:?}");
     }

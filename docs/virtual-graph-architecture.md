@@ -77,20 +77,22 @@ The supported foundation subset is intentionally narrow:
   repeated bindings may omit the label;
 - directed, typed relationships;
 - connected multi-hop relationship chains;
-  - `WHERE` comparisons combined with `AND`, `OR`, `NOT`, and parentheses;
-  - literal-left and chained comparisons normalized into property predicates;
-  - `IN` predicates over scalar literal lists;
-  - string prefix, suffix, and substring predicates lowered to escaped SQL
-    `LIKE`;
+- `WHERE` comparisons combined with `AND`, `OR`, `NOT`, and parentheses;
+- literal-left and chained comparisons normalized into property predicates;
+- `IN` predicates over scalar literal lists;
+- string prefix, suffix, and substring predicates lowered to escaped SQL
+  `LIKE`;
 - inline node property maps normalized to equality predicates;
 - inline relationship property maps normalized to equality predicates, with
   internal relationship variables for anonymous edges;
 - `IS NULL` and `IS NOT NULL` predicates lowered with SQL null semantics;
-  - property projections, standalone and grouped `count(*)`, property
-    `ORDER BY`, and projection alias `ORDER BY` including aggregate aliases;
+- property projections, standalone and grouped `count(*)`,
+  `count(property)`, `count(DISTINCT property)`, property `ORDER BY`, and
+  projection alias `ORDER BY` including aggregate aliases;
 - integer `LIMIT`.
 
 Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.
 This includes writes, multi-part queries, optional matches, path variables,
-variable-length paths, undirected relationships, parameters, grouping,
-subqueries, procedure calls, and broad expression semantics.
+variable-length paths, undirected relationships, parameters, subqueries,
+procedure calls, non-count aggregate functions, and broad expression
+semantics.

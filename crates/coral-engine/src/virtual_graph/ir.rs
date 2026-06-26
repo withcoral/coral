@@ -113,6 +113,32 @@ pub enum Projection {
         /// Output alias.
         alias: String,
     },
+    /// Project an aggregate over a graph property.
+    Aggregate {
+        /// Aggregate function.
+        function: AggregateFunction,
+        /// Property to aggregate.
+        property: PropertyRef,
+        /// Whether the aggregate applies distinct semantics.
+        distinct: bool,
+        /// Output alias.
+        alias: String,
+    },
+}
+
+impl Projection {
+    /// Returns whether this projection is an aggregate.
+    #[must_use]
+    pub fn is_aggregate(&self) -> bool {
+        matches!(self, Self::CountAll { .. } | Self::Aggregate { .. })
+    }
+}
+
+/// Aggregate functions in the shared graph IR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateFunction {
+    /// `COUNT(property)`.
+    Count,
 }
 
 /// Property comparison predicate.

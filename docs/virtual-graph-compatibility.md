@@ -23,16 +23,16 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Property projections | Supported foundation | Node keys and exposed properties |
 | Property predicates | Supported foundation | Literal and property-to-property comparisons with boolean expression trees |
 | `COUNT(*)` | Supported foundation | Standalone or grouped by projected properties |
-| Grouped `COUNT(*)` | Supported foundation | Property projections become SQL `GROUP BY` keys |
+| `COUNT(property)` | Supported foundation | Counts non-null mapped property values; optional `DISTINCT` is supported |
+| Grouped aggregate projections | Supported foundation | Property projections become SQL `GROUP BY` keys |
 | Distinct projections | Supported foundation | `SELECT DISTINCT` over projected rows |
-| Ordering, skip, and limit | Supported foundation | Property order keys, row offset, and row limit |
+| Ordering, skip, and limit | Supported foundation | Property order keys, projection aliases including aggregate aliases, row offset, and row limit |
 | Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
 | Declaration-aware plan validation | Supported foundation | Resolves variables/properties and rejects unsupported plan shapes before SQL rendering |
 | Optional matches | Deferred | Requires nullability-aware IR |
 | Variable-length paths | Deferred | Requires recursive/path expansion semantics |
 | Path values | Deferred | Requires graph value representation |
-| Mixed aggregate/property projections | Rejected | Needs grouping IR |
-| Aggregate ordering | Rejected | Needs aggregate/grouping IR |
+| Aggregate functions beyond `count` | Rejected | Needs function-specific type and nullability validation |
 
 ## Frontends
 
@@ -56,7 +56,8 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `RETURN` property projections | Supported foundation | Optional aliases are supported |
 | `RETURN DISTINCT` | Supported foundation | Supported for projected rows; `ORDER BY` with `DISTINCT` must use projected properties |
 | `RETURN count(*)` | Supported foundation | Supported as a standalone aggregate projection |
-| `RETURN property, count(*)` | Supported foundation | Uses Cypher-style implicit grouping over projected properties |
+| `RETURN count(property)` | Supported foundation | Supports `count(property)` and `count(DISTINCT property)` |
+| `RETURN property, count(...)` | Supported foundation | Uses Cypher-style implicit grouping over projected properties |
 | `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, projection aliases including aggregate aliases, and non-negative integer offsets/limits |
 | `OPTIONAL MATCH` | Rejected | Needs nullability-aware IR and SQL lowering |
 | Multiple `MATCH` clauses | Rejected | Needs multi-pattern planning and join ordering rules |

@@ -4,8 +4,8 @@ use std::fmt::Write as _;
 use super::declaration::{Declaration, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    ComparisonOperator, Direction, GraphPlan, Literal, OrderDirection, OrderExpression,
-    PredicateExpression, PredicateRhs, Projection, PropertyRef,
+    AggregateFunction, ComparisonOperator, Direction, GraphPlan, Literal, OrderDirection,
+    OrderExpression, PredicateExpression, PredicateRhs, Projection, PropertyRef,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -319,6 +319,20 @@ impl<'a> Lowerer<'a> {
                 Projection::CountAll { alias } => {
                     rendered.push(format!("COUNT(*) AS {}", quote_ident(alias)));
                 }
+                Projection::Aggregate {
+                    function,
+                    property,
+                    distinct,
+                    alias,
+                } => {
+                    rendered.push(format!(
+                        "{}({}{}) AS {}",
+                        render_aggregate_function(*function),
+                        if *distinct { "DISTINCT " } else { "" },
+                        self.render_property_ref(property)?,
+                        quote_ident(alias)
+                    ));
+                }
             }
         }
         Ok(format!(
@@ -357,7 +371,7 @@ impl<'a> Lowerer<'a> {
             .plan()
             .projections
             .iter()
-            .any(|projection| matches!(projection, Projection::CountAll { .. }))
+            .any(Projection::is_aggregate)
         {
             return Ok(String::new());
         }
@@ -369,7 +383,7 @@ impl<'a> Lowerer<'a> {
             .iter()
             .filter_map(|projection| match projection {
                 Projection::Property { property, .. } => Some(property),
-                Projection::CountAll { .. } => None,
+                Projection::CountAll { .. } | Projection::Aggregate { .. } => None,
             })
             .map(|property| self.render_property_ref(property))
             .collect::<Result<Vec<_>, _>>()?;
@@ -542,6 +556,12 @@ fn render_operator(operator: ComparisonOperator) -> &'static str {
     }
 }
 
+fn render_aggregate_function(function: AggregateFunction) -> &'static str {
+    match function {
+        AggregateFunction::Count => "COUNT",
+    }
+}
+
 fn render_literal(literal: &Literal) -> String {
     match literal {
         Literal::String(value) => quote_string_literal(value),
@@ -581,8 +601,8 @@ fn quote_string_literal(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
-        ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection,
-        OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
+        AggregateFunction, ComparisonOperator, Direction, GraphPlan, Literal, NodePattern,
+        OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
         PropertyPredicate, PropertyRef, RelationshipPattern,
     };
 
@@ -1325,6 +1345,38 @@ relationships: []
             translation
                 .sql()
                 .contains(" ORDER BY \"ownership_count\" DESC"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_count_property_projection() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.projections.push(Projection::Aggregate {
+            function: AggregateFunction::Count,
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "tier".to_string(),
+            },
+            distinct: true,
+            alias: "tier_count".to_string(),
+        });
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("count property projection should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("COUNT(DISTINCT \"n1\".\"tier\") AS \"tier_count\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation.sql().contains(" GROUP BY "),
             "{}",
             translation.sql()
         );

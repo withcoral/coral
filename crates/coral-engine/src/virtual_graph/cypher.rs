@@ -1,7 +1,7 @@
 use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection};
 use decypher::ast::expr::{
     BinaryOperator as CypherBinaryOperator, ComparisonOperator as CypherComparisonOperator,
-    Expression, Literal as CypherLiteral, NumberLiteral, UnaryOperator,
+    Expression, FunctionInvocation, Literal as CypherLiteral, NumberLiteral, UnaryOperator,
 };
 use decypher::ast::names::Variable;
 use decypher::ast::pattern::{
@@ -15,9 +15,9 @@ use decypher::ast::query::{
 
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection,
-    OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection, PropertyPredicate,
-    PropertyRef, RelationshipPattern,
+    AggregateFunction, ComparisonOperator, Direction, GraphPlan, Literal, NodePattern,
+    OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
+    PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -370,14 +370,8 @@ fn compile_return(return_clause: &Return, plan: &mut GraphPlan) -> Result<(), Co
     }
 
     for (index, item) in return_clause.items.iter().enumerate() {
-        match compile_projection(item, format!("return.items[{index}]"))? {
-            Projection::CountAll { alias } => {
-                plan.projections.push(Projection::CountAll { alias });
-            }
-            projection @ Projection::Property { .. } => {
-                plan.projections.push(projection);
-            }
-        }
+        plan.projections
+            .push(compile_projection(item, format!("return.items[{index}]"))?);
     }
 
     if let Some(order) = &return_clause.order {
@@ -428,7 +422,7 @@ fn projection_order_expression_for_alias(
     let path = path.into();
     let alias = variable_name(variable);
     let mut found_property = None;
-    let mut found_count = false;
+    let mut found_projected_alias = false;
     for projection in projections {
         match projection {
             Projection::Property {
@@ -445,13 +439,23 @@ fn projection_order_expression_for_alias(
             }
             Projection::CountAll {
                 alias: projection_alias,
+            }
+            | Projection::Aggregate {
+                alias: projection_alias,
+                ..
             } if projection_alias == &alias => {
-                found_count = true;
+                if found_projected_alias {
+                    return Err(unsupported(
+                        path,
+                        format!("ORDER BY alias '{alias}' is ambiguous"),
+                    ));
+                }
+                found_projected_alias = true;
             }
             _ => {}
         }
     }
-    if found_property.is_some() && found_count {
+    if found_property.is_some() && found_projected_alias {
         return Err(unsupported(
             path,
             format!("ORDER BY alias '{alias}' is ambiguous"),
@@ -460,7 +464,7 @@ fn projection_order_expression_for_alias(
     if let Some(property) = found_property {
         return Ok(OrderExpression::Property(property));
     }
-    if found_count {
+    if found_projected_alias {
         return Ok(OrderExpression::ProjectionAlias(alias));
     }
     Err(unsupported(
@@ -481,11 +485,60 @@ fn compile_projection(
                 .as_ref()
                 .map_or_else(|| "count".to_string(), variable_name),
         }),
+        Expression::FunctionCall(function) if is_count_function(function) => {
+            compile_count_projection(function, item, path)
+        }
+        Expression::FunctionCall(function) => Err(unsupported(
+            format!("{path}.expression"),
+            format!(
+                "RETURN function '{}' is not supported yet",
+                qualified_function_name(function)
+            ),
+        )),
         expression => Ok(Projection::Property {
             property: compile_property_ref(expression, format!("{path}.expression"))?,
             alias: item.alias.as_ref().map(variable_name),
         }),
     }
+}
+
+fn compile_count_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.expression.arguments"),
+            "count() supports exactly one graph property argument; use count(*) to count rows",
+        ));
+    };
+    Ok(Projection::Aggregate {
+        function: AggregateFunction::Count,
+        property: compile_property_ref(argument, format!("{path}.expression.arguments[0]"))?,
+        distinct: function.distinct,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "count".to_string(), variable_name),
+    })
+}
+
+fn is_count_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("count")
+    )
+}
+
+fn qualified_function_name(function: &FunctionInvocation) -> String {
+    function
+        .name
+        .iter()
+        .map(|part| part.name.as_str())
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 fn compile_predicate_expression(
@@ -1642,8 +1695,74 @@ mod tests {
     }
 
     #[test]
+    fn compiles_count_property_projection() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN service.tier AS tier, count(service.name) AS named_services \
+             ORDER BY named_services DESC",
+        )
+        .expect("count property query should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("tier".to_string()),
+                },
+                Projection::Aggregate {
+                    function: super::AggregateFunction::Count,
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    distinct: false,
+                    alias: "named_services".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("named_services".to_string()),
+                direction: OrderDirection::Descending,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_count_distinct_property_projection() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN count(DISTINCT service.tier) AS tier_count",
+        )
+        .expect("count distinct property query should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Aggregate {
+                function: super::AggregateFunction::Count,
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                distinct: true,
+                alias: "tier_count".to_string(),
+            }]
+        );
+    }
+
+    #[test]
     fn rejects_order_by_unknown_aliases() {
         assert_unsupported("MATCH (service:Service) RETURN service.name AS name ORDER BY missing");
+    }
+
+    #[test]
+    fn rejects_unsupported_return_functions() {
+        assert_unsupported("MATCH (service:Service) RETURN sum(service.id) AS total");
     }
 
     #[test]
