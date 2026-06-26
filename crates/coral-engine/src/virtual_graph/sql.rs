@@ -84,6 +84,7 @@ impl<'a> Lowerer<'a> {
     fn lower(mut self) -> Result<SqlTranslation, CoreError> {
         self.bind_nodes()?;
         self.bind_relationships()?;
+        self.validate_aggregation()?;
         self.build_from_clause()?;
 
         let select = self.render_select()?;
@@ -102,6 +103,35 @@ impl<'a> Lowerer<'a> {
             ),
             Vec::new(),
         ))
+    }
+
+    fn validate_aggregation(&self) -> Result<(), CoreError> {
+        let count_all_count = self
+            .plan
+            .projections
+            .iter()
+            .filter(|projection| matches!(projection, Projection::CountAll { .. }))
+            .count();
+        if count_all_count == 0 {
+            return Ok(());
+        }
+        if self.plan.projections.len() != 1 {
+            return Err(Diagnostic::new(
+                "UNSUPPORTED_AGGREGATION",
+                "projections",
+                "COUNT(*) cannot be mixed with property projections until grouping is supported",
+            )
+            .into_core_error());
+        }
+        if !self.plan.order_by.is_empty() {
+            return Err(Diagnostic::new(
+                "UNSUPPORTED_AGGREGATION",
+                "order_by",
+                "ORDER BY with COUNT(*) is not supported until aggregate ordering is supported",
+            )
+            .into_core_error());
+        }
+        Ok(())
     }
 
     fn bind_nodes(&mut self) -> Result<(), CoreError> {
@@ -874,6 +904,42 @@ relationships: []
             translation.sql(),
             "SELECT \"n0\".\"service_name\" AS \"service\" FROM \"ops\".\"services\" AS \"n0\" \
              WHERE \"n0\".\"tier\" IS NULL AND \"n0\".\"service_name\" IS NOT NULL"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_rejects_mixed_count_and_property_projection() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.projections.push(Projection::CountAll {
+            alias: "ownership_count".to_string(),
+        });
+
+        let error = graph
+            .lower_graph_plan(&plan)
+            .expect_err("mixed aggregate and property projection should fail");
+
+        assert!(
+            error.to_string().contains("UNSUPPORTED_AGGREGATION"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_rejects_count_with_property_ordering() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.projections = vec![Projection::CountAll {
+            alias: "ownership_count".to_string(),
+        }];
+
+        let error = graph
+            .lower_graph_plan(&plan)
+            .expect_err("count with property ordering should fail");
+
+        assert!(
+            error.to_string().contains("UNSUPPORTED_AGGREGATION"),
+            "{error:?}"
         );
     }
 

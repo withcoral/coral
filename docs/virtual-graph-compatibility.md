@@ -21,12 +21,14 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Directed relationship traversals | Supported foundation | Forward and reverse traversal lower to joins |
 | Property projections | Supported foundation | Node keys and exposed properties |
 | Property predicates | Supported foundation | Conjunctive comparisons |
-| `COUNT(*)` | Supported foundation | SQL lowering only in first slice |
+| `COUNT(*)` | Supported foundation | Standalone aggregate projection only |
 | Ordering and limit | Supported foundation | Property order keys and row limit |
 | Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
 | Optional matches | Deferred | Requires nullability-aware IR |
 | Variable-length paths | Deferred | Requires recursive/path expansion semantics |
 | Path values | Deferred | Requires graph value representation |
+| Mixed aggregate/property projections | Rejected | Needs grouping IR |
+| Aggregate ordering | Rejected | Needs aggregate/grouping IR |
 
 ## Frontends
 
