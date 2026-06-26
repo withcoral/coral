@@ -154,9 +154,18 @@ pub enum PredicateExpression {
 
 /// Ordering key in the shared graph IR.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderExpression {
+    /// Order by a graph property.
+    Property(PropertyRef),
+    /// Order by a projected output alias.
+    ProjectionAlias(String),
+}
+
+/// Ordering key in the shared graph IR.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderKey {
-    /// Property to order by.
-    pub property: PropertyRef,
+    /// Expression to order by.
+    pub expression: OrderExpression,
     /// Sort direction.
     pub direction: OrderDirection,
 }

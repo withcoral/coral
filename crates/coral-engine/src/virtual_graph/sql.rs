@@ -4,8 +4,8 @@ use std::fmt::Write as _;
 use super::declaration::{Declaration, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    ComparisonOperator, Direction, GraphPlan, Literal, OrderDirection, PredicateExpression,
-    PredicateRhs, Projection, PropertyRef,
+    ComparisonOperator, Direction, GraphPlan, Literal, OrderDirection, OrderExpression,
+    PredicateExpression, PredicateRhs, Projection, PropertyRef,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -482,7 +482,7 @@ impl<'a> Lowerer<'a> {
         for key in &self.validated.plan().order_by {
             keys.push(format!(
                 "{} {}",
-                self.render_property_ref(&key.property)?,
+                self.render_order_expression(&key.expression)?,
                 match key.direction {
                     OrderDirection::Ascending => "ASC",
                     OrderDirection::Descending => "DESC",
@@ -490,6 +490,13 @@ impl<'a> Lowerer<'a> {
             ));
         }
         Ok(format!(" ORDER BY {}", keys.join(", ")))
+    }
+
+    fn render_order_expression(&self, expression: &OrderExpression) -> Result<String, CoreError> {
+        match expression {
+            OrderExpression::Property(property) => self.render_property_ref(property),
+            OrderExpression::ProjectionAlias(alias) => Ok(quote_ident(alias)),
+        }
     }
 
     fn render_property_ref(&self, property: &PropertyRef) -> Result<String, CoreError> {
@@ -574,9 +581,9 @@ fn quote_string_literal(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
-        ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection, OrderKey,
-        PredicateExpression, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
-        RelationshipPattern,
+        ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection,
+        OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
+        PropertyPredicate, PropertyRef, RelationshipPattern,
     };
 
     const GRAPH: &str = r"
@@ -1239,10 +1246,10 @@ relationships: []
             alias: Some("tier".to_string()),
         }];
         plan.order_by = vec![OrderKey {
-            property: PropertyRef {
+            expression: OrderExpression::Property(PropertyRef {
                 variable: "service".to_string(),
                 property: "tier".to_string(),
-            },
+            }),
             direction: OrderDirection::Ascending,
         }];
         plan.limit = None;
@@ -1293,6 +1300,31 @@ relationships: []
             translation.sql().contains(
                 " GROUP BY \"n0\".\"full_name\", \"n1\".\"service_name\" ORDER BY \"n0\".\"full_name\" ASC"
             ),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_orders_by_count_alias() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.projections.push(Projection::CountAll {
+            alias: "ownership_count".to_string(),
+        });
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::ProjectionAlias("ownership_count".to_string()),
+            direction: OrderDirection::Descending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("aggregate alias ordering should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains(" ORDER BY \"ownership_count\" DESC"),
             "{}",
             translation.sql()
         );
@@ -1403,10 +1435,10 @@ relationships: []
             }],
             predicate: None,
             order_by: vec![OrderKey {
-                property: PropertyRef {
+                expression: OrderExpression::Property(PropertyRef {
                     variable: "person".to_string(),
                     property: "name".to_string(),
-                },
+                }),
                 direction: OrderDirection::Ascending,
             }],
             skip: None,

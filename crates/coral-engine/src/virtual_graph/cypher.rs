@@ -15,9 +15,9 @@ use decypher::ast::query::{
 
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection, OrderKey,
-    PredicateExpression, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
-    RelationshipPattern,
+    ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection,
+    OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection, PropertyPredicate,
+    PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -383,7 +383,7 @@ fn compile_return(return_clause: &Return, plan: &mut GraphPlan) -> Result<(), Co
     if let Some(order) = &return_clause.order {
         for (index, item) in order.items.iter().enumerate() {
             plan.order_by.push(OrderKey {
-                property: compile_order_property(
+                expression: compile_order_expression(
                     &item.expression,
                     &plan.projections,
                     format!("return.order.items[{index}].expression"),
@@ -403,29 +403,32 @@ fn compile_return(return_clause: &Return, plan: &mut GraphPlan) -> Result<(), Co
     Ok(())
 }
 
-fn compile_order_property(
+fn compile_order_expression(
     expression: &Expression,
     projections: &[Projection],
     path: impl Into<String>,
-) -> Result<PropertyRef, CoreError> {
+) -> Result<OrderExpression, CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_order_property(inner, projections, path),
+        Expression::Parenthesized(inner) => compile_order_expression(inner, projections, path),
         Expression::Variable(variable) => {
-            projection_property_for_alias(variable, projections, path)
+            projection_order_expression_for_alias(variable, projections, path)
         }
-        _ => compile_property_ref(expression, path),
+        _ => Ok(OrderExpression::Property(compile_property_ref(
+            expression, path,
+        )?)),
     }
 }
 
-fn projection_property_for_alias(
+fn projection_order_expression_for_alias(
     variable: &Variable,
     projections: &[Projection],
     path: impl Into<String>,
-) -> Result<PropertyRef, CoreError> {
+) -> Result<OrderExpression, CoreError> {
     let path = path.into();
     let alias = variable_name(variable);
     let mut found_property = None;
+    let mut found_count = false;
     for projection in projections {
         match projection {
             Projection::Property {
@@ -443,20 +446,27 @@ fn projection_property_for_alias(
             Projection::CountAll {
                 alias: projection_alias,
             } if projection_alias == &alias => {
-                return Err(unsupported(
-                    path,
-                    "ORDER BY aggregate aliases is not supported until grouping is supported",
-                ));
+                found_count = true;
             }
             _ => {}
         }
     }
-    found_property.ok_or_else(|| {
-        unsupported(
+    if found_property.is_some() && found_count {
+        return Err(unsupported(
             path,
-            format!("ORDER BY alias '{alias}' does not match a property projection"),
-        )
-    })
+            format!("ORDER BY alias '{alias}' is ambiguous"),
+        ));
+    }
+    if let Some(property) = found_property {
+        return Ok(OrderExpression::Property(property));
+    }
+    if found_count {
+        return Ok(OrderExpression::ProjectionAlias(alias));
+    }
+    Err(unsupported(
+        path,
+        format!("ORDER BY alias '{alias}' does not match a projection"),
+    ))
 }
 
 fn compile_projection(
@@ -1001,10 +1011,10 @@ mod tests {
         assert_eq!(
             plan.order_by,
             vec![OrderKey {
-                property: PropertyRef {
+                expression: OrderExpression::Property(PropertyRef {
                     variable: "service".to_string(),
                     property: "name".to_string(),
-                },
+                }),
                 direction: OrderDirection::Descending,
             }]
         );
@@ -1508,10 +1518,10 @@ mod tests {
         assert_eq!(
             plan.order_by,
             vec![OrderKey {
-                property: PropertyRef {
+                expression: OrderExpression::Property(PropertyRef {
                     variable: "service".to_string(),
                     property: "name".to_string(),
-                },
+                }),
                 direction: OrderDirection::Descending,
             }]
         );
@@ -1637,8 +1647,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_order_by_aggregate_aliases() {
-        assert_unsupported("MATCH (service:Service) RETURN count(*) AS services ORDER BY services");
+    fn compiles_order_by_aggregate_aliases() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN count(*) AS services \
+             ORDER BY services DESC",
+        )
+        .expect("aggregate alias ordering should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("services".to_string()),
+                direction: OrderDirection::Descending,
+            }]
+        );
     }
 
     fn assert_unsupported(cypher: &str) {

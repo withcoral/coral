@@ -87,7 +87,7 @@ The supported foundation subset is intentionally narrow:
   internal relationship variables for anonymous edges;
 - `IS NULL` and `IS NOT NULL` predicates lowered with SQL null semantics;
   - property projections, standalone and grouped `count(*)`, property
-    `ORDER BY`, and property projection alias `ORDER BY`;
+    `ORDER BY`, and projection alias `ORDER BY` including aggregate aliases;
 - integer `LIMIT`.
 
 Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.

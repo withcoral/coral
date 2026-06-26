@@ -2,8 +2,8 @@ use std::path::Path;
 
 use coral_engine::{
     ComparisonOperator, CoralQuery, GraphDeclaration, GraphDirection, GraphLiteral,
-    GraphOrderDirection, GraphOrderKey, GraphPlan, GraphPredicateRhs, GraphProjection,
-    GraphPropertyPredicate, GraphPropertyRef, NodePattern, RelationshipPattern,
+    GraphOrderDirection, GraphOrderExpression, GraphOrderKey, GraphPlan, GraphPredicateRhs,
+    GraphProjection, GraphPropertyPredicate, GraphPropertyRef, NodePattern, RelationshipPattern,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -801,7 +801,7 @@ async fn cypher_grouped_count_projection_executes_against_synthetic_sources() {
         "MATCH (service:Service) \
          WHERE service.tier IS NOT NULL \
          RETURN service.tier AS tier, count(*) AS services \
-         ORDER BY tier",
+         ORDER BY services DESC, tier",
     )
     .await
     .expect("grouped count Cypher query should execute");
@@ -814,8 +814,8 @@ async fn cypher_grouped_count_projection_executes_against_synthetic_sources() {
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"tier": "dev", "services": 1}),
             json!({"tier": "prod", "services": 2}),
+            json!({"tier": "dev", "services": 1}),
         ]
     );
 }
@@ -892,10 +892,10 @@ fn owner_service_plan() -> GraphPlan {
         }],
         predicate: None,
         order_by: vec![GraphOrderKey {
-            property: GraphPropertyRef {
+            expression: GraphOrderExpression::Property(GraphPropertyRef {
                 variable: "person".to_string(),
                 property: "name".to_string(),
-            },
+            }),
             direction: GraphOrderDirection::Ascending,
         }],
         skip: None,

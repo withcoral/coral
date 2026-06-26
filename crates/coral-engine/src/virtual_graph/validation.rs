@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::declaration::{Declaration, Node, Relationship};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    ComparisonOperator, GraphPlan, Literal, PredicateExpression, PredicateRhs, Projection,
-    PropertyPredicate, PropertyRef, RelationshipPattern,
+    ComparisonOperator, GraphPlan, Literal, OrderExpression, PredicateExpression, PredicateRhs,
+    Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -279,20 +279,15 @@ impl<'a> GraphPlanValidator<'a> {
             return Ok(());
         }
         let projected_properties = self.projected_properties();
-        if projected_properties.is_empty() && !self.plan.order_by.is_empty() {
-            return Err(Diagnostic::new(
-                "UNSUPPORTED_AGGREGATION",
-                "order_by",
-                "ORDER BY with count-only projections is not supported until aggregate ordering is supported",
-            )
-            .into_core_error());
-        }
         for (index, order_key) in self.plan.order_by.iter().enumerate() {
-            if !projected_properties.contains(&&order_key.property) {
+            if !self.order_expression_is_projected_property_or_alias(
+                &order_key.expression,
+                &projected_properties,
+            ) {
                 return Err(Diagnostic::new(
                     "UNSUPPORTED_AGGREGATION",
-                    format!("order_by[{index}].property"),
-                    "ORDER BY with grouped COUNT(*) must use a projected property",
+                    format!("order_by[{index}]"),
+                    "ORDER BY with COUNT(*) must use a projected property or projection alias",
                 )
                 .into_core_error());
             }
@@ -313,7 +308,7 @@ impl<'a> GraphPlanValidator<'a> {
             self.validate_predicate_expression(predicate, "predicate")?;
         }
         for (index, key) in self.plan.order_by.iter().enumerate() {
-            self.validate_property_ref(&key.property, format!("order_by[{index}].property"))?;
+            self.validate_order_expression(&key.expression, format!("order_by[{index}]"))?;
         }
         Ok(())
     }
@@ -325,11 +320,14 @@ impl<'a> GraphPlanValidator<'a> {
 
         let projected_properties = self.projected_properties();
         for (index, order_key) in self.plan.order_by.iter().enumerate() {
-            if !projected_properties.contains(&&order_key.property) {
+            if !self.order_expression_is_projected_property_or_alias(
+                &order_key.expression,
+                &projected_properties,
+            ) {
                 return Err(Diagnostic::new(
                     "UNSUPPORTED_DISTINCT_ORDERING",
-                    format!("order_by[{index}].property"),
-                    "ORDER BY with DISTINCT must use a projected property",
+                    format!("order_by[{index}]"),
+                    "ORDER BY with DISTINCT must use a projected property or projection alias",
                 )
                 .into_core_error());
             }
@@ -374,6 +372,58 @@ impl<'a> GraphPlanValidator<'a> {
                 self.validate_predicate_expression(expression, format!("{path}.expression"))
             }
         }
+    }
+
+    fn validate_order_expression(
+        &self,
+        expression: &OrderExpression,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        match expression {
+            OrderExpression::Property(property) => {
+                self.validate_property_ref(property, format!("{path}.property"))
+            }
+            OrderExpression::ProjectionAlias(alias) => {
+                if self.projection_alias_exists(alias) {
+                    Ok(())
+                } else {
+                    Err(Diagnostic::new(
+                        "UNKNOWN_PROJECTION_ALIAS",
+                        path,
+                        format!("unknown projection alias '{alias}'"),
+                    )
+                    .into_core_error())
+                }
+            }
+        }
+    }
+
+    fn order_expression_is_projected_property_or_alias(
+        &self,
+        expression: &OrderExpression,
+        projected_properties: &[&PropertyRef],
+    ) -> bool {
+        match expression {
+            OrderExpression::Property(property) => projected_properties.contains(&property),
+            OrderExpression::ProjectionAlias(alias) => self.projection_alias_exists(alias),
+        }
+    }
+
+    fn projection_alias_exists(&self, alias: &str) -> bool {
+        self.plan
+            .projections
+            .iter()
+            .any(|projection| match projection {
+                Projection::Property {
+                    alias: Some(projection_alias),
+                    ..
+                }
+                | Projection::CountAll {
+                    alias: projection_alias,
+                } => projection_alias == alias,
+                Projection::Property { alias: None, .. } => false,
+            })
     }
 
     fn validate_property_predicate(
@@ -623,8 +673,8 @@ fn validate_variable(path: impl Into<String>, variable: &str) -> Result<(), Core
 mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
-        Direction, NodePattern, OrderDirection, OrderKey, PredicateExpression, PredicateRhs,
-        Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+        Direction, NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
+        PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
     };
 
     const GRAPH: &str = r"
@@ -676,10 +726,10 @@ relationships:
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan();
         plan.order_by = vec![OrderKey {
-            property: PropertyRef {
+            expression: OrderExpression::Property(PropertyRef {
                 variable: "service".to_string(),
                 property: "missing".to_string(),
-            },
+            }),
             direction: OrderDirection::Ascending,
         }];
 
@@ -869,10 +919,10 @@ relationships:
         let mut plan = ownership_plan();
         plan.distinct = true;
         plan.order_by = vec![OrderKey {
-            property: PropertyRef {
+            expression: OrderExpression::Property(PropertyRef {
                 variable: "service".to_string(),
                 property: "name".to_string(),
-            },
+            }),
             direction: OrderDirection::Ascending,
         }];
 

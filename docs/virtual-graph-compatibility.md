@@ -57,7 +57,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `RETURN DISTINCT` | Supported foundation | Supported for projected rows; `ORDER BY` with `DISTINCT` must use projected properties |
 | `RETURN count(*)` | Supported foundation | Supported as a standalone aggregate projection |
 | `RETURN property, count(*)` | Supported foundation | Uses Cypher-style implicit grouping over projected properties |
-| `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, property projection aliases, and non-negative integer offsets/limits |
+| `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, projection aliases including aggregate aliases, and non-negative integer offsets/limits |
 | `OPTIONAL MATCH` | Rejected | Needs nullability-aware IR and SQL lowering |
 | Multiple `MATCH` clauses | Rejected | Needs multi-pattern planning and join ordering rules |
 | `WHERE XOR` | Rejected | Not portable across target SQL dialects |
@@ -69,7 +69,6 @@ unsupported behavior should be rejected clearly instead of guessed.
 | User variables beginning with `__coral_` | Rejected | Prefix reserved for internal planner bindings |
 | `WITH`, `UNION`, subqueries, procedure calls | Rejected | Needs scope and pipeline semantics |
 | Parameters | Rejected | Needs API/runtime parameter binding contract |
-| `ORDER BY` aggregate aliases | Rejected | Needs aggregate order-key IR |
 | GraphQL parser | Planned | Must compile to shared IR, not Cypher strings |
 | Writes | Rejected by product invariant | Coral virtual graph is read-only |
 
