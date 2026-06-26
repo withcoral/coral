@@ -297,6 +297,39 @@ async fn cypher_is_null_predicates_execute_with_sql_null_semantics() {
 }
 
 #[tokio::test]
+async fn cypher_skip_limit_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service \
+         ORDER BY service \
+         SKIP 1 LIMIT 2",
+    )
+    .await
+    .expect("Cypher query with SKIP should execute");
+
+    assert!(
+        execution.translated_sql().ends_with(" LIMIT 2 OFFSET 1"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "deployments"}),
+            json!({"service": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn explain_cypher_preserves_translated_sql_and_datafusion_plan() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -381,6 +414,7 @@ relationships: []
         }],
         predicates: Vec::new(),
         order_by: Vec::new(),
+        skip: None,
         limit: None,
     };
 
@@ -473,6 +507,7 @@ async fn virtual_graph_count_projection_executes_against_synthetic_file_sources(
         }],
         predicates: Vec::new(),
         order_by: Vec::new(),
+        skip: None,
         limit: None,
     };
 
@@ -562,6 +597,7 @@ fn owner_service_plan() -> GraphPlan {
             },
             direction: GraphOrderDirection::Ascending,
         }],
+        skip: None,
         limit: Some(25),
     }
 }

@@ -78,10 +78,16 @@ impl<'a> Lowerer<'a> {
             .limit
             .map(|limit| format!(" LIMIT {limit}"))
             .unwrap_or_default();
+        let offset = self
+            .validated
+            .plan()
+            .skip
+            .map(|skip| format!(" OFFSET {skip}"))
+            .unwrap_or_default();
 
         Ok(SqlTranslation::new(
             format!(
-                "{select} {}{where_clause}{order_by}{limit}",
+                "{select} {}{where_clause}{order_by}{limit}{offset}",
                 self.from_clause
             ),
             Vec::new(),
@@ -528,6 +534,7 @@ relationships:
             }],
             predicates: Vec::new(),
             order_by: Vec::new(),
+            skip: None,
             limit: None,
         };
 
@@ -669,6 +676,7 @@ relationships:
             ],
             predicates: Vec::new(),
             order_by: Vec::new(),
+            skip: None,
             limit: None,
         };
 
@@ -740,6 +748,7 @@ relationships:
             ],
             predicates: Vec::new(),
             order_by: Vec::new(),
+            skip: None,
             limit: None,
         };
 
@@ -796,6 +805,7 @@ relationships: []
                 rhs: PredicateRhs::Literal(Literal::String("Ada's laptop".to_string())),
             }],
             order_by: Vec::new(),
+            skip: None,
             limit: None,
         };
 
@@ -846,6 +856,7 @@ relationships: []
                 },
             ],
             order_by: Vec::new(),
+            skip: None,
             limit: None,
         };
 
@@ -884,6 +895,23 @@ relationships: []
             translation
                 .sql()
                 .contains("WHERE \"n0\".\"team\" = \"n1\".\"tier\""),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_offset() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.skip = Some(5);
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("offset plan should lower");
+
+        assert!(
+            translation.sql().ends_with(" LIMIT 25 OFFSET 5"),
             "{}",
             translation.sql()
         );
@@ -1016,6 +1044,7 @@ relationships: []
                 },
                 direction: OrderDirection::Ascending,
             }],
+            skip: None,
             limit: Some(25),
         }
     }

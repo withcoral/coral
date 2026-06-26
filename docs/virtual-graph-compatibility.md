@@ -23,7 +23,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Property projections | Supported foundation | Node keys and exposed properties |
 | Property predicates | Supported foundation | Conjunctive literal and property-to-property comparisons |
 | `COUNT(*)` | Supported foundation | Standalone aggregate projection only |
-| Ordering and limit | Supported foundation | Property order keys and row limit |
+| Ordering, skip, and limit | Supported foundation | Property order keys, row offset, and row limit |
 | Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
 | Declaration-aware plan validation | Supported foundation | Resolves variables/properties and rejects unsupported plan shapes before SQL rendering |
 | Optional matches | Deferred | Requires nullability-aware IR |
@@ -47,7 +47,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Inline relationship property maps | Supported foundation | Anonymous relationships get internal variables for property predicates |
 | `RETURN` property projections | Supported foundation | Optional aliases are supported |
 | `RETURN count(*)` | Supported foundation | Supported as a standalone aggregate projection |
-| `ORDER BY` and `LIMIT` | Supported foundation | Property order keys, property projection aliases, and non-negative integer limits |
+| `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, property projection aliases, and non-negative integer offsets/limits |
 | `OPTIONAL MATCH` | Rejected | Needs nullability-aware IR and SQL lowering |
 | Multiple `MATCH` clauses | Rejected | Needs multi-pattern planning and join ordering rules |
 | Undirected or bidirectional relationships | Rejected | Needs explicit graph-expansion semantics |
@@ -56,7 +56,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | User variables beginning with `__coral_` | Rejected | Prefix reserved for internal planner bindings |
 | `WITH`, `UNION`, subqueries, procedure calls | Rejected | Needs scope and pipeline semantics |
 | Parameters | Rejected | Needs API/runtime parameter binding contract |
-| `DISTINCT`, `SKIP`, grouping | Rejected | Needs aggregate/grouping IR |
+| `DISTINCT` and grouping | Rejected | Needs aggregate/grouping IR |
 | `ORDER BY` aggregate aliases | Rejected | Needs aggregate/grouping IR |
 | GraphQL parser | Planned | Must compile to shared IR, not Cypher strings |
 | Writes | Rejected by product invariant | Coral virtual graph is read-only |

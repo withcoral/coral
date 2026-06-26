@@ -138,6 +138,8 @@ pub struct GraphPlan {
     pub predicates: Vec<PropertyPredicate>,
     /// Ordering expressions.
     pub order_by: Vec<OrderKey>,
+    /// Optional row offset.
+    pub skip: Option<u64>,
     /// Optional row limit.
     pub limit: Option<u64>,
 }

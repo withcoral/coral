@@ -326,8 +326,8 @@ fn compile_return(return_clause: &Return, plan: &mut GraphPlan) -> Result<(), Co
     if return_clause.star {
         return Err(unsupported("return.star", "RETURN * is not supported yet"));
     }
-    if return_clause.skip.is_some() {
-        return Err(unsupported("return.skip", "SKIP is not supported yet"));
+    if let Some(skip) = &return_clause.skip {
+        plan.skip = Some(compile_skip(skip, "return.skip")?);
     }
     if return_clause.items.is_empty() {
         return Err(unsupported(
@@ -603,17 +603,29 @@ fn compile_literal(expression: &Expression, path: impl Into<String>) -> Result<L
 }
 
 fn compile_limit(expression: &Expression, path: impl Into<String>) -> Result<u64, CoreError> {
+    compile_non_negative_integer(expression, path, "LIMIT")
+}
+
+fn compile_skip(expression: &Expression, path: impl Into<String>) -> Result<u64, CoreError> {
+    compile_non_negative_integer(expression, path, "SKIP")
+}
+
+fn compile_non_negative_integer(
+    expression: &Expression,
+    path: impl Into<String>,
+    keyword: &str,
+) -> Result<u64, CoreError> {
     let path = path.into();
-    match compile_literal(expression, path)? {
+    match compile_literal(expression, path.clone())? {
         Literal::Integer(value) => u64::try_from(value).map_err(|conversion_error| {
             unsupported(
-                "return.limit",
-                format!("LIMIT must be a non-negative integer literal: {conversion_error}"),
+                path.clone(),
+                format!("{keyword} must be a non-negative integer literal: {conversion_error}"),
             )
         }),
         _ => Err(unsupported(
-            "return.limit",
-            "LIMIT must be a non-negative integer literal",
+            path,
+            format!("{keyword} must be a non-negative integer literal"),
         )),
     }
 }
@@ -832,6 +844,28 @@ mod tests {
             vec![Projection::CountAll {
                 alias: "services".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_skip_and_limit() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) RETURN service.name AS service ORDER BY service SKIP 1 LIMIT 2",
+        )
+        .expect("query should compile");
+
+        assert_eq!(plan.skip, Some(1));
+        assert_eq!(plan.limit, Some(2));
+    }
+
+    #[test]
+    fn rejects_negative_skip() {
+        let error = compile_cypher("MATCH (service:Service) RETURN service.name SKIP -1")
+            .expect_err("negative SKIP should fail");
+
+        assert!(
+            error.to_string().contains("UNSUPPORTED_CYPHER"),
+            "{error:?}"
         );
     }
 
