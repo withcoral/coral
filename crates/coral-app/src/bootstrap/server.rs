@@ -262,9 +262,12 @@ impl ServerBuilder {
             self.config.enable_stderr_logs,
             internal_trace_store_dir.clone(),
         )?;
-        let installed_trace_store_dir = installed_trace_store
-            .as_ref()
-            .map(|store| store.dir.clone());
+        let active_trace_store = telemetry_config
+            .trace_history
+            .enabled
+            .then_some(installed_trace_store)
+            .flatten();
+        let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
         let config_store = ConfigStore::new(layout.clone());
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
@@ -281,7 +284,7 @@ impl ServerBuilder {
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
-            installed_trace_store_dir,
+            active_trace_store_dir.clone(),
             workspace_lifecycle_lock,
         );
         let feedback_manager =
@@ -301,18 +304,20 @@ impl ServerBuilder {
             layout,
             self.config.engine_extensions_providers,
         );
-        let trace_service = if telemetry_config.trace_history.enabled {
-            installed_trace_store.map(|store| TraceService::new(store.dir, store.retention))
-        } else {
-            None
-        };
+        let trace_components =
+            active_trace_store.map_or_else(TraceServerComponents::default, |store| {
+                TraceServerComponents {
+                    local_trace_store_dir: Some(store.dir.clone()),
+                    service: Some(TraceService::new(store.dir, store.retention)),
+                }
+            });
         start_server(
             source_manager,
             workspace_manager,
             query_manager,
             feedback_manager,
             episode_store,
-            trace_service,
+            trace_components,
             self.config.mode,
         )
         .await
@@ -326,6 +331,7 @@ impl ServerBuilder {
 /// does not wait for the task to finish.
 pub struct RunningServer {
     endpoint_uri: String,
+    local_trace_store_dir: Option<PathBuf>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
 }
@@ -339,6 +345,13 @@ impl RunningServer {
     /// over server configuration.
     pub fn endpoint_uri(&self) -> &str {
         &self.endpoint_uri
+    }
+
+    #[must_use]
+    /// Returns the process-installed local trace store directory, when local
+    /// trace history is enabled for this process.
+    pub fn local_trace_store_dir(&self) -> Option<&std::path::Path> {
+        self.local_trace_store_dir.as_deref()
     }
 
     /// Shuts the server down and waits for the background task to finish.
@@ -389,15 +402,25 @@ impl Drop for RunningServer {
     }
 }
 
+#[derive(Default)]
+struct TraceServerComponents {
+    service: Option<TraceService>,
+    local_trace_store_dir: Option<PathBuf>,
+}
+
 async fn start_server(
     source_manager: SourceManager,
     workspace_manager: WorkspaceManager,
     query_manager: QueryManager,
     feedback_manager: FeedbackManager,
     episode_store: EpisodeStore,
-    trace_service: Option<TraceService>,
+    trace_components: TraceServerComponents,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
+    let TraceServerComponents {
+        service: trace_service,
+        local_trace_store_dir,
+    } = trace_components;
     let source_service = SourceService::new(source_manager, query_manager.clone());
     let workspace_service = WorkspaceService::new(workspace_manager);
     let catalog_service = CatalogService::new(query_manager.clone());
@@ -452,6 +475,7 @@ async fn start_server(
 
     Ok(RunningServer {
         endpoint_uri,
+        local_trace_store_dir,
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
         task: Mutex::new(Some(task)),
     })
@@ -671,8 +695,8 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider, is_grpc_web_content_type,
-        is_native_grpc_content_type, start_server,
+        ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider, TraceServerComponents,
+        is_grpc_web_content_type, is_native_grpc_content_type, start_server,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::episode::store::EpisodeStore;
@@ -815,7 +839,10 @@ enabled = false
             query_manager,
             feedback_manager,
             episode_store,
-            Some(trace_service),
+            TraceServerComponents {
+                service: Some(trace_service),
+                local_trace_store_dir: None,
+            },
             ServerMode::NativeGrpc,
         )
         .await
@@ -1203,7 +1230,7 @@ tables:
             query_manager,
             feedback_manager,
             episode_store,
-            None,
+            TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )
         .await
@@ -1311,7 +1338,7 @@ tables:
             query_manager,
             feedback_manager,
             episode_store,
-            None,
+            TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )
         .await
@@ -1419,7 +1446,7 @@ tables:
             query_manager,
             feedback_manager,
             episode_store,
-            None,
+            TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )
         .await
