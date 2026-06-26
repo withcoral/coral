@@ -16,18 +16,21 @@ use assert_cmd::Command;
 use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer};
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
+use coral_api::v1::workspace_service_server::{WorkspaceService, WorkspaceServiceServer};
 use coral_api::v1::{
     CatalogCounts, CatalogItem, CatalogSearchResult, Column, ColumnSearchResult,
     CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DeleteSourceResponse,
+    CreateBundledSourceWithOAuthResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
+    DeleteSourceRequest, DeleteSourceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
     DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
     ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
     GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
     ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
     ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
-    PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
-    Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
-    Table, TableSummary, ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    ListWorkspacesRequest, ListWorkspacesResponse, PaginationRequest, PaginationResponse,
+    QueryPlan, SearchCatalogRequest, SearchCatalogResponse, Source, SourceCredentialStorage,
+    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
+    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
     create_bundled_source_with_o_auth_response, import_source_response,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -461,6 +464,7 @@ pub(crate) struct MockServerConfig {
     execute_sql_override: Option<MockResult<ExecuteSqlResponse>>,
     discover_sources: MockResult<DiscoverSourcesResponse>,
     list_sources: MockResult<ListSourcesResponse>,
+    list_workspaces: MockResult<ListWorkspacesResponse>,
     validate_source: MockResult<ValidateSourceResponse>,
     delete_source: MockResult<()>,
 }
@@ -492,6 +496,9 @@ impl Default for MockServerConfig {
                     },
                 ],
             }),
+            list_workspaces: MockResult::ok(ListWorkspacesResponse {
+                workspaces: vec![workspace()],
+            }),
             validate_source: MockResult::ok(mock_validate_response()),
             delete_source: MockResult::ok(()),
         }
@@ -506,6 +513,11 @@ impl MockServerConfig {
 
     pub(crate) fn with_list_sources(mut self, response: ListSourcesResponse) -> Self {
         self.list_sources = MockResult::ok(response);
+        self
+    }
+
+    pub(crate) fn with_list_workspaces(mut self, response: ListWorkspacesResponse) -> Self {
+        self.list_workspaces = MockResult::ok(response);
         self
     }
 
@@ -609,6 +621,9 @@ struct Captured {
     import_source: Mutex<Vec<ImportSourceRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
+    list_workspaces: Mutex<Vec<ListWorkspacesRequest>>,
+    create_workspace: Mutex<Vec<CreateWorkspaceRequest>>,
+    delete_workspace: Mutex<Vec<DeleteWorkspaceRequest>>,
 }
 
 pub(crate) fn encode_arrow_ipc_stream(
@@ -1001,6 +1016,59 @@ impl SourceService for MockSourceService {
     }
 }
 
+#[derive(Clone)]
+struct MockWorkspaceService {
+    config: Arc<MockServerConfig>,
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl WorkspaceService for MockWorkspaceService {
+    async fn list_workspaces(
+        &self,
+        request: Request<ListWorkspacesRequest>,
+    ) -> Result<Response<ListWorkspacesResponse>, Status> {
+        self.captured
+            .list_workspaces
+            .lock()
+            .expect("list_workspaces capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config.list_workspaces.clone().into_tonic_result()?,
+        ))
+    }
+
+    async fn create_workspace(
+        &self,
+        request: Request<CreateWorkspaceRequest>,
+    ) -> Result<Response<CreateWorkspaceResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .create_workspace
+            .lock()
+            .expect("create_workspace capture")
+            .push(request.clone());
+        Ok(Response::new(CreateWorkspaceResponse {
+            workspace: request.workspace,
+        }))
+    }
+
+    async fn delete_workspace(
+        &self,
+        request: Request<DeleteWorkspaceRequest>,
+    ) -> Result<Response<DeleteWorkspaceResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .delete_workspace
+            .lock()
+            .expect("delete_workspace capture")
+            .push(request.clone());
+        Ok(Response::new(DeleteWorkspaceResponse {
+            workspace: request.workspace,
+        }))
+    }
+}
+
 pub(crate) struct MockServer {
     endpoint_uri: String,
     config_dir: TempDir,
@@ -1025,7 +1093,10 @@ impl MockServer {
         let query_captured = Arc::clone(&captured);
         let catalog_captured = Arc::clone(&captured);
         let source_captured = Arc::clone(&captured);
+        let workspace_captured = Arc::clone(&captured);
         let query_config = Arc::clone(&config);
+        let source_config = Arc::clone(&config);
+        let workspace_config = Arc::clone(&config);
         let task = tokio::spawn(async move {
             Server::builder()
                 .add_service(CatalogServiceServer::new(MockCatalogService {
@@ -1036,8 +1107,12 @@ impl MockServer {
                     captured: query_captured,
                 }))
                 .add_service(SourceServiceServer::new(MockSourceService {
-                    config,
+                    config: source_config,
                     captured: source_captured,
+                }))
+                .add_service(WorkspaceServiceServer::new(MockWorkspaceService {
+                    config: workspace_config,
+                    captured: workspace_captured,
                 }))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     drop(shutdown_rx.await);
@@ -1166,6 +1241,30 @@ impl MockServer {
             .import_source
             .lock()
             .expect("import_source capture")
+            .clone()
+    }
+
+    pub(crate) fn list_workspaces_requests(&self) -> Vec<ListWorkspacesRequest> {
+        self.captured
+            .list_workspaces
+            .lock()
+            .expect("list_workspaces capture")
+            .clone()
+    }
+
+    pub(crate) fn create_workspace_requests(&self) -> Vec<CreateWorkspaceRequest> {
+        self.captured
+            .create_workspace
+            .lock()
+            .expect("create_workspace capture")
+            .clone()
+    }
+
+    pub(crate) fn delete_workspace_requests(&self) -> Vec<DeleteWorkspaceRequest> {
+        self.captured
+            .delete_workspace
+            .lock()
+            .expect("delete_workspace capture")
             .clone()
     }
 
