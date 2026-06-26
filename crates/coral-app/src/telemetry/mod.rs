@@ -32,6 +32,7 @@ pub mod metrics;
 pub(crate) mod service;
 
 use crate::bootstrap::AppError;
+use crate::workspaces::WorkspaceName;
 pub use config::TelemetryConfig;
 use config::{DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
 
@@ -263,6 +264,15 @@ fn configured_local_trace_store(
         .map(|dir| InstalledLocalTraceStore::new(dir, config.trace_history.retention()))
 }
 
+pub(crate) fn delete_workspace_traces(
+    trace_store_dir: PathBuf,
+    workspace_name: &WorkspaceName,
+) -> Result<usize, String> {
+    local_store::TraceStore::new(trace_store_dir)
+        .delete_traces_for_workspace(workspace_name.as_str())
+        .map_err(|error| error.to_string())
+}
+
 fn telemetry_resource(service_name: &str) -> Resource {
     Resource::builder()
         .with_attribute(opentelemetry::KeyValue::new(
@@ -307,7 +317,7 @@ fn add_local_trace_exporter(
         build_trace_targets(DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOCAL_TRACE_FILTER);
     let exporter = TargetFilteringSpanExporter::new(exporter, internal_trace_targets)
         .excluding_rpc_services(LOCAL_TRACE_EXCLUDED_RPC_SERVICES);
-    Ok(builder.with_span_processor(BatchSpanProcessor::builder(exporter).build()))
+    Ok(builder.with_simple_exporter(exporter))
 }
 
 fn build_otlp_logger_provider(

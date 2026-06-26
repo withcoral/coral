@@ -1,6 +1,6 @@
 use crate::bootstrap::AppError;
 use crate::sources::model::InstalledSource;
-use crate::workspaces::{WorkspaceName, WorkspaceRecord};
+use crate::workspaces::{DeletedWorkspaceRecord, WorkspaceName, WorkspaceRecord};
 
 /// Repository boundary for workspace metadata and workspace-owned source state.
 pub(crate) trait WorkspaceStore: Send + Sync + 'static {
@@ -17,5 +17,7 @@ pub(crate) trait WorkspaceStore: Send + Sync + 'static {
     fn delete_workspace(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Option<WorkspaceRecord>, AppError>;
+    ) -> Result<Option<DeletedWorkspaceRecord>, AppError>;
+
+    fn restore_workspace(&self, deleted: DeletedWorkspaceRecord) -> Result<(), AppError>;
 }

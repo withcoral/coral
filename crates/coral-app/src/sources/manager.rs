@@ -27,7 +27,7 @@ use crate::sources::materialization::{
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
 use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec};
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use tokio::sync::{mpsc, oneshot};
@@ -40,6 +40,7 @@ pub(crate) struct SourceManager {
     credential_manager: CredentialManager,
     oauth_credential_service: OAuthCredentialService,
     layout: AppStateLayout,
+    lifecycle_lock: WorkspaceLifecycleLock,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -169,16 +170,32 @@ fn materialization_inputs_from_bindings(
 }
 
 impl SourceManager {
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
         layout: AppStateLayout,
+    ) -> Self {
+        Self::new_with_lifecycle_lock(
+            config_store,
+            credential_manager,
+            layout,
+            WorkspaceLifecycleLock::default(),
+        )
+    }
+
+    pub(crate) fn new_with_lifecycle_lock(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        layout: AppStateLayout,
+        lifecycle_lock: WorkspaceLifecycleLock,
     ) -> Self {
         Self {
             config_store,
             credential_manager,
             oauth_credential_service: OAuthCredentialService::new(),
             layout,
+            lifecycle_lock,
         }
     }
 
@@ -351,6 +368,7 @@ impl SourceManager {
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
+        let _lifecycle_guard = self.lifecycle_lock.lock();
         self.validate_runtime_schema_names_available(
             workspace_name,
             &candidate.name,
@@ -438,6 +456,12 @@ impl SourceManager {
                 events,
             )
             .await?;
+        let _lifecycle_guard = self.lifecycle_lock.lock();
+        self.validate_runtime_schema_names_available(
+            workspace_name,
+            &candidate.name,
+            materialization_manifest_yaml,
+        )?;
         let materialization_inputs =
             materialization_inputs_from_bindings(&bindings, &stored_material_for_materialization);
         let credential_storage = self.source_persist_storage(
@@ -473,6 +497,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
+        let _lifecycle_guard = self.lifecycle_lock.lock();
         let stored = self.config_store.get_source(workspace_name, source_name)?;
         let removed = self.populate_source_version_or_keep(workspace_name, stored.clone());
         let source_dir = self.layout.source_dir(workspace_name, source_name);

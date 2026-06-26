@@ -57,7 +57,7 @@ use crate::state::{ConfigStore, ConfigWorkspaceStore};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
-use crate::workspaces::{WorkspaceManager, WorkspaceService};
+use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceManager, WorkspaceService};
 
 /// A static asset (e.g., a built SPA file) served on the same port as
 /// gRPC-Web.
@@ -267,15 +267,19 @@ impl ServerBuilder {
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
+        let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
+        let source_manager = SourceManager::new_with_lifecycle_lock(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            workspace_lifecycle_lock.clone(),
         );
-        let workspace_manager = WorkspaceManager::new(
+        let workspace_manager = WorkspaceManager::new_with_lifecycle_lock(
             ConfigWorkspaceStore::new(config_store.clone()),
             credential_manager.clone(),
             layout.workspaces_root(),
+            internal_trace_store_dir,
+            workspace_lifecycle_lock,
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
@@ -791,6 +795,7 @@ enabled = false
             ConfigWorkspaceStore::new(config_store.clone()),
             credential_manager.clone(),
             layout.workspaces_root(),
+            None,
         );
         let query_manager = QueryManager::new(
             config_store,
@@ -1177,6 +1182,7 @@ tables:
             ConfigWorkspaceStore::new(config_store.clone()),
             credential_manager.clone(),
             layout.workspaces_root(),
+            None,
         );
         let query_manager = QueryManager::new(
             config_store,
@@ -1287,6 +1293,7 @@ tables:
             ConfigWorkspaceStore::new(config_store.clone()),
             credential_manager.clone(),
             layout.workspaces_root(),
+            None,
         );
         let query_manager = QueryManager::new(
             config_store,
@@ -1394,6 +1401,7 @@ tables:
             ConfigWorkspaceStore::new(config_store.clone()),
             credential_manager.clone(),
             layout.workspaces_root(),
+            None,
         );
         let query_manager = QueryManager::new(
             config_store,

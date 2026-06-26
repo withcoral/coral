@@ -14,7 +14,7 @@ use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
 use crate::storage::fs::{self as storage_fs, FileLock};
 use crate::workspaces::WorkspaceName;
-use crate::workspaces::{WorkspaceRecord, WorkspaceStore};
+use crate::workspaces::{DeletedWorkspaceRecord, WorkspaceRecord, WorkspaceStore};
 
 #[derive(Debug, Clone)]
 pub(crate) struct AppConfig {
@@ -509,15 +509,39 @@ impl ConfigStore {
     pub(crate) fn delete_workspace(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Option<WorkspaceRecord>, AppError> {
+    ) -> Result<Option<DeletedWorkspaceRecord>, AppError> {
         self.update_config(|config| {
             let removed = config.workspaces.remove(workspace_name);
             if removed {
-                config.catalog.remove_workspace(workspace_name);
+                let sources = config
+                    .catalog
+                    .remove_workspace(workspace_name)
+                    .map(|sources| sources.into_values().collect())
+                    .unwrap_or_default();
+                return Ok(Some(DeletedWorkspaceRecord {
+                    workspace: WorkspaceRecord {
+                        name: workspace_name.clone(),
+                    },
+                    sources,
+                }));
             }
-            Ok(removed.then(|| WorkspaceRecord {
-                name: workspace_name.clone(),
-            }))
+            Ok(None)
+        })
+    }
+
+    pub(crate) fn restore_workspace(
+        &self,
+        deleted: DeletedWorkspaceRecord,
+    ) -> Result<(), AppError> {
+        self.update_config(|config| {
+            let workspace_name = deleted.workspace.name;
+            if !config.workspaces.insert(workspace_name.clone()) {
+                return Err(AppError::WorkspaceAlreadyExists(workspace_name.to_string()));
+            }
+            for source in deleted.sources {
+                config.catalog.upsert_source(&workspace_name, source);
+            }
+            Ok(())
         })
     }
 
@@ -620,8 +644,12 @@ impl WorkspaceStore for ConfigWorkspaceStore {
     fn delete_workspace(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Option<WorkspaceRecord>, AppError> {
+    ) -> Result<Option<DeletedWorkspaceRecord>, AppError> {
         self.config_store.delete_workspace(workspace_name)
+    }
+
+    fn restore_workspace(&self, deleted: DeletedWorkspaceRecord) -> Result<(), AppError> {
+        self.config_store.restore_workspace(deleted)
     }
 }
 
