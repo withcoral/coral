@@ -1108,7 +1108,37 @@ async fn cypher_count_node_projection_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
-async fn cypher_count_relationship_variables_are_rejected() {
+async fn cypher_count_keyed_relationship_variables_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         RETURN count(owns) AS ownerships",
+    )
+    .await
+    .expect("counting a keyed relationship variable should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COUNT(\"r0\".\"ownership_id\") AS \"ownerships\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"ownerships": 3})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_count_keyless_relationship_variables_are_rejected() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
     let source = build_source(ops_manifest(temp.path()));
@@ -1118,11 +1148,11 @@ async fn cypher_count_relationship_variables_are_rejected() {
         &[source],
         test_runtime(),
         &graph,
-        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
-         RETURN count(owns) AS ownerships",
+        "MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \
+         RETURN count(dependency) AS dependencies",
     )
     .await
-    .expect_err("counting a relationship variable should fail");
+    .expect_err("counting a keyless relationship variable should fail");
 
     assert!(
         error.to_string().contains("INVALID_AGGREGATE_TARGET"),
@@ -1270,9 +1300,9 @@ fn write_ops_fixture(dir: &Path) {
         dir,
         "ownerships.jsonl",
         &[
-            json!({"person_id": 1, "service_id": 10, "since": "2024-01-10"}),
-            json!({"person_id": 2, "service_id": 20, "since": "2024-02-20", "source": "pagerduty"}),
-            json!({"person_id": 3, "service_id": 30, "since": "2024-03-15", "source": "catalog"}),
+            json!({"ownership_id": 100, "person_id": 1, "service_id": 10, "since": "2024-01-10"}),
+            json!({"ownership_id": 200, "person_id": 2, "service_id": 20, "since": "2024-02-20", "source": "pagerduty"}),
+            json!({"ownership_id": 300, "person_id": 3, "service_id": 30, "since": "2024-03-15", "source": "catalog"}),
         ],
     );
     write_jsonl_file(
@@ -1324,6 +1354,7 @@ fn ops_manifest(dir: &Path) -> Value {
                 "format": "jsonl",
                 "source": { "location": dir_url(dir), "glob": "ownerships.jsonl" },
                 "columns": [
+                    { "name": "ownership_id", "type": "Int64" },
                     { "name": "person_id", "type": "Int64" },
                     { "name": "service_id", "type": "Int64" },
                     { "name": "since", "type": "Utf8" },
@@ -1370,6 +1401,7 @@ nodes:
 relationships:
   - type: OWNS
     table: { schema: ops, name: ownerships }
+    key: ownership_id
     from: { label: Person, key: person_id }
     to: { label: Service, key: service_id }
     properties:

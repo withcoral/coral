@@ -158,9 +158,9 @@ pub enum AggregateFunction {
 pub enum AggregateTarget {
     /// Aggregate a graph property.
     Property(PropertyRef),
-    /// Aggregate a node variable by its mapped key column.
-    Node {
-        /// Node variable to aggregate.
+    /// Aggregate a graph variable by its mapped stable key column.
+    VariableKey {
+        /// Graph variable to aggregate.
         variable: String,
     },
 }

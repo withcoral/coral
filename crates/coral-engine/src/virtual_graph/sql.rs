@@ -517,21 +517,26 @@ impl<'a> Lowerer<'a> {
     fn render_aggregate_target(&self, target: &AggregateTarget) -> Result<String, CoreError> {
         match target {
             AggregateTarget::Property(property) => self.render_property_ref(property),
-            AggregateTarget::Node { variable } => self.render_node_key_ref(variable),
+            AggregateTarget::VariableKey { variable } => self.render_binding_key_ref(variable),
         }
     }
 
-    fn render_node_key_ref(&self, variable: &str) -> Result<String, CoreError> {
+    fn render_binding_key_ref(&self, variable: &str) -> Result<String, CoreError> {
         let binding = self.validated.binding(variable)?;
-        let ValidatedBindingKind::Node(node) = binding.kind() else {
-            return Err(CoreError::internal(
-                "validated aggregate node target was not a node binding",
-            ));
+        let key = match binding.kind() {
+            ValidatedBindingKind::Node(node) => node.key.as_str(),
+            ValidatedBindingKind::Relationship(relationship) => {
+                relationship.key.as_deref().ok_or_else(|| {
+                    CoreError::internal(
+                        "validated aggregate relationship target did not have a key",
+                    )
+                })?
+            }
         };
         Ok(format!(
             "{}.{}",
             quote_ident(binding.alias()),
-            quote_ident(&node.key)
+            quote_ident(key)
         ))
     }
 
@@ -653,6 +658,7 @@ nodes:
 relationships:
   - type: OWNS
     table: { schema: ops, name: ownerships }
+    key: ownership_id
     from: { label: Person, key: person_id }
     to: { label: Service, key: service_id }
     properties:
@@ -1547,7 +1553,7 @@ relationships: []
         let mut plan = ownership_plan(Direction::Outgoing);
         plan.projections = vec![Projection::Aggregate {
             function: AggregateFunction::Count,
-            target: AggregateTarget::Node {
+            target: AggregateTarget::VariableKey {
                 variable: "service".to_string(),
             },
             distinct: true,
@@ -1573,6 +1579,37 @@ relationships: []
             translation
                 .sql()
                 .contains(" ORDER BY \"service_count\" DESC"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_count_keyed_relationship_projection() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.relationships
+            .first_mut()
+            .expect("ownership plan should include a relationship")
+            .variable = Some("owns".to_string());
+        plan.projections = vec![Projection::Aggregate {
+            function: AggregateFunction::Count,
+            target: AggregateTarget::VariableKey {
+                variable: "owns".to_string(),
+            },
+            distinct: true,
+            alias: "ownership_count".to_string(),
+        }];
+        plan.order_by.clear();
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("count keyed relationship projection should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("COUNT(DISTINCT \"r0\".\"ownership_id\") AS \"ownership_count\""),
             "{}",
             translation.sql()
         );

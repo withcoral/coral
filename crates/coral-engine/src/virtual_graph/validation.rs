@@ -511,13 +511,13 @@ impl<'a> GraphPlanValidator<'a> {
         let path = path.into();
         match target {
             AggregateTarget::Property(property) => self.validate_property_ref(property, path),
-            AggregateTarget::Node { variable } => {
+            AggregateTarget::VariableKey { variable } => {
                 if function != AggregateFunction::Count {
                     return Err(Diagnostic::new(
                         "INVALID_AGGREGATE_TARGET",
                         path,
                         format!(
-                            "{}({variable}) requires a graph property argument; only count(node) can aggregate a node variable",
+                            "{}({variable}) requires a graph property argument; only count(variable) can aggregate a graph variable key",
                             aggregate_function_name(function)
                         ),
                     )
@@ -534,14 +534,21 @@ impl<'a> GraphPlanValidator<'a> {
                 })?;
                 match binding.kind() {
                     ValidatedBindingKind::Node(_) => Ok(()),
-                    ValidatedBindingKind::Relationship(_) => Err(Diagnostic::new(
-                        "INVALID_AGGREGATE_TARGET",
-                        path,
-                        format!(
-                            "count({variable}) is only supported for node variables because relationship mappings do not define a unique key"
-                        ),
-                    )
-                    .into_core_error()),
+                    ValidatedBindingKind::Relationship(relationship) => {
+                        if relationship.key.is_some() {
+                            Ok(())
+                        } else {
+                            Err(Diagnostic::new(
+                                "INVALID_AGGREGATE_TARGET",
+                                path,
+                                format!(
+                                    "count({variable}) requires relationship mapping '{}' to declare a key",
+                                    relationship.relationship_type
+                                ),
+                            )
+                            .into_core_error())
+                        }
+                    }
                 }
             }
         }
@@ -836,12 +843,12 @@ relationships:
     }
 
     #[test]
-    fn validate_graph_plan_rejects_relationship_aggregate_targets() {
+    fn validate_graph_plan_rejects_keyless_relationship_aggregate_targets() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan();
         plan.projections = vec![Projection::Aggregate {
             function: AggregateFunction::Count,
-            target: AggregateTarget::Node {
+            target: AggregateTarget::VariableKey {
                 variable: "owns".to_string(),
             },
             distinct: true,
@@ -859,12 +866,34 @@ relationships:
     }
 
     #[test]
+    fn validate_graph_plan_accepts_keyed_relationship_aggregate_targets() {
+        let keyed_graph = GRAPH.replace(
+            "table: { schema: ops, name: ownerships }\n    from:",
+            "table: { schema: ops, name: ownerships }\n    key: ownership_id\n    from:",
+        );
+        let graph = Declaration::from_yaml(&keyed_graph).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Aggregate {
+            function: AggregateFunction::Count,
+            target: AggregateTarget::VariableKey {
+                variable: "owns".to_string(),
+            },
+            distinct: true,
+            alias: "ownership_count".to_string(),
+        }];
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("keyed relationship aggregate target should validate");
+    }
+
+    #[test]
     fn validate_graph_plan_rejects_non_count_node_aggregate_targets() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan();
         plan.projections = vec![Projection::Aggregate {
             function: AggregateFunction::Sum,
-            target: AggregateTarget::Node {
+            target: AggregateTarget::VariableKey {
                 variable: "service".to_string(),
             },
             distinct: false,

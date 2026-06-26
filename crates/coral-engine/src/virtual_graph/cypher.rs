@@ -581,7 +581,7 @@ fn compile_function_aggregate_target(
                     "count() supports exactly one graph property or node variable argument; use count(*) to count rows",
                 )
             })?;
-            Ok(AggregateTarget::Node {
+            Ok(AggregateTarget::VariableKey {
                 variable: variable.to_string(),
             })
         }
@@ -644,7 +644,7 @@ fn compile_aggregate_target(
     let path = path.into();
     match expression {
         Expression::Parenthesized(inner) => compile_aggregate_target(inner, path),
-        Expression::Variable(variable) => Ok(AggregateTarget::Node {
+        Expression::Variable(variable) => Ok(AggregateTarget::VariableKey {
             variable: variable_name(variable),
         }),
         _ => Ok(AggregateTarget::Property(compile_property_ref(
@@ -2168,7 +2168,7 @@ mod tests {
             vec![
                 Projection::Aggregate {
                     function: super::AggregateFunction::Count,
-                    target: AggregateTarget::Node {
+                    target: AggregateTarget::VariableKey {
                         variable: "service".to_string(),
                     },
                     distinct: false,
@@ -2176,7 +2176,7 @@ mod tests {
                 },
                 Projection::Aggregate {
                     function: super::AggregateFunction::Count,
-                    target: AggregateTarget::Node {
+                    target: AggregateTarget::VariableKey {
                         variable: "service".to_string(),
                     },
                     distinct: true,

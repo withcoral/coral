@@ -58,6 +58,9 @@ pub struct Relationship {
     pub relationship_type: String,
     /// Source table backing the relationship.
     pub table: TableRef,
+    /// Optional source table column used as a stable relationship key.
+    #[serde(default)]
+    pub key: Option<String>,
     /// Relationship endpoint mapped to the source table's from-key column.
     pub from: Endpoint,
     /// Relationship endpoint mapped to the source table's to-key column.
@@ -196,6 +199,9 @@ impl Declaration {
                 .into_core_error()
             })?;
             validate_table_scan_supported(table, &format!("{path}.table"))?;
+            if let Some(key) = &relationship.key {
+                validate_column(table, key, &format!("{path}.key"))?;
+            }
             validate_column(table, &relationship.from.key, &format!("{path}.from.key"))?;
             validate_column(table, &relationship.to.key, &format!("{path}.to.key"))?;
             for (property, column) in &relationship.properties {
@@ -241,12 +247,18 @@ impl Relationship {
     fn validate(&self, path: &str, labels: &BTreeSet<&str>) -> Result<(), CoreError> {
         require_non_empty(format!("{path}.type"), &self.relationship_type)?;
         self.table.validate(&format!("{path}.table"))?;
+        if let Some(key) = &self.key {
+            require_non_empty(format!("{path}.key"), key)?;
+        }
         self.from.validate(&format!("{path}.from"), labels)?;
         self.to.validate(&format!("{path}.to"), labels)?;
         validate_properties(&format!("{path}.properties"), &self.properties)
     }
 
     pub(crate) fn column_for_property(&self, property: &str) -> Option<&str> {
+        if self.key.as_deref() == Some(property) {
+            return self.key.as_deref();
+        }
         self.properties.get(property).map(String::as_str)
     }
 }
@@ -362,6 +374,7 @@ nodes:
 relationships:
   - type: OWNS
     table: { schema: ops, name: ownerships }
+    key: ownership_id
     from: { label: Person, key: person_id }
     to: { label: Service, key: service_id }
     properties:
@@ -375,6 +388,13 @@ relationships:
         assert_eq!(graph.name, "ownership");
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(graph.relationships.len(), 1);
+        assert_eq!(
+            graph
+                .relationships
+                .first()
+                .and_then(|rel| rel.key.as_deref()),
+            Some("ownership_id")
+        );
         assert_eq!(
             graph
                 .node("Person")
@@ -400,6 +420,14 @@ relationships:
         let error = Declaration::from_yaml(&raw).expect_err("unknown endpoint should fail");
 
         assert_invalid_graph_error(error, "UNKNOWN_ENDPOINT_LABEL");
+    }
+
+    #[test]
+    fn declaration_rejects_empty_relationship_keys() {
+        let raw = VALID_GRAPH.replace("key: ownership_id", "key: ''");
+        let error = Declaration::from_yaml(&raw).expect_err("empty relationship key should fail");
+
+        assert_invalid_graph_error(error, "EMPTY_FIELD");
     }
 
     #[test]
@@ -471,6 +499,26 @@ relationships: []
     }
 
     #[test]
+    fn declaration_catalog_validation_rejects_missing_relationship_key_columns() {
+        let graph = Declaration::from_yaml(VALID_GRAPH).expect("graph should parse");
+        let mut catalog = ownership_catalog();
+        let ownerships = catalog
+            .tables
+            .iter_mut()
+            .find(|table| table.table_name == "ownerships")
+            .expect("ownerships table should exist");
+        ownerships
+            .columns
+            .retain(|column| column.name != "ownership_id");
+
+        let error = graph
+            .validate_against_catalog(&catalog)
+            .expect_err("missing relationship key column should fail");
+
+        assert_invalid_graph_error(error, "MAPPED_COLUMN_NOT_FOUND");
+    }
+
+    #[test]
     fn declaration_catalog_validation_rejects_required_filter_tables() {
         let graph = Declaration::from_yaml(VALID_GRAPH).expect("graph should parse");
         let mut catalog = ownership_catalog();
@@ -506,7 +554,11 @@ relationships: []
             tables: vec![
                 table("ops", "people", &["id", "full_name", "team"]),
                 table("ops", "services", &["id", "service_name"]),
-                table("ops", "ownerships", &["person_id", "service_id", "since"]),
+                table(
+                    "ops",
+                    "ownerships",
+                    &["ownership_id", "person_id", "service_id", "since"],
+                ),
             ],
             table_functions: Vec::new(),
         }
