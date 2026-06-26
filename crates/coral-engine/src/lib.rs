@@ -59,6 +59,7 @@ mod backends;
 mod composition;
 pub mod contracts;
 mod runtime;
+pub mod virtual_graph;
 
 pub use backends::mcp::discover_tool_catalog as discover_mcp_tool_catalog;
 pub use composition::{
@@ -73,6 +74,13 @@ pub use contracts::{
     QueryTestResult, QueryTestSuccess, RuntimeSourceComponent, RuntimeSourcePackage,
     SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
     TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+};
+pub use virtual_graph::{
+    ComparisonOperator, Declaration as GraphDeclaration, Diagnostic as GraphDiagnostic,
+    Direction as GraphDirection, GraphPlan, Literal as GraphLiteral, NodePattern,
+    OrderDirection as GraphOrderDirection, OrderKey as GraphOrderKey,
+    Projection as GraphProjection, PropertyPredicate as GraphPropertyPredicate,
+    PropertyRef as GraphPropertyRef, RelationshipPattern, SqlTranslation as GraphSqlTranslation,
 };
 
 /// High-level query operations for the local query engine.

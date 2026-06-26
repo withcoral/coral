@@ -1,4 +1,4 @@
-.PHONY: install ui-build rust-checks perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
+.PHONY: install ui-build rust-checks virtual-graph-checks perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
 
 install: ui-build
 	cargo install --path crates/coral-cli --locked
@@ -13,6 +13,11 @@ rust-checks:
 	cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 	cargo nextest run --workspace --all-targets --all-features --locked --no-fail-fast
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
+
+virtual-graph-checks:
+	cargo fmt --all -- --check
+	cargo clippy -p coral-engine --all-targets --locked -- -D warnings
+	cargo test -p coral-engine virtual_graph --locked
 
 perf-check:
 	cargo build --locked -p coral-cli --release
