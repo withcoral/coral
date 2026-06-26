@@ -34,6 +34,31 @@ impl SqlBatchValue {
             results,
         }
     }
+
+    pub(crate) fn from_unordered(
+        mut results: Vec<SqlQueryResultValue>,
+    ) -> Result<Self, tonic::Status> {
+        results.sort_by_key(SqlQueryResultValue::index);
+
+        for (expected_index, result) in results.iter().enumerate() {
+            let actual_index = result.index();
+            if actual_index != expected_index {
+                return Err(tonic::Status::internal(format!(
+                    "SQL batch result index mismatch: expected {expected_index}, found {actual_index}"
+                )));
+            }
+        }
+
+        Ok(Self::from_successes(results))
+    }
+}
+
+impl SqlQueryResultValue {
+    fn index(&self) -> usize {
+        match self {
+            Self::Success { index, .. } => *index,
+        }
+    }
 }
 
 pub(crate) fn sql_arguments(

@@ -1,5 +1,10 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
@@ -314,19 +319,51 @@ impl CoralMcpServer {
             .map_err(|error| tonic::Status::internal(error.to_string()))
     }
 
-    async fn execute_sql_batch_value(&self, queries: Vec<String>) -> Result<Value, tonic::Status> {
-        let mut results = Vec::with_capacity(queries.len());
+    async fn execute_one_sql_query(
+        &self,
+        index: usize,
+        sql: String,
+    ) -> Result<SqlQueryResultValue, tonic::Status> {
+        let request = Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql,
+        });
+        Ok(SqlQueryResultValue::Success {
+            index,
+            rows: self.query_rows(request).await?,
+        })
+    }
+
+    async fn execute_sql_batch(
+        &self,
+        queries: Vec<String>,
+    ) -> Result<SqlBatchValue, tonic::Status> {
+        let mut tasks = tokio::task::JoinSet::new();
+        let next_to_submit = Arc::new(AtomicUsize::new(0));
+        let submission_notify = Arc::new(tokio::sync::Notify::new());
         for (index, sql) in queries.into_iter().enumerate() {
-            let request = Request::new(ExecuteSqlRequest {
-                workspace: Some(default_workspace()),
-                sql,
-            });
-            results.push(SqlQueryResultValue::Success {
-                index,
-                rows: self.query_rows(request).await?,
+            let server = self.clone();
+            let next_to_submit = Arc::clone(&next_to_submit);
+            let submission_notify = Arc::clone(&submission_notify);
+            tasks.spawn(async move {
+                while next_to_submit.load(Ordering::Acquire) != index {
+                    submission_notify.notified().await;
+                }
+                next_to_submit.fetch_add(1, Ordering::AcqRel);
+                submission_notify.notify_waiters();
+                server.execute_one_sql_query(index, sql).await
             });
         }
-        serialize_tool_value(SqlBatchValue::from_successes(results))
+
+        let mut results = Vec::new();
+        while let Some(joined) = tasks.join_next().await {
+            results.push(joined.map_err(|error| tonic::Status::internal(error.to_string()))??);
+        }
+        SqlBatchValue::from_unordered(results)
+    }
+
+    async fn execute_sql_batch_value(&self, queries: Vec<String>) -> Result<Value, tonic::Status> {
+        serialize_tool_value(self.execute_sql_batch(queries).await?)
     }
 
     async fn open_episode(

@@ -209,6 +209,24 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
         return mock_coral_tables_response();
     }
 
+    if sql.contains("'first'") || sql.contains("'second'") {
+        let label = if sql.contains("'first'") {
+            "first"
+        } else {
+            "second"
+        };
+        let schema = Schema::new(vec![Field::new("label", DataType::Utf8, false)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(StringArray::from(vec![label]))],
+        )
+        .expect("build label batch");
+        return ExecuteSqlResponse {
+            arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
+            row_count: 1,
+        };
+    }
+
     let (schema, batch, row_count) = if sql.contains("local_messages.messages") {
         let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
         let batch = RecordBatch::try_new(

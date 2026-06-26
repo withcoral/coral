@@ -961,6 +961,48 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_sql_batch_records_execute_sql_requests_in_order()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client(&server).await?;
+
+    let sql = structured_tool_content(
+        &client,
+        CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+            "queries": [
+                "SELECT 'first' AS label",
+                "SELECT 'second' AS label"
+            ]
+        }))),
+    )
+    .await?;
+    assert_eq!(sql["total_count"], 2);
+    assert_eq!(sql["success_count"], 2);
+    assert_eq!(sql["error_count"], 0);
+    assert_eq!(sql["results"][0]["index"], 0);
+    assert_eq!(sql["results"][0]["rows"][0]["label"], "first");
+    assert_eq!(sql["results"][1]["index"], 1);
+    assert_eq!(sql["results"][1]["rows"][0]["label"], "second");
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.sql == "SELECT 'first' AS label")
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.sql == "SELECT 'second' AS label")
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_stdio_sql_rejects_malformed_queries_before_backend_dispatch()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;

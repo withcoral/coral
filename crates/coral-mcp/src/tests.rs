@@ -1462,6 +1462,41 @@ async fn mcp_feedback_tool_is_disabled_by_default() {
 }
 
 #[tokio::test]
+async fn mcp_sql_executes_successful_batch_in_input_order() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let mut session = start_session(&temp).await;
+    add_demo_source(&mut session.source_client, manifest_yaml).await;
+    let client = &session.client;
+
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": [
+                    "SELECT text FROM local_messages.messages WHERE text = 'world'",
+                    "SELECT text FROM local_messages.messages WHERE text = 'hello'"
+                ]
+            }))),
+        )
+        .await
+        .expect("batched sql");
+    assert_eq!(sql.is_error, Some(false));
+    let sql = sql.structured_content.expect("sql structured");
+    assert_eq!(sql["total_count"], 2);
+    assert_eq!(sql["success_count"], 2);
+    assert_eq!(sql["error_count"], 0);
+    assert_eq!(sql["results"][0]["index"], 0);
+    assert_eq!(sql["results"][0]["status"], "success");
+    assert_eq!(sql["results"][0]["rows"][0]["text"], "world");
+    assert_eq!(sql["results"][1]["index"], 1);
+    assert_eq!(sql["results"][1]["status"], "success");
+    assert_eq!(sql["results"][1]["rows"][0]["text"], "hello");
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn mcp_tool_error_does_not_end_session() {
     let temp = TempDir::new().expect("temp dir");
     let manifest_path = write_fixture_manifest(temp.path());
