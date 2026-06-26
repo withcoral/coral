@@ -32,7 +32,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Distinct projections | Supported foundation | `SELECT DISTINCT` over projected rows |
 | Identity projections | Supported foundation | `id(node)`, `id(keyedRelationship)`, and `type(relationship)` lower through mapped keys and fixed relationship types |
 | Identity predicates | Supported foundation | `WHERE id(...)` compares mapped keys; `WHERE type(r)` is folded from the fixed relationship type |
-| Ordering, skip, and limit | Supported foundation | Property order keys, identity order keys, projection aliases including aggregate aliases, row offset, and row limit |
+| Ordering, skip, and limit | Supported foundation | Property order keys, identity order keys, direct projected aggregate expressions, projection aliases including aggregate aliases, row offset, and row limit |
 | Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
 | Declaration-aware plan validation | Supported foundation | Resolves variables/properties and rejects unsupported plan shapes before SQL rendering |
 | Optional matches | Deferred | Requires nullability-aware IR |
@@ -71,7 +71,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `RETURN id(...)` / `type(r)` | Supported foundation | Projects mapped keys and fixed relationship type literals |
 | `RETURN sum/avg/min/max(property)` | Supported foundation | Numeric aggregate projections over mapped properties |
 | `RETURN property, count(...)` | Supported foundation | Uses Cypher-style implicit grouping over projected properties |
-| `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, identity expressions, projection aliases including aggregate aliases, and non-negative integer offsets/limits |
+| `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, identity expressions, direct aggregate expressions that match `RETURN` projections, projection aliases including aggregate aliases, and non-negative integer offsets/limits |
 | `WITH` pass-through | Supported foundation | Transparent `WITH var, ...` and `WITH *` preserve bound graph variables |
 | Terminal `WITH` projections | Supported foundation | Terminal projection, alias filtering, ordering, skip, and limit are supported without staging another `MATCH` |
 | `OPTIONAL MATCH` | Rejected | Needs nullability-aware IR and SQL lowering |

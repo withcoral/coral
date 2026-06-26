@@ -837,15 +837,95 @@ fn compile_order_expression(
         Expression::Variable(variable) => {
             projection_order_expression_for_alias(variable, projections, path)
         }
+        Expression::CountStar { .. } => {
+            count_star_order_expression_for_projection(projections, path)
+        }
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_order_expression(function, path, plan, context)
         }
         Expression::FunctionCall(function) if is_type_function(function) => {
             compile_type_order_expression(function, path, plan, context)
         }
+        Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
+            aggregate_order_expression_for_projection(function, projections, path, context)
+        }
         _ => Ok(OrderExpression::Property(compile_property_ref(
             expression, path,
         )?)),
+    }
+}
+
+fn count_star_order_expression_for_projection(
+    projections: &[Projection],
+    path: impl Into<String>,
+) -> Result<OrderExpression, CoreError> {
+    let path = path.into();
+    let aliases = projections
+        .iter()
+        .filter_map(|projection| match projection {
+            Projection::CountAll { alias } => Some(alias.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    projection_alias_for_matching_order_expression(&aliases, path, "count(*)")
+}
+
+fn aggregate_order_expression_for_projection(
+    function: &FunctionInvocation,
+    projections: &[Projection],
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    let path = path.into();
+    let function_kind = compile_aggregate_function(function).ok_or_else(|| {
+        unsupported(
+            path.clone(),
+            format!(
+                "ORDER BY function '{}' is not supported yet",
+                qualified_function_name(function)
+            ),
+        )
+    })?;
+    let target = compile_function_aggregate_target(function, function_kind, &path, context)?;
+    let aliases = projections
+        .iter()
+        .filter_map(|projection| match projection {
+            Projection::Aggregate {
+                function: projection_function,
+                target: projection_target,
+                distinct,
+                alias,
+            } if *projection_function == function_kind
+                && projection_target == &target
+                && *distinct == function.distinct =>
+            {
+                Some(alias.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    projection_alias_for_matching_order_expression(
+        &aliases,
+        path,
+        &format!("{}()", aggregate_function_name(function_kind)),
+    )
+}
+
+fn projection_alias_for_matching_order_expression(
+    aliases: &[String],
+    path: String,
+    expression: &str,
+) -> Result<OrderExpression, CoreError> {
+    match aliases {
+        [alias] => Ok(OrderExpression::ProjectionAlias(alias.clone())),
+        [] => Err(unsupported(
+            path,
+            format!("ORDER BY {expression} must match a RETURN aggregate projection"),
+        )),
+        _ => Err(unsupported(
+            path,
+            format!("ORDER BY {expression} is ambiguous because multiple RETURN projections match"),
+        )),
     }
 }
 
@@ -3745,6 +3825,66 @@ mod tests {
                 expression: OrderExpression::ProjectionAlias("services".to_string()),
                 direction: OrderDirection::Descending,
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_order_by_count_star_expression() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN service.tier AS tier, count(*) AS services \
+             ORDER BY count(*) DESC, tier",
+        )
+        .expect("count(*) order expression should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("services".to_string()),
+                    direction: OrderDirection::Descending,
+                },
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_order_by_aggregate_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN count(service) AS services, avg(service.risk) AS average_risk \
+             ORDER BY count(service) DESC, avg(service.risk)",
+        )
+        .expect("aggregate order expressions should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("services".to_string()),
+                    direction: OrderDirection::Descending,
+                },
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("average_risk".to_string()),
+                    direction: OrderDirection::Ascending,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_unprojected_order_by_aggregate_expressions() {
+        assert_unsupported(
+            "MATCH (service:Service) \
+             RETURN service.tier AS tier \
+             ORDER BY count(*)",
         );
     }
 

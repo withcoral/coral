@@ -92,7 +92,8 @@ The supported foundation subset is intentionally narrow:
 - property projections, identity projections, standalone and grouped `count(*)`,
   `count(property)`, `count(DISTINCT property)`, `count(node)`,
   `count(DISTINCT node)`, `count(keyedRelationship)`, numeric property
-  aggregates, property and identity `ORDER BY`, and projection alias `ORDER BY`
+  aggregates, property and identity `ORDER BY`, direct aggregate `ORDER BY`
+  expressions that match projected aggregates, and projection alias `ORDER BY`
   including aggregate aliases;
 - transparent `WITH` pass-through and terminal `WITH` projection subsets;
 - integer `SKIP` and `LIMIT`.
