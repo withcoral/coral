@@ -190,10 +190,14 @@ jobs:
             xtask
           )
 
+          status=0
           for package in "${packages[@]}"; do
-            cargo nextest run -p "$package" --all-targets --all-features --locked --no-fail-fast --no-tests pass
+            if ! cargo nextest run -p "$package" --all-targets --all-features --locked --no-fail-fast --no-tests pass; then
+              status=1
+            fi
             cargo clean -p "$package"
           done
+          exit "$status"
 
       - name: Free Rust test artifacts
         run: cargo clean

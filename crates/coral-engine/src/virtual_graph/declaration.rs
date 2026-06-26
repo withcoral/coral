@@ -7,6 +7,7 @@ use crate::CoreError;
 
 /// Versioned virtual graph declaration.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Declaration {
     /// Declaration schema version.
     pub version: u16,
@@ -25,6 +26,7 @@ pub struct Declaration {
 
 /// SQL table reference used by a graph mapping.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct TableRef {
     /// `DataFusion` schema name.
     pub schema: String,
@@ -34,6 +36,7 @@ pub struct TableRef {
 
 /// Node label mapping.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Node {
     /// Graph node label.
     pub label: String,
@@ -48,6 +51,7 @@ pub struct Node {
 
 /// Relationship type mapping.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Relationship {
     /// Graph relationship type.
     #[serde(rename = "type")]
@@ -65,6 +69,7 @@ pub struct Relationship {
 
 /// Relationship endpoint mapping.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Endpoint {
     /// Node label at this endpoint.
     pub label: String,
@@ -170,10 +175,10 @@ impl Node {
     }
 
     pub(crate) fn column_for_property(&self, property: &str) -> Option<&str> {
-        if property == self.key {
-            return Some(&self.key);
-        }
-        self.properties.get(property).map(String::as_str)
+        self.properties
+            .get(property)
+            .map(String::as_str)
+            .or_else(|| (property == self.key).then_some(self.key.as_str()))
     }
 }
 
@@ -305,6 +310,39 @@ relationships:
         let error = Declaration::from_yaml(&raw).expect_err("unsupported version should fail");
 
         assert_invalid_graph_error(error, "UNSUPPORTED_VERSION");
+    }
+
+    #[test]
+    fn declaration_rejects_unknown_yaml_fields() {
+        let raw = VALID_GRAPH.replace("name: ownership", "name: ownership\nunknown: true");
+        let error = Declaration::from_yaml(&raw).expect_err("unknown field should fail");
+
+        assert_invalid_graph_error(error, "unknown field");
+    }
+
+    #[test]
+    fn node_explicit_property_mapping_takes_precedence_over_key_fallback() {
+        let graph = Declaration::from_yaml(
+            r"
+version: 1
+name: explicit-key-property
+nodes:
+  - label: Person
+    table: { schema: ops, name: people }
+    key: id
+    properties:
+      id: external_id
+relationships: []
+",
+        )
+        .expect("graph should parse");
+
+        assert_eq!(
+            graph
+                .node("Person")
+                .and_then(|node| node.column_for_property("id")),
+            Some("external_id")
+        );
     }
 
     fn assert_invalid_graph_error(error: CoreError, expected_code: &str) {

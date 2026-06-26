@@ -251,14 +251,36 @@ impl<'a> Lowerer<'a> {
         );
         self.joined_nodes.insert(first_node.variable.as_str());
 
-        for (index, pattern) in self.plan.relationships.iter().enumerate() {
-            let relationship = self
-                .graph
-                .relationship(&pattern.relationship_type)
-                .ok_or_else(|| {
-                    CoreError::internal("relationship binding missing during lowering")
+        let mut remaining_relationships =
+            (0..self.plan.relationships.len()).collect::<BTreeSet<_>>();
+        while !remaining_relationships.is_empty() {
+            let mut progressed = false;
+            for index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
+                let pattern = self.plan.relationships.get(index).ok_or_else(|| {
+                    CoreError::internal("validated relationship index was out of bounds")
                 })?;
-            self.join_relationship(index, pattern, relationship)?;
+                let left_joined = self.joined_nodes.contains(pattern.left.as_str());
+                let right_joined = self.joined_nodes.contains(pattern.right.as_str());
+                if left_joined || right_joined {
+                    let relationship = self
+                        .graph
+                        .relationship(&pattern.relationship_type)
+                        .ok_or_else(|| {
+                            CoreError::internal("relationship binding missing during lowering")
+                        })?;
+                    self.join_relationship(index, pattern, relationship)?;
+                    remaining_relationships.remove(&index);
+                    progressed = true;
+                }
+            }
+            if !progressed {
+                return Err(Diagnostic::new(
+                    "DISCONNECTED_PATTERN",
+                    "relationships",
+                    "remaining relationships do not connect to an already joined node",
+                )
+                .into_core_error());
+            }
         }
 
         for node in &self.plan.nodes {
@@ -456,12 +478,19 @@ impl<'a> Lowerer<'a> {
 
         let mut predicates = Vec::with_capacity(self.plan.predicates.len());
         for predicate in &self.plan.predicates {
-            predicates.push(format!(
-                "{} {} {}",
-                self.render_property_ref(&predicate.property)?,
-                render_operator(predicate.operator),
-                render_literal(&predicate.literal)
-            ));
+            let property = self.render_property_ref(&predicate.property)?;
+            predicates.push(match (predicate.operator, &predicate.literal) {
+                (ComparisonOperator::Equal, Literal::Null) => format!("{property} IS NULL"),
+                (ComparisonOperator::NotEqual, Literal::Null) => {
+                    format!("{property} IS NOT NULL")
+                }
+                _ => format!(
+                    "{} {} {}",
+                    property,
+                    render_operator(predicate.operator),
+                    render_literal(&predicate.literal)
+                ),
+            });
         }
         Ok(format!(" WHERE {}", predicates.join(" AND ")))
     }
@@ -598,6 +627,12 @@ relationships:
     to: { label: Service, key: service_id }
     properties:
       since: since
+  - type: DEPENDS_ON
+    table: { schema: ops, name: service_dependencies }
+    from: { label: Service, key: from_service_id }
+    to: { label: Service, key: to_service_id }
+    properties:
+      criticality: criticality
 ";
 
     #[test]
@@ -665,6 +700,66 @@ relationships:
     }
 
     #[test]
+    fn lower_graph_plan_reorders_connected_relationships() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "source".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "middle".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "target".to_string(),
+                    label: "Service".to_string(),
+                },
+            ],
+            relationships: vec![
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "middle".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "target".to_string(),
+                },
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "source".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "middle".to_string(),
+                },
+            ],
+            projections: vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "target".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("target".to_string()),
+            }],
+            predicates: Vec::new(),
+            order_by: Vec::new(),
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("connected relationships should lower independent of order");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n2\".\"service_name\" AS \"target\" FROM \"ops\".\"services\" AS \"n0\" \
+             JOIN \"ops\".\"service_dependencies\" AS \"r1\" ON \"r1\".\"from_service_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"services\" AS \"n1\" ON \"r1\".\"to_service_id\" = \"n1\".\"id\" \
+             JOIN \"ops\".\"service_dependencies\" AS \"r0\" ON \"r0\".\"from_service_id\" = \"n1\".\"id\" \
+             JOIN \"ops\".\"services\" AS \"n2\" ON \"r0\".\"to_service_id\" = \"n2\".\"id\""
+        );
+    }
+
+    #[test]
     fn lower_graph_plan_quotes_identifiers_and_literals() {
         let graph = Declaration::from_yaml(
             r#"
@@ -714,6 +809,32 @@ relationships: []
             "SELECT \"n0\".\"display\"\"name\" AS \"value\" \
              FROM \"weird-schema\".\"table\"\"name\" AS \"n0\" \
              WHERE \"n0\".\"display\"\"name\" = 'Ada''s laptop'"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_null_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates = vec![PropertyPredicate {
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "tier".to_string(),
+            },
+            operator: ComparisonOperator::Equal,
+            literal: Literal::Null,
+        }];
+        plan.order_by = Vec::new();
+        plan.limit = None;
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("null predicate should lower");
+
+        assert!(
+            translation.sql().contains("\"n1\".\"tier\" IS NULL"),
+            "{}",
+            translation.sql()
         );
     }
 
