@@ -271,7 +271,6 @@ fn configured_local_trace_store(
         .map(|dir| InstalledLocalTraceStore::new(dir, config.trace_history.retention()))
 }
 
-#[expect(dead_code, reason = "used in next stack PR")]
 pub(crate) async fn delete_workspace_traces(
     trace_store_dir: PathBuf,
     workspace_name: &WorkspaceName,

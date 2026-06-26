@@ -57,7 +57,7 @@ use crate::state::ConfigStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
-use crate::workspaces::{WorkspaceManager, WorkspaceService};
+use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceManager, WorkspaceService};
 
 /// A static asset (e.g., a built SPA file) served on the same port as
 /// gRPC-Web.
@@ -262,20 +262,27 @@ impl ServerBuilder {
             self.config.enable_stderr_logs,
             internal_trace_store_dir.clone(),
         )?;
+        let installed_trace_store_dir = installed_trace_store
+            .as_ref()
+            .map(|store| store.dir.clone());
         let config_store = ConfigStore::new(layout.clone());
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
+        let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
         let source_manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            workspace_lifecycle_lock.clone(),
         );
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            installed_trace_store_dir,
+            workspace_lifecycle_lock,
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
@@ -780,17 +787,18 @@ enabled = false
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
+        let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
-        let workspace_manager = WorkspaceManager::new(
+        let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            None,
         );
         let query_manager = QueryManager::new(
             config_store,
@@ -1166,17 +1174,18 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
+        let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
-        let workspace_manager = WorkspaceManager::new(
+        let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            None,
         );
         let query_manager = QueryManager::new(
             config_store,
@@ -1276,17 +1285,18 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
+        let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
-        let workspace_manager = WorkspaceManager::new(
+        let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            None,
         );
         let query_manager = QueryManager::new(
             config_store,
@@ -1383,17 +1393,18 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new(
+        let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
-        let workspace_manager = WorkspaceManager::new(
+        let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
+            None,
         );
         let query_manager = QueryManager::new(
             config_store,

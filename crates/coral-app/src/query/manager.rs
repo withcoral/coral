@@ -1210,7 +1210,7 @@ tables:
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
         fixture.manager.layout.ensure().expect("ensure layout");
-        let source_manager = SourceManager::new(
+        let source_manager = SourceManager::new_for_tests(
             fixture.manager.config_store.clone(),
             fixture.manager.credential_manager.clone(),
             fixture.manager.layout.clone(),

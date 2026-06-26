@@ -6,7 +6,7 @@ pub(crate) mod service;
 pub(crate) mod store;
 
 pub(crate) use manager::WorkspaceManager;
-pub(crate) use model::{DeletedWorkspace, WorkspaceRecord};
+pub(crate) use model::{DeletedWorkspace, WorkspaceLifecycleLock, WorkspaceRecord};
 pub use name::DEFAULT_WORKSPACE_ID;
 pub(crate) use name::WorkspaceName;
 pub(crate) use paths::WorkspacePaths;
