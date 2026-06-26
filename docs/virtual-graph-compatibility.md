@@ -60,6 +60,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Literal-left comparisons | Supported foundation | Operators are inverted around the property operand where possible |
 | `WHERE` boolean logic | Supported foundation | `AND`, `OR`, `NOT`, and parentheses lower to SQL boolean predicates |
 | `WHERE ... IN [...]` | Supported foundation | Literal scalar lists, including numeric lists, lower to SQL `IN`; empty lists lower to `FALSE` |
+| Cypher parameters | Supported foundation | Explicit typed parameter API binds scalar values in literal positions and list values as `IN` right-hand sides before SQL lowering |
 | `WHERE ... STARTS WITH` / `ENDS WITH` / `CONTAINS` | Supported foundation | String-literal RHS lowers to escaped SQL `LIKE` |
 | `WHERE ... IS NULL` / `IS NOT NULL` | Supported foundation | Lowers to SQL `IS NULL` / `IS NOT NULL` |
 | Inline node property maps | Supported foundation | Normalized to equality predicates, e.g. `(n:Service {tier: 'prod'})` |
@@ -84,7 +85,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Path variables and path values | Rejected | Needs graph value representation |
 | User variables beginning with `__coral_` | Rejected | Prefix reserved for internal planner bindings |
 | General `WITH`, `UNION`, subqueries, procedure calls | Rejected | Non-terminal projection boundaries and set/pipeline semantics need staged planning |
-| Parameters | Rejected | Needs API/runtime parameter binding contract |
+| Parameterized property maps | Rejected | Full map expansion would need shape-aware parameter semantics; use scalar inline property values instead |
 | GraphQL parser | Planned | Must compile to shared IR, not Cypher strings |
 | Writes | Rejected by product invariant | Coral virtual graph is read-only |
 

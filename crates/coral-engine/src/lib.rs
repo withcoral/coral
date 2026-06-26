@@ -55,6 +55,8 @@
     )
 )]
 
+use std::collections::BTreeMap;
+
 mod backends;
 mod composition;
 pub mod contracts;
@@ -77,16 +79,18 @@ pub use contracts::{
 };
 pub use virtual_graph::{
     AggregateFunction as GraphAggregateFunction, AggregateTarget as GraphAggregateTarget,
-    ComparisonOperator, Declaration as GraphDeclaration, Diagnostic as GraphDiagnostic,
-    Direction as GraphDirection, GraphExecution, GraphPlan, GraphQueryPlan,
-    Literal as GraphLiteral, NodePattern, OrderDirection as GraphOrderDirection,
-    OrderExpression as GraphOrderExpression, OrderKey as GraphOrderKey,
-    PredicateExpression as GraphPredicateExpression, PredicateRhs as GraphPredicateRhs,
-    Projection as GraphProjection, ProjectionPredicate as GraphProjectionPredicate,
+    ComparisonOperator, CypherParameterValue as GraphCypherParameterValue,
+    Declaration as GraphDeclaration, Diagnostic as GraphDiagnostic, Direction as GraphDirection,
+    GraphExecution, GraphPlan, GraphQueryPlan, Literal as GraphLiteral, NodePattern,
+    OrderDirection as GraphOrderDirection, OrderExpression as GraphOrderExpression,
+    OrderKey as GraphOrderKey, PredicateExpression as GraphPredicateExpression,
+    PredicateRhs as GraphPredicateRhs, Projection as GraphProjection,
+    ProjectionPredicate as GraphProjectionPredicate,
     ProjectionPredicateExpression as GraphProjectionPredicateExpression,
     ProjectionPredicateRhs as GraphProjectionPredicateRhs,
     PropertyPredicate as GraphPropertyPredicate, PropertyRef as GraphPropertyRef,
     RelationshipPattern, SqlTranslation as GraphSqlTranslation, compile_cypher,
+    compile_cypher_with_parameters,
 };
 
 /// High-level query operations for the local query engine.
@@ -275,6 +279,35 @@ impl CoralQuery {
         Self::execute_graph_plan(sources, runtime, graph, &plan).await
     }
 
+    /// Executes one supported read-only Cypher query with typed parameters.
+    ///
+    /// Parameters are bound into Coral's shared graph plan before SQL lowering.
+    /// Scalar parameters can be used anywhere the supported subset accepts a
+    /// literal; list parameters can be used as `IN` right-hand sides.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if parsing or subset validation fails, a required
+    /// parameter is missing, a parameter value is used in an unsupported
+    /// position, graph lowering fails, source compilation fails, or the
+    /// generated SQL cannot execute.
+    pub async fn execute_cypher_with_parameters(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        cypher: &str,
+        parameters: &BTreeMap<String, GraphCypherParameterValue>,
+    ) -> Result<GraphExecution, CoreError> {
+        if cypher.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "Cypher query must not be empty".to_string(),
+            ));
+        }
+
+        let plan = compile_cypher_with_parameters(cypher, parameters)?;
+        Self::execute_graph_plan(sources, runtime, graph, &plan).await
+    }
+
     /// Explains one supported read-only Cypher query over a virtual graph declaration.
     ///
     /// # Errors
@@ -295,6 +328,31 @@ impl CoralQuery {
         }
 
         let plan = compile_cypher(cypher)?;
+        Self::explain_graph_plan(sources, runtime, graph, &plan).await
+    }
+
+    /// Explains one supported read-only Cypher query with typed parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if parsing or subset validation fails, a required
+    /// parameter is missing, a parameter value is used in an unsupported
+    /// position, graph lowering fails, source compilation fails, or the
+    /// generated SQL cannot be planned.
+    pub async fn explain_cypher_with_parameters(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        cypher: &str,
+        parameters: &BTreeMap<String, GraphCypherParameterValue>,
+    ) -> Result<GraphQueryPlan, CoreError> {
+        if cypher.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "Cypher query must not be empty".to_string(),
+            ));
+        }
+
+        let plan = compile_cypher_with_parameters(cypher, parameters)?;
         Self::explain_graph_plan(sources, runtime, graph, &plan).await
     }
 

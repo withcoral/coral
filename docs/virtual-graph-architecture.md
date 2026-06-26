@@ -84,6 +84,9 @@ The supported foundation subset is intentionally narrow:
 - literal-left and chained comparisons normalized into property predicates;
 - integer and finite floating-point predicate literals;
 - `IN` predicates over scalar literal lists, including numeric lists;
+- typed Cypher parameters bound through the explicit parameter API, where
+  scalar parameters are accepted in literal positions and list parameters are
+  accepted as `IN` right-hand sides;
 - `id(node)`, `id(keyedRelationship)`, and `type(relationship)` in predicates,
   projections, and ordering;
 - string prefix, suffix, and substring predicates lowered to escaped SQL
@@ -103,5 +106,6 @@ The supported foundation subset is intentionally narrow:
 
 Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.
 This includes writes, optional matches, path variables, variable-length paths,
-parameters, keyless relationship identity operations, non-terminal projection
-boundaries, subqueries, procedure calls, and broad expression semantics.
+parameterized property maps, keyless relationship identity operations,
+non-terminal projection boundaries, subqueries, procedure calls, and broad
+expression semantics.

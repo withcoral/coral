@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection, With};
 use decypher::ast::expr::{
     BinaryOperator as CypherBinaryOperator, ComparisonOperator as CypherComparisonOperator,
-    Expression, FunctionInvocation, Literal as CypherLiteral, NumberLiteral, UnaryOperator,
+    Expression, FunctionInvocation, Literal as CypherLiteral, NumberLiteral,
+    Parameter as CypherParameter, UnaryOperator,
 };
 use decypher::ast::names::Variable;
 use decypher::ast::pattern::{
@@ -44,12 +45,17 @@ struct CompiledRelationship {
 #[derive(Debug, Default)]
 struct CypherCompileContext {
     variable_function_arguments: BTreeMap<(usize, usize), String>,
+    parameters: BTreeMap<String, CypherParameterValue>,
 }
 
 impl CypherCompileContext {
-    fn from_source(cypher: &str) -> Self {
+    fn from_source_with_parameters(
+        cypher: &str,
+        parameters: BTreeMap<String, CypherParameterValue>,
+    ) -> Self {
         Self {
             variable_function_arguments: collect_variable_function_arguments(cypher),
+            parameters,
         }
     }
 
@@ -58,6 +64,32 @@ impl CypherCompileContext {
             .get(&(function.span.start, function.span.end))
             .map(String::as_str)
     }
+
+    fn parameter_value(
+        &self,
+        parameter: &CypherParameter,
+        path: impl Into<String>,
+    ) -> Result<&CypherParameterValue, CoreError> {
+        let path = path.into();
+        let name = parameter.name.name.as_str();
+        self.parameters.get(name).ok_or_else(|| {
+            Diagnostic::new(
+                "MISSING_PARAMETER",
+                path,
+                format!("Cypher parameter '${name}' was not provided"),
+            )
+            .into_core_error()
+        })
+    }
+}
+
+/// Runtime value that can be bound to a Cypher parameter in the supported subset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CypherParameterValue {
+    /// Scalar literal parameter, usable where a literal expression is accepted.
+    Literal(Literal),
+    /// Scalar-list parameter, usable as the right-hand side of `IN`.
+    List(Vec<Literal>),
 }
 
 /// Parses and compiles the Coral-supported read-only Cypher subset into a shared graph plan.
@@ -67,10 +99,28 @@ impl CypherCompileContext {
 /// Returns [`CoreError::InvalidInput`] when the query cannot be parsed or uses
 /// Cypher/GQL features outside Coral's current read-only virtual graph subset.
 pub fn compile_cypher(cypher: &str) -> Result<GraphPlan, CoreError> {
+    compile_cypher_with_parameters(cypher, &BTreeMap::new())
+}
+
+/// Parses and compiles Cypher with typed parameter values into a shared graph plan.
+///
+/// Parameter values are bound before SQL lowering and only in positions where
+/// the same literal or literal-list value is already supported by the read-only
+/// Cypher subset.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the query cannot be parsed, uses
+/// unsupported Cypher/GQL features, references a missing parameter, or binds a
+/// list parameter where a scalar literal is required.
+pub fn compile_cypher_with_parameters(
+    cypher: &str,
+    parameters: &BTreeMap<String, CypherParameterValue>,
+) -> Result<GraphPlan, CoreError> {
     let query = decypher::parse(cypher).map_err(|error| {
         Diagnostic::new("CYPHER_PARSE_ERROR", "query", error.to_string()).into_core_error()
     })?;
-    let context = CypherCompileContext::from_source(cypher);
+    let context = CypherCompileContext::from_source_with_parameters(cypher, parameters.clone());
     compile_query(&query, &context)
 }
 
@@ -156,7 +206,7 @@ fn compile_terminal_with_projection(
 
     compile_terminal_with_clause(&part.with, &mut plan, context)?;
     apply_terminal_return_projection_aliases(return_clause, &mut plan.projections)?;
-    apply_terminal_return_modifiers(return_clause, &mut plan)?;
+    apply_terminal_return_modifiers(return_clause, &mut plan, context)?;
     Ok(Some(plan))
 }
 
@@ -205,6 +255,7 @@ fn compile_terminal_with_clause(
         plan.post_projection_predicate = Some(compile_projection_predicate_expression(
             where_clause,
             "with.where",
+            context,
         )?);
     }
 
@@ -224,10 +275,10 @@ fn compile_terminal_with_clause(
         }
     }
     if let Some(skip) = &with.skip {
-        plan.skip = Some(compile_skip(skip, "with.skip")?);
+        plan.skip = Some(compile_skip(skip, "with.skip", context)?);
     }
     if let Some(limit) = &with.limit {
-        plan.limit = Some(compile_limit(limit, "with.limit")?);
+        plan.limit = Some(compile_limit(limit, "with.limit", context)?);
     }
     Ok(())
 }
@@ -307,6 +358,7 @@ fn set_projection_output_alias(projection: &mut Projection, alias: String) {
 fn apply_terminal_return_modifiers(
     return_clause: &Return,
     plan: &mut GraphPlan,
+    context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     plan.distinct |= return_clause.distinct;
     if (return_clause.order.is_some()
@@ -320,7 +372,7 @@ fn apply_terminal_return_modifiers(
         ));
     }
     if let Some(skip) = &return_clause.skip {
-        plan.skip = Some(compile_skip(skip, "final_part.return.skip")?);
+        plan.skip = Some(compile_skip(skip, "final_part.return.skip", context)?);
     }
     if let Some(order) = &return_clause.order {
         for (index, item) in order.items.iter().enumerate() {
@@ -338,7 +390,7 @@ fn apply_terminal_return_modifiers(
         }
     }
     if let Some(limit) = &return_clause.limit {
-        plan.limit = Some(compile_limit(limit, "final_part.return.limit")?);
+        plan.limit = Some(compile_limit(limit, "final_part.return.limit", context)?);
     }
     Ok(())
 }
@@ -509,7 +561,7 @@ fn compile_reading_clauses_into(
     for (index, clause) in reading_clauses.iter().enumerate() {
         match clause {
             ReadingClause::Match(match_clause) => {
-                compile_match_into(match_clause, plan)?;
+                compile_match_into(match_clause, plan, context)?;
                 if let Some(where_clause) = &match_clause.where_clause {
                     let predicate = compile_predicate_expression(
                         where_clause,
@@ -550,7 +602,11 @@ fn return_clause_from_single_part(
     }
 }
 
-fn compile_match_into(match_clause: &Match, plan: &mut GraphPlan) -> Result<(), CoreError> {
+fn compile_match_into(
+    match_clause: &Match,
+    plan: &mut GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<(), CoreError> {
     if match_clause.optional {
         return Err(unsupported("match", "OPTIONAL MATCH is not supported yet"));
     }
@@ -581,6 +637,7 @@ fn compile_match_into(match_clause: &Match, plan: &mut GraphPlan) -> Result<(), 
             start,
             plan,
             format!("match.pattern.parts[{part_index}].nodes[0]"),
+            context,
         )?;
         let mut previous_variable = start_node.variable.clone();
         plan.predicates.extend(start_node.predicates);
@@ -593,7 +650,7 @@ fn compile_match_into(match_clause: &Match, plan: &mut GraphPlan) -> Result<(), 
                 "match.pattern.parts[{part_index}].nodes[{}]",
                 chain_index + 1
             );
-            let next_node = compile_node(&chain.node, plan, node_path)?;
+            let next_node = compile_node(&chain.node, plan, node_path, context)?;
             let next_variable = next_node.variable.clone();
             let relationship_index = plan.relationships.len();
             let relationship_path =
@@ -605,6 +662,7 @@ fn compile_match_into(match_clause: &Match, plan: &mut GraphPlan) -> Result<(), 
                 relationship_index,
                 plan,
                 relationship_path,
+                context,
             )?;
             previous_variable = next_variable;
             plan.predicates.extend(next_node.predicates);
@@ -623,13 +681,16 @@ fn compile_node(
     pattern: &CypherNodePattern,
     plan: &GraphPlan,
     path: impl Into<String>,
+    context: &CypherCompileContext,
 ) -> Result<CompiledNode, CoreError> {
     let path = path.into();
     let variable = required_variable(pattern.variable.as_ref(), format!("{path}.variable"))?;
     let label = optional_single_static_label(&pattern.labels, format!("{path}.labels"))?;
     let predicates = pattern.properties.as_ref().map_or_else(
         || Ok(Vec::new()),
-        |properties| compile_inline_properties(properties, &variable, format!("{path}.properties")),
+        |properties| {
+            compile_inline_properties(properties, &variable, format!("{path}.properties"), context)
+        },
     )?;
     if let Some(existing) = plan.nodes.iter().find(|node| node.variable == variable) {
         if let Some(label) = label
@@ -667,6 +728,7 @@ fn compile_inline_properties(
     properties: &Properties,
     variable: &str,
     path: impl Into<String>,
+    context: &CypherCompileContext,
 ) -> Result<Vec<PropertyPredicate>, CoreError> {
     let path = path.into();
     let Properties::Map(map) = properties else {
@@ -687,6 +749,7 @@ fn compile_inline_properties(
             rhs: PredicateRhs::Literal(compile_literal(
                 expression,
                 format!("{path}.entries[{index}].value"),
+                context,
             )?),
         });
     }
@@ -700,6 +763,7 @@ fn compile_relationship(
     index: usize,
     plan: &GraphPlan,
     path: impl Into<String>,
+    context: &CypherCompileContext,
 ) -> Result<CompiledRelationship, CoreError> {
     let path = path.into();
     if pattern.quantifier.is_some() {
@@ -748,7 +812,7 @@ fn compile_relationship(
         });
     let predicates = match (&detail.properties, &variable) {
         (Some(properties), Some(variable)) => {
-            compile_inline_properties(properties, variable, format!("{path}.properties"))?
+            compile_inline_properties(properties, variable, format!("{path}.properties"), context)?
         }
         (Some(_), None) => {
             return Err(CoreError::internal(
@@ -783,7 +847,7 @@ fn compile_return(
         return Err(unsupported("return.star", "RETURN * is not supported yet"));
     }
     if let Some(skip) = &return_clause.skip {
-        plan.skip = Some(compile_skip(skip, "return.skip")?);
+        plan.skip = Some(compile_skip(skip, "return.skip", context)?);
     }
     if return_clause.items.is_empty() {
         return Err(unsupported(
@@ -816,7 +880,7 @@ fn compile_return(
     }
 
     if let Some(limit) = &return_clause.limit {
-        plan.limit = Some(compile_limit(limit, "return.limit")?);
+        plan.limit = Some(compile_limit(limit, "return.limit", context)?);
     }
 
     Ok(())
@@ -1443,10 +1507,13 @@ fn compile_exists_predicate(
 fn compile_projection_predicate_expression(
     expression: &Expression,
     path: impl Into<String>,
+    context: &CypherCompileContext,
 ) -> Result<ProjectionPredicateExpression, CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_projection_predicate_expression(inner, path),
+        Expression::Parenthesized(inner) => {
+            compile_projection_predicate_expression(inner, path, context)
+        }
         Expression::BinaryOp {
             op: CypherBinaryOperator::And,
             lhs,
@@ -1456,10 +1523,12 @@ fn compile_projection_predicate_expression(
             left: Box::new(compile_projection_predicate_expression(
                 lhs,
                 format!("{path}.lhs"),
+                context,
             )?),
             right: Box::new(compile_projection_predicate_expression(
                 rhs,
                 format!("{path}.rhs"),
+                context,
             )?),
         }),
         Expression::BinaryOp {
@@ -1471,10 +1540,12 @@ fn compile_projection_predicate_expression(
             left: Box::new(compile_projection_predicate_expression(
                 lhs,
                 format!("{path}.lhs"),
+                context,
             )?),
             right: Box::new(compile_projection_predicate_expression(
                 rhs,
                 format!("{path}.rhs"),
+                context,
             )?),
         }),
         Expression::BinaryOp {
@@ -1489,13 +1560,14 @@ fn compile_projection_predicate_expression(
             expression: Box::new(compile_projection_predicate_expression(
                 operand,
                 format!("{path}.operand"),
+                context,
             )?),
         }),
         Expression::Comparison { lhs, operators, .. } => {
-            compile_projection_comparison_expression(lhs, operators.as_slice(), path)
+            compile_projection_comparison_expression(lhs, operators.as_slice(), path, context)
         }
         Expression::In { lhs, rhs, .. } => Ok(ProjectionPredicateExpression::Comparison(
-            compile_projection_in_predicate(lhs, rhs, path)?,
+            compile_projection_in_predicate(lhs, rhs, path, context)?,
         )),
         Expression::Literal(CypherLiteral::Boolean(value)) => {
             Ok(ProjectionPredicateExpression::Boolean(*value))
@@ -1531,6 +1603,7 @@ fn compile_projection_comparison_expression(
     lhs: &Expression,
     operators: &[(CypherComparisonOperator, Box<Expression>)],
     path: impl Into<String>,
+    context: &CypherCompileContext,
 ) -> Result<ProjectionPredicateExpression, CoreError> {
     let path = path.into();
     if operators.is_empty() {
@@ -1538,7 +1611,7 @@ fn compile_projection_comparison_expression(
     }
 
     let (prefix, mut current_lhs) =
-        compile_projection_comparison_prefix(lhs, format!("{path}.lhs"))?;
+        compile_projection_comparison_prefix(lhs, format!("{path}.lhs"), context)?;
     let mut expression = prefix;
     for (index, (operator, rhs)) in operators.iter().enumerate() {
         let predicate = compile_binary_projection_comparison(
@@ -1546,6 +1619,7 @@ fn compile_projection_comparison_expression(
             *operator,
             rhs,
             format!("{path}.operators[{index}]"),
+            context,
         )?;
         let next = ProjectionPredicateExpression::Comparison(predicate);
         expression = Some(append_projection_expression_conjunct(expression, next));
@@ -1555,18 +1629,22 @@ fn compile_projection_comparison_expression(
     expression.ok_or_else(|| CoreError::internal("projection comparison expression was empty"))
 }
 
-fn compile_projection_comparison_prefix(
-    expression: &Expression,
+fn compile_projection_comparison_prefix<'a>(
+    expression: &'a Expression,
     path: impl Into<String>,
-) -> Result<(Option<ProjectionPredicateExpression>, &Expression), CoreError> {
+    context: &CypherCompileContext,
+) -> Result<(Option<ProjectionPredicateExpression>, &'a Expression), CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_projection_comparison_prefix(inner, path),
+        Expression::Parenthesized(inner) => {
+            compile_projection_comparison_prefix(inner, path, context)
+        }
         Expression::Comparison { lhs, operators, .. } => Ok((
             Some(compile_projection_comparison_expression(
                 lhs,
                 operators.as_slice(),
                 path,
+                context,
             )?),
             terminal_comparison_operand(lhs, operators.as_slice()),
         )),
@@ -1592,6 +1670,7 @@ fn compile_binary_projection_comparison(
     operator: CypherComparisonOperator,
     rhs: &Expression,
     path: impl Into<String>,
+    context: &CypherCompileContext,
 ) -> Result<ProjectionPredicate, CoreError> {
     let path = path.into();
     let operator = compile_comparison_operator(operator, format!("{path}.operator"))?;
@@ -1599,14 +1678,18 @@ fn compile_binary_projection_comparison(
         return Ok(ProjectionPredicate {
             alias,
             operator,
-            rhs: compile_projection_predicate_rhs(rhs, format!("{path}.rhs"))?,
+            rhs: compile_projection_predicate_rhs(rhs, format!("{path}.rhs"), context)?,
         });
     }
     if let Some(alias) = compile_optional_projection_alias_ref(rhs) {
         return Ok(ProjectionPredicate {
             alias,
             operator: invert_comparison_operator(operator, format!("{path}.operator"))?,
-            rhs: ProjectionPredicateRhs::Literal(compile_literal(lhs, format!("{path}.lhs"))?),
+            rhs: ProjectionPredicateRhs::Literal(compile_literal(
+                lhs,
+                format!("{path}.lhs"),
+                context,
+            )?),
         });
     }
 
@@ -1620,27 +1703,33 @@ fn compile_projection_in_predicate(
     lhs: &Expression,
     rhs: &Expression,
     path: impl Into<String>,
+    context: &CypherCompileContext,
 ) -> Result<ProjectionPredicate, CoreError> {
     let path = path.into();
     Ok(ProjectionPredicate {
         alias: compile_projection_alias_ref(lhs, format!("{path}.lhs"))?,
         operator: ComparisonOperator::In,
-        rhs: ProjectionPredicateRhs::List(compile_literal_list(rhs, format!("{path}.rhs"))?),
+        rhs: ProjectionPredicateRhs::List(compile_literal_list(
+            rhs,
+            format!("{path}.rhs"),
+            context,
+        )?),
     })
 }
 
 fn compile_projection_predicate_rhs(
     expression: &Expression,
     path: impl Into<String>,
+    context: &CypherCompileContext,
 ) -> Result<ProjectionPredicateRhs, CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_projection_predicate_rhs(inner, path),
+        Expression::Parenthesized(inner) => compile_projection_predicate_rhs(inner, path, context),
         Expression::Variable(variable) => {
             Ok(ProjectionPredicateRhs::Alias(variable_name(variable)))
         }
         _ => Ok(ProjectionPredicateRhs::Literal(compile_literal(
-            expression, path,
+            expression, path, context,
         )?)),
     }
 }
@@ -1849,7 +1938,7 @@ fn compile_in_predicate(
     context: &CypherCompileContext,
 ) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
-    let literals = compile_literal_list(rhs, format!("{path}.rhs"))?;
+    let literals = compile_literal_list(rhs, format!("{path}.rhs"), context)?;
     if let Some(property) = compile_optional_property_ref(lhs, format!("{path}.lhs"))? {
         return Ok(PredicateExpression::Comparison(PropertyPredicate {
             property,
@@ -1994,7 +2083,7 @@ fn compile_predicate_literal(
         Expression::FunctionCall(function) if is_type_function(function) => {
             compile_type_literal(function, path, plan, context)
         }
-        _ => compile_literal(expression, path),
+        _ => compile_literal(expression, path, context),
     }
 }
 
@@ -2115,20 +2204,28 @@ fn compile_optional_property_ref(
 fn compile_literal_list(
     expression: &Expression,
     path: impl Into<String>,
+    context: &CypherCompileContext,
 ) -> Result<Vec<Literal>, CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_literal_list(inner, path),
+        Expression::Parenthesized(inner) => compile_literal_list(inner, path, context),
         Expression::Literal(CypherLiteral::List(list)) => list
             .elements
             .iter()
             .enumerate()
-            .map(|(index, expression)| compile_literal(expression, format!("{path}[{index}]")))
+            .map(|(index, expression)| {
+                compile_literal(expression, format!("{path}[{index}]"), context)
+            })
             .collect(),
-        Expression::Parameter(_) => Err(unsupported(
-            path,
-            "parameters are not supported in virtual graph queries yet",
-        )),
+        Expression::Parameter(parameter) => {
+            match context.parameter_value(parameter, path.clone())? {
+                CypherParameterValue::List(values) => Ok(values.clone()),
+                CypherParameterValue::Literal(_) => Err(unsupported(
+                    path,
+                    "IN parameter right-hand sides require a list value",
+                )),
+            }
+        }
         _ => Err(unsupported(
             path,
             "IN predicates require a literal list right-hand side",
@@ -2136,10 +2233,14 @@ fn compile_literal_list(
     }
 }
 
-fn compile_literal(expression: &Expression, path: impl Into<String>) -> Result<Literal, CoreError> {
+fn compile_literal(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Literal, CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_literal(inner, path),
+        Expression::Parenthesized(inner) => compile_literal(inner, path, context),
         Expression::Literal(CypherLiteral::String(value)) => {
             Ok(Literal::String(value.value.clone()))
         }
@@ -2155,7 +2256,7 @@ fn compile_literal(expression: &Expression, path: impl Into<String>) -> Result<L
             op: UnaryOperator::Negate,
             operand,
             ..
-        } => match compile_literal(operand, path)? {
+        } => match compile_literal(operand, path, context)? {
             Literal::Integer(value) => Ok(Literal::Integer(-value)),
             Literal::Float(value) => Ok(Literal::Float(OrderedFloat(-value.into_inner()))),
             _ => Err(unsupported(
@@ -2163,10 +2264,15 @@ fn compile_literal(expression: &Expression, path: impl Into<String>) -> Result<L
                 "only numeric literals can be negated",
             )),
         },
-        Expression::Parameter(_) => Err(unsupported(
-            path,
-            "parameters are not supported in virtual graph queries yet",
-        )),
+        Expression::Parameter(parameter) => {
+            match context.parameter_value(parameter, path.clone())? {
+                CypherParameterValue::Literal(value) => Ok(value.clone()),
+                CypherParameterValue::List(_) => Err(unsupported(
+                    path,
+                    "list parameters can only be used as IN right-hand sides",
+                )),
+            }
+        }
         _ => Err(unsupported(
             path,
             "only string, numeric, boolean, and null literals are supported",
@@ -2186,21 +2292,30 @@ fn compile_float_literal(value: f64, path: impl Into<String>) -> Result<Literal,
     }
 }
 
-fn compile_limit(expression: &Expression, path: impl Into<String>) -> Result<u64, CoreError> {
-    compile_non_negative_integer(expression, path, "LIMIT")
+fn compile_limit(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<u64, CoreError> {
+    compile_non_negative_integer(expression, path, "LIMIT", context)
 }
 
-fn compile_skip(expression: &Expression, path: impl Into<String>) -> Result<u64, CoreError> {
-    compile_non_negative_integer(expression, path, "SKIP")
+fn compile_skip(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<u64, CoreError> {
+    compile_non_negative_integer(expression, path, "SKIP", context)
 }
 
 fn compile_non_negative_integer(
     expression: &Expression,
     path: impl Into<String>,
     keyword: &str,
+    context: &CypherCompileContext,
 ) -> Result<u64, CoreError> {
     let path = path.into();
-    match compile_literal(expression, path.clone())? {
+    match compile_literal(expression, path.clone(), context)? {
         Literal::Integer(value) => u64::try_from(value).map_err(|conversion_error| {
             unsupported(
                 path.clone(),
@@ -3113,6 +3228,55 @@ mod tests {
     }
 
     #[test]
+    fn compiles_bound_cypher_parameters() {
+        let parameters = BTreeMap::from([
+            (
+                "tier".to_string(),
+                CypherParameterValue::Literal(Literal::String("prod".to_string())),
+            ),
+            (
+                "ids".to_string(),
+                CypherParameterValue::List(vec![Literal::Integer(10), Literal::Integer(40)]),
+            ),
+            (
+                "limit".to_string(),
+                CypherParameterValue::Literal(Literal::Integer(2)),
+            ),
+        ]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (service:Service {tier: $tier}) \
+             WHERE service.id IN $ids \
+             RETURN service.name \
+             LIMIT $limit",
+            &parameters,
+        )
+        .expect("parameterized query should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+                },
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "id".to_string(),
+                    },
+                    operator: ComparisonOperator::In,
+                    rhs: PredicateRhs::List(vec![Literal::Integer(10), Literal::Integer(40)]),
+                },
+            ]
+        );
+        assert_eq!(plan.limit, Some(2));
+    }
+
+    #[test]
     fn compiles_string_predicates() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -3564,9 +3728,48 @@ mod tests {
     }
 
     #[test]
-    fn rejects_parameterized_in_predicates() {
-        assert_unsupported(
+    fn rejects_missing_cypher_parameters() {
+        let error = compile_cypher(
             "MATCH (service:Service) WHERE service.tier IN $tiers RETURN service.name",
+        )
+        .expect_err("missing parameter should fail");
+
+        assert!(
+            error.to_string().contains("MISSING_PARAMETER"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_cypher_parameter_kind_mismatches() {
+        let scalar_for_list = BTreeMap::from([(
+            "tiers".to_string(),
+            CypherParameterValue::Literal(Literal::String("prod".to_string())),
+        )]);
+        let error = compile_cypher_with_parameters(
+            "MATCH (service:Service) WHERE service.tier IN $tiers RETURN service.name",
+            &scalar_for_list,
+        )
+        .expect_err("scalar parameter should not bind as IN list");
+        assert!(
+            error.to_string().contains("IN parameter right-hand sides"),
+            "unexpected error: {error}"
+        );
+
+        let list_for_scalar = BTreeMap::from([(
+            "tier".to_string(),
+            CypherParameterValue::List(vec![Literal::String("prod".to_string())]),
+        )]);
+        let error = compile_cypher_with_parameters(
+            "MATCH (service:Service) WHERE service.tier = $tier RETURN service.name",
+            &list_for_scalar,
+        )
+        .expect_err("list parameter should not bind as scalar literal");
+        assert!(
+            error
+                .to_string()
+                .contains("list parameters can only be used"),
+            "unexpected error: {error}"
         );
     }
 

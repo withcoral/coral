@@ -1,9 +1,11 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use coral_engine::{
-    ComparisonOperator, CoralQuery, GraphDeclaration, GraphDirection, GraphLiteral,
-    GraphOrderDirection, GraphOrderExpression, GraphOrderKey, GraphPlan, GraphPredicateRhs,
-    GraphProjection, GraphPropertyPredicate, GraphPropertyRef, NodePattern, RelationshipPattern,
+    ComparisonOperator, CoralQuery, GraphCypherParameterValue, GraphDeclaration, GraphDirection,
+    GraphLiteral, GraphOrderDirection, GraphOrderExpression, GraphOrderKey, GraphPlan,
+    GraphPredicateRhs, GraphProjection, GraphPropertyPredicate, GraphPropertyRef, NodePattern,
+    RelationshipPattern,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -778,6 +780,60 @@ async fn cypher_in_predicates_execute_against_synthetic_sources() {
             json!({"service": "deployments"}),
             json!({"service": "experiments"}),
         ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_parameters_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([
+        (
+            "tier".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::String("prod".to_string())),
+        ),
+        (
+            "services".to_string(),
+            GraphCypherParameterValue::List(vec![
+                GraphLiteral::String("billing-api".to_string()),
+                GraphLiteral::String("deployments".to_string()),
+            ]),
+        ),
+        (
+            "limit".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::Integer(1)),
+        ),
+    ]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {tier: $tier}) \
+         WHERE service.name IN $services \
+         RETURN service.name AS service \
+         ORDER BY service \
+         LIMIT $limit",
+        &parameters,
+    )
+    .await
+    .expect("parameterized Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains("'prod'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        !execution.translated_sql().contains('$'),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api"})]
     );
 }
 

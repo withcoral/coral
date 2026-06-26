@@ -12,7 +12,7 @@ mod ir;
 mod sql;
 mod validation;
 
-pub use cypher::compile_cypher;
+pub use cypher::{CypherParameterValue, compile_cypher, compile_cypher_with_parameters};
 pub use declaration::{Declaration, Endpoint, Node, Relationship, TableRef};
 pub use diagnostic::Diagnostic;
 pub use execution::{GraphExecution, GraphQueryPlan};
