@@ -71,6 +71,7 @@ impl<'a> Lowerer<'a> {
 
         let select = self.render_select()?;
         let where_clause = self.render_where()?;
+        let group_by = self.render_group_by()?;
         let order_by = self.render_order_by()?;
         let limit = self
             .validated
@@ -87,7 +88,7 @@ impl<'a> Lowerer<'a> {
 
         Ok(SqlTranslation::new(
             format!(
-                "{select} {}{where_clause}{order_by}{limit}{offset}",
+                "{select} {}{where_clause}{group_by}{order_by}{limit}{offset}",
                 self.from_clause
             ),
             Vec::new(),
@@ -348,6 +349,35 @@ impl<'a> Lowerer<'a> {
             predicates.push(self.render_predicate_expression(predicate)?);
         }
         Ok(format!(" WHERE {}", predicates.join(" AND ")))
+    }
+
+    fn render_group_by(&self) -> Result<String, CoreError> {
+        if !self
+            .validated
+            .plan()
+            .projections
+            .iter()
+            .any(|projection| matches!(projection, Projection::CountAll { .. }))
+        {
+            return Ok(String::new());
+        }
+
+        let properties = self
+            .validated
+            .plan()
+            .projections
+            .iter()
+            .filter_map(|projection| match projection {
+                Projection::Property { property, .. } => Some(property),
+                Projection::CountAll { .. } => None,
+            })
+            .map(|property| self.render_property_ref(property))
+            .collect::<Result<Vec<_>, _>>()?;
+        if properties.is_empty() {
+            Ok(String::new())
+        } else {
+            Ok(format!(" GROUP BY {}", properties.join(", ")))
+        }
     }
 
     fn render_predicate_expression(
@@ -1248,20 +1278,23 @@ relationships: []
     }
 
     #[test]
-    fn lower_graph_plan_rejects_mixed_count_and_property_projection() {
+    fn lower_graph_plan_renders_grouped_count_projection() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan(Direction::Outgoing);
         plan.projections.push(Projection::CountAll {
             alias: "ownership_count".to_string(),
         });
 
-        let error = graph
+        let translation = graph
             .lower_graph_plan(&plan)
-            .expect_err("mixed aggregate and property projection should fail");
+            .expect("grouped aggregate projection should lower");
 
         assert!(
-            error.to_string().contains("UNSUPPORTED_AGGREGATION"),
-            "{error:?}"
+            translation.sql().contains(
+                " GROUP BY \"n0\".\"full_name\", \"n1\".\"service_name\" ORDER BY \"n0\".\"full_name\" ASC"
+            ),
+            "{}",
+            translation.sql()
         );
     }
 

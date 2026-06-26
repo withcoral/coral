@@ -278,21 +278,24 @@ impl<'a> GraphPlanValidator<'a> {
         if count_all_count == 0 {
             return Ok(());
         }
-        if self.plan.projections.len() != 1 {
-            return Err(Diagnostic::new(
-                "UNSUPPORTED_AGGREGATION",
-                "projections",
-                "COUNT(*) cannot be mixed with property projections until grouping is supported",
-            )
-            .into_core_error());
-        }
-        if !self.plan.order_by.is_empty() {
+        let projected_properties = self.projected_properties();
+        if projected_properties.is_empty() && !self.plan.order_by.is_empty() {
             return Err(Diagnostic::new(
                 "UNSUPPORTED_AGGREGATION",
                 "order_by",
-                "ORDER BY with COUNT(*) is not supported until aggregate ordering is supported",
+                "ORDER BY with count-only projections is not supported until aggregate ordering is supported",
             )
             .into_core_error());
+        }
+        for (index, order_key) in self.plan.order_by.iter().enumerate() {
+            if !projected_properties.contains(&&order_key.property) {
+                return Err(Diagnostic::new(
+                    "UNSUPPORTED_AGGREGATION",
+                    format!("order_by[{index}].property"),
+                    "ORDER BY with grouped COUNT(*) must use a projected property",
+                )
+                .into_core_error());
+            }
         }
         Ok(())
     }
@@ -320,15 +323,7 @@ impl<'a> GraphPlanValidator<'a> {
             return Ok(());
         }
 
-        let projected_properties = self
-            .plan
-            .projections
-            .iter()
-            .filter_map(|projection| match projection {
-                Projection::Property { property, .. } => Some(property),
-                Projection::CountAll { .. } => None,
-            })
-            .collect::<Vec<_>>();
+        let projected_properties = self.projected_properties();
         for (index, order_key) in self.plan.order_by.iter().enumerate() {
             if !projected_properties.contains(&&order_key.property) {
                 return Err(Diagnostic::new(
@@ -340,6 +335,17 @@ impl<'a> GraphPlanValidator<'a> {
             }
         }
         Ok(())
+    }
+
+    fn projected_properties(&self) -> Vec<&PropertyRef> {
+        self.plan
+            .projections
+            .iter()
+            .filter_map(|projection| match projection {
+                Projection::Property { property, .. } => Some(property),
+                Projection::CountAll { .. } => None,
+            })
+            .collect()
     }
 
     fn validate_predicate(

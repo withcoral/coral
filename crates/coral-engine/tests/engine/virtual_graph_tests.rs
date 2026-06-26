@@ -788,6 +788,39 @@ async fn virtual_graph_count_projection_executes_against_synthetic_file_sources(
 }
 
 #[tokio::test]
+async fn cypher_grouped_count_projection_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier IS NOT NULL \
+         RETURN service.tier AS tier, count(*) AS services \
+         ORDER BY tier",
+    )
+    .await
+    .expect("grouped count Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" GROUP BY "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"tier": "dev", "services": 1}),
+            json!({"tier": "prod", "services": 2}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn explain_graph_plan_preserves_translated_sql_and_datafusion_plan() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -369,25 +369,15 @@ fn compile_return(return_clause: &Return, plan: &mut GraphPlan) -> Result<(), Co
         ));
     }
 
-    let mut saw_count = false;
-    let mut saw_property = false;
     for (index, item) in return_clause.items.iter().enumerate() {
         match compile_projection(item, format!("return.items[{index}]"))? {
             Projection::CountAll { alias } => {
-                saw_count = true;
                 plan.projections.push(Projection::CountAll { alias });
             }
             projection @ Projection::Property { .. } => {
-                saw_property = true;
                 plan.projections.push(projection);
             }
         }
-    }
-    if saw_count && saw_property {
-        return Err(unsupported(
-            "return.items",
-            "COUNT(*) cannot be mixed with property projections until grouping is supported",
-        ));
     }
 
     if let Some(order) = &return_clause.order {
@@ -1596,8 +1586,30 @@ mod tests {
     }
 
     #[test]
-    fn rejects_mixed_count_and_property_projection() {
-        assert_unsupported("MATCH (service:Service) RETURN service.name, count(*) AS services");
+    fn compiles_grouped_count_projection() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN service.tier AS tier, count(*) AS services \
+             ORDER BY tier",
+        )
+        .expect("grouped count query should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("tier".to_string()),
+                },
+                Projection::CountAll {
+                    alias: "services".to_string(),
+                },
+            ]
+        );
+        assert_eq!(plan.order_by.len(), 1);
     }
 
     #[test]

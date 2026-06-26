@@ -22,7 +22,8 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Connected multi-hop paths | Supported foundation | Linear and closed connected patterns lower to deterministic joins |
 | Property projections | Supported foundation | Node keys and exposed properties |
 | Property predicates | Supported foundation | Literal and property-to-property comparisons with boolean expression trees |
-| `COUNT(*)` | Supported foundation | Standalone aggregate projection only |
+| `COUNT(*)` | Supported foundation | Standalone or grouped by projected properties |
+| Grouped `COUNT(*)` | Supported foundation | Property projections become SQL `GROUP BY` keys |
 | Distinct projections | Supported foundation | `SELECT DISTINCT` over projected rows |
 | Ordering, skip, and limit | Supported foundation | Property order keys, row offset, and row limit |
 | Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
@@ -55,6 +56,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `RETURN` property projections | Supported foundation | Optional aliases are supported |
 | `RETURN DISTINCT` | Supported foundation | Supported for projected rows; `ORDER BY` with `DISTINCT` must use projected properties |
 | `RETURN count(*)` | Supported foundation | Supported as a standalone aggregate projection |
+| `RETURN property, count(*)` | Supported foundation | Uses Cypher-style implicit grouping over projected properties |
 | `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, property projection aliases, and non-negative integer offsets/limits |
 | `OPTIONAL MATCH` | Rejected | Needs nullability-aware IR and SQL lowering |
 | Multiple `MATCH` clauses | Rejected | Needs multi-pattern planning and join ordering rules |
@@ -67,8 +69,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | User variables beginning with `__coral_` | Rejected | Prefix reserved for internal planner bindings |
 | `WITH`, `UNION`, subqueries, procedure calls | Rejected | Needs scope and pipeline semantics |
 | Parameters | Rejected | Needs API/runtime parameter binding contract |
-| Grouping | Rejected | Needs aggregate/grouping IR |
-| `ORDER BY` aggregate aliases | Rejected | Needs aggregate/grouping IR |
+| `ORDER BY` aggregate aliases | Rejected | Needs aggregate order-key IR |
 | GraphQL parser | Planned | Must compile to shared IR, not Cypher strings |
 | Writes | Rejected by product invariant | Coral virtual graph is read-only |
 
