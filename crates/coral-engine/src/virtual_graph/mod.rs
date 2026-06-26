@@ -19,6 +19,7 @@ pub use execution::{GraphExecution, GraphQueryPlan};
 pub use ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, Literal,
     NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
-    Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 pub use sql::SqlTranslation;

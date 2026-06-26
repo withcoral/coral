@@ -82,9 +82,11 @@ pub use virtual_graph::{
     Literal as GraphLiteral, NodePattern, OrderDirection as GraphOrderDirection,
     OrderExpression as GraphOrderExpression, OrderKey as GraphOrderKey,
     PredicateExpression as GraphPredicateExpression, PredicateRhs as GraphPredicateRhs,
-    Projection as GraphProjection, PropertyPredicate as GraphPropertyPredicate,
-    PropertyRef as GraphPropertyRef, RelationshipPattern, SqlTranslation as GraphSqlTranslation,
-    compile_cypher,
+    Projection as GraphProjection, ProjectionPredicate as GraphProjectionPredicate,
+    ProjectionPredicateExpression as GraphProjectionPredicateExpression,
+    ProjectionPredicateRhs as GraphProjectionPredicateRhs,
+    PropertyPredicate as GraphPropertyPredicate, PropertyRef as GraphPropertyRef,
+    RelationshipPattern, SqlTranslation as GraphSqlTranslation, compile_cypher,
 };
 
 /// High-level query operations for the local query engine.

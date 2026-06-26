@@ -4,7 +4,8 @@ use super::declaration::{Declaration, Node, Relationship};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, GraphPlan, Literal, OrderExpression,
-    PredicateExpression, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
+    PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
     RelationshipPattern,
 };
 use crate::CoreError;
@@ -331,6 +332,9 @@ impl<'a> GraphPlanValidator<'a> {
         if let Some(predicate) = &self.plan.predicate {
             self.validate_predicate_expression(predicate, "predicate")?;
         }
+        if let Some(predicate) = &self.plan.post_projection_predicate {
+            self.validate_projection_predicate_expression(predicate, "post_projection_predicate")?;
+        }
         for (index, key) in self.plan.order_by.iter().enumerate() {
             self.validate_order_expression(&key.expression, format!("order_by[{index}]"))?;
         }
@@ -399,6 +403,27 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateExpression::Not { expression } => {
                 self.validate_predicate_expression(expression, format!("{path}.expression"))
             }
+        }
+    }
+
+    fn validate_projection_predicate_expression(
+        &self,
+        expression: &ProjectionPredicateExpression,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        match expression {
+            ProjectionPredicateExpression::Boolean(_) => Ok(()),
+            ProjectionPredicateExpression::Comparison(predicate) => {
+                self.validate_projection_predicate(predicate, path)
+            }
+            ProjectionPredicateExpression::And { left, right }
+            | ProjectionPredicateExpression::Or { left, right } => {
+                self.validate_projection_predicate_expression(left, format!("{path}.left"))?;
+                self.validate_projection_predicate_expression(right, format!("{path}.right"))
+            }
+            ProjectionPredicateExpression::Not { expression } => self
+                .validate_projection_predicate_expression(expression, format!("{path}.expression")),
         }
     }
 
@@ -521,6 +546,82 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 Self::validate_in_list(path, literals)
             }
+        }
+    }
+
+    fn validate_projection_predicate(
+        &self,
+        predicate: &ProjectionPredicate,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        self.validate_projection_alias(&predicate.alias, format!("{path}.alias"))?;
+        match &predicate.rhs {
+            ProjectionPredicateRhs::Literal(literal) => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
+                Self::validate_literal_predicate(path, predicate.operator, literal)
+            }
+            ProjectionPredicateRhs::Alias(alias) => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                if matches!(
+                    predicate.operator,
+                    ComparisonOperator::StartsWith
+                        | ComparisonOperator::EndsWith
+                        | ComparisonOperator::Contains
+                ) {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "string predicates require a string literal right-hand side",
+                    )
+                    .into_core_error());
+                }
+                self.validate_projection_alias(alias, format!("{path}.rhs"))
+            }
+            ProjectionPredicateRhs::List(literals) => {
+                if predicate.operator != ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "literal lists are only supported with IN predicates",
+                    )
+                    .into_core_error());
+                }
+                Self::validate_in_list(path, literals)
+            }
+        }
+    }
+
+    fn validate_projection_alias(
+        &self,
+        alias: &str,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        if self.projection_alias_exists(alias) {
+            Ok(())
+        } else {
+            Err(Diagnostic::new(
+                "UNKNOWN_PROJECTION_ALIAS",
+                path,
+                format!("unknown projection alias '{alias}'"),
+            )
+            .into_core_error())
         }
     }
 
@@ -889,6 +990,7 @@ relationships:
             }],
             predicates: Vec::new(),
             predicate: None,
+            post_projection_predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -1022,6 +1124,28 @@ relationships:
 
         assert!(
             error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_unknown_post_projection_aliases() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.post_projection_predicate = Some(ProjectionPredicateExpression::Comparison(
+            ProjectionPredicate {
+                alias: "missing".to_string(),
+                operator: ComparisonOperator::Equal,
+                rhs: ProjectionPredicateRhs::Literal(Literal::String("Ada".to_string())),
+            },
+        ));
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("unknown projected alias should fail validation");
+
+        assert!(
+            error.to_string().contains("UNKNOWN_PROJECTION_ALIAS"),
             "{error:?}"
         );
     }
@@ -1283,6 +1407,7 @@ relationships:
             }],
             predicates: Vec::new(),
             predicate: None,
+            post_projection_predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -1341,6 +1466,7 @@ relationships:
             }],
             predicates: Vec::new(),
             predicate: None,
+            post_projection_predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,

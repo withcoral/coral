@@ -23,7 +23,8 @@ use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, Literal,
     NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
-    Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -177,12 +178,6 @@ fn compile_terminal_with_clause(
             "WITH * requires scoped query planning and is not supported yet",
         ));
     }
-    if with.where_clause.is_some() {
-        return Err(unsupported(
-            "with.where",
-            "WITH WHERE requires staged query planning and is not supported yet",
-        ));
-    }
     if with.items.is_empty() {
         return Err(unsupported(
             "with.items",
@@ -205,6 +200,12 @@ fn compile_terminal_with_clause(
         }
         let projection = compile_projection(item, format!("with.items[{index}]"), context, plan)?;
         plan.projections.push(projection);
+    }
+    if let Some(where_clause) = &with.where_clause {
+        plan.post_projection_predicate = Some(compile_projection_predicate_expression(
+            where_clause,
+            "with.where",
+        )?);
     }
 
     if let Some(order) = &with.order {
@@ -1248,6 +1249,234 @@ fn compile_exists_predicate(
     })
 }
 
+fn compile_projection_predicate_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+) -> Result<ProjectionPredicateExpression, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_projection_predicate_expression(inner, path),
+        Expression::BinaryOp {
+            op: CypherBinaryOperator::And,
+            lhs,
+            rhs,
+            ..
+        } => Ok(ProjectionPredicateExpression::And {
+            left: Box::new(compile_projection_predicate_expression(
+                lhs,
+                format!("{path}.lhs"),
+            )?),
+            right: Box::new(compile_projection_predicate_expression(
+                rhs,
+                format!("{path}.rhs"),
+            )?),
+        }),
+        Expression::BinaryOp {
+            op: CypherBinaryOperator::Or,
+            lhs,
+            rhs,
+            ..
+        } => Ok(ProjectionPredicateExpression::Or {
+            left: Box::new(compile_projection_predicate_expression(
+                lhs,
+                format!("{path}.lhs"),
+            )?),
+            right: Box::new(compile_projection_predicate_expression(
+                rhs,
+                format!("{path}.rhs"),
+            )?),
+        }),
+        Expression::BinaryOp {
+            op: CypherBinaryOperator::Xor,
+            ..
+        } => Err(unsupported(path, "WITH WHERE XOR is not supported yet")),
+        Expression::UnaryOp {
+            op: UnaryOperator::Not,
+            operand,
+            ..
+        } => Ok(ProjectionPredicateExpression::Not {
+            expression: Box::new(compile_projection_predicate_expression(
+                operand,
+                format!("{path}.operand"),
+            )?),
+        }),
+        Expression::Comparison { lhs, operators, .. } => {
+            compile_projection_comparison_expression(lhs, operators.as_slice(), path)
+        }
+        Expression::In { lhs, rhs, .. } => Ok(ProjectionPredicateExpression::Comparison(
+            compile_projection_in_predicate(lhs, rhs, path)?,
+        )),
+        Expression::Literal(CypherLiteral::Boolean(value)) => {
+            Ok(ProjectionPredicateExpression::Boolean(*value))
+        }
+        Expression::IsNull {
+            operand, negated, ..
+        } => Ok(ProjectionPredicateExpression::Comparison(
+            ProjectionPredicate {
+                alias: compile_projection_alias_ref(operand, format!("{path}.operand"))?,
+                operator: if *negated {
+                    ComparisonOperator::NotEqual
+                } else {
+                    ComparisonOperator::Equal
+                },
+                rhs: ProjectionPredicateRhs::Literal(Literal::Null),
+            },
+        )),
+        Expression::Variable(variable) => Ok(ProjectionPredicateExpression::Comparison(
+            ProjectionPredicate {
+                alias: variable_name(variable),
+                operator: ComparisonOperator::Equal,
+                rhs: ProjectionPredicateRhs::Literal(Literal::Boolean(true)),
+            },
+        )),
+        _ => Err(unsupported(
+            path,
+            "WITH WHERE only supports projected alias comparisons combined with AND, OR, and NOT",
+        )),
+    }
+}
+
+fn compile_projection_comparison_expression(
+    lhs: &Expression,
+    operators: &[(CypherComparisonOperator, Box<Expression>)],
+    path: impl Into<String>,
+) -> Result<ProjectionPredicateExpression, CoreError> {
+    let path = path.into();
+    if operators.is_empty() {
+        return Err(unsupported(path, "comparison must include an operator"));
+    }
+
+    let (prefix, mut current_lhs) =
+        compile_projection_comparison_prefix(lhs, format!("{path}.lhs"))?;
+    let mut expression = prefix;
+    for (index, (operator, rhs)) in operators.iter().enumerate() {
+        let predicate = compile_binary_projection_comparison(
+            current_lhs,
+            *operator,
+            rhs,
+            format!("{path}.operators[{index}]"),
+        )?;
+        let next = ProjectionPredicateExpression::Comparison(predicate);
+        expression = Some(append_projection_expression_conjunct(expression, next));
+        current_lhs = rhs;
+    }
+
+    expression.ok_or_else(|| CoreError::internal("projection comparison expression was empty"))
+}
+
+fn compile_projection_comparison_prefix(
+    expression: &Expression,
+    path: impl Into<String>,
+) -> Result<(Option<ProjectionPredicateExpression>, &Expression), CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_projection_comparison_prefix(inner, path),
+        Expression::Comparison { lhs, operators, .. } => Ok((
+            Some(compile_projection_comparison_expression(
+                lhs,
+                operators.as_slice(),
+                path,
+            )?),
+            terminal_comparison_operand(lhs, operators.as_slice()),
+        )),
+        _ => Ok((None, expression)),
+    }
+}
+
+fn append_projection_expression_conjunct(
+    expression: Option<ProjectionPredicateExpression>,
+    next: ProjectionPredicateExpression,
+) -> ProjectionPredicateExpression {
+    match expression {
+        Some(previous) => ProjectionPredicateExpression::And {
+            left: Box::new(previous),
+            right: Box::new(next),
+        },
+        None => next,
+    }
+}
+
+fn compile_binary_projection_comparison(
+    lhs: &Expression,
+    operator: CypherComparisonOperator,
+    rhs: &Expression,
+    path: impl Into<String>,
+) -> Result<ProjectionPredicate, CoreError> {
+    let path = path.into();
+    let operator = compile_comparison_operator(operator, format!("{path}.operator"))?;
+    if let Some(alias) = compile_optional_projection_alias_ref(lhs) {
+        return Ok(ProjectionPredicate {
+            alias,
+            operator,
+            rhs: compile_projection_predicate_rhs(rhs, format!("{path}.rhs"))?,
+        });
+    }
+    if let Some(alias) = compile_optional_projection_alias_ref(rhs) {
+        return Ok(ProjectionPredicate {
+            alias,
+            operator: invert_comparison_operator(operator, format!("{path}.operator"))?,
+            rhs: ProjectionPredicateRhs::Literal(compile_literal(lhs, format!("{path}.lhs"))?),
+        });
+    }
+
+    Err(unsupported(
+        path,
+        "WITH WHERE comparisons must include at least one projected alias operand",
+    ))
+}
+
+fn compile_projection_in_predicate(
+    lhs: &Expression,
+    rhs: &Expression,
+    path: impl Into<String>,
+) -> Result<ProjectionPredicate, CoreError> {
+    let path = path.into();
+    Ok(ProjectionPredicate {
+        alias: compile_projection_alias_ref(lhs, format!("{path}.lhs"))?,
+        operator: ComparisonOperator::In,
+        rhs: ProjectionPredicateRhs::List(compile_literal_list(rhs, format!("{path}.rhs"))?),
+    })
+}
+
+fn compile_projection_predicate_rhs(
+    expression: &Expression,
+    path: impl Into<String>,
+) -> Result<ProjectionPredicateRhs, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_projection_predicate_rhs(inner, path),
+        Expression::Variable(variable) => {
+            Ok(ProjectionPredicateRhs::Alias(variable_name(variable)))
+        }
+        _ => Ok(ProjectionPredicateRhs::Literal(compile_literal(
+            expression, path,
+        )?)),
+    }
+}
+
+fn compile_projection_alias_ref(
+    expression: &Expression,
+    path: impl Into<String>,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_projection_alias_ref(inner, path),
+        Expression::Variable(variable) => Ok(variable_name(variable)),
+        _ => Err(unsupported(
+            path,
+            "only projected alias expressions are supported here",
+        )),
+    }
+}
+
+fn compile_optional_projection_alias_ref(expression: &Expression) -> Option<String> {
+    match expression {
+        Expression::Parenthesized(inner) => compile_optional_projection_alias_ref(inner),
+        Expression::Variable(variable) => Some(variable_name(variable)),
+        _ => None,
+    }
+}
+
 fn append_predicate_expression(expression: PredicateExpression, plan: &mut GraphPlan) {
     if is_conjunctive_expression(&expression) {
         append_conjunctive_expression(expression, &mut plan.predicates);
@@ -1872,6 +2101,71 @@ mod tests {
             ]
         );
         assert_eq!(plan.limit, Some(10));
+    }
+
+    #[test]
+    fn compiles_terminal_with_scalar_where_alias_predicates() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[:OWNS]->(service:Service) \
+             WITH person.name AS owner, service.tier AS tier \
+             WHERE owner STARTS WITH 'Ada' AND tier IN ['prod', 'critical'] \
+             RETURN owner, tier",
+        )
+        .expect("terminal WITH scalar WHERE should compile");
+
+        assert_eq!(
+            plan.post_projection_predicate,
+            Some(ProjectionPredicateExpression::And {
+                left: Box::new(ProjectionPredicateExpression::Comparison(
+                    ProjectionPredicate {
+                        alias: "owner".to_string(),
+                        operator: ComparisonOperator::StartsWith,
+                        rhs: ProjectionPredicateRhs::Literal(Literal::String("Ada".to_string())),
+                    },
+                )),
+                right: Box::new(ProjectionPredicateExpression::Comparison(
+                    ProjectionPredicate {
+                        alias: "tier".to_string(),
+                        operator: ComparisonOperator::In,
+                        rhs: ProjectionPredicateRhs::List(vec![
+                            Literal::String("prod".to_string()),
+                            Literal::String("critical".to_string()),
+                        ]),
+                    },
+                )),
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_terminal_with_aggregate_where_alias_predicates() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[:OWNS]->(service:Service) \
+             WITH person.team AS team, count(service) AS services \
+             WHERE services > 1 AND team IS NOT NULL \
+             RETURN team, services",
+        )
+        .expect("terminal WITH aggregate WHERE should compile");
+
+        assert_eq!(
+            plan.post_projection_predicate,
+            Some(ProjectionPredicateExpression::And {
+                left: Box::new(ProjectionPredicateExpression::Comparison(
+                    ProjectionPredicate {
+                        alias: "services".to_string(),
+                        operator: ComparisonOperator::GreaterThan,
+                        rhs: ProjectionPredicateRhs::Literal(Literal::Integer(1)),
+                    },
+                )),
+                right: Box::new(ProjectionPredicateExpression::Comparison(
+                    ProjectionPredicate {
+                        alias: "team".to_string(),
+                        operator: ComparisonOperator::NotEqual,
+                        rhs: ProjectionPredicateRhs::Literal(Literal::Null),
+                    },
+                )),
+            })
+        );
     }
 
     #[test]
@@ -2649,9 +2943,6 @@ mod tests {
         assert_unsupported("MATCH (service:Service) WITH service.name AS service RETURN missing");
         assert_unsupported(
             "MATCH (service:Service) WITH service.name AS service RETURN service AS renamed",
-        );
-        assert_unsupported(
-            "MATCH (service:Service) WITH service.name AS service WHERE service = 'billing-api' RETURN service",
         );
         assert_unsupported(
             "MATCH (service:Service) WITH service.name AS service MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN service, target.name",

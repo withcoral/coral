@@ -956,6 +956,7 @@ relationships: []
         }],
         predicates: Vec::new(),
         predicate: None,
+        post_projection_predicate: None,
         order_by: Vec::new(),
         skip: None,
         limit: None,
@@ -1051,6 +1052,7 @@ async fn virtual_graph_count_projection_executes_against_synthetic_file_sources(
         }],
         predicates: Vec::new(),
         predicate: None,
+        post_projection_predicate: None,
         order_by: Vec::new(),
         skip: None,
         limit: None,
@@ -1130,6 +1132,67 @@ async fn cypher_terminal_with_projection_executes_against_synthetic_sources() {
             json!({"tier": "prod", "services": 2, "average_risk": 0.7}),
             json!({"tier": "dev", "services": 1, "average_risk": 0.25}),
         ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_terminal_with_scalar_where_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[:OWNS]->(service:Service) \
+         WITH person.name AS owner, service.name AS service \
+         WHERE owner STARTS WITH 'Ada' \
+         RETURN owner, service",
+    )
+    .await
+    .expect("terminal WITH scalar WHERE should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LIKE 'Ada%'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"owner": "Ada Lovelace", "service": "billing-api"})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_terminal_with_aggregate_where_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier IS NOT NULL \
+         WITH service.tier AS tier, count(service) AS services \
+         WHERE services > 1 \
+         RETURN tier, services",
+    )
+    .await
+    .expect("terminal WITH aggregate WHERE should execute");
+
+    assert!(
+        execution.translated_sql().contains(" HAVING COUNT("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"tier": "prod", "services": 2})]
     );
 }
 
@@ -1468,6 +1531,7 @@ fn owner_service_plan() -> GraphPlan {
             rhs: GraphPredicateRhs::Literal(GraphLiteral::String("prod".to_string())),
         }],
         predicate: None,
+        post_projection_predicate: None,
         order_by: vec![GraphOrderKey {
             expression: GraphOrderExpression::Property(GraphPropertyRef {
                 variable: "person".to_string(),

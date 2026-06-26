@@ -80,6 +80,17 @@ pub enum PredicateRhs {
     List(Vec<Literal>),
 }
 
+/// Right-hand side of a post-projection predicate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectionPredicateRhs {
+    /// Compare against a literal value.
+    Literal(Literal),
+    /// Compare against another projected alias.
+    Alias(String),
+    /// Compare against a literal list.
+    List(Vec<Literal>),
+}
+
 /// Node pattern in the shared graph IR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodePattern {
@@ -220,6 +231,45 @@ pub enum PredicateExpression {
     },
 }
 
+/// Predicate over projected aliases, applied after terminal `WITH` projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionPredicate {
+    /// Left-hand projected alias.
+    pub alias: String,
+    /// Comparison operator.
+    pub operator: ComparisonOperator,
+    /// Right-hand comparison operand.
+    pub rhs: ProjectionPredicateRhs,
+}
+
+/// Boolean predicate expression over projected aliases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectionPredicateExpression {
+    /// Boolean constant.
+    Boolean(bool),
+    /// Leaf projected alias comparison.
+    Comparison(ProjectionPredicate),
+    /// Boolean conjunction.
+    And {
+        /// Left-hand expression.
+        left: Box<ProjectionPredicateExpression>,
+        /// Right-hand expression.
+        right: Box<ProjectionPredicateExpression>,
+    },
+    /// Boolean disjunction.
+    Or {
+        /// Left-hand expression.
+        left: Box<ProjectionPredicateExpression>,
+        /// Right-hand expression.
+        right: Box<ProjectionPredicateExpression>,
+    },
+    /// Boolean negation.
+    Not {
+        /// Negated expression.
+        expression: Box<ProjectionPredicateExpression>,
+    },
+}
+
 /// Ordering key in the shared graph IR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OrderExpression {
@@ -254,6 +304,8 @@ pub struct GraphPlan {
     /// Optional boolean predicate tree for expressions that cannot be flattened
     /// into the conjunctive predicate vector.
     pub predicate: Option<PredicateExpression>,
+    /// Optional predicate over projected aliases, applied after terminal `WITH`.
+    pub post_projection_predicate: Option<ProjectionPredicateExpression>,
     /// Ordering expressions.
     pub order_by: Vec<OrderKey>,
     /// Optional row offset.

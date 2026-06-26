@@ -5,7 +5,8 @@ use super::declaration::{Declaration, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, Literal,
-    OrderDirection, OrderExpression, PredicateExpression, PredicateRhs, Projection, PropertyRef,
+    OrderDirection, OrderExpression, PredicateExpression, PredicateRhs, Projection,
+    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyRef,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -78,6 +79,7 @@ impl<'a> Lowerer<'a> {
         let select = self.render_select()?;
         let where_clause = self.render_where()?;
         let group_by = self.render_group_by()?;
+        let having = self.render_having()?;
         let order_by = self.render_order_by()?;
         let limit = self
             .validated
@@ -94,7 +96,7 @@ impl<'a> Lowerer<'a> {
 
         Ok(SqlTranslation::new(
             format!(
-                "{select} {}{where_clause}{group_by}{order_by}{limit}{offset}",
+                "{select} {}{where_clause}{group_by}{having}{order_by}{limit}{offset}",
                 self.from_clause
             ),
             Vec::new(),
@@ -457,11 +459,19 @@ impl<'a> Lowerer<'a> {
     }
 
     fn render_where(&self) -> Result<String, CoreError> {
-        if self.validated.plan().predicates.is_empty() && self.validated.plan().predicate.is_none()
+        let mut predicates = self.render_pre_projection_predicates()?;
+        if !self.plan_has_aggregate_projection()
+            && let Some(predicate) = &self.validated.plan().post_projection_predicate
         {
+            predicates.push(self.render_projection_predicate_expression(predicate)?);
+        }
+        if predicates.is_empty() {
             return Ok(String::new());
         }
+        Ok(format!(" WHERE {}", predicates.join(" AND ")))
+    }
 
+    fn render_pre_projection_predicates(&self) -> Result<Vec<String>, CoreError> {
         let mut predicates = Vec::with_capacity(
             self.validated.plan().predicates.len()
                 + usize::from(self.validated.plan().predicate.is_some()),
@@ -472,7 +482,28 @@ impl<'a> Lowerer<'a> {
         if let Some(predicate) = &self.validated.plan().predicate {
             predicates.push(self.render_predicate_expression(predicate)?);
         }
-        Ok(format!(" WHERE {}", predicates.join(" AND ")))
+        Ok(predicates)
+    }
+
+    fn render_having(&self) -> Result<String, CoreError> {
+        if !self.plan_has_aggregate_projection() {
+            return Ok(String::new());
+        }
+        let Some(predicate) = &self.validated.plan().post_projection_predicate else {
+            return Ok(String::new());
+        };
+        Ok(format!(
+            " HAVING {}",
+            self.render_projection_predicate_expression(predicate)?
+        ))
+    }
+
+    fn plan_has_aggregate_projection(&self) -> bool {
+        self.validated
+            .plan()
+            .projections
+            .iter()
+            .any(Projection::is_aggregate)
     }
 
     fn render_group_by(&self) -> Result<String, CoreError> {
@@ -545,6 +576,92 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn render_projection_predicate_expression(
+        &self,
+        predicate: &ProjectionPredicateExpression,
+    ) -> Result<String, CoreError> {
+        match predicate {
+            ProjectionPredicateExpression::Boolean(value) => Ok(value.to_string().to_uppercase()),
+            ProjectionPredicateExpression::Comparison(predicate) => {
+                self.render_projection_predicate(predicate)
+            }
+            ProjectionPredicateExpression::And { left, right } => Ok(format!(
+                "({} AND {})",
+                self.render_projection_predicate_expression(left)?,
+                self.render_projection_predicate_expression(right)?
+            )),
+            ProjectionPredicateExpression::Or { left, right } => Ok(format!(
+                "({} OR {})",
+                self.render_projection_predicate_expression(left)?,
+                self.render_projection_predicate_expression(right)?
+            )),
+            ProjectionPredicateExpression::Not { expression } => Ok(format!(
+                "NOT ({})",
+                self.render_projection_predicate_expression(expression)?
+            )),
+        }
+    }
+
+    fn render_projection_predicate(
+        &self,
+        predicate: &ProjectionPredicate,
+    ) -> Result<String, CoreError> {
+        let alias = self.render_projection_alias_ref(&predicate.alias)?;
+        match (&predicate.operator, &predicate.rhs) {
+            (ComparisonOperator::In, ProjectionPredicateRhs::List(literals)) => {
+                if literals.is_empty() {
+                    return Ok("FALSE".to_string());
+                }
+                let rendered = literals
+                    .iter()
+                    .map(render_literal)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok(format!("{alias} IN ({rendered})"))
+            }
+            (ComparisonOperator::In, _) => Err(CoreError::internal(
+                "validated projected IN predicate did not contain a literal list",
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                ProjectionPredicateRhs::Literal(Literal::String(value)),
+            ) => Ok(format!(
+                "{alias} LIKE {} ESCAPE '\\'",
+                render_like_pattern(predicate.operator, value)
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                _,
+            ) => Err(CoreError::internal(
+                "validated projected string predicate did not contain a string literal",
+            )),
+            (ComparisonOperator::Equal, ProjectionPredicateRhs::Literal(Literal::Null)) => {
+                Ok(format!("{alias} IS NULL"))
+            }
+            (ComparisonOperator::NotEqual, ProjectionPredicateRhs::Literal(Literal::Null)) => {
+                Ok(format!("{alias} IS NOT NULL"))
+            }
+            (
+                ComparisonOperator::GreaterThan
+                | ComparisonOperator::GreaterThanOrEqual
+                | ComparisonOperator::LessThan
+                | ComparisonOperator::LessThanOrEqual,
+                ProjectionPredicateRhs::Literal(Literal::Null),
+            ) => Err(CoreError::internal(
+                "validated projected predicate contained an invalid null comparison",
+            )),
+            _ => Ok(format!(
+                "{alias} {} {}",
+                render_operator(predicate.operator),
+                self.render_projection_predicate_rhs(&predicate.rhs)?
+            )),
+        }
+    }
+
     fn render_predicate(
         &self,
         predicate: &super::ir::PropertyPredicate,
@@ -605,6 +722,19 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn render_projection_predicate_rhs(
+        &self,
+        rhs: &ProjectionPredicateRhs,
+    ) -> Result<String, CoreError> {
+        match rhs {
+            ProjectionPredicateRhs::Literal(literal) => Ok(render_literal(literal)),
+            ProjectionPredicateRhs::Alias(alias) => self.render_projection_alias_ref(alias),
+            ProjectionPredicateRhs::List(_) => Err(CoreError::internal(
+                "validated projected literal list predicate reached generic RHS renderer",
+            )),
+        }
+    }
+
     fn render_predicate_rhs(&self, rhs: &PredicateRhs) -> Result<String, CoreError> {
         match rhs {
             PredicateRhs::Literal(literal) => Ok(render_literal(literal)),
@@ -645,6 +775,37 @@ impl<'a> Lowerer<'a> {
         match target {
             AggregateTarget::Property(property) => self.render_property_ref(property),
             AggregateTarget::VariableKey { variable } => self.render_binding_key_ref(variable),
+        }
+    }
+
+    fn render_projection_alias_ref(&self, alias: &str) -> Result<String, CoreError> {
+        let projection = self
+            .validated
+            .plan()
+            .projections
+            .iter()
+            .find(|projection| projection_output_alias(projection) == Some(alias))
+            .ok_or_else(|| {
+                CoreError::internal(format!(
+                    "validated projected predicate referenced unknown alias '{alias}'"
+                ))
+            })?;
+        match projection {
+            Projection::Property { property, .. } => self.render_property_ref(property),
+            Projection::Key { variable, .. } => self.render_binding_key_ref(variable),
+            Projection::Literal { literal, .. } => Ok(render_literal(literal)),
+            Projection::CountAll { .. } => Ok("COUNT(*)".to_string()),
+            Projection::Aggregate {
+                function,
+                target,
+                distinct,
+                ..
+            } => Ok(format!(
+                "{}({}{})",
+                render_aggregate_function(*function),
+                if *distinct { "DISTINCT " } else { "" },
+                self.render_aggregate_target(target)?
+            )),
         }
     }
 
@@ -720,6 +881,16 @@ fn render_aggregate_function(function: AggregateFunction) -> &'static str {
     }
 }
 
+fn projection_output_alias(projection: &Projection) -> Option<&str> {
+    match projection {
+        Projection::Property { alias, .. } => alias.as_deref(),
+        Projection::Key { alias, .. }
+        | Projection::Literal { alias, .. }
+        | Projection::CountAll { alias }
+        | Projection::Aggregate { alias, .. } => Some(alias),
+    }
+}
+
 fn render_literal(literal: &Literal) -> String {
     match literal {
         Literal::String(value) => quote_string_literal(value),
@@ -762,7 +933,8 @@ mod tests {
     use crate::virtual_graph::ir::{
         AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, Literal,
         NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
-        Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+        Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+        PropertyPredicate, PropertyRef, RelationshipPattern,
     };
 
     const GRAPH: &str = r"
@@ -848,6 +1020,7 @@ relationships:
             }],
             predicates: Vec::new(),
             predicate: None,
+            post_projection_predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -896,6 +1069,7 @@ relationships:
             }],
             predicates: Vec::new(),
             predicate: None,
+            post_projection_predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -944,6 +1118,7 @@ relationships:
             }],
             predicates: Vec::new(),
             predicate: None,
+            post_projection_predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -995,6 +1170,76 @@ relationships:
              JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
              JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"service_id\" = \"n1\".\"id\" \
              WHERE \"n1\".\"tier\" = 'prod' ORDER BY \"n0\".\"full_name\" ASC LIMIT 25"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_scalar_post_projection_predicates_as_where() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.post_projection_predicate = Some(ProjectionPredicateExpression::Comparison(
+            ProjectionPredicate {
+                alias: "owner".to_string(),
+                operator: ComparisonOperator::StartsWith,
+                rhs: ProjectionPredicateRhs::Literal(Literal::String("Ada".to_string())),
+            },
+        ));
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("post-projection predicate should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n0\".\"full_name\" AS \"owner\", \"n1\".\"service_name\" AS \"service\" \
+             FROM \"ops\".\"people\" AS \"n0\" \
+             JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"service_id\" = \"n1\".\"id\" \
+             WHERE \"n1\".\"tier\" = 'prod' AND \"n0\".\"full_name\" LIKE 'Ada%' ESCAPE '\\' \
+             ORDER BY \"n0\".\"full_name\" ASC LIMIT 25"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_aggregate_post_projection_predicates_as_having() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.projections = vec![
+            Projection::Property {
+                property: PropertyRef {
+                    variable: "person".to_string(),
+                    property: "team".to_string(),
+                },
+                alias: Some("team".to_string()),
+            },
+            Projection::CountAll {
+                alias: "service_count".to_string(),
+            },
+        ];
+        plan.post_projection_predicate = Some(ProjectionPredicateExpression::Comparison(
+            ProjectionPredicate {
+                alias: "service_count".to_string(),
+                operator: ComparisonOperator::GreaterThan,
+                rhs: ProjectionPredicateRhs::Literal(Literal::Integer(1)),
+            },
+        ));
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::ProjectionAlias("service_count".to_string()),
+            direction: OrderDirection::Descending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("aggregate post-projection predicate should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n0\".\"team\" AS \"team\", COUNT(*) AS \"service_count\" \
+             FROM \"ops\".\"people\" AS \"n0\" \
+             JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"service_id\" = \"n1\".\"id\" \
+             WHERE \"n1\".\"tier\" = 'prod' GROUP BY \"n0\".\"team\" \
+             HAVING COUNT(*) > 1 ORDER BY \"service_count\" DESC LIMIT 25"
         );
     }
 
@@ -1065,6 +1310,7 @@ relationships:
             ],
             predicates: Vec::new(),
             predicate: None,
+            post_projection_predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -1139,6 +1385,7 @@ relationships:
             ],
             predicates: Vec::new(),
             predicate: None,
+            post_projection_predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -1198,6 +1445,7 @@ relationships: []
                 rhs: PredicateRhs::Literal(Literal::String("Ada's laptop".to_string())),
             }],
             predicate: None,
+            post_projection_predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -1251,6 +1499,7 @@ relationships: []
                 },
             ],
             predicate: None,
+            post_projection_predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -1919,6 +2168,7 @@ relationships: []
                 rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
             }],
             predicate: None,
+            post_projection_predicate: None,
             order_by: vec![OrderKey {
                 expression: OrderExpression::Property(PropertyRef {
                     variable: "person".to_string(),
