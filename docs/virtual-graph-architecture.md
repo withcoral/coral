@@ -48,9 +48,9 @@ The foundation slice establishes:
 - a typed shared graph query plan.
 - a declaration-aware graph plan validator that frontloads user-facing semantic
   diagnostics before SQL lowering.
-- SQL lowering for node scans, directed relationship traversals, property
-  projections, connected multi-hop paths, property predicates, ordering,
-  `COUNT(*)`, and `LIMIT`.
+- SQL lowering for node scans, directed and undirected relationship traversals,
+  property and identity projections, connected multi-hop paths, property and
+  identity predicates, grouping aggregates, ordering, `SKIP`, and `LIMIT`.
 - `CoralQuery::execute_graph_plan` and `CoralQuery::explain_graph_plan`
   wrappers that validate declarations against the built runtime catalog,
   preserve translated SQL and diagnostics, and reuse the existing SQL execution
@@ -71,30 +71,33 @@ execution remain separate layers.
 
 The supported foundation subset is intentionally narrow:
 
-- exactly one read-only single-part query;
-- one non-optional `MATCH` clause with connected path parts;
+- read-only single-part queries and transparent multi-part `MATCH` queries;
+- one or more non-optional `MATCH` clauses with connected path parts;
 - named node variables where the first binding has one static label and
   repeated bindings may omit the label;
-- directed, typed relationships;
+- directed, reverse, and undirected typed relationships;
 - connected multi-hop relationship chains;
 - `WHERE` comparisons combined with `AND`, `OR`, `NOT`, and parentheses;
 - literal-left and chained comparisons normalized into property predicates;
 - integer and finite floating-point predicate literals;
 - `IN` predicates over scalar literal lists, including numeric lists;
+- `id(node)`, `id(keyedRelationship)`, and `type(relationship)` in predicates,
+  projections, and ordering;
 - string prefix, suffix, and substring predicates lowered to escaped SQL
   `LIKE`;
 - inline node property maps normalized to equality predicates;
 - inline relationship property maps normalized to equality predicates, with
   internal relationship variables for anonymous edges;
 - `IS NULL` and `IS NOT NULL` predicates lowered with SQL null semantics;
-- property projections, standalone and grouped `count(*)`,
+- property projections, identity projections, standalone and grouped `count(*)`,
   `count(property)`, `count(DISTINCT property)`, `count(node)`,
-  `count(DISTINCT node)`, property `ORDER BY`, and projection alias
-  `ORDER BY` including aggregate aliases;
-- integer `LIMIT`.
+  `count(DISTINCT node)`, `count(keyedRelationship)`, numeric property
+  aggregates, property and identity `ORDER BY`, and projection alias `ORDER BY`
+  including aggregate aliases;
+- transparent `WITH` pass-through and terminal `WITH` projection subsets;
+- integer `SKIP` and `LIMIT`.
 
 Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.
-This includes writes, multi-part queries, optional matches, path variables,
-variable-length paths, undirected relationships, parameters, relationship
-variable counts, subqueries, procedure calls, non-count aggregate functions,
-and broad expression semantics.
+This includes writes, optional matches, path variables, variable-length paths,
+parameters, keyless relationship identity operations, non-terminal projection
+boundaries, subqueries, procedure calls, and broad expression semantics.

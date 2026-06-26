@@ -26,16 +26,18 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `COUNT(*)` | Supported foundation | Standalone or grouped by projected properties |
 | `COUNT(property)` | Supported foundation | Counts non-null mapped property values; optional `DISTINCT` is supported |
 | `COUNT(node)` | Supported foundation | Counts node key occurrences; `COUNT(DISTINCT node)` counts distinct declared node keys |
+| `COUNT(relationship)` | Supported foundation | Counts declared relationship key values; keyless relationship mappings are rejected |
+| Numeric aggregate functions | Supported foundation | `SUM`, `AVG`, `MIN`, and `MAX` over mapped graph properties |
 | Grouped aggregate projections | Supported foundation | Property projections become SQL `GROUP BY` keys |
 | Distinct projections | Supported foundation | `SELECT DISTINCT` over projected rows |
-| Ordering, skip, and limit | Supported foundation | Property order keys, projection aliases including aggregate aliases, row offset, and row limit |
+| Identity projections | Supported foundation | `id(node)`, `id(keyedRelationship)`, and `type(relationship)` lower through mapped keys and fixed relationship types |
+| Identity predicates | Supported foundation | `WHERE id(...)` compares mapped keys; `WHERE type(r)` is folded from the fixed relationship type |
+| Ordering, skip, and limit | Supported foundation | Property order keys, identity order keys, projection aliases including aggregate aliases, row offset, and row limit |
 | Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
 | Declaration-aware plan validation | Supported foundation | Resolves variables/properties and rejects unsupported plan shapes before SQL rendering |
 | Optional matches | Deferred | Requires nullability-aware IR |
 | Variable-length paths | Deferred | Requires recursive/path expansion semantics |
 | Path values | Deferred | Requires graph value representation |
-| `COUNT(relationship)` | Rejected | Relationship mappings do not define a unique relationship key yet |
-| Aggregate functions beyond `count` | Rejected | Needs function-specific type and nullability validation |
 
 ## Frontends
 
@@ -45,9 +47,13 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Single `MATCH ... RETURN` | Supported foundation | One non-optional MATCH clause with one or more connected pattern parts |
 | Comma-separated `MATCH` patterns | Supported foundation | Supported when parts are connected by reused node variables |
 | Labeled node patterns | Supported foundation | Requires named node variables; first binding needs exactly one static label, repeated bindings may omit the label |
-| Typed directed relationships | Supported foundation | Requires one static relationship type and one arrowhead |
+| Typed directed relationships | Supported foundation | Requires one static relationship type |
+| Undirected relationships | Supported foundation | Lowers to orientation-aware joins; same-label relationships use disjunctive endpoint conditions |
 | Multi-hop relationship chains | Supported foundation | Forward, reverse, and mixed chains compile through the shared graph IR |
+| Multiple `MATCH` clauses | Supported foundation | Transparent multi-part read clauses compile into one connected graph plan |
 | `WHERE` property comparisons | Supported foundation | String, integer, float, boolean, null literal, and property-to-property comparisons |
+| `WHERE id(...)` predicates | Supported foundation | Node ids and keyed relationship ids lower to mapped key comparisons and `IN` predicates |
+| `WHERE type(r)` predicates | Supported foundation | Folded to boolean predicates because each relationship pattern has one static type |
 | Chained comparisons | Supported foundation | Normalized to conjunctions, e.g. `10 <= n.score < 20` |
 | Literal-left comparisons | Supported foundation | Operators are inverted around the property operand where possible |
 | `WHERE` boolean logic | Supported foundation | `AND`, `OR`, `NOT`, and parentheses lower to SQL boolean predicates |
@@ -61,18 +67,21 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `RETURN count(*)` | Supported foundation | Supported as a standalone aggregate projection |
 | `RETURN count(property)` | Supported foundation | Supports `count(property)` and `count(DISTINCT property)` |
 | `RETURN count(node)` | Supported foundation | Supports `count(node)` and `count(DISTINCT node)` over declared node keys |
+| `RETURN count(relationship)` | Supported foundation | Requires the relationship mapping to declare a key |
+| `RETURN id(...)` / `type(r)` | Supported foundation | Projects mapped keys and fixed relationship type literals |
+| `RETURN sum/avg/min/max(property)` | Supported foundation | Numeric aggregate projections over mapped properties |
 | `RETURN property, count(...)` | Supported foundation | Uses Cypher-style implicit grouping over projected properties |
-| `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, projection aliases including aggregate aliases, and non-negative integer offsets/limits |
+| `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, identity expressions, projection aliases including aggregate aliases, and non-negative integer offsets/limits |
+| `WITH` pass-through | Supported foundation | Transparent `WITH var, ...` and `WITH *` preserve bound graph variables |
+| Terminal `WITH` projections | Supported foundation | Terminal projection, alias filtering, ordering, skip, and limit are supported without staging another `MATCH` |
 | `OPTIONAL MATCH` | Rejected | Needs nullability-aware IR and SQL lowering |
-| Multiple `MATCH` clauses | Rejected | Needs multi-pattern planning and join ordering rules |
 | `WHERE XOR` | Rejected | Not portable across target SQL dialects |
 | `WHERE ... IN` with null list values | Rejected | Needs explicit Cypher null-membership semantics |
 | `WHERE ... =~` regex matching | Rejected | Needs regex dialect compatibility across DataFusion targets |
-| Undirected or bidirectional relationships | Rejected | Needs explicit graph-expansion semantics |
 | Variable-length paths | Rejected | Needs recursive/path expansion semantics |
 | Path variables and path values | Rejected | Needs graph value representation |
 | User variables beginning with `__coral_` | Rejected | Prefix reserved for internal planner bindings |
-| `WITH`, `UNION`, subqueries, procedure calls | Rejected | Needs scope and pipeline semantics |
+| General `WITH`, `UNION`, subqueries, procedure calls | Rejected | Non-terminal projection boundaries and set/pipeline semantics need staged planning |
 | Parameters | Rejected | Needs API/runtime parameter binding contract |
 | GraphQL parser | Planned | Must compile to shared IR, not Cypher strings |
 | Writes | Rejected by product invariant | Coral virtual graph is read-only |

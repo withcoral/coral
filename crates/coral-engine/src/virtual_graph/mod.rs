@@ -17,9 +17,9 @@ pub use declaration::{Declaration, Endpoint, Node, Relationship, TableRef};
 pub use diagnostic::Diagnostic;
 pub use execution::{GraphExecution, GraphQueryPlan};
 pub use ir::{
-    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, Literal,
-    NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
-    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
-    PropertyPredicate, PropertyRef, RelationshipPattern,
+    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
+    Literal, NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
+    PredicateRhs, Projection, ProjectionPredicate, ProjectionPredicateExpression,
+    ProjectionPredicateRhs, PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 pub use sql::SqlTranslation;

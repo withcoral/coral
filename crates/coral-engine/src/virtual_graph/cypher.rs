@@ -21,10 +21,10 @@ use ordered_float::OrderedFloat;
 
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, Literal,
-    NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
-    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
-    PropertyPredicate, PropertyRef, RelationshipPattern,
+    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
+    Literal, NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
+    PredicateRhs, Projection, ProjectionPredicate, ProjectionPredicateExpression,
+    ProjectionPredicateRhs, PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -105,7 +105,7 @@ fn compile_single_part(
     let return_clause = return_clause_from_single_part(query, "query")?;
 
     let mut plan = GraphPlan::default();
-    compile_reading_clauses_into(&query.reading_clauses, "match", &mut plan)?;
+    compile_reading_clauses_into(&query.reading_clauses, "match", &mut plan, context)?;
     compile_return(return_clause, &mut plan, context)?;
     Ok(plan)
 }
@@ -152,7 +152,7 @@ fn compile_terminal_with_projection(
 
     let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
     let mut plan = GraphPlan::default();
-    compile_reading_clauses_into(&part.reading_clauses, "parts[0].match", &mut plan)?;
+    compile_reading_clauses_into(&part.reading_clauses, "parts[0].match", &mut plan, context)?;
 
     compile_terminal_with_clause(&part.with, &mut plan, context)?;
     apply_terminal_return_projection_aliases(return_clause, &mut plan.projections)?;
@@ -379,12 +379,12 @@ fn compile_transparent_multi_part(
 ) -> Result<GraphPlan, CoreError> {
     let mut plan = GraphPlan::default();
     for (index, part) in query.parts.iter().enumerate() {
-        compile_transparent_multi_part_part(part, index, &mut plan)?;
+        compile_transparent_multi_part_part(part, index, &mut plan, context)?;
     }
 
     match query.final_part.reading_clauses.as_slice() {
         [] => {}
-        clauses => compile_reading_clauses_into(clauses, "final_part.match", &mut plan)?,
+        clauses => compile_reading_clauses_into(clauses, "final_part.match", &mut plan, context)?,
     }
     let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
     compile_return(return_clause, &mut plan, context)?;
@@ -395,6 +395,7 @@ fn compile_transparent_multi_part_part(
     part: &MultiPartQueryPart,
     index: usize,
     plan: &mut GraphPlan,
+    context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     if !part.updating_clauses.is_empty() {
         return Err(unsupported(
@@ -402,7 +403,12 @@ fn compile_transparent_multi_part_part(
             "write clauses are not supported by Coral virtual graphs",
         ));
     }
-    compile_reading_clauses_into(&part.reading_clauses, format!("parts[{index}].match"), plan)?;
+    compile_reading_clauses_into(
+        &part.reading_clauses,
+        format!("parts[{index}].match"),
+        plan,
+        context,
+    )?;
     validate_transparent_with(&part.with, plan, format!("parts[{index}].with"))
 }
 
@@ -490,6 +496,7 @@ fn compile_reading_clauses_into(
     reading_clauses: &[ReadingClause],
     path: impl Into<String>,
     plan: &mut GraphPlan,
+    context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     let path = path.into();
     if reading_clauses.is_empty() {
@@ -507,6 +514,8 @@ fn compile_reading_clauses_into(
                     let predicate = compile_predicate_expression(
                         where_clause,
                         format!("{path}[{index}].where"),
+                        plan,
+                        context,
                     )?;
                     append_predicate_expression(predicate, plan);
                 }
@@ -1244,18 +1253,32 @@ fn qualified_function_name(function: &FunctionInvocation) -> String {
 fn compile_predicate_expression(
     expression: &Expression,
     path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
 ) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_predicate_expression(inner, path),
+        Expression::Parenthesized(inner) => {
+            compile_predicate_expression(inner, path, plan, context)
+        }
         Expression::BinaryOp {
             op: CypherBinaryOperator::And,
             lhs,
             rhs,
             ..
         } => Ok(PredicateExpression::And {
-            left: Box::new(compile_predicate_expression(lhs, format!("{path}.lhs"))?),
-            right: Box::new(compile_predicate_expression(rhs, format!("{path}.rhs"))?),
+            left: Box::new(compile_predicate_expression(
+                lhs,
+                format!("{path}.lhs"),
+                plan,
+                context,
+            )?),
+            right: Box::new(compile_predicate_expression(
+                rhs,
+                format!("{path}.rhs"),
+                plan,
+                context,
+            )?),
         }),
         Expression::BinaryOp {
             op: CypherBinaryOperator::Or,
@@ -1263,8 +1286,18 @@ fn compile_predicate_expression(
             rhs,
             ..
         } => Ok(PredicateExpression::Or {
-            left: Box::new(compile_predicate_expression(lhs, format!("{path}.lhs"))?),
-            right: Box::new(compile_predicate_expression(rhs, format!("{path}.rhs"))?),
+            left: Box::new(compile_predicate_expression(
+                lhs,
+                format!("{path}.lhs"),
+                plan,
+                context,
+            )?),
+            right: Box::new(compile_predicate_expression(
+                rhs,
+                format!("{path}.rhs"),
+                plan,
+                context,
+            )?),
         }),
         Expression::BinaryOp {
             op: CypherBinaryOperator::Xor,
@@ -1278,28 +1311,20 @@ fn compile_predicate_expression(
             expression: Box::new(compile_predicate_expression(
                 operand,
                 format!("{path}.operand"),
+                plan,
+                context,
             )?),
         }),
         Expression::Comparison { lhs, operators, .. } => {
-            compile_comparison_expression(lhs, operators.as_slice(), path)
+            compile_comparison_expression(lhs, operators.as_slice(), path, plan, context)
         }
-        Expression::In { lhs, rhs, .. } => Ok(PredicateExpression::Comparison(
-            compile_in_predicate(lhs, rhs, path)?,
-        )),
+        Expression::In { lhs, rhs, .. } => compile_in_predicate(lhs, rhs, path, plan, context),
         Expression::Literal(CypherLiteral::Boolean(value)) => {
             Ok(PredicateExpression::Boolean(*value))
         }
         Expression::IsNull {
             operand, negated, ..
-        } => Ok(PredicateExpression::Comparison(PropertyPredicate {
-            property: compile_property_ref(operand, format!("{path}.operand"))?,
-            operator: if *negated {
-                ComparisonOperator::NotEqual
-            } else {
-                ComparisonOperator::Equal
-            },
-            rhs: PredicateRhs::Literal(Literal::Null),
-        })),
+        } => compile_null_predicate(operand, *negated, path, plan, context),
         Expression::FunctionCall(function) if is_exists_function(function) => Ok(
             PredicateExpression::Comparison(compile_exists_predicate(function, path)?),
         ),
@@ -1584,6 +1609,7 @@ fn is_conjunctive_expression(expression: &PredicateExpression) -> bool {
             is_conjunctive_expression(left) && is_conjunctive_expression(right)
         }
         PredicateExpression::Boolean(_)
+        | PredicateExpression::KeyComparison(_)
         | PredicateExpression::Or { .. }
         | PredicateExpression::Not { .. } => false,
     }
@@ -1600,6 +1626,7 @@ fn append_conjunctive_expression(
             append_conjunctive_expression(*right, predicates);
         }
         PredicateExpression::Boolean(_)
+        | PredicateExpression::KeyComparison(_)
         | PredicateExpression::Or { .. }
         | PredicateExpression::Not { .. } => {
             unreachable!("non-conjunctive predicate expression reached conjunctive appender")
@@ -1611,22 +1638,26 @@ fn compile_comparison_expression(
     lhs: &Expression,
     operators: &[(CypherComparisonOperator, Box<Expression>)],
     path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
 ) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
     if operators.is_empty() {
         return Err(unsupported(path, "comparison must include an operator"));
     }
 
-    let (prefix, mut current_lhs) = compile_comparison_prefix(lhs, format!("{path}.lhs"))?;
+    let (prefix, mut current_lhs) =
+        compile_comparison_prefix(lhs, format!("{path}.lhs"), plan, context)?;
     let mut expression = prefix;
     for (index, (operator, rhs)) in operators.iter().enumerate() {
-        let predicate = compile_binary_comparison(
+        let next = compile_binary_comparison(
             current_lhs,
             *operator,
             rhs,
             format!("{path}.operators[{index}]"),
+            plan,
+            context,
         )?;
-        let next = PredicateExpression::Comparison(predicate);
         expression = Some(append_expression_conjunct(expression, next));
         current_lhs = rhs;
     }
@@ -1634,18 +1665,22 @@ fn compile_comparison_expression(
     expression.ok_or_else(|| CoreError::internal("comparison expression was empty"))
 }
 
-fn compile_comparison_prefix(
-    expression: &Expression,
+fn compile_comparison_prefix<'a>(
+    expression: &'a Expression,
     path: impl Into<String>,
-) -> Result<(Option<PredicateExpression>, &Expression), CoreError> {
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<(Option<PredicateExpression>, &'a Expression), CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_comparison_prefix(inner, path),
+        Expression::Parenthesized(inner) => compile_comparison_prefix(inner, path, plan, context),
         Expression::Comparison { lhs, operators, .. } => Ok((
             Some(compile_comparison_expression(
                 lhs,
                 operators.as_slice(),
                 path,
+                plan,
+                context,
             )?),
             terminal_comparison_operand(lhs, operators.as_slice()),
         )),
@@ -1678,27 +1713,51 @@ fn compile_binary_comparison(
     operator: CypherComparisonOperator,
     rhs: &Expression,
     path: impl Into<String>,
-) -> Result<PropertyPredicate, CoreError> {
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
     let operator = compile_comparison_operator(operator, format!("{path}.operator"))?;
     if let Some(property) = compile_optional_property_ref(lhs, format!("{path}.lhs"))? {
-        return Ok(PropertyPredicate {
+        return Ok(PredicateExpression::Comparison(PropertyPredicate {
             property,
             operator,
-            rhs: compile_predicate_rhs(rhs, format!("{path}.rhs"))?,
-        });
+            rhs: compile_predicate_rhs(rhs, format!("{path}.rhs"), plan, context)?,
+        }));
+    }
+    if let Some(variable) = compile_optional_id_ref(lhs, format!("{path}.lhs"), plan, context)? {
+        return Ok(PredicateExpression::KeyComparison(KeyPredicate {
+            variable,
+            operator,
+            rhs: compile_predicate_rhs(rhs, format!("{path}.rhs"), plan, context)?,
+        }));
     }
     if let Some(property) = compile_optional_property_ref(rhs, format!("{path}.rhs"))? {
-        return Ok(PropertyPredicate {
+        return Ok(PredicateExpression::Comparison(PropertyPredicate {
             property,
             operator: invert_comparison_operator(operator, format!("{path}.operator"))?,
-            rhs: PredicateRhs::Literal(compile_literal(lhs, format!("{path}.lhs"))?),
-        });
+            rhs: compile_literal_predicate_rhs(lhs, format!("{path}.lhs"), plan, context)?,
+        }));
+    }
+    if let Some(variable) = compile_optional_id_ref(rhs, format!("{path}.rhs"), plan, context)? {
+        return Ok(PredicateExpression::KeyComparison(KeyPredicate {
+            variable,
+            operator: invert_comparison_operator(operator, format!("{path}.operator"))?,
+            rhs: compile_literal_predicate_rhs(lhs, format!("{path}.lhs"), plan, context)?,
+        }));
+    }
+
+    if contains_type_function(lhs) || contains_type_function(rhs) {
+        let lhs = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
+        let rhs = compile_predicate_literal(rhs, format!("{path}.rhs"), plan, context)?;
+        return Ok(PredicateExpression::Boolean(evaluate_literal_comparison(
+            &lhs, operator, &rhs, path,
+        )?));
     }
 
     Err(unsupported(
         path,
-        "comparisons must include at least one variable.property operand",
+        "comparisons must include at least one variable.property, id(variable), or type(relationship) operand",
     ))
 }
 
@@ -1706,26 +1765,232 @@ fn compile_in_predicate(
     lhs: &Expression,
     rhs: &Expression,
     path: impl Into<String>,
-) -> Result<PropertyPredicate, CoreError> {
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
-    Ok(PropertyPredicate {
-        property: compile_property_ref(lhs, format!("{path}.lhs"))?,
-        operator: ComparisonOperator::In,
-        rhs: PredicateRhs::List(compile_literal_list(rhs, format!("{path}.rhs"))?),
-    })
+    let literals = compile_literal_list(rhs, format!("{path}.rhs"))?;
+    if let Some(property) = compile_optional_property_ref(lhs, format!("{path}.lhs"))? {
+        return Ok(PredicateExpression::Comparison(PropertyPredicate {
+            property,
+            operator: ComparisonOperator::In,
+            rhs: PredicateRhs::List(literals),
+        }));
+    }
+    if let Some(variable) = compile_optional_id_ref(lhs, format!("{path}.lhs"), plan, context)? {
+        return Ok(PredicateExpression::KeyComparison(KeyPredicate {
+            variable,
+            operator: ComparisonOperator::In,
+            rhs: PredicateRhs::List(literals),
+        }));
+    }
+    if contains_type_function(lhs) {
+        let literal = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
+        return Ok(PredicateExpression::Boolean(literals.contains(&literal)));
+    }
+    Err(unsupported(
+        format!("{path}.lhs"),
+        "IN predicates require variable.property, id(variable), or type(relationship) on the left-hand side",
+    ))
 }
 
 fn compile_predicate_rhs(
     expression: &Expression,
     path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
 ) -> Result<PredicateRhs, CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_predicate_rhs(inner, path),
+        Expression::Parenthesized(inner) => compile_predicate_rhs(inner, path, plan, context),
         Expression::PropertyLookup { .. } => Ok(PredicateRhs::Property(compile_property_ref(
             expression, path,
         )?)),
-        _ => Ok(PredicateRhs::Literal(compile_literal(expression, path)?)),
+        Expression::FunctionCall(function) if is_id_function(function) => Ok(PredicateRhs::Key {
+            variable: compile_id_variable(function, path, plan, context)?,
+        }),
+        _ => Ok(PredicateRhs::Literal(compile_predicate_literal(
+            expression, path, plan, context,
+        )?)),
+    }
+}
+
+fn compile_literal_predicate_rhs(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<PredicateRhs, CoreError> {
+    Ok(PredicateRhs::Literal(compile_predicate_literal(
+        expression, path, plan, context,
+    )?))
+}
+
+fn compile_null_predicate(
+    operand: &Expression,
+    negated: bool,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    let operator = if negated {
+        ComparisonOperator::NotEqual
+    } else {
+        ComparisonOperator::Equal
+    };
+    if let Some(property) = compile_optional_property_ref(operand, format!("{path}.operand"))? {
+        return Ok(PredicateExpression::Comparison(PropertyPredicate {
+            property,
+            operator,
+            rhs: PredicateRhs::Literal(Literal::Null),
+        }));
+    }
+    if let Some(variable) =
+        compile_optional_id_ref(operand, format!("{path}.operand"), plan, context)?
+    {
+        return Ok(PredicateExpression::KeyComparison(KeyPredicate {
+            variable,
+            operator,
+            rhs: PredicateRhs::Literal(Literal::Null),
+        }));
+    }
+    if contains_type_function(operand) {
+        return Ok(PredicateExpression::Boolean(negated));
+    }
+    Err(unsupported(
+        format!("{path}.operand"),
+        "IS NULL predicates require variable.property, id(variable), or type(relationship)",
+    ))
+}
+
+fn compile_optional_id_ref(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<String>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_optional_id_ref(inner, path, plan, context),
+        Expression::FunctionCall(function) if is_id_function(function) => {
+            Ok(Some(compile_id_variable(function, path, plan, context)?))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn compile_id_variable(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    let variable = compile_single_variable_function_argument(
+        function,
+        format!("{path}.arguments"),
+        "id() supports exactly one graph variable argument",
+        context,
+    )?;
+    if !plan_uses_variable(plan, &variable) {
+        return Err(unsupported(
+            format!("{path}.arguments[0]"),
+            format!("id() argument '{variable}' is not a bound graph variable"),
+        ));
+    }
+    Ok(variable)
+}
+
+fn compile_predicate_literal(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_predicate_literal(inner, path, plan, context),
+        Expression::FunctionCall(function) if is_type_function(function) => {
+            compile_type_literal(function, path, plan, context)
+        }
+        _ => compile_literal(expression, path),
+    }
+}
+
+fn compile_type_literal(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let variable = compile_single_variable_function_argument(
+        function,
+        format!("{path}.arguments"),
+        "type() supports exactly one relationship variable argument",
+        context,
+    )?;
+    let relationship = plan
+        .relationships
+        .iter()
+        .find(|relationship| relationship.variable.as_deref() == Some(variable.as_str()))
+        .ok_or_else(|| {
+            unsupported(
+                format!("{path}.arguments[0]"),
+                format!("type() argument '{variable}' is not a named relationship variable"),
+            )
+        })?;
+    Ok(Literal::String(relationship.relationship_type.clone()))
+}
+
+fn contains_type_function(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => contains_type_function(inner),
+        Expression::FunctionCall(function) => is_type_function(function),
+        _ => false,
+    }
+}
+
+fn evaluate_literal_comparison(
+    lhs: &Literal,
+    operator: ComparisonOperator,
+    rhs: &Literal,
+    path: impl Into<String>,
+) -> Result<bool, CoreError> {
+    let path = path.into();
+    match operator {
+        ComparisonOperator::Equal => Ok(lhs == rhs),
+        ComparisonOperator::NotEqual => Ok(lhs != rhs),
+        ComparisonOperator::StartsWith => match (lhs, rhs) {
+            (Literal::String(lhs), Literal::String(rhs)) => Ok(lhs.starts_with(rhs)),
+            _ => Err(unsupported(
+                path,
+                "STARTS WITH literal comparisons require string operands",
+            )),
+        },
+        ComparisonOperator::EndsWith => match (lhs, rhs) {
+            (Literal::String(lhs), Literal::String(rhs)) => Ok(lhs.ends_with(rhs)),
+            _ => Err(unsupported(
+                path,
+                "ENDS WITH literal comparisons require string operands",
+            )),
+        },
+        ComparisonOperator::Contains => match (lhs, rhs) {
+            (Literal::String(lhs), Literal::String(rhs)) => Ok(lhs.contains(rhs)),
+            _ => Err(unsupported(
+                path,
+                "CONTAINS literal comparisons require string operands",
+            )),
+        },
+        ComparisonOperator::GreaterThan
+        | ComparisonOperator::GreaterThanOrEqual
+        | ComparisonOperator::LessThan
+        | ComparisonOperator::LessThanOrEqual
+        | ComparisonOperator::In => Err(unsupported(
+            path,
+            "literal comparisons only support equality and string predicates",
+        )),
     }
 }
 
@@ -2446,6 +2711,55 @@ mod tests {
                     direction: OrderDirection::Ascending,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_id_predicates() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE id(person) = 1 AND id(owns) IN [100, 200] \
+             RETURN person.name AS owner",
+        )
+        .expect("id() predicates should compile");
+
+        assert_eq!(plan.predicates, Vec::new());
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::KeyComparison(KeyPredicate {
+                    variable: "person".to_string(),
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Literal(Literal::Integer(1)),
+                })),
+                right: Box::new(PredicateExpression::KeyComparison(KeyPredicate {
+                    variable: "owns".to_string(),
+                    operator: ComparisonOperator::In,
+                    rhs: PredicateRhs::List(vec![Literal::Integer(100), Literal::Integer(200)]),
+                })),
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_type_predicates_as_boolean_constants() {
+        let matching = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE type(owns) = 'OWNS' \
+             RETURN person.name AS owner",
+        )
+        .expect("matching type() predicate should compile");
+        let non_matching = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE type(owns) = 'DEPENDS_ON' \
+             RETURN person.name AS owner",
+        )
+        .expect("non-matching type() predicate should compile");
+
+        assert_eq!(matching.predicate, Some(PredicateExpression::Boolean(true)));
+        assert_eq!(
+            non_matching.predicate,
+            Some(PredicateExpression::Boolean(false))
         );
     }
 

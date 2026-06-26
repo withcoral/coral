@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::declaration::{Declaration, Node, Relationship};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateFunction, AggregateTarget, ComparisonOperator, GraphPlan, Literal, OrderExpression,
-    PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
+    AggregateFunction, AggregateTarget, ComparisonOperator, GraphPlan, KeyPredicate, Literal,
+    OrderExpression, PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
     RelationshipPattern,
 };
@@ -396,6 +396,9 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateExpression::Comparison(predicate) => {
                 self.validate_property_predicate(predicate, path)
             }
+            PredicateExpression::KeyComparison(predicate) => {
+                self.validate_key_predicate(predicate, path)
+            }
             PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
                 self.validate_predicate_expression(left, format!("{path}.left"))?;
                 self.validate_predicate_expression(right, format!("{path}.right"))
@@ -548,6 +551,112 @@ impl<'a> GraphPlanValidator<'a> {
                     .into_core_error());
                 }
                 self.validate_property_ref(property, format!("{path}.rhs"))
+            }
+            PredicateRhs::Key { variable } => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                if matches!(
+                    predicate.operator,
+                    ComparisonOperator::StartsWith
+                        | ComparisonOperator::EndsWith
+                        | ComparisonOperator::Contains
+                ) {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "string predicates require a string literal right-hand side",
+                    )
+                    .into_core_error());
+                }
+                self.validate_key_projection(variable, format!("{path}.rhs"))
+            }
+            PredicateRhs::List(literals) => {
+                if predicate.operator != ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "literal lists are only supported with IN predicates",
+                    )
+                    .into_core_error());
+                }
+                Self::validate_in_list(path, literals)
+            }
+        }
+    }
+
+    fn validate_key_predicate(
+        &self,
+        predicate: &KeyPredicate,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        self.validate_key_projection(&predicate.variable, format!("{path}.variable"))?;
+        match &predicate.rhs {
+            PredicateRhs::Literal(literal) => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
+                Self::validate_literal_predicate(path, predicate.operator, literal)
+            }
+            PredicateRhs::Property(property) => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                if matches!(
+                    predicate.operator,
+                    ComparisonOperator::StartsWith
+                        | ComparisonOperator::EndsWith
+                        | ComparisonOperator::Contains
+                ) {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "string predicates require a string literal right-hand side",
+                    )
+                    .into_core_error());
+                }
+                self.validate_property_ref(property, format!("{path}.rhs"))
+            }
+            PredicateRhs::Key { variable } => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                if matches!(
+                    predicate.operator,
+                    ComparisonOperator::StartsWith
+                        | ComparisonOperator::EndsWith
+                        | ComparisonOperator::Contains
+                ) {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "string predicates require a string literal right-hand side",
+                    )
+                    .into_core_error());
+                }
+                self.validate_key_projection(variable, format!("{path}.rhs"))
             }
             PredicateRhs::List(literals) => {
                 if predicate.operator != ComparisonOperator::In {
@@ -924,7 +1033,7 @@ fn aggregate_function_name(function: AggregateFunction) -> &'static str {
 mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
-        AggregateFunction, AggregateTarget, Direction, NodePattern, OrderDirection,
+        AggregateFunction, AggregateTarget, Direction, KeyPredicate, NodePattern, OrderDirection,
         OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
         PropertyPredicate, PropertyRef, RelationshipPattern,
     };
@@ -1112,6 +1221,26 @@ relationships:
         let error = graph
             .validate_graph_plan(&plan)
             .expect_err("keyless relationship id projection should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_KEY_PROJECTION"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_keyless_relationship_key_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicate = Some(PredicateExpression::KeyComparison(KeyPredicate {
+            variable: "owns".to_string(),
+            operator: ComparisonOperator::Equal,
+            rhs: PredicateRhs::Literal(Literal::Integer(100)),
+        }));
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("keyless relationship id predicate should fail validation");
 
         assert!(
             error.to_string().contains("INVALID_KEY_PROJECTION"),

@@ -76,6 +76,11 @@ pub enum PredicateRhs {
     Literal(Literal),
     /// Compare against another graph property.
     Property(PropertyRef),
+    /// Compare against the stable mapped key for a graph variable.
+    Key {
+        /// Graph variable.
+        variable: String,
+    },
     /// Compare against a literal list.
     List(Vec<Literal>),
 }
@@ -203,6 +208,17 @@ pub struct PropertyPredicate {
     pub rhs: PredicateRhs,
 }
 
+/// Key comparison predicate, compiled from `id(variable)` expressions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyPredicate {
+    /// Graph variable whose mapped key is compared.
+    pub variable: String,
+    /// Comparison operator.
+    pub operator: ComparisonOperator,
+    /// Right-hand comparison operand.
+    pub rhs: PredicateRhs,
+}
+
 /// Boolean predicate expression over graph properties.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PredicateExpression {
@@ -210,6 +226,8 @@ pub enum PredicateExpression {
     Boolean(bool),
     /// Leaf property comparison.
     Comparison(PropertyPredicate),
+    /// Leaf key comparison.
+    KeyComparison(KeyPredicate),
     /// Boolean conjunction.
     And {
         /// Left-hand expression.

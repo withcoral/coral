@@ -1511,6 +1511,42 @@ async fn cypher_order_by_id_functions_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_id_and_type_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         WHERE id(person) = 2 AND id(owns) IN [100, 200] AND type(owns) = 'OWNS' \
+         RETURN person.name AS owner, service.name AS service",
+    )
+    .await
+    .expect("id() and type() predicates should execute");
+
+    assert!(
+        execution.translated_sql().contains("\"n0\".\"id\" = 2"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"r0\".\"ownership_id\" IN (100, 200)"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"owner": "Grace Hopper", "service": "deployments"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_count_keyless_relationship_variables_are_rejected() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

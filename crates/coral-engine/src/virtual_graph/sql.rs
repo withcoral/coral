@@ -4,8 +4,8 @@ use std::fmt::Write as _;
 use super::declaration::{Declaration, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, Literal,
-    OrderDirection, OrderExpression, PredicateExpression, PredicateRhs, Projection,
+    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
+    Literal, OrderDirection, OrderExpression, PredicateExpression, PredicateRhs, Projection,
     ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyRef,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
@@ -559,6 +559,7 @@ impl<'a> Lowerer<'a> {
         match predicate {
             PredicateExpression::Boolean(value) => Ok(value.to_string().to_uppercase()),
             PredicateExpression::Comparison(predicate) => self.render_predicate(predicate),
+            PredicateExpression::KeyComparison(predicate) => self.render_key_predicate(predicate),
             PredicateExpression::And { left, right } => Ok(format!(
                 "({} AND {})",
                 self.render_predicate_expression(left)?,
@@ -722,6 +723,63 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn render_key_predicate(&self, predicate: &KeyPredicate) -> Result<String, CoreError> {
+        let key = self.render_binding_key_ref(&predicate.variable)?;
+        match (&predicate.operator, &predicate.rhs) {
+            (ComparisonOperator::In, PredicateRhs::List(literals)) => {
+                if literals.is_empty() {
+                    return Ok("FALSE".to_string());
+                }
+                let rendered = literals
+                    .iter()
+                    .map(render_literal)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok(format!("{key} IN ({rendered})"))
+            }
+            (ComparisonOperator::In, _) => Err(CoreError::internal(
+                "validated id() IN predicate did not contain a literal list",
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                PredicateRhs::Literal(Literal::String(value)),
+            ) => Ok(format!(
+                "{key} LIKE {} ESCAPE '\\'",
+                render_like_pattern(predicate.operator, value)
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                _,
+            ) => Err(CoreError::internal(
+                "validated id() string predicate did not contain a string literal",
+            )),
+            (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
+                Ok(format!("{key} IS NULL"))
+            }
+            (ComparisonOperator::NotEqual, PredicateRhs::Literal(Literal::Null)) => {
+                Ok(format!("{key} IS NOT NULL"))
+            }
+            (
+                ComparisonOperator::GreaterThan
+                | ComparisonOperator::GreaterThanOrEqual
+                | ComparisonOperator::LessThan
+                | ComparisonOperator::LessThanOrEqual,
+                PredicateRhs::Literal(Literal::Null),
+            ) => Err(CoreError::internal(
+                "validated id() predicate contained an invalid null comparison",
+            )),
+            _ => Ok(format!(
+                "{key} {} {}",
+                render_operator(predicate.operator),
+                self.render_predicate_rhs(&predicate.rhs)?
+            )),
+        }
+    }
+
     fn render_projection_predicate_rhs(
         &self,
         rhs: &ProjectionPredicateRhs,
@@ -739,6 +797,7 @@ impl<'a> Lowerer<'a> {
         match rhs {
             PredicateRhs::Literal(literal) => Ok(render_literal(literal)),
             PredicateRhs::Property(property) => self.render_property_ref(property),
+            PredicateRhs::Key { variable } => self.render_binding_key_ref(variable),
             PredicateRhs::List(_) => Err(CoreError::internal(
                 "validated literal list predicate reached generic RHS renderer",
             )),
@@ -933,10 +992,10 @@ fn quote_string_literal(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
-        AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, Literal,
-        NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
-        Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
-        PropertyPredicate, PropertyRef, RelationshipPattern,
+        AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
+        Literal, NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
+        PredicateRhs, Projection, ProjectionPredicate, ProjectionPredicateExpression,
+        ProjectionPredicateRhs, PropertyPredicate, PropertyRef, RelationshipPattern,
     };
 
     const GRAPH: &str = r"
@@ -1462,6 +1521,123 @@ relationships: []
             "SELECT \"n0\".\"display\"\"name\" AS \"value\" \
              FROM \"weird-schema\".\"table\"\"name\" AS \"n0\" \
              WHERE \"n0\".\"display\"\"name\" = 'Ada''s laptop'"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_key_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: Some("owns".to_string()),
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "service".to_string(),
+            }],
+            distinct: false,
+            projections: vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("service".to_string()),
+            }],
+            predicates: Vec::new(),
+            predicate: Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::KeyComparison(KeyPredicate {
+                    variable: "person".to_string(),
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Literal(Literal::Integer(1)),
+                })),
+                right: Box::new(PredicateExpression::KeyComparison(KeyPredicate {
+                    variable: "owns".to_string(),
+                    operator: ComparisonOperator::In,
+                    rhs: PredicateRhs::List(vec![Literal::Integer(100), Literal::Integer(200)]),
+                })),
+            }),
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("key predicates should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n1\".\"service_name\" AS \"service\" FROM \"ops\".\"people\" AS \"n0\" \
+             JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"service_id\" = \"n1\".\"id\" \
+             WHERE (\"n0\".\"id\" = 1 AND \"r0\".\"ownership_id\" IN (100, 200))"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_key_rhs_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "source".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "target".to_string(),
+                    label: "Service".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "DEPENDS_ON".to_string(),
+                left: "source".to_string(),
+                direction: Direction::Outgoing,
+                right: "target".to_string(),
+            }],
+            distinct: false,
+            projections: vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "source".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("source".to_string()),
+            }],
+            predicates: Vec::new(),
+            predicate: Some(PredicateExpression::KeyComparison(KeyPredicate {
+                variable: "source".to_string(),
+                operator: ComparisonOperator::NotEqual,
+                rhs: PredicateRhs::Key {
+                    variable: "target".to_string(),
+                },
+            })),
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("key RHS predicate should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n0\".\"service_name\" AS \"source\" FROM \"ops\".\"services\" AS \"n0\" \
+             JOIN \"ops\".\"service_dependencies\" AS \"r0\" ON \"r0\".\"from_service_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"to_service_id\" = \"n1\".\"id\" \
+             WHERE \"n0\".\"id\" <> \"n1\".\"id\""
         );
     }
 
