@@ -155,7 +155,7 @@ fn compile_terminal_with_projection(
     compile_reading_clauses_into(&part.reading_clauses, "parts[0].match", &mut plan)?;
 
     compile_terminal_with_clause(&part.with, &mut plan, context)?;
-    validate_terminal_return_aliases(return_clause, &plan.projections)?;
+    apply_terminal_return_projection_aliases(return_clause, &mut plan.projections)?;
     apply_terminal_return_modifiers(return_clause, &mut plan)?;
     Ok(Some(plan))
 }
@@ -232,9 +232,9 @@ fn compile_terminal_with_clause(
     Ok(())
 }
 
-fn validate_terminal_return_aliases(
+fn apply_terminal_return_projection_aliases(
     return_clause: &Return,
-    projections: &[Projection],
+    projections: &mut [Projection],
 ) -> Result<(), CoreError> {
     if return_clause.star {
         return Err(unsupported(
@@ -251,15 +251,9 @@ fn validate_terminal_return_aliases(
     for (index, (item, projection)) in return_clause
         .items
         .iter()
-        .zip(projections.iter())
+        .zip(projections.iter_mut())
         .enumerate()
     {
-        if item.alias.is_some() {
-            return Err(unsupported(
-                format!("final_part.return.items[{index}].alias"),
-                "terminal RETURN alias renaming after WITH is not supported yet",
-            ));
-        }
         let Expression::Variable(variable) = &item.expression else {
             return Err(unsupported(
                 format!("final_part.return.items[{index}].expression"),
@@ -279,8 +273,35 @@ fn validate_terminal_return_aliases(
                 format!("terminal RETURN expected WITH alias '{expected}', got '{alias}'"),
             ));
         }
+        if let Some(alias) = &item.alias {
+            set_projection_output_alias(projection, variable_name(alias));
+        }
     }
     Ok(())
+}
+
+fn set_projection_output_alias(projection: &mut Projection, alias: String) {
+    match projection {
+        Projection::Property {
+            alias: projection_alias,
+            ..
+        } => *projection_alias = Some(alias),
+        Projection::Key {
+            alias: projection_alias,
+            ..
+        }
+        | Projection::Literal {
+            alias: projection_alias,
+            ..
+        }
+        | Projection::CountAll {
+            alias: projection_alias,
+        }
+        | Projection::Aggregate {
+            alias: projection_alias,
+            ..
+        } => *projection_alias = alias,
+    }
 }
 
 fn apply_terminal_return_modifiers(
@@ -2104,6 +2125,54 @@ mod tests {
     }
 
     #[test]
+    fn compiles_terminal_with_final_return_aliases() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH service.tier AS tier, count(service) AS services \
+             RETURN tier AS service_tier, services AS total_services \
+             ORDER BY total_services DESC, service_tier",
+        )
+        .expect("terminal WITH final RETURN aliases should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("service_tier".to_string()),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Count,
+                    target: AggregateTarget::VariableKey {
+                        variable: "service".to_string(),
+                    },
+                    distinct: false,
+                    alias: "total_services".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("total_services".to_string()),
+                    direction: OrderDirection::Descending,
+                },
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_terminal_with_scalar_where_alias_predicates() {
         let plan = compile_cypher(
             "MATCH (person:Person)-[:OWNS]->(service:Service) \
@@ -2941,9 +3010,6 @@ mod tests {
         assert_unsupported("MATCH (service:Service) WITH service.name RETURN service.name");
         assert_unsupported("MATCH (service:Service) WITH service AS renamed RETURN renamed");
         assert_unsupported("MATCH (service:Service) WITH service.name AS service RETURN missing");
-        assert_unsupported(
-            "MATCH (service:Service) WITH service.name AS service RETURN service AS renamed",
-        );
         assert_unsupported(
             "MATCH (service:Service) WITH service.name AS service MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN service, target.name",
         );
