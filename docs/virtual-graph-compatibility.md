@@ -44,6 +44,8 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Typed directed relationships | Supported foundation | Requires one static relationship type and one arrowhead |
 | Multi-hop relationship chains | Supported foundation | Forward, reverse, and mixed chains compile through the shared graph IR |
 | `WHERE` property comparisons | Supported foundation | String, integer, boolean, null literal, and property-to-property comparisons |
+| Chained comparisons | Supported foundation | Normalized to conjunctions, e.g. `10 <= n.score < 20` |
+| Literal-left comparisons | Supported foundation | Operators are inverted around the property operand where possible |
 | `WHERE` boolean logic | Supported foundation | `AND`, `OR`, `NOT`, and parentheses lower to SQL boolean predicates |
 | `WHERE ... IN [...]` | Supported foundation | Literal scalar lists lower to SQL `IN`; empty lists lower to `FALSE` |
 | `WHERE ... STARTS WITH` / `ENDS WITH` / `CONTAINS` | Supported foundation | String-literal RHS lowers to escaped SQL `LIKE` |

@@ -527,9 +527,9 @@ fn compile_predicate_expression(
                 format!("{path}.operand"),
             )?),
         }),
-        Expression::Comparison { lhs, operators, .. } => Ok(PredicateExpression::Comparison(
-            compile_comparison(lhs, operators.as_slice(), path)?,
-        )),
+        Expression::Comparison { lhs, operators, .. } => {
+            compile_comparison_expression(lhs, operators.as_slice(), path)
+        }
         Expression::In { lhs, rhs, .. } => Ok(PredicateExpression::Comparison(
             compile_in_predicate(lhs, rhs, path)?,
         )),
@@ -591,24 +591,99 @@ fn append_conjunctive_expression(
     }
 }
 
-fn compile_comparison(
+fn compile_comparison_expression(
     lhs: &Expression,
     operators: &[(CypherComparisonOperator, Box<Expression>)],
     path: impl Into<String>,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    if operators.is_empty() {
+        return Err(unsupported(path, "comparison must include an operator"));
+    }
+
+    let (prefix, mut current_lhs) = compile_comparison_prefix(lhs, format!("{path}.lhs"))?;
+    let mut expression = prefix;
+    for (index, (operator, rhs)) in operators.iter().enumerate() {
+        let predicate = compile_binary_comparison(
+            current_lhs,
+            *operator,
+            rhs,
+            format!("{path}.operators[{index}]"),
+        )?;
+        let next = PredicateExpression::Comparison(predicate);
+        expression = Some(append_expression_conjunct(expression, next));
+        current_lhs = rhs;
+    }
+
+    expression.ok_or_else(|| CoreError::internal("comparison expression was empty"))
+}
+
+fn compile_comparison_prefix(
+    expression: &Expression,
+    path: impl Into<String>,
+) -> Result<(Option<PredicateExpression>, &Expression), CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_comparison_prefix(inner, path),
+        Expression::Comparison { lhs, operators, .. } => Ok((
+            Some(compile_comparison_expression(
+                lhs,
+                operators.as_slice(),
+                path,
+            )?),
+            terminal_comparison_operand(lhs, operators.as_slice()),
+        )),
+        _ => Ok((None, expression)),
+    }
+}
+
+fn terminal_comparison_operand<'a>(
+    lhs: &'a Expression,
+    operators: &'a [(CypherComparisonOperator, Box<Expression>)],
+) -> &'a Expression {
+    operators.last().map_or(lhs, |(_, rhs)| rhs.as_ref())
+}
+
+fn append_expression_conjunct(
+    expression: Option<PredicateExpression>,
+    next: PredicateExpression,
+) -> PredicateExpression {
+    match expression {
+        Some(previous) => PredicateExpression::And {
+            left: Box::new(previous),
+            right: Box::new(next),
+        },
+        None => next,
+    }
+}
+
+fn compile_binary_comparison(
+    lhs: &Expression,
+    operator: CypherComparisonOperator,
+    rhs: &Expression,
+    path: impl Into<String>,
 ) -> Result<PropertyPredicate, CoreError> {
     let path = path.into();
-    let [(operator, rhs)] = operators else {
-        return Err(unsupported(
-            path,
-            "chained comparisons are not supported yet",
-        ));
-    };
+    let operator = compile_comparison_operator(operator, format!("{path}.operator"))?;
+    if let Some(property) = compile_optional_property_ref(lhs, format!("{path}.lhs"))? {
+        return Ok(PropertyPredicate {
+            property,
+            operator,
+            rhs: compile_predicate_rhs(rhs, format!("{path}.rhs"))?,
+        });
+    }
+    if let Some(property) = compile_optional_property_ref(rhs, format!("{path}.rhs"))? {
+        return Ok(PropertyPredicate {
+            property,
+            operator: invert_comparison_operator(operator, format!("{path}.operator"))?,
+            rhs: PredicateRhs::Literal(compile_literal(lhs, format!("{path}.lhs"))?),
+        });
+    }
 
-    Ok(PropertyPredicate {
-        property: compile_property_ref(lhs, format!("{path}.lhs"))?,
-        operator: compile_comparison_operator(*operator, format!("{path}.operator"))?,
-        rhs: compile_predicate_rhs(rhs, format!("{path}.rhs"))?,
-    })
+    Err(unsupported(
+        path,
+        "comparisons must include at least one variable.property operand",
+    ))
 }
 
 fn compile_in_predicate(
@@ -661,6 +736,18 @@ fn compile_property_ref(
             path,
             "only variable.property expressions are supported here",
         )),
+    }
+}
+
+fn compile_optional_property_ref(
+    expression: &Expression,
+    path: impl Into<String>,
+) -> Result<Option<PropertyRef>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_optional_property_ref(inner, path),
+        Expression::PropertyLookup { .. } => compile_property_ref(expression, path).map(Some),
+        _ => Ok(None),
     }
 }
 
@@ -771,6 +858,27 @@ fn compile_comparison_operator(
         CypherComparisonOperator::RegexMatch => Err(unsupported(
             path,
             "regex comparison operators are not supported yet",
+        )),
+    }
+}
+
+fn invert_comparison_operator(
+    operator: ComparisonOperator,
+    path: impl Into<String>,
+) -> Result<ComparisonOperator, CoreError> {
+    match operator {
+        ComparisonOperator::Equal => Ok(ComparisonOperator::Equal),
+        ComparisonOperator::NotEqual => Ok(ComparisonOperator::NotEqual),
+        ComparisonOperator::GreaterThan => Ok(ComparisonOperator::LessThan),
+        ComparisonOperator::GreaterThanOrEqual => Ok(ComparisonOperator::LessThanOrEqual),
+        ComparisonOperator::LessThan => Ok(ComparisonOperator::GreaterThan),
+        ComparisonOperator::LessThanOrEqual => Ok(ComparisonOperator::GreaterThanOrEqual),
+        ComparisonOperator::In
+        | ComparisonOperator::StartsWith
+        | ComparisonOperator::EndsWith
+        | ComparisonOperator::Contains => Err(unsupported(
+            path,
+            "this comparison operator requires a variable.property left-hand side",
         )),
     }
 }
@@ -1059,6 +1167,70 @@ mod tests {
                     property: "team".to_string(),
                 }),
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_literal_left_comparisons_by_inverting_operator() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE 'prod' = service.tier AND 10 < service.id \
+             RETURN service.name",
+        )
+        .expect("query should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+                },
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "id".to_string(),
+                    },
+                    operator: ComparisonOperator::GreaterThan,
+                    rhs: PredicateRhs::Literal(Literal::Integer(10)),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_chained_comparisons_as_conjunctions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE 10 <= service.id < 30 \
+             RETURN service.name",
+        )
+        .expect("query should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "id".to_string(),
+                    },
+                    operator: ComparisonOperator::GreaterThanOrEqual,
+                    rhs: PredicateRhs::Literal(Literal::Integer(10)),
+                },
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "id".to_string(),
+                    },
+                    operator: ComparisonOperator::LessThan,
+                    rhs: PredicateRhs::Literal(Literal::Integer(30)),
+                },
+            ]
         );
     }
 
@@ -1416,6 +1588,11 @@ mod tests {
         assert_unsupported(
             "MATCH (service:Service) WHERE service.name =~ '.*api' RETURN service.name",
         );
+    }
+
+    #[test]
+    fn rejects_comparisons_without_property_operands() {
+        assert_unsupported("MATCH (service:Service) WHERE 10 < 20 RETURN service.name");
     }
 
     #[test]
