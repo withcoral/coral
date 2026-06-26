@@ -933,18 +933,30 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
     let server = MockServer::start().await;
     let client = start_mcp_client(&server).await?;
 
-    let invalid_sql = client
+    let mixed_sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "queries": ["DELETE FROM local_messages.messages"]
+                "queries": [
+                    "SELECT text FROM local_messages.messages ORDER BY text",
+                    "DELETE FROM local_messages.messages"
+                ]
             }))),
         )
         .await?;
-    assert_eq!(invalid_sql.is_error, Some(true));
+    assert_eq!(mixed_sql.is_error, Some(true));
+    let mixed_sql = mixed_sql.structured_content.expect("structured content");
+    assert_eq!(mixed_sql["total_count"], 2);
+    assert_eq!(mixed_sql["success_count"], 1);
+    assert_eq!(mixed_sql["error_count"], 1);
+    assert_eq!(mixed_sql["results"][0]["status"], "success");
+    assert_eq!(mixed_sql["results"][0]["rows"][0]["text"], "hello");
+    assert_eq!(mixed_sql["results"][1]["status"], "error");
     assert_eq!(
-        invalid_sql.structured_content.expect("structured content")["error"]["summary"],
+        mixed_sql["results"][1]["error"]["summary"],
         "Query request is invalid"
     );
+
+    assert_eq!(server.execute_sql_requests().len(), 2);
 
     let catalog = client
         .call_tool(CallToolRequestParams::new("list_catalog"))

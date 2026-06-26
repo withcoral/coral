@@ -117,6 +117,14 @@ pub(crate) fn record_tonic_status(span: &tracing::Span, status: &tonic::Status) 
     }
 }
 
+pub(crate) fn record_tool_payload_error(
+    span: &tracing::Span,
+    error_type: &str,
+    message: impl std::fmt::Display,
+) {
+    record_error(span, error_type, message);
+}
+
 pub(crate) fn record_success(span: &tracing::Span) {
     span.record("status", "ok");
     span.set_status(OtelStatus::Ok);

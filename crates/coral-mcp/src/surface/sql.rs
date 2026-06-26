@@ -4,6 +4,8 @@ use rmcp::ErrorData;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
+use super::ToolError;
+
 pub(crate) const MAX_SQL_BATCH_QUERIES: usize = 10;
 
 pub(crate) struct SqlArguments {
@@ -23,18 +25,11 @@ pub(crate) struct SqlBatchValue {
 pub(crate) enum SqlQueryResultValue {
     #[serde(rename = "success")]
     Success { index: usize, rows: Vec<Value> },
+    #[serde(rename = "error")]
+    Error { index: usize, error: ToolError },
 }
 
 impl SqlBatchValue {
-    pub(crate) fn from_successes(results: Vec<SqlQueryResultValue>) -> Self {
-        Self {
-            total_count: results.len(),
-            success_count: results.len(),
-            error_count: 0,
-            results,
-        }
-    }
-
     pub(crate) fn from_unordered(
         mut results: Vec<SqlQueryResultValue>,
     ) -> Result<Self, tonic::Status> {
@@ -49,14 +44,27 @@ impl SqlBatchValue {
             }
         }
 
-        Ok(Self::from_successes(results))
+        let success_count = results
+            .iter()
+            .filter(|result| matches!(result, SqlQueryResultValue::Success { .. }))
+            .count();
+        Ok(Self {
+            total_count: results.len(),
+            success_count,
+            error_count: results.len() - success_count,
+            results,
+        })
+    }
+
+    pub(crate) fn has_errors(&self) -> bool {
+        self.error_count > 0
     }
 }
 
 impl SqlQueryResultValue {
     fn index(&self) -> usize {
         match self {
-            Self::Success { index, .. } => *index,
+            Self::Success { index, .. } | Self::Error { index, .. } => *index,
         }
     }
 }
@@ -136,14 +144,44 @@ pub(crate) fn sql_output_schema() -> Arc<Map<String, Value>> {
                 "minItems": 1,
                 "maxItems": MAX_SQL_BATCH_QUERIES,
                 "items": {
-                    "type": "object",
-                    "required": ["index", "status", "rows"],
-                    "additionalProperties": false,
-                    "properties": {
-                        "index": { "type": "integer", "minimum": 0, "maximum": 9 },
-                        "status": { "const": "success" },
-                        "rows": { "type": "array", "items": { "type": "object" } }
-                    }
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "required": ["index", "status", "rows"],
+                            "additionalProperties": false,
+                            "properties": {
+                                "index": { "type": "integer", "minimum": 0, "maximum": 9 },
+                                "status": { "const": "success" },
+                                "rows": { "type": "array", "items": { "type": "object" } }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["index", "status", "error"],
+                            "additionalProperties": false,
+                            "properties": {
+                                "index": { "type": "integer", "minimum": 0, "maximum": 9 },
+                                "status": { "const": "error" },
+                                "error": { "$ref": "#/$defs/sql_query_error" }
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+        "$defs": {
+            "sql_query_error": {
+                "type": "object",
+                "required": ["summary", "detail", "grpc_code", "retryable", "metadata"],
+                "additionalProperties": false,
+                "properties": {
+                    "summary": { "type": "string" },
+                    "detail": { "type": "string" },
+                    "hint": { "type": "string" },
+                    "grpc_code": { "type": "string" },
+                    "reason": { "type": "string" },
+                    "retryable": { "type": "boolean" },
+                    "metadata": { "type": "object", "additionalProperties": { "type": "string" } }
                 }
             }
         }

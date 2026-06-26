@@ -1520,25 +1520,28 @@ async fn mcp_tool_error_does_not_end_session() {
     );
     assert_eq!(sql.is_error, Some(false));
 
-    let invalid_sql = client
+    let mixed_sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "queries": ["DELETE FROM local_messages.messages"]
+                "queries": [
+                    "SELECT text FROM local_messages.messages WHERE text = 'hello'",
+                    "DELETE FROM local_messages.messages"
+                ]
             }))),
         )
         .await
-        .expect("failing sql still returns tool result");
-    assert_eq!(invalid_sql.is_error, Some(true));
+        .expect("mixed sql still returns tool result");
+    assert_eq!(mixed_sql.is_error, Some(true));
+    let mixed_sql = mixed_sql.structured_content.expect("structured content");
+    assert_eq!(mixed_sql["total_count"], 2);
+    assert_eq!(mixed_sql["success_count"], 1);
+    assert_eq!(mixed_sql["error_count"], 1);
+    assert_eq!(mixed_sql["results"][0]["status"], "success");
+    assert_eq!(mixed_sql["results"][0]["rows"][0]["text"], "hello");
+    assert_eq!(mixed_sql["results"][1]["status"], "error");
     assert_eq!(
-        invalid_sql.structured_content.expect("structured content")["error"]["summary"],
+        mixed_sql["results"][1]["error"]["summary"],
         "Query request is invalid"
-    );
-    assert!(
-        invalid_sql.content[0]
-            .as_text()
-            .expect("text content")
-            .text
-            .contains("Detail:")
     );
 
     let catalog_after_error = client
