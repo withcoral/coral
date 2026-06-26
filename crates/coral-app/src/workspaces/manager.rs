@@ -1,5 +1,3 @@
-#![expect(dead_code, reason = "used in next stack PR")]
-
 use std::sync::Arc;
 
 use tracing::warn;

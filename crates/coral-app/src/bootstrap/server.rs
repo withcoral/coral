@@ -20,6 +20,7 @@ use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
+use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
     TRACE_RESPONSE_MAX_MESSAGE_SIZE,
@@ -56,6 +57,7 @@ use crate::state::ConfigStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
+use crate::workspaces::{WorkspaceManager, WorkspaceService};
 
 /// A static asset (e.g., a built SPA file) served on the same port as
 /// gRPC-Web.
@@ -270,6 +272,11 @@ impl ServerBuilder {
             credential_manager.clone(),
             layout.clone(),
         );
+        let workspace_manager = WorkspaceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+        );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let episode_store = EpisodeStore::new(layout.clone());
@@ -294,6 +301,7 @@ impl ServerBuilder {
         };
         start_server(
             source_manager,
+            workspace_manager,
             query_manager,
             feedback_manager,
             episode_store,
@@ -376,6 +384,7 @@ impl Drop for RunningServer {
 
 async fn start_server(
     source_manager: SourceManager,
+    workspace_manager: WorkspaceManager,
     query_manager: QueryManager,
     feedback_manager: FeedbackManager,
     episode_store: EpisodeStore,
@@ -383,6 +392,7 @@ async fn start_server(
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
     let source_service = SourceService::new(source_manager, query_manager.clone());
+    let workspace_service = WorkspaceService::new(workspace_manager);
     let catalog_service = CatalogService::new(query_manager.clone());
     let query_service = QueryService::new(query_manager);
     let feedback_service = FeedbackService::new(feedback_manager);
@@ -391,6 +401,9 @@ async fn start_server(
         .add_service(GrpcMethodAnnotatedService::new(SourceServiceServer::new(
             source_service,
         )))
+        .add_service(GrpcMethodAnnotatedService::new(
+            WorkspaceServiceServer::new(workspace_service),
+        ))
         .add_service(GrpcMethodAnnotatedService::new(
             CatalogServiceServer::new(catalog_service)
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
@@ -662,7 +675,7 @@ mod tests {
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
-    use crate::workspaces::WorkspaceName;
+    use crate::workspaces::{WorkspaceManager, WorkspaceName};
     use crate::{AwsEngineExtensionsProvider, NoopEngineExtensionsProvider};
 
     fn default_workspace() -> Workspace {
@@ -774,6 +787,11 @@ enabled = false
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
+        let workspace_manager = WorkspaceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+        );
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -785,6 +803,7 @@ enabled = false
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
             source_manager,
+            workspace_manager,
             query_manager,
             feedback_manager,
             episode_store,
@@ -1154,6 +1173,11 @@ tables:
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
+        let workspace_manager = WorkspaceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+        );
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1166,6 +1190,7 @@ tables:
         );
         let running = start_server(
             source_manager,
+            workspace_manager,
             query_manager,
             feedback_manager,
             episode_store,
@@ -1258,6 +1283,11 @@ tables:
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
+        let workspace_manager = WorkspaceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+        );
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1267,6 +1297,7 @@ tables:
         );
         let running = start_server(
             source_manager,
+            workspace_manager,
             query_manager,
             feedback_manager,
             episode_store,
@@ -1359,6 +1390,11 @@ tables:
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
+        let workspace_manager = WorkspaceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+        );
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1368,6 +1404,7 @@ tables:
         );
         let running = start_server(
             source_manager,
+            workspace_manager,
             query_manager,
             feedback_manager,
             episode_store,
