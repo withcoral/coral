@@ -158,8 +158,25 @@ jobs:
         with:
           tool: nextest
 
-      - name: Run make rust-checks
-        run: make rust-checks
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Rust clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Free Rust clippy artifacts
+        run: cargo clean
+
+      - name: Run Rust tests
+        run: cargo nextest run --workspace --all-targets --all-features --locked --no-fail-fast
+
+      - name: Free Rust test artifacts
+        run: cargo clean
+
+      - name: Build Rust documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --all-features --no-deps --locked
 
   windows-rust-smoke:
     name: Windows Rust smoke
