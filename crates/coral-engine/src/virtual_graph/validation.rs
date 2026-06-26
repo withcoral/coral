@@ -374,6 +374,7 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<(), CoreError> {
         let path = path.into();
         match expression {
+            PredicateExpression::Boolean(_) => Ok(()),
             PredicateExpression::Comparison(predicate) => {
                 self.validate_property_predicate(predicate, path)
             }

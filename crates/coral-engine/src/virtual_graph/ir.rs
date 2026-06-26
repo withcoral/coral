@@ -179,6 +179,8 @@ pub struct PropertyPredicate {
 /// Boolean predicate expression over graph properties.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PredicateExpression {
+    /// Boolean constant.
+    Boolean(bool),
     /// Leaf property comparison.
     Comparison(PropertyPredicate),
     /// Boolean conjunction.

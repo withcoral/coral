@@ -524,6 +524,57 @@ async fn cypher_bare_boolean_property_predicates_execute_against_synthetic_sourc
 }
 
 #[tokio::test]
+async fn cypher_constant_boolean_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let no_rows = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE false \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect("constant false predicate query should execute");
+
+    assert!(
+        no_rows.translated_sql().contains("WHERE FALSE"),
+        "{}",
+        no_rows.translated_sql()
+    );
+    assert_eq!(execution_to_rows(no_rows.execution()), Vec::<Value>::new());
+
+    let active = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.active OR false \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("constant boolean expression query should execute");
+
+    assert!(
+        active.translated_sql().contains(" OR FALSE"),
+        "{}",
+        active.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(active.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_in_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

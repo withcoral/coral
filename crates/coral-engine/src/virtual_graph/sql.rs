@@ -399,6 +399,7 @@ impl<'a> Lowerer<'a> {
         predicate: &PredicateExpression,
     ) -> Result<String, CoreError> {
         match predicate {
+            PredicateExpression::Boolean(value) => Ok(value.to_string().to_uppercase()),
             PredicateExpression::Comparison(predicate) => self.render_predicate(predicate),
             PredicateExpression::And { left, right } => Ok(format!(
                 "({} AND {})",
@@ -1278,6 +1279,36 @@ relationships: []
             translation
                 .sql()
                 .contains("WHERE NOT (\"n1\".\"tier\" = 'prod')"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_boolean_constant_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.predicate = Some(PredicateExpression::Or {
+            left: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            })),
+            right: Box::new(PredicateExpression::Boolean(false)),
+        });
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("constant boolean predicate expression should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE (\"n1\".\"tier\" = 'prod' OR FALSE)"),
             "{}",
             translation.sql()
         );

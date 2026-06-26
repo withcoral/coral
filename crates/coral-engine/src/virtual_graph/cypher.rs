@@ -743,6 +743,9 @@ fn compile_predicate_expression(
         Expression::In { lhs, rhs, .. } => Ok(PredicateExpression::Comparison(
             compile_in_predicate(lhs, rhs, path)?,
         )),
+        Expression::Literal(CypherLiteral::Boolean(value)) => {
+            Ok(PredicateExpression::Boolean(*value))
+        }
         Expression::IsNull {
             operand, negated, ..
         } => Ok(PredicateExpression::Comparison(PropertyPredicate {
@@ -809,7 +812,9 @@ fn is_conjunctive_expression(expression: &PredicateExpression) -> bool {
         PredicateExpression::And { left, right } => {
             is_conjunctive_expression(left) && is_conjunctive_expression(right)
         }
-        PredicateExpression::Or { .. } | PredicateExpression::Not { .. } => false,
+        PredicateExpression::Boolean(_)
+        | PredicateExpression::Or { .. }
+        | PredicateExpression::Not { .. } => false,
     }
 }
 
@@ -823,7 +828,9 @@ fn append_conjunctive_expression(
             append_conjunctive_expression(*left, predicates);
             append_conjunctive_expression(*right, predicates);
         }
-        PredicateExpression::Or { .. } | PredicateExpression::Not { .. } => {
+        PredicateExpression::Boolean(_)
+        | PredicateExpression::Or { .. }
+        | PredicateExpression::Not { .. } => {
             unreachable!("non-conjunctive predicate expression reached conjunctive appender")
         }
     }
@@ -1644,6 +1651,30 @@ mod tests {
         assert!(matches!(
             negated.predicate,
             Some(PredicateExpression::Not { .. })
+        ));
+    }
+
+    #[test]
+    fn compiles_constant_boolean_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE true \
+             RETURN service.name",
+        )
+        .expect("constant true predicate query should compile");
+
+        assert!(plan.predicates.is_empty());
+        assert_eq!(plan.predicate, Some(PredicateExpression::Boolean(true)));
+
+        let combined = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service.active OR false \
+             RETURN service.name",
+        )
+        .expect("constant false predicate expression query should compile");
+        assert!(matches!(
+            combined.predicate,
+            Some(PredicateExpression::Or { .. })
         ));
     }
 
