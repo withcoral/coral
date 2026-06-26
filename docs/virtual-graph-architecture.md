@@ -71,7 +71,9 @@ execution remain separate layers.
 The supported foundation subset is intentionally narrow:
 
 - exactly one read-only single-part query;
-- one non-optional `MATCH` path with named, single-label nodes;
+- one non-optional `MATCH` clause with connected path parts;
+- named node variables where the first binding has one static label and
+  repeated bindings may omit the label;
 - directed, typed relationships;
 - connected multi-hop relationship chains;
 - `WHERE` comparisons joined by `AND`;

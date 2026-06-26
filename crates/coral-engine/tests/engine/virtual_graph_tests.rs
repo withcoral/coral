@@ -268,6 +268,78 @@ async fn cypher_reverse_multihop_paths_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_connected_comma_patterns_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service)-[:DEPENDS_ON]->(middle:Service), \
+               (middle)-[:DEPENDS_ON]->(target:Service), \
+               (source)-[:DEPENDS_ON]->(target) \
+         RETURN source.name AS source, middle.name AS middle, target.name AS target \
+         ORDER BY source, middle, target",
+    )
+    .await
+    .expect("connected comma-separated Cypher patterns should execute");
+    let graph_rows = execution_to_rows(execution.execution());
+
+    let sql_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT source.service_name AS source, middle.service_name AS middle, target.service_name AS target \
+             FROM ops.services AS source \
+             JOIN ops.service_dependencies AS source_middle ON source_middle.from_service_id = source.id \
+             JOIN ops.services AS middle ON source_middle.to_service_id = middle.id \
+             JOIN ops.service_dependencies AS middle_target ON middle_target.from_service_id = middle.id \
+             JOIN ops.services AS target ON middle_target.to_service_id = target.id \
+             JOIN ops.service_dependencies AS source_target ON source_target.from_service_id = source.id AND source_target.to_service_id = target.id \
+             ORDER BY source.service_name, middle.service_name, target.service_name",
+        )
+        .await
+        .expect("equivalent SQL should execute"),
+    );
+
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![json!({
+            "source": "billing-api",
+            "middle": "deployments",
+            "target": "experiments",
+        })]
+    );
+}
+
+#[tokio::test]
+async fn cypher_disconnected_comma_patterns_are_rejected_before_sql_planning() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service)-[:DEPENDS_ON]->(target:Service), (orphan:Person) \
+         RETURN source.name AS source, target.name AS target",
+    )
+    .await
+    .expect_err("disconnected comma-separated patterns should fail validation");
+
+    assert!(
+        error.to_string().contains("DISCONNECTED_PATTERN"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
 async fn cypher_is_null_predicates_execute_with_sql_null_semantics() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

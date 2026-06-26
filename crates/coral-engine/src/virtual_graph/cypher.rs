@@ -22,7 +22,8 @@ use crate::CoreError;
 
 #[derive(Debug)]
 struct CompiledNode {
-    pattern: NodePattern,
+    variable: String,
+    pattern: Option<NodePattern>,
     predicates: Vec<PropertyPredicate>,
 }
 
@@ -128,58 +129,67 @@ fn compile_match(match_clause: &Match) -> Result<GraphPlan, CoreError> {
         return Err(unsupported("match", "OPTIONAL MATCH is not supported yet"));
     }
 
-    let pattern_part = match match_clause.pattern.parts.as_slice() {
-        [pattern_part] => pattern_part,
-        [] => {
-            return Err(unsupported(
-                "match.pattern",
-                "MATCH pattern must not be empty",
-            ));
-        }
-        _ => {
-            return Err(unsupported(
-                "match.pattern",
-                "comma-separated pattern parts are not supported yet",
-            ));
-        }
-    };
-    if pattern_part.variable.is_some() {
+    let mut plan = GraphPlan::default();
+
+    if match_clause.pattern.parts.is_empty() {
         return Err(unsupported(
             "match.pattern",
-            "path variables are not supported yet",
+            "MATCH pattern must not be empty",
         ));
     }
 
-    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
-        return Err(unsupported(
-            "match.pattern",
-            "parenthesized and quantified path patterns are not supported yet",
-        ));
-    };
+    for (part_index, pattern_part) in match_clause.pattern.parts.iter().enumerate() {
+        if pattern_part.variable.is_some() {
+            return Err(unsupported(
+                format!("match.pattern.parts[{part_index}]"),
+                "path variables are not supported yet",
+            ));
+        }
 
-    let mut plan = GraphPlan::default();
-    let start_node = compile_node(start, "match.pattern.nodes[0]")?;
-    let mut previous_variable = start_node.pattern.variable.clone();
-    plan.predicates.extend(start_node.predicates);
-    plan.nodes.push(start_node.pattern);
+        let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+            return Err(unsupported(
+                format!("match.pattern.parts[{part_index}]"),
+                "parenthesized and quantified path patterns are not supported yet",
+            ));
+        };
 
-    for (index, chain) in chains.iter().enumerate() {
-        let node_path = format!("match.pattern.nodes[{}]", index + 1);
-        let next_node = compile_node(&chain.node, node_path)?;
-        let relationship_path = format!("match.pattern.relationships[{index}]");
-        let relationship = compile_relationship(
-            &chain.relationship,
-            &previous_variable,
-            &next_node.pattern.variable,
-            index,
+        let start_node = compile_node(
+            start,
             &plan,
-            relationship_path,
+            format!("match.pattern.parts[{part_index}].nodes[0]"),
         )?;
-        previous_variable.clone_from(&next_node.pattern.variable);
-        plan.predicates.extend(next_node.predicates);
-        plan.nodes.push(next_node.pattern);
-        plan.predicates.extend(relationship.predicates);
-        plan.relationships.push(relationship.pattern);
+        let mut previous_variable = start_node.variable.clone();
+        plan.predicates.extend(start_node.predicates);
+        if let Some(pattern) = start_node.pattern {
+            plan.nodes.push(pattern);
+        }
+
+        for (chain_index, chain) in chains.iter().enumerate() {
+            let node_path = format!(
+                "match.pattern.parts[{part_index}].nodes[{}]",
+                chain_index + 1
+            );
+            let next_node = compile_node(&chain.node, &plan, node_path)?;
+            let next_variable = next_node.variable.clone();
+            let relationship_index = plan.relationships.len();
+            let relationship_path =
+                format!("match.pattern.parts[{part_index}].relationships[{chain_index}]");
+            let relationship = compile_relationship(
+                &chain.relationship,
+                &previous_variable,
+                &next_variable,
+                relationship_index,
+                &plan,
+                relationship_path,
+            )?;
+            previous_variable = next_variable;
+            plan.predicates.extend(next_node.predicates);
+            if let Some(pattern) = next_node.pattern {
+                plan.nodes.push(pattern);
+            }
+            plan.predicates.extend(relationship.predicates);
+            plan.relationships.push(relationship.pattern);
+        }
     }
 
     Ok(plan)
@@ -187,18 +197,44 @@ fn compile_match(match_clause: &Match) -> Result<GraphPlan, CoreError> {
 
 fn compile_node(
     pattern: &CypherNodePattern,
+    plan: &GraphPlan,
     path: impl Into<String>,
 ) -> Result<CompiledNode, CoreError> {
     let path = path.into();
     let variable = required_variable(pattern.variable.as_ref(), format!("{path}.variable"))?;
-    let label = single_static_label(&pattern.labels, format!("{path}.labels"))?;
+    let label = optional_single_static_label(&pattern.labels, format!("{path}.labels"))?;
     let predicates = pattern.properties.as_ref().map_or_else(
         || Ok(Vec::new()),
         |properties| compile_inline_properties(properties, &variable, format!("{path}.properties")),
     )?;
+    if let Some(existing) = plan.nodes.iter().find(|node| node.variable == variable) {
+        if let Some(label) = label
+            && label != existing.label
+        {
+            return Err(unsupported(
+                format!("{path}.labels"),
+                format!(
+                    "node variable '{variable}' was already bound with label '{}'",
+                    existing.label
+                ),
+            ));
+        }
+        return Ok(CompiledNode {
+            variable,
+            pattern: None,
+            predicates,
+        });
+    }
+    let label = label.ok_or_else(|| {
+        unsupported(
+            format!("{path}.labels"),
+            "a node label is required when a variable is first bound",
+        )
+    })?;
 
     Ok(CompiledNode {
-        pattern: NodePattern { variable, label },
+        variable: variable.clone(),
+        pattern: Some(NodePattern { variable, label }),
         predicates,
     })
 }
@@ -714,6 +750,16 @@ fn single_static_label(
     Ok(name.name.clone())
 }
 
+fn optional_single_static_label(
+    labels: &[LabelExpression],
+    path: impl Into<String>,
+) -> Result<Option<String>, CoreError> {
+    if labels.is_empty() {
+        return Ok(None);
+    }
+    single_static_label(labels, path).map(Some)
+}
+
 fn variable_name(variable: &Variable) -> String {
     variable.name.name.clone()
 }
@@ -801,6 +847,99 @@ mod tests {
                 },
                 alias: Some("source".to_string()),
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_connected_comma_separated_patterns_with_reused_nodes() {
+        let plan = compile_cypher(
+            "MATCH (source:Service)-[:DEPENDS_ON]->(middle:Service), \
+                   (middle)-[:DEPENDS_ON]->(target:Service), \
+                   (source)-[:DEPENDS_ON]->(target) \
+             RETURN source.name AS source, middle.name AS middle, target.name AS target",
+        )
+        .expect("query should compile");
+
+        assert_eq!(
+            plan.nodes,
+            vec![
+                NodePattern {
+                    variable: "source".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "middle".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "target".to_string(),
+                    label: "Service".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.relationships,
+            vec![
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "source".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "middle".to_string(),
+                },
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "middle".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "target".to_string(),
+                },
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "source".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "target".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_repeated_node_property_maps_as_additional_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service {tier: 'prod'}), (service {team: 'platform'}) \
+             RETURN service.name",
+        )
+        .expect("query should compile");
+
+        assert_eq!(
+            plan.nodes,
+            vec![NodePattern {
+                variable: "service".to_string(),
+                label: "Service".to_string(),
+            }]
+        );
+        assert_eq!(
+            plan.predicates,
+            vec![
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+                },
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "team".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Literal(Literal::String("platform".to_string())),
+                },
+            ]
         );
     }
 
@@ -1040,6 +1179,20 @@ mod tests {
     #[test]
     fn rejects_reserved_internal_variable_prefix() {
         assert_unsupported("MATCH (__coral_rel_0:Service) RETURN __coral_rel_0.name");
+    }
+
+    #[test]
+    fn rejects_unlabeled_first_node_binding() {
+        assert_unsupported("MATCH (source)-[:DEPENDS_ON]->(target:Service) RETURN target.name");
+    }
+
+    #[test]
+    fn rejects_conflicting_labels_for_reused_node_variables() {
+        assert_unsupported(
+            "MATCH (source:Service)-[:DEPENDS_ON]->(target:Service), \
+                   (source:Person)-[:OWNS]->(target) \
+             RETURN target.name",
+        );
     }
 
     #[test]
