@@ -183,12 +183,6 @@ fn compile_terminal_with_clause(
             "WITH WHERE requires staged query planning and is not supported yet",
         ));
     }
-    if with.order.is_some() || with.skip.is_some() || with.limit.is_some() {
-        return Err(unsupported(
-            "with",
-            "WITH ORDER BY, SKIP, and LIMIT require staged query planning and are not supported yet",
-        ));
-    }
     if with.items.is_empty() {
         return Err(unsupported(
             "with.items",
@@ -214,6 +208,28 @@ fn compile_terminal_with_clause(
             format!("with.items[{index}]"),
             context,
         )?);
+    }
+
+    if let Some(order) = &with.order {
+        for (index, item) in order.items.iter().enumerate() {
+            plan.order_by.push(OrderKey {
+                expression: compile_terminal_alias_order_expression(
+                    &item.expression,
+                    &plan.projections,
+                    format!("with.order.items[{index}].expression"),
+                )?,
+                direction: match item.direction {
+                    Some(SortDirection::Descending) => OrderDirection::Descending,
+                    Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
+                },
+            });
+        }
+    }
+    if let Some(skip) = &with.skip {
+        plan.skip = Some(compile_skip(skip, "with.skip")?);
+    }
+    if let Some(limit) = &with.limit {
+        plan.limit = Some(compile_limit(limit, "with.limit")?);
     }
     Ok(())
 }
@@ -274,6 +290,16 @@ fn apply_terminal_return_modifiers(
     plan: &mut GraphPlan,
 ) -> Result<(), CoreError> {
     plan.distinct |= return_clause.distinct;
+    if (return_clause.order.is_some()
+        || return_clause.skip.is_some()
+        || return_clause.limit.is_some())
+        && (!plan.order_by.is_empty() || plan.skip.is_some() || plan.limit.is_some())
+    {
+        return Err(unsupported(
+            "final_part.return",
+            "terminal WITH and RETURN cannot both define ORDER BY, SKIP, or LIMIT without staged query planning",
+        ));
+    }
     if let Some(skip) = &return_clause.skip {
         plan.skip = Some(compile_skip(skip, "final_part.return.skip")?);
     }
@@ -1786,6 +1812,38 @@ mod tests {
     }
 
     #[test]
+    fn compiles_terminal_with_order_skip_limit() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH service.tier AS tier, count(service) AS services \
+             ORDER BY services DESC, tier \
+             SKIP 1 \
+             LIMIT 5 \
+             RETURN tier, services",
+        )
+        .expect("terminal WITH modifiers should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("services".to_string()),
+                    direction: OrderDirection::Descending,
+                },
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                },
+            ]
+        );
+        assert_eq!(plan.skip, Some(1));
+        assert_eq!(plan.limit, Some(5));
+    }
+
+    #[test]
     fn compiles_reverse_relationship_direction() {
         let plan = compile_cypher(
             "MATCH (service:Service)<-[ownership:OWNS]-(person:Person) \
@@ -2462,9 +2520,6 @@ mod tests {
             "MATCH (service:Service) WITH service.name AS service RETURN service AS renamed",
         );
         assert_unsupported(
-            "MATCH (service:Service) WITH service.name AS service ORDER BY service RETURN service",
-        );
-        assert_unsupported(
             "MATCH (service:Service) WITH service.name AS service WHERE service = 'billing-api' RETURN service",
         );
         assert_unsupported(
@@ -2472,6 +2527,9 @@ mod tests {
         );
         assert_unsupported(
             "MATCH (service:Service) WITH service.name AS service RETURN service ORDER BY service.name",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) WITH service.name AS service ORDER BY service RETURN service ORDER BY service",
         );
     }
 

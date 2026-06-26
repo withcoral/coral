@@ -1101,6 +1101,38 @@ async fn cypher_terminal_with_projection_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_terminal_with_modifiers_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier IS NOT NULL \
+         WITH service.tier AS tier, count(service) AS services \
+         ORDER BY services DESC, tier \
+         LIMIT 1 \
+         RETURN tier, services",
+    )
+    .await
+    .expect("terminal WITH modifiers should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LIMIT 1"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"tier": "prod", "services": 2})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_count_property_projection_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
