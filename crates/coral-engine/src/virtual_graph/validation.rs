@@ -4,9 +4,9 @@ use super::declaration::{Declaration, Node, Relationship};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
-    Literal, OrderExpression, PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
-    RelationshipPattern,
+    Literal, OptionalMatchScope, OrderExpression, PredicateExpression, PredicateRhs, Projection,
+    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate,
+    PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -419,6 +419,14 @@ impl<'a> GraphPlanValidator<'a> {
         if let Some(predicate) = &self.plan.predicate {
             self.validate_predicate_expression(predicate, "predicate")?;
         }
+        for (index, optional_match) in self.plan.optional_matches.iter().enumerate() {
+            if let Some(predicate) = &optional_match.predicate {
+                self.validate_predicate_expression(
+                    predicate,
+                    format!("optional_matches[{index}].predicate"),
+                )?;
+            }
+        }
         if let Some(predicate) = &self.plan.post_projection_predicate {
             self.validate_projection_predicate_expression(predicate, "post_projection_predicate")?;
         }
@@ -457,7 +465,213 @@ impl<'a> GraphPlanValidator<'a> {
             )
             .into_core_error());
         }
+        self.validate_optional_match_scopes()?;
         Ok(())
+    }
+
+    fn validate_optional_match_scopes(&self) -> Result<(), CoreError> {
+        for (index, optional_match) in self.plan.optional_matches.iter().enumerate() {
+            self.validate_optional_match_scope(index, optional_match)?;
+        }
+        Ok(())
+    }
+
+    fn validate_optional_match_scope(
+        &self,
+        index: usize,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<(), CoreError> {
+        let allowed_variables = self.optional_match_scope_variables(index, optional_match)?;
+        let Some(predicate) = &optional_match.predicate else {
+            return Ok(());
+        };
+        self.validate_optional_match_predicate_shape(index, optional_match)?;
+        let mut referenced_variables = BTreeSet::new();
+        Self::collect_predicate_expression_variables(predicate, &mut referenced_variables);
+        if let Some(variable) = referenced_variables
+            .iter()
+            .find(|variable| !allowed_variables.contains(**variable))
+        {
+            return Err(Diagnostic::new(
+                "UNSUPPORTED_OPTIONAL_PREDICATE",
+                format!("optional_matches[{index}].predicate"),
+                format!(
+                    "optional predicate references '{variable}', which is outside the optional relationship scope"
+                ),
+            )
+            .into_core_error());
+        }
+        Ok(())
+    }
+
+    fn optional_match_scope_variables(
+        &self,
+        index: usize,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<BTreeSet<&str>, CoreError> {
+        self.validate_optional_match_relationship_indices(index, optional_match)?;
+        let mut allowed_variables = BTreeSet::new();
+        for relationship_index in optional_match.relationship_indices.iter().copied() {
+            let relationship = self
+                .plan
+                .relationships
+                .get(relationship_index)
+                .ok_or_else(|| CoreError::internal("validated optional index was invalid"))?;
+            allowed_variables.insert(relationship.left.as_str());
+            allowed_variables.insert(relationship.right.as_str());
+            if let Some(variable) = relationship.variable.as_deref() {
+                allowed_variables.insert(variable);
+            }
+        }
+        Ok(allowed_variables)
+    }
+
+    fn validate_optional_match_relationship_indices(
+        &self,
+        index: usize,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<(), CoreError> {
+        if optional_match.relationship_indices.is_empty() {
+            return Err(Diagnostic::new(
+                "INVALID_OPTIONAL_MATCH_SCOPE",
+                format!("optional_matches[{index}].relationship_indices"),
+                "optional match scopes must contain at least one relationship index",
+            )
+            .into_core_error());
+        }
+        if optional_match
+            .relationship_indices
+            .windows(2)
+            .any(|pair| matches!(pair, [left, right] if left >= right))
+        {
+            return Err(Diagnostic::new(
+                "INVALID_OPTIONAL_MATCH_SCOPE",
+                format!("optional_matches[{index}].relationship_indices"),
+                "optional match relationship indices must be unique and sorted in ascending order",
+            )
+            .into_core_error());
+        }
+        for (position, relationship_index) in optional_match
+            .relationship_indices
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            self.validate_optional_match_relationship_index(index, position, relationship_index)?;
+        }
+        Ok(())
+    }
+
+    fn validate_optional_match_relationship_index(
+        &self,
+        index: usize,
+        position: usize,
+        relationship_index: usize,
+    ) -> Result<(), CoreError> {
+        if self.plan.relationships.get(relationship_index).is_none() {
+            return Err(Diagnostic::new(
+                "INVALID_OPTIONAL_MATCH_SCOPE",
+                format!("optional_matches[{index}].relationship_indices[{position}]"),
+                format!(
+                    "optional match scope references relationship index {relationship_index}, but only {} relationships exist",
+                    self.plan.relationships.len()
+                ),
+            )
+            .into_core_error());
+        }
+        if self
+            .plan
+            .optional_relationships
+            .binary_search(&relationship_index)
+            .is_err()
+        {
+            return Err(Diagnostic::new(
+                "INVALID_OPTIONAL_MATCH_SCOPE",
+                format!("optional_matches[{index}].relationship_indices[{position}]"),
+                "optional match scopes must reference optional relationships",
+            )
+            .into_core_error());
+        }
+        Ok(())
+    }
+
+    fn validate_optional_match_predicate_shape(
+        &self,
+        index: usize,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<(), CoreError> {
+        if optional_match.relationship_indices.len() != 1 {
+            return Err(Diagnostic::new(
+                "UNSUPPORTED_OPTIONAL_PREDICATE",
+                format!("optional_matches[{index}].predicate"),
+                "optional predicates currently require a single relationship pattern",
+            )
+            .into_core_error());
+        }
+        let relationship_index = *optional_match
+            .relationship_indices
+            .first()
+            .ok_or_else(|| CoreError::internal("validated optional match scope was empty"))?;
+        let relationship = self
+            .plan
+            .relationships
+            .get(relationship_index)
+            .ok_or_else(|| CoreError::internal("validated relationship index was invalid"))?;
+        if relationship.direction == Direction::Undirected {
+            return Err(Diagnostic::new(
+                "UNSUPPORTED_OPTIONAL_PREDICATE",
+                format!("optional_matches[{index}].predicate"),
+                "optional predicates on undirected relationships require orientation-aware join grouping",
+            )
+            .into_core_error());
+        }
+        Ok(())
+    }
+
+    fn collect_predicate_expression_variables<'b>(
+        predicate: &'b PredicateExpression,
+        variables: &mut BTreeSet<&'b str>,
+    ) {
+        match predicate {
+            PredicateExpression::Boolean(_) => {}
+            PredicateExpression::Comparison(predicate) => {
+                Self::collect_property_predicate_variables(predicate, variables);
+            }
+            PredicateExpression::KeyComparison(predicate) => {
+                variables.insert(predicate.variable.as_str());
+                Self::collect_predicate_rhs_variables(&predicate.rhs, variables);
+            }
+            PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
+                Self::collect_predicate_expression_variables(left, variables);
+                Self::collect_predicate_expression_variables(right, variables);
+            }
+            PredicateExpression::Not { expression } => {
+                Self::collect_predicate_expression_variables(expression, variables);
+            }
+        }
+    }
+
+    fn collect_property_predicate_variables<'b>(
+        predicate: &'b PropertyPredicate,
+        variables: &mut BTreeSet<&'b str>,
+    ) {
+        variables.insert(predicate.property.variable.as_str());
+        Self::collect_predicate_rhs_variables(&predicate.rhs, variables);
+    }
+
+    fn collect_predicate_rhs_variables<'b>(
+        rhs: &'b PredicateRhs,
+        variables: &mut BTreeSet<&'b str>,
+    ) {
+        match rhs {
+            PredicateRhs::Property(property) => {
+                variables.insert(property.variable.as_str());
+            }
+            PredicateRhs::Key { variable } => {
+                variables.insert(variable.as_str());
+            }
+            PredicateRhs::Literal(_) | PredicateRhs::List(_) => {}
+        }
     }
 
     fn validate_predicate_expression_not_optional(
@@ -1344,9 +1558,9 @@ fn aggregate_function_name(function: AggregateFunction) -> &'static str {
 mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
-        AggregateFunction, AggregateTarget, Direction, KeyPredicate, NodePattern, OrderDirection,
-        OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
-        PropertyPredicate, PropertyRef, RelationshipPattern,
+        AggregateFunction, AggregateTarget, Direction, KeyPredicate, NodePattern,
+        OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
+        PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
     };
 
     const GRAPH: &str = r"
@@ -1446,6 +1660,7 @@ relationships:
                 right: "service".to_string(),
             }],
             optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1543,6 +1758,7 @@ relationships:
                 right: "person".to_string(),
             }],
             optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1705,6 +1921,59 @@ relationships:
         let error = graph
             .validate_graph_plan(&plan)
             .expect_err("optional binding predicate should fail validation");
+
+        assert!(
+            error.to_string().contains("UNSUPPORTED_OPTIONAL_PREDICATE"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_accepts_optional_match_scoped_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.optional_relationships = vec![0];
+        plan.optional_matches = vec![OptionalMatchScope {
+            relationship_indices: vec![0],
+            predicate: Some(PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            })),
+        }];
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("scoped optional predicate should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_optional_match_predicates_outside_scope() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.nodes.push(NodePattern {
+            variable: "other".to_string(),
+            label: "Person".to_string(),
+        });
+        plan.optional_relationships = vec![0];
+        plan.optional_matches = vec![OptionalMatchScope {
+            relationship_indices: vec![0],
+            predicate: Some(PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "other".to_string(),
+                    property: "name".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("platform".to_string())),
+            })),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("out-of-scope optional predicate should fail validation");
 
         assert!(
             error.to_string().contains("UNSUPPORTED_OPTIONAL_PREDICATE"),
@@ -2005,6 +2274,7 @@ relationships:
                 },
             ],
             optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -2065,6 +2335,7 @@ relationships:
                 right: "service".to_string(),
             }],
             optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {

@@ -219,6 +219,15 @@ pub struct KeyPredicate {
     pub rhs: PredicateRhs,
 }
 
+/// Scope introduced by one `OPTIONAL MATCH` clause.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionalMatchScope {
+    /// Relationship indices introduced by the optional pattern.
+    pub relationship_indices: Vec<usize>,
+    /// Predicate to apply in the null-preserving optional match scope.
+    pub predicate: Option<PredicateExpression>,
+}
+
 /// Boolean predicate expression over graph properties.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PredicateExpression {
@@ -323,6 +332,9 @@ pub struct GraphPlan {
     /// Relationship indices that should be lowered as null-preserving optional
     /// matches.
     pub optional_relationships: Vec<usize>,
+    /// Optional pattern scopes. These preserve the clause-level boundary needed
+    /// for optional predicates and future multi-hop optional lowering.
+    pub optional_matches: Vec<OptionalMatchScope>,
     /// Whether duplicate projected rows should be removed.
     pub distinct: bool,
     /// Projected expressions.

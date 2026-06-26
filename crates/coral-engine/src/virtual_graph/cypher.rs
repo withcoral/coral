@@ -23,9 +23,10 @@ use ordered_float::OrderedFloat;
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
-    Literal, NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
-    PredicateRhs, Projection, ProjectionPredicate, ProjectionPredicateExpression,
-    ProjectionPredicateRhs, PropertyPredicate, PropertyRef, RelationshipPattern,
+    Literal, NodePattern, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey,
+    PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
+    RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -570,15 +571,31 @@ fn compile_reading_clauses_into(
                 }
                 if match_clause.optional {
                     saw_optional_match = true;
-                    if match_clause.where_clause.is_some() {
-                        return Err(unsupported(
-                            format!("{path}[{index}].where"),
-                            "OPTIONAL MATCH WHERE requires null-preserving predicate placement and is not supported yet",
-                        ));
-                    }
                 }
+                let predicate_start = plan.predicates.len();
+                let relationship_start = plan.relationships.len();
                 compile_match_into(match_clause, plan, context)?;
-                if let Some(where_clause) = &match_clause.where_clause {
+                if match_clause.optional {
+                    let predicate = match_clause
+                        .where_clause
+                        .as_ref()
+                        .map(|where_clause| {
+                            compile_predicate_expression(
+                                where_clause,
+                                format!("{path}[{index}].where"),
+                                plan,
+                                context,
+                            )
+                        })
+                        .transpose()?;
+                    attach_optional_match_scope(
+                        plan,
+                        relationship_start,
+                        predicate_start,
+                        predicate,
+                        format!("{path}[{index}]"),
+                    )?;
+                } else if let Some(where_clause) = &match_clause.where_clause {
                     let predicate = compile_predicate_expression(
                         where_clause,
                         format!("{path}[{index}].where"),
@@ -598,6 +615,67 @@ fn compile_reading_clauses_into(
         }
     }
     Ok(())
+}
+
+fn attach_optional_match_scope(
+    plan: &mut GraphPlan,
+    relationship_start: usize,
+    predicate_start: usize,
+    predicate: Option<PredicateExpression>,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    let relationship_indices = (relationship_start..plan.relationships.len()).collect::<Vec<_>>();
+    let inline_predicates = plan.predicates.drain(predicate_start..).collect::<Vec<_>>();
+    let predicate = combine_optional_predicates(inline_predicates, predicate);
+    if relationship_indices.is_empty() && predicate.is_some() {
+        return Err(unsupported(
+            path,
+            "OPTIONAL MATCH predicates currently require a relationship pattern",
+        ));
+    }
+    if relationship_indices.is_empty() {
+        return Ok(());
+    }
+
+    if predicate.is_some() && relationship_indices.len() != 1 {
+        return Err(unsupported(
+            path,
+            "OPTIONAL MATCH predicates currently require a single relationship pattern",
+        ));
+    }
+    if predicate.is_some()
+        && relationship_indices.iter().any(|index| {
+            plan.relationships
+                .get(*index)
+                .is_some_and(|pattern| pattern.direction == Direction::Undirected)
+        })
+    {
+        return Err(unsupported(
+            path,
+            "OPTIONAL MATCH predicates on undirected relationships require orientation-aware join grouping and are not supported yet",
+        ));
+    }
+
+    plan.optional_matches.push(OptionalMatchScope {
+        relationship_indices,
+        predicate,
+    });
+    Ok(())
+}
+
+fn combine_optional_predicates(
+    predicates: Vec<PropertyPredicate>,
+    predicate: Option<PredicateExpression>,
+) -> Option<PredicateExpression> {
+    predicates
+        .into_iter()
+        .map(PredicateExpression::Comparison)
+        .chain(predicate)
+        .reduce(|left, right| PredicateExpression::And {
+            left: Box::new(left),
+            right: Box::new(right),
+        })
 }
 
 fn return_clause_from_single_part(
@@ -674,7 +752,6 @@ fn compile_match_into(
             plan,
             format!("match.pattern.parts[{part_index}].nodes[0]"),
             context,
-            match_clause.optional,
         )?;
         let mut previous_variable = start_node.variable.clone();
         plan.predicates.extend(start_node.predicates);
@@ -687,8 +764,7 @@ fn compile_match_into(
                 "match.pattern.parts[{part_index}].nodes[{}]",
                 chain_index + 1
             );
-            let next_node =
-                compile_node(&chain.node, plan, node_path, context, match_clause.optional)?;
+            let next_node = compile_node(&chain.node, plan, node_path, context)?;
             let next_variable = next_node.variable.clone();
             let relationship_index = plan.relationships.len();
             let relationship_path =
@@ -700,7 +776,6 @@ fn compile_match_into(
                 plan,
                 relationship_path,
                 context,
-                match_clause.optional,
             )?;
             previous_variable = next_variable;
             plan.predicates.extend(next_node.predicates);
@@ -746,17 +821,10 @@ fn compile_node(
     plan: &GraphPlan,
     path: impl Into<String>,
     context: &CypherCompileContext,
-    optional: bool,
 ) -> Result<CompiledNode, CoreError> {
     let path = path.into();
     let variable = required_variable(pattern.variable.as_ref(), format!("{path}.variable"))?;
     let label = optional_single_static_label(&pattern.labels, format!("{path}.labels"))?;
-    if optional && pattern.properties.is_some() {
-        return Err(unsupported(
-            format!("{path}.properties"),
-            "inline property maps in OPTIONAL MATCH require null-preserving predicate placement and are not supported yet",
-        ));
-    }
     let predicates = pattern.properties.as_ref().map_or_else(
         || Ok(Vec::new()),
         |properties| {
@@ -834,7 +902,6 @@ fn compile_relationship(
     plan: &GraphPlan,
     path: impl Into<String>,
     context: &CypherCompileContext,
-    optional: bool,
 ) -> Result<CompiledRelationship, CoreError> {
     let path = path.into();
     let (left, right) = endpoints;
@@ -863,12 +930,6 @@ fn compile_relationship(
         return Err(unsupported(
             format!("{path}.range"),
             "variable-length relationship ranges are not supported yet",
-        ));
-    }
-    if optional && detail.properties.is_some() {
-        return Err(unsupported(
-            format!("{path}.properties"),
-            "inline relationship property maps in OPTIONAL MATCH require null-preserving predicate placement and are not supported yet",
         ));
     }
     let relationship_type = detail.types.as_ref().ok_or_else(|| {
@@ -3746,6 +3807,13 @@ mod tests {
 
         assert_eq!(plan.optional_relationships, vec![0]);
         assert_eq!(
+            plan.optional_matches,
+            vec![OptionalMatchScope {
+                relationship_indices: vec![0],
+                predicate: None,
+            }]
+        );
+        assert_eq!(
             plan.nodes,
             vec![
                 NodePattern {
@@ -3771,13 +3839,37 @@ mod tests {
     }
 
     #[test]
+    fn compiles_optional_match_local_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person {active: true})-[owns:OWNS {source: 'pagerduty'}]->(service) \
+             WHERE person.team = service.team AND id(owns) > 10 \
+             RETURN service.name AS service, person.name AS owner",
+        )
+        .expect("OPTIONAL MATCH predicates should compile");
+
+        assert_eq!(plan.optional_relationships, vec![0]);
+        assert_eq!(plan.predicates, Vec::new());
+        assert_eq!(plan.optional_matches.len(), 1);
+        let optional_match = plan
+            .optional_matches
+            .first()
+            .expect("optional match scope should be present");
+        assert_eq!(optional_match.relationship_indices, vec![0]);
+        assert!(matches!(
+            &optional_match.predicate,
+            Some(PredicateExpression::And { .. })
+        ));
+    }
+
+    #[test]
     fn rejects_unsupported_optional_match_shapes() {
         assert_unsupported("OPTIONAL MATCH (service:Service) RETURN service.name");
         assert_unsupported(
-            "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service) WHERE target.tier = 'prod' RETURN service.name",
+            "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service)-[:DEPENDS_ON]->(next:Service) WHERE next.tier = 'prod' RETURN service.name",
         );
         assert_unsupported(
-            "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON {source: 'catalog'}]->(target:Service) RETURN service.name",
+            "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]-(target:Service) WHERE target.tier = 'prod' RETURN service.name",
         );
         assert_unsupported(
             "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service) MATCH (target)-[:DEPENDS_ON]->(next:Service) RETURN next.name",

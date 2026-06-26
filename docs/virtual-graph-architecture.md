@@ -76,7 +76,9 @@ The supported foundation subset is intentionally narrow:
 
 - read-only single-part queries and transparent multi-part `MATCH` queries;
 - one or more non-optional `MATCH` clauses with connected path parts;
-- anchored `OPTIONAL MATCH` pattern parts lowered as null-preserving left joins;
+- anchored `OPTIONAL MATCH` pattern parts lowered as null-preserving left joins,
+  including single-hop directed optional-local predicates and inline property
+  maps placed in the join scope;
 - named node variables where the first binding has one static label and
   repeated bindings may omit the label;
 - directed, reverse, and undirected typed relationships;
@@ -106,7 +108,7 @@ The supported foundation subset is intentionally narrow:
 - integer `SKIP` and `LIMIT`.
 
 Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.
-This includes writes, optional-local predicates and inline optional property
-maps, path variables, variable-length paths, parameterized property maps,
-keyless relationship identity operations, non-terminal projection boundaries,
-subqueries, procedure calls, and broad expression semantics.
+This includes writes, multi-hop or undirected optional-local predicates, path
+variables, variable-length paths, parameterized property maps, keyless
+relationship identity operations, non-terminal projection boundaries, subqueries,
+procedure calls, and broad expression semantics.

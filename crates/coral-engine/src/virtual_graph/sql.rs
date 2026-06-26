@@ -65,9 +65,16 @@ struct RelationshipOrientation {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct JoinFromKnownNodeOptions {
+struct JoinFromKnownNodeOptions<'p> {
     left_is_known: bool,
     optional: bool,
+    optional_predicate: Option<&'p str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct JoinRelationshipOptions<'p> {
+    optional: bool,
+    optional_predicate: Option<&'p str>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -156,6 +163,11 @@ impl<'a> Lowerer<'a> {
                 let right_joined = self.joined_nodes.contains(pattern.right.as_str());
                 if left_joined || right_joined {
                     let relationship = validated.relationship_mapping(index)?;
+                    let optional_predicate = if optional {
+                        self.render_optional_join_predicate(index)?
+                    } else {
+                        None
+                    };
                     Self::join_relationship(
                         validated,
                         &mut self.joined_nodes,
@@ -163,7 +175,10 @@ impl<'a> Lowerer<'a> {
                         index,
                         pattern,
                         relationship,
-                        optional,
+                        JoinRelationshipOptions {
+                            optional,
+                            optional_predicate: optional_predicate.as_deref(),
+                        },
                     )?;
                     remaining_relationships.remove(&index);
                     progressed = true;
@@ -185,7 +200,7 @@ impl<'a> Lowerer<'a> {
         index: usize,
         pattern: &'a super::ir::RelationshipPattern,
         relationship: &Relationship,
-        optional: bool,
+        options: JoinRelationshipOptions<'_>,
     ) -> Result<(), CoreError> {
         let left_joined = joined_nodes.contains(pattern.left.as_str());
         let right_joined = joined_nodes.contains(pattern.right.as_str());
@@ -197,7 +212,11 @@ impl<'a> Lowerer<'a> {
 
         let relationship_alias = validated.relationship_alias(index, pattern);
         let quoted_relationship_alias = quote_ident(&relationship_alias);
-        let join_operator = if optional { " LEFT JOIN " } else { " JOIN " };
+        let join_operator = if options.optional {
+            " LEFT JOIN "
+        } else {
+            " JOIN "
+        };
 
         if left_joined && right_joined {
             let condition = Self::relationship_pair_condition(
@@ -206,6 +225,8 @@ impl<'a> Lowerer<'a> {
                 &relationship_alias,
                 pattern,
             )?;
+            let condition =
+                Self::join_condition_with_predicate(condition, options.optional_predicate);
             write!(
                 from_clause,
                 "{}{} AS {} ON {}",
@@ -225,7 +246,8 @@ impl<'a> Lowerer<'a> {
                 &relationship_alias,
                 JoinFromKnownNodeOptions {
                     left_is_known: true,
-                    optional,
+                    optional: options.optional,
+                    optional_predicate: options.optional_predicate,
                 },
             )?;
         } else {
@@ -238,7 +260,8 @@ impl<'a> Lowerer<'a> {
                 &relationship_alias,
                 JoinFromKnownNodeOptions {
                     left_is_known: false,
-                    optional,
+                    optional: options.optional,
+                    optional_predicate: options.optional_predicate,
                 },
             )?;
         }
@@ -253,7 +276,7 @@ impl<'a> Lowerer<'a> {
         relationship: &Relationship,
         pattern: &'a super::ir::RelationshipPattern,
         relationship_alias: &str,
-        options: JoinFromKnownNodeOptions,
+        options: JoinFromKnownNodeOptions<'_>,
     ) -> Result<(), CoreError> {
         let (known_variable, unknown_variable, known_is_left) = if options.left_is_known {
             (pattern.left.as_str(), pattern.right.as_str(), true)
@@ -276,6 +299,33 @@ impl<'a> Lowerer<'a> {
         } else {
             " JOIN "
         };
+        if options.optional
+            && let Some(optional_predicate) = options.optional_predicate
+        {
+            let unknown_join = Self::relationship_known_node_condition(
+                validated,
+                relationship,
+                pattern,
+                relationship_alias,
+                unknown_variable,
+                !known_is_left,
+            )?;
+            let outer_condition =
+                Self::join_condition_with_predicate(relationship_join, Some(optional_predicate));
+            write!(
+                from_clause,
+                " LEFT JOIN ({} AS {} JOIN {} AS {} ON {}) ON {}",
+                render_table_ref(&relationship.table),
+                quote_ident(relationship_alias),
+                unknown_table_ref,
+                quote_ident(&unknown_alias),
+                unknown_join,
+                outer_condition
+            )
+            .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+            joined_nodes.insert(unknown_variable);
+            return Ok(());
+        }
 
         write!(
             from_clause,
@@ -311,6 +361,38 @@ impl<'a> Lowerer<'a> {
         .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
         joined_nodes.insert(unknown_variable);
         Ok(())
+    }
+
+    fn render_optional_join_predicate(
+        &self,
+        relationship_index: usize,
+    ) -> Result<Option<String>, CoreError> {
+        let predicates = self
+            .validated
+            .plan()
+            .optional_matches
+            .iter()
+            .filter(|optional_match| {
+                optional_match.relationship_indices.as_slice() == [relationship_index]
+            })
+            .filter_map(|optional_match| optional_match.predicate.as_ref())
+            .map(|predicate| self.render_predicate_expression(predicate))
+            .collect::<Result<Vec<_>, _>>()?;
+        if predicates.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(predicates.join(" AND ")))
+        }
+    }
+
+    fn join_condition_with_predicate(
+        condition: String,
+        optional_predicate: Option<&str>,
+    ) -> String {
+        match optional_predicate {
+            Some(predicate) => format!("({condition}) AND ({predicate})"),
+            None => condition,
+        }
     }
 
     fn relationship_pair_condition(
@@ -1026,9 +1108,10 @@ mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
         AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
-        Literal, NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
-        PredicateRhs, Projection, ProjectionPredicate, ProjectionPredicateExpression,
-        ProjectionPredicateRhs, PropertyPredicate, PropertyRef, RelationshipPattern,
+        Literal, NodePattern, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey,
+        PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
+        ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
+        RelationshipPattern,
     };
 
     const GRAPH: &str = r"
@@ -1105,6 +1188,7 @@ relationships:
                 right: "person".to_string(),
             }],
             optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1155,6 +1239,7 @@ relationships:
                 right: "service".to_string(),
             }],
             optional_relationships: vec![0],
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![
                 Projection::Property {
@@ -1194,6 +1279,81 @@ relationships:
     }
 
     #[test]
+    fn lower_graph_plan_renders_optional_predicates_inside_join_scope() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: Some("owns".to_string()),
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "service".to_string(),
+            }],
+            optional_relationships: vec![0],
+            optional_matches: vec![OptionalMatchScope {
+                relationship_indices: vec![0],
+                predicate: Some(PredicateExpression::Comparison(PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "person".to_string(),
+                        property: "team".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Literal(Literal::String("platform".to_string())),
+                })),
+            }],
+            distinct: false,
+            projections: vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service".to_string()),
+                },
+                Projection::Key {
+                    variable: "owns".to_string(),
+                    alias: "ownership_id".to_string(),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "person".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("owner".to_string()),
+                },
+            ],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("optional predicate should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n0\".\"service_name\" AS \"service\", \"r0\".\"ownership_id\" AS \"ownership_id\", \"n1\".\"full_name\" AS \"owner\" \
+             FROM \"ops\".\"services\" AS \"n0\" \
+             LEFT JOIN (\"ops\".\"ownerships\" AS \"r0\" JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"person_id\" = \"n1\".\"id\") \
+             ON (\"r0\".\"service_id\" = \"n0\".\"id\") AND (\"n1\".\"team\" = 'platform')"
+        );
+    }
+
+    #[test]
     fn lower_graph_plan_renders_undirected_distinct_label_relationship_sql() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let plan = GraphPlan {
@@ -1215,6 +1375,7 @@ relationships:
                 right: "person".to_string(),
             }],
             optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1265,6 +1426,7 @@ relationships:
                 right: "neighbor".to_string(),
             }],
             optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1442,6 +1604,7 @@ relationships:
                 },
             ],
             optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![
                 Projection::Property {
@@ -1525,6 +1688,7 @@ relationships:
                 },
             ],
             optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![
                 Projection::Property {
@@ -1588,6 +1752,7 @@ relationships: []
             }],
             relationships: Vec::new(),
             optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1645,6 +1810,7 @@ relationships: []
                 right: "service".to_string(),
             }],
             optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1707,6 +1873,7 @@ relationships: []
                 right: "target".to_string(),
             }],
             optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -1752,6 +1919,7 @@ relationships: []
             }],
             relationships: Vec::new(),
             optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
@@ -2423,6 +2591,7 @@ relationships: []
                 right: "service".to_string(),
             }],
             optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
             distinct: false,
             projections: vec![
                 Projection::Property {

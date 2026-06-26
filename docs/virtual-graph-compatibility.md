@@ -37,7 +37,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Ordering, skip, and limit | Supported foundation | Property order keys, identity order keys, direct projected aggregate expressions, projection aliases including aggregate aliases, row offset, and row limit |
 | Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
 | Declaration-aware plan validation | Supported foundation | Resolves variables/properties and rejects unsupported plan shapes before SQL rendering |
-| Optional matches | Supported foundation | Anchored optional relationships lower to `LEFT JOIN`; optional-local predicates and inline optional property maps are still rejected |
+| Optional matches | Supported foundation | Anchored optional relationships lower to `LEFT JOIN`; single-hop directed optional-local predicates and inline property maps lower into the nullable join scope |
 | Variable-length paths | Deferred | Requires recursive/path expansion semantics |
 | Path values | Deferred | Requires graph value representation |
 
@@ -78,7 +78,8 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `WITH` pass-through | Supported foundation | Transparent `WITH var, ...` and `WITH *` preserve bound graph variables |
 | Terminal `WITH` projections | Supported foundation | Terminal projection, alias filtering, ordering, skip, and limit are supported without staging another `MATCH` |
 | `OPTIONAL MATCH` | Supported foundation | Requires an already-bound node anchor and one connected pattern part; preserves unmatched rows with nullable optional bindings |
-| Optional-local `WHERE` and inline property maps | Rejected | Needs predicate placement inside null-preserving join conditions |
+| Optional-local `WHERE` and inline property maps | Supported foundation | Supported for single-hop directed optional patterns by placing predicates inside the null-preserving join scope |
+| Multi-hop or undirected optional-local predicates | Rejected | Needs broader optional-scope grouping and orientation-aware predicate placement |
 | `WHERE XOR` | Rejected | Not portable across target SQL dialects |
 | `WHERE ... IN` with null list values | Rejected | Needs explicit Cypher null-membership semantics |
 | `WHERE ... =~` regex matching | Rejected | Needs regex dialect compatibility across DataFusion targets |

@@ -527,6 +527,115 @@ async fn cypher_optional_match_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_optional_match_where_preserves_rows_with_null_optional_bindings() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[owns:OWNS]->(service) \
+         WHERE person.team = 'platform' \
+         RETURN service.name AS service, id(owns) AS ownership_id, person.name AS owner \
+         ORDER BY service",
+    )
+    .await
+    .expect("OPTIONAL MATCH WHERE Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LEFT JOIN ("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        !execution.translated_sql().contains(" WHERE "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "ownership_id": 100, "owner": "Ada Lovelace"}),
+            json!({"service": "deployments"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_optional_match_inline_property_maps_execute_as_join_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person {team: 'infra'})-[owns:OWNS {source: 'pagerduty'}]->(service) \
+         RETURN service.name AS service, id(owns) AS ownership_id, person.name AS owner \
+         ORDER BY service",
+    )
+    .await
+    .expect("OPTIONAL MATCH inline property maps should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"r0\".\"source\" = 'pagerduty'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments", "ownership_id": 200, "owner": "Grace Hopper"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_optional_match_false_where_preserves_left_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[owns:OWNS]->(service) \
+         WHERE false \
+         RETURN service.name AS service, id(owns) AS ownership_id, person.name AS owner \
+         ORDER BY service",
+    )
+    .await
+    .expect("OPTIONAL MATCH false WHERE should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_disconnected_comma_patterns_are_rejected_before_sql_planning() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -1108,6 +1217,7 @@ relationships: []
         }],
         relationships: Vec::new(),
         optional_relationships: Vec::new(),
+        optional_matches: Vec::new(),
         distinct: false,
         projections: vec![GraphProjection::Property {
             property: GraphPropertyRef {
@@ -1209,6 +1319,7 @@ async fn virtual_graph_count_projection_executes_against_synthetic_file_sources(
             right: "service".to_string(),
         }],
         optional_relationships: Vec::new(),
+        optional_matches: Vec::new(),
         distinct: false,
         projections: vec![GraphProjection::CountAll {
             alias: "ownership_count".to_string(),
@@ -1811,6 +1922,7 @@ fn owner_service_plan() -> GraphPlan {
             right: "service".to_string(),
         }],
         optional_relationships: Vec::new(),
+        optional_matches: Vec::new(),
         distinct: false,
         projections: vec![
             GraphProjection::Property {
