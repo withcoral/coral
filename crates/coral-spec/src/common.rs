@@ -85,7 +85,7 @@ pub enum SourceBackend {
 /// Normalized scalar data types supported by the source-spec DSL.
 ///
 /// The engine is responsible for mapping these into runtime-specific types.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub enum ManifestDataType {
     Utf8,
