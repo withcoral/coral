@@ -116,6 +116,32 @@ pub struct PropertyPredicate {
     pub rhs: PredicateRhs,
 }
 
+/// Boolean predicate expression over graph properties.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PredicateExpression {
+    /// Leaf property comparison.
+    Comparison(PropertyPredicate),
+    /// Boolean conjunction.
+    And {
+        /// Left-hand expression.
+        left: Box<PredicateExpression>,
+        /// Right-hand expression.
+        right: Box<PredicateExpression>,
+    },
+    /// Boolean disjunction.
+    Or {
+        /// Left-hand expression.
+        left: Box<PredicateExpression>,
+        /// Right-hand expression.
+        right: Box<PredicateExpression>,
+    },
+    /// Boolean negation.
+    Not {
+        /// Negated expression.
+        expression: Box<PredicateExpression>,
+    },
+}
+
 /// Ordering key in the shared graph IR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderKey {
@@ -138,6 +164,9 @@ pub struct GraphPlan {
     pub projections: Vec<Projection>,
     /// Conjunctive property predicates.
     pub predicates: Vec<PropertyPredicate>,
+    /// Optional boolean predicate tree for expressions that cannot be flattened
+    /// into the conjunctive predicate vector.
+    pub predicate: Option<PredicateExpression>,
     /// Ordering expressions.
     pub order_by: Vec<OrderKey>,
     /// Optional row offset.

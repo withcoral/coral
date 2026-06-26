@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::declaration::{Declaration, Node, Relationship};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    ComparisonOperator, GraphPlan, Literal, PredicateRhs, Projection, PropertyPredicate,
-    PropertyRef, RelationshipPattern,
+    ComparisonOperator, GraphPlan, Literal, PredicateExpression, PredicateRhs, Projection,
+    PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -306,6 +306,9 @@ impl<'a> GraphPlanValidator<'a> {
         for (index, predicate) in self.plan.predicates.iter().enumerate() {
             self.validate_predicate(index, predicate)?;
         }
+        if let Some(predicate) = &self.plan.predicate {
+            self.validate_predicate_expression(predicate, "predicate")?;
+        }
         for (index, key) in self.plan.order_by.iter().enumerate() {
             self.validate_property_ref(&key.property, format!("order_by[{index}].property"))?;
         }
@@ -344,22 +347,52 @@ impl<'a> GraphPlanValidator<'a> {
         index: usize,
         predicate: &PropertyPredicate,
     ) -> Result<(), CoreError> {
-        self.validate_property_ref(&predicate.property, format!("predicates[{index}].property"))?;
+        self.validate_property_predicate(predicate, format!("predicates[{index}]"))
+    }
+
+    fn validate_predicate_expression(
+        &self,
+        expression: &PredicateExpression,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        match expression {
+            PredicateExpression::Comparison(predicate) => {
+                self.validate_property_predicate(predicate, path)
+            }
+            PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
+                self.validate_predicate_expression(left, format!("{path}.left"))?;
+                self.validate_predicate_expression(right, format!("{path}.right"))
+            }
+            PredicateExpression::Not { expression } => {
+                self.validate_predicate_expression(expression, format!("{path}.expression"))
+            }
+        }
+    }
+
+    fn validate_property_predicate(
+        &self,
+        predicate: &PropertyPredicate,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        self.validate_property_ref(&predicate.property, format!("{path}.property"))?;
         match &predicate.rhs {
             PredicateRhs::Literal(literal) => {
-                Self::validate_literal_predicate(index, predicate.operator, literal)
+                Self::validate_literal_predicate(path, predicate.operator, literal)
             }
             PredicateRhs::Property(property) => {
-                self.validate_property_ref(property, format!("predicates[{index}].rhs"))
+                self.validate_property_ref(property, format!("{path}.rhs"))
             }
         }
     }
 
     fn validate_literal_predicate(
-        index: usize,
+        path: impl Into<String>,
         operator: ComparisonOperator,
         literal: &Literal,
     ) -> Result<(), CoreError> {
+        let path = path.into();
         match (operator, literal) {
             (
                 ComparisonOperator::GreaterThan
@@ -369,7 +402,7 @@ impl<'a> GraphPlanValidator<'a> {
                 Literal::Null,
             ) => Err(Diagnostic::new(
                 "INVALID_NULL_COMPARISON",
-                format!("predicates[{index}]"),
+                path,
                 "null can only be compared with equality or inequality",
             )
             .into_core_error()),
@@ -504,8 +537,8 @@ fn validate_variable(path: impl Into<String>, variable: &str) -> Result<(), Core
 mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
-        Direction, NodePattern, OrderDirection, OrderKey, PredicateRhs, Projection,
-        PropertyPredicate, PropertyRef, RelationshipPattern,
+        Direction, NodePattern, OrderDirection, OrderKey, PredicateExpression, PredicateRhs,
+        Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
     };
 
     const GRAPH: &str = r"
@@ -595,6 +628,61 @@ relationships:
     }
 
     #[test]
+    fn validate_graph_plan_rejects_unknown_properties_inside_predicate_expression() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicate = Some(PredicateExpression::Or {
+            left: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            })),
+            right: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "missing".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("dev".to_string())),
+            })),
+        });
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("unknown property inside predicate tree should fail validation");
+
+        assert!(error.to_string().contains("UNKNOWN_PROPERTY"), "{error:?}");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_invalid_null_comparisons_inside_predicate_expression() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicate = Some(PredicateExpression::Not {
+            expression: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::GreaterThan,
+                rhs: PredicateRhs::Literal(Literal::Null),
+            })),
+        });
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("ordered null comparison inside predicate tree should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_NULL_COMPARISON"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn validate_graph_plan_rejects_distinct_ordering_by_unprojected_properties() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan();
@@ -677,6 +765,7 @@ relationships:
                 alias: Some("target".to_string()),
             }],
             predicates: Vec::new(),
+            predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -734,6 +823,7 @@ relationships:
                 alias: Some("owner".to_string()),
             }],
             predicates: Vec::new(),
+            predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,

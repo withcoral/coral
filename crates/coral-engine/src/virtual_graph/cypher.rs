@@ -16,7 +16,8 @@ use decypher::ast::query::{
 use super::diagnostic::Diagnostic;
 use super::ir::{
     ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection, OrderKey,
-    PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+    PredicateExpression, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
+    RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -118,7 +119,8 @@ fn compile_single_part(query: &SinglePartQuery) -> Result<GraphPlan, CoreError> 
 
     let mut plan = compile_match(match_clause)?;
     if let Some(where_clause) = &match_clause.where_clause {
-        append_predicates(where_clause, &mut plan.predicates, "where")?;
+        let predicate = compile_predicate_expression(where_clause, "where")?;
+        append_predicate_expression(predicate, &mut plan);
     }
     compile_return(return_clause, &mut plan)?;
     Ok(plan)
@@ -486,52 +488,103 @@ fn compile_projection(
     }
 }
 
-fn append_predicates(
+fn compile_predicate_expression(
     expression: &Expression,
-    predicates: &mut Vec<PropertyPredicate>,
     path: impl Into<String>,
-) -> Result<(), CoreError> {
+) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => append_predicates(inner, predicates, path),
+        Expression::Parenthesized(inner) => compile_predicate_expression(inner, path),
         Expression::BinaryOp {
             op: CypherBinaryOperator::And,
             lhs,
             rhs,
             ..
-        } => {
-            append_predicates(lhs, predicates, format!("{path}.lhs"))?;
-            append_predicates(rhs, predicates, format!("{path}.rhs"))
-        }
+        } => Ok(PredicateExpression::And {
+            left: Box::new(compile_predicate_expression(lhs, format!("{path}.lhs"))?),
+            right: Box::new(compile_predicate_expression(rhs, format!("{path}.rhs"))?),
+        }),
         Expression::BinaryOp {
-            op: CypherBinaryOperator::Or | CypherBinaryOperator::Xor,
+            op: CypherBinaryOperator::Or,
+            lhs,
+            rhs,
             ..
-        } => Err(unsupported(
-            path,
-            "WHERE OR and XOR are not supported yet; use property comparisons joined by AND",
+        } => Ok(PredicateExpression::Or {
+            left: Box::new(compile_predicate_expression(lhs, format!("{path}.lhs"))?),
+            right: Box::new(compile_predicate_expression(rhs, format!("{path}.rhs"))?),
+        }),
+        Expression::BinaryOp {
+            op: CypherBinaryOperator::Xor,
+            ..
+        } => Err(unsupported(path, "WHERE XOR is not supported yet")),
+        Expression::UnaryOp {
+            op: UnaryOperator::Not,
+            operand,
+            ..
+        } => Ok(PredicateExpression::Not {
+            expression: Box::new(compile_predicate_expression(
+                operand,
+                format!("{path}.operand"),
+            )?),
+        }),
+        Expression::Comparison { lhs, operators, .. } => Ok(PredicateExpression::Comparison(
+            compile_comparison(lhs, operators.as_slice(), path)?,
         )),
-        Expression::Comparison { lhs, operators, .. } => {
-            predicates.push(compile_comparison(lhs, operators.as_slice(), path)?);
-            Ok(())
-        }
         Expression::IsNull {
             operand, negated, ..
-        } => {
-            predicates.push(PropertyPredicate {
-                property: compile_property_ref(operand, format!("{path}.operand"))?,
-                operator: if *negated {
-                    ComparisonOperator::NotEqual
-                } else {
-                    ComparisonOperator::Equal
-                },
-                rhs: PredicateRhs::Literal(Literal::Null),
-            });
-            Ok(())
-        }
+        } => Ok(PredicateExpression::Comparison(PropertyPredicate {
+            property: compile_property_ref(operand, format!("{path}.operand"))?,
+            operator: if *negated {
+                ComparisonOperator::NotEqual
+            } else {
+                ComparisonOperator::Equal
+            },
+            rhs: PredicateRhs::Literal(Literal::Null),
+        })),
         _ => Err(unsupported(
             path,
-            "WHERE only supports property comparisons joined by AND",
+            "WHERE only supports property comparisons combined with AND, OR, and NOT",
         )),
+    }
+}
+
+fn append_predicate_expression(expression: PredicateExpression, plan: &mut GraphPlan) {
+    if is_conjunctive_expression(&expression) {
+        append_conjunctive_expression(expression, &mut plan.predicates);
+    } else {
+        plan.predicate = Some(match plan.predicate.take() {
+            Some(existing) => PredicateExpression::And {
+                left: Box::new(existing),
+                right: Box::new(expression),
+            },
+            None => expression,
+        });
+    }
+}
+
+fn is_conjunctive_expression(expression: &PredicateExpression) -> bool {
+    match expression {
+        PredicateExpression::Comparison(_) => true,
+        PredicateExpression::And { left, right } => {
+            is_conjunctive_expression(left) && is_conjunctive_expression(right)
+        }
+        PredicateExpression::Or { .. } | PredicateExpression::Not { .. } => false,
+    }
+}
+
+fn append_conjunctive_expression(
+    expression: PredicateExpression,
+    predicates: &mut Vec<PropertyPredicate>,
+) {
+    match expression {
+        PredicateExpression::Comparison(predicate) => predicates.push(predicate),
+        PredicateExpression::And { left, right } => {
+            append_conjunctive_expression(*left, predicates);
+            append_conjunctive_expression(*right, predicates);
+        }
+        PredicateExpression::Or { .. } | PredicateExpression::Not { .. } => {
+            unreachable!("non-conjunctive predicate expression reached conjunctive appender")
+        }
     }
 }
 
@@ -818,6 +871,7 @@ mod tests {
             }]
         );
         assert_eq!(plan.limit, Some(10));
+        assert_eq!(plan.predicate, None);
     }
 
     #[test]
@@ -966,6 +1020,87 @@ mod tests {
                 }),
             }]
         );
+    }
+
+    #[test]
+    fn compiles_or_predicates_as_boolean_expression_tree() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service.tier = 'prod' OR service.tier IS NULL \
+             RETURN service.name",
+        )
+        .expect("query should compile");
+
+        assert!(plan.predicates.is_empty());
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::Or {
+                left: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+                })),
+                right: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Literal(Literal::Null),
+                })),
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_not_predicates_as_boolean_expression_tree() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE NOT (service.tier = 'prod') \
+             RETURN service.name",
+        )
+        .expect("query should compile");
+
+        assert!(plan.predicates.is_empty());
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::Not { .. })
+        ));
+    }
+
+    #[test]
+    fn preserves_parenthesized_boolean_precedence() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service.team = 'platform' AND (service.tier = 'prod' OR service.tier IS NULL) \
+             RETURN service.name",
+        )
+        .expect("query should compile");
+
+        assert!(plan.predicates.is_empty());
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::And { .. })
+        ));
+    }
+
+    #[test]
+    fn combines_inline_property_maps_with_boolean_where_tree() {
+        let plan = compile_cypher(
+            "MATCH (service:Service {team: 'platform'}) \
+             WHERE service.tier = 'prod' OR service.tier IS NULL \
+             RETURN service.name",
+        )
+        .expect("query should compile");
+
+        assert_eq!(plan.predicates.len(), 1);
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::Or { .. })
+        ));
     }
 
     #[test]
@@ -1169,6 +1304,15 @@ mod tests {
     #[test]
     fn rejects_undirected_relationships() {
         assert_unsupported("MATCH (a:Service)-[:DEPENDS_ON]-(b:Service) RETURN a.name");
+    }
+
+    #[test]
+    fn rejects_xor_predicates() {
+        assert_unsupported(
+            "MATCH (service:Service) \
+             WHERE service.tier = 'prod' XOR service.tier IS NULL \
+             RETURN service.name",
+        );
     }
 
     #[test]

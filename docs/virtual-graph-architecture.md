@@ -15,7 +15,8 @@ string rendering.
   into the shared graph IR.
 - **Shared graph IR**: typed nodes, relationships, predicates, projections,
   distinct row selection, ordering, aggregation, offsets, and limits. Predicate
-  operands can compare properties against literals or other graph properties.
+  operands can compare properties against literals or other graph properties,
+  and boolean expression trees represent non-conjunctive filters.
 - **Plan validation**: resolves IR variables to declaration mappings, checks
   endpoint labels, property references, aggregate restrictions, and connected
   join shape before any SQL is rendered.
@@ -76,7 +77,7 @@ The supported foundation subset is intentionally narrow:
   repeated bindings may omit the label;
 - directed, typed relationships;
 - connected multi-hop relationship chains;
-- `WHERE` comparisons joined by `AND`;
+- `WHERE` comparisons combined with `AND`, `OR`, `NOT`, and parentheses;
 - inline node property maps normalized to equality predicates;
 - inline relationship property maps normalized to equality predicates, with
   internal relationship variables for anonymous edges;

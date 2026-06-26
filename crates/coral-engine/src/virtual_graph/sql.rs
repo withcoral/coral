@@ -4,8 +4,8 @@ use std::fmt::Write as _;
 use super::declaration::{Declaration, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    ComparisonOperator, Direction, GraphPlan, Literal, OrderDirection, PredicateRhs, Projection,
-    PropertyRef,
+    ComparisonOperator, Direction, GraphPlan, Literal, OrderDirection, PredicateExpression,
+    PredicateRhs, Projection, PropertyRef,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -332,15 +332,45 @@ impl<'a> Lowerer<'a> {
     }
 
     fn render_where(&self) -> Result<String, CoreError> {
-        if self.validated.plan().predicates.is_empty() {
+        if self.validated.plan().predicates.is_empty() && self.validated.plan().predicate.is_none()
+        {
             return Ok(String::new());
         }
 
-        let mut predicates = Vec::with_capacity(self.validated.plan().predicates.len());
+        let mut predicates = Vec::with_capacity(
+            self.validated.plan().predicates.len()
+                + usize::from(self.validated.plan().predicate.is_some()),
+        );
         for predicate in &self.validated.plan().predicates {
             predicates.push(self.render_predicate(predicate)?);
         }
+        if let Some(predicate) = &self.validated.plan().predicate {
+            predicates.push(self.render_predicate_expression(predicate)?);
+        }
         Ok(format!(" WHERE {}", predicates.join(" AND ")))
+    }
+
+    fn render_predicate_expression(
+        &self,
+        predicate: &PredicateExpression,
+    ) -> Result<String, CoreError> {
+        match predicate {
+            PredicateExpression::Comparison(predicate) => self.render_predicate(predicate),
+            PredicateExpression::And { left, right } => Ok(format!(
+                "({} AND {})",
+                self.render_predicate_expression(left)?,
+                self.render_predicate_expression(right)?
+            )),
+            PredicateExpression::Or { left, right } => Ok(format!(
+                "({} OR {})",
+                self.render_predicate_expression(left)?,
+                self.render_predicate_expression(right)?
+            )),
+            PredicateExpression::Not { expression } => Ok(format!(
+                "NOT ({})",
+                self.render_predicate_expression(expression)?
+            )),
+        }
     }
 
     fn render_predicate(
@@ -459,7 +489,8 @@ mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
         ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection, OrderKey,
-        PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+        PredicateExpression, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
+        RelationshipPattern,
     };
 
     const GRAPH: &str = r"
@@ -542,6 +573,7 @@ relationships:
                 alias: Some("owner".to_string()),
             }],
             predicates: Vec::new(),
+            predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -685,6 +717,7 @@ relationships:
                 },
             ],
             predicates: Vec::new(),
+            predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -758,6 +791,7 @@ relationships:
                 },
             ],
             predicates: Vec::new(),
+            predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -816,6 +850,7 @@ relationships: []
                 operator: ComparisonOperator::Equal,
                 rhs: PredicateRhs::Literal(Literal::String("Ada's laptop".to_string())),
             }],
+            predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -868,6 +903,7 @@ relationships: []
                     rhs: PredicateRhs::Literal(Literal::Null),
                 },
             ],
+            predicate: None,
             order_by: Vec::new(),
             skip: None,
             limit: None,
@@ -908,6 +944,108 @@ relationships: []
             translation
                 .sql()
                 .contains("WHERE \"n0\".\"team\" = \"n1\".\"tier\""),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_or_predicate_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.predicate = Some(PredicateExpression::Or {
+            left: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            })),
+            right: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::Null),
+            })),
+        });
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("OR predicate expression should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE (\"n1\".\"tier\" = 'prod' OR \"n1\".\"tier\" IS NULL)"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_not_predicate_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.predicate = Some(PredicateExpression::Not {
+            expression: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            })),
+        });
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("NOT predicate expression should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE NOT (\"n1\".\"tier\" = 'prod')"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_combines_conjunctive_vector_and_predicate_expression() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicate = Some(PredicateExpression::Or {
+            left: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "person".to_string(),
+                    property: "team".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("platform".to_string())),
+            })),
+            right: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "person".to_string(),
+                    property: "team".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("infra".to_string())),
+            })),
+        });
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("conjunctive vector plus predicate expression should lower");
+
+        assert!(
+            translation.sql().contains(
+                "WHERE \"n1\".\"tier\" = 'prod' AND (\"n0\".\"team\" = 'platform' OR \"n0\".\"team\" = 'infra')"
+            ),
             "{}",
             translation.sql()
         );
@@ -1085,6 +1223,7 @@ relationships: []
                 operator: ComparisonOperator::Equal,
                 rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
             }],
+            predicate: None,
             order_by: vec![OrderKey {
                 property: PropertyRef {
                     variable: "person".to_string(),

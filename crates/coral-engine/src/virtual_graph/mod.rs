@@ -18,6 +18,7 @@ pub use diagnostic::Diagnostic;
 pub use execution::{GraphExecution, GraphQueryPlan};
 pub use ir::{
     ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection, OrderKey,
-    PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+    PredicateExpression, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
+    RelationshipPattern,
 };
 pub use sql::SqlTranslation;

@@ -369,6 +369,69 @@ async fn cypher_is_null_predicates_execute_with_sql_null_semantics() {
 }
 
 #[tokio::test]
+async fn cypher_or_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier = 'dev' OR service.tier IS NULL \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher OR predicate query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" OR "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_not_predicates_execute_with_sql_null_semantics() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE NOT (service.tier = 'prod') \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher NOT predicate query should execute");
+
+    assert!(
+        execution.translated_sql().contains("NOT ("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "experiments"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_skip_limit_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -515,6 +578,7 @@ relationships: []
             alias: Some("service".to_string()),
         }],
         predicates: Vec::new(),
+        predicate: None,
         order_by: Vec::new(),
         skip: None,
         limit: None,
@@ -609,6 +673,7 @@ async fn virtual_graph_count_projection_executes_against_synthetic_file_sources(
             alias: "ownership_count".to_string(),
         }],
         predicates: Vec::new(),
+        predicate: None,
         order_by: Vec::new(),
         skip: None,
         limit: None,
@@ -694,6 +759,7 @@ fn owner_service_plan() -> GraphPlan {
             operator: ComparisonOperator::Equal,
             rhs: GraphPredicateRhs::Literal(GraphLiteral::String("prod".to_string())),
         }],
+        predicate: None,
         order_by: vec![GraphOrderKey {
             property: GraphPropertyRef {
                 variable: "person".to_string(),

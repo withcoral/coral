@@ -21,7 +21,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Directed relationship traversals | Supported foundation | Forward and reverse traversal lower to joins |
 | Connected multi-hop paths | Supported foundation | Linear and closed connected patterns lower to deterministic joins |
 | Property projections | Supported foundation | Node keys and exposed properties |
-| Property predicates | Supported foundation | Conjunctive literal and property-to-property comparisons |
+| Property predicates | Supported foundation | Literal and property-to-property comparisons with boolean expression trees |
 | `COUNT(*)` | Supported foundation | Standalone aggregate projection only |
 | Distinct projections | Supported foundation | `SELECT DISTINCT` over projected rows |
 | Ordering, skip, and limit | Supported foundation | Property order keys, row offset, and row limit |
@@ -43,7 +43,8 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Labeled node patterns | Supported foundation | Requires named node variables; first binding needs exactly one static label, repeated bindings may omit the label |
 | Typed directed relationships | Supported foundation | Requires one static relationship type and one arrowhead |
 | Multi-hop relationship chains | Supported foundation | Forward, reverse, and mixed chains compile through the shared graph IR |
-| `WHERE` property comparisons | Supported foundation | String, integer, boolean, null literal, and property-to-property comparisons joined by `AND` |
+| `WHERE` property comparisons | Supported foundation | String, integer, boolean, null literal, and property-to-property comparisons |
+| `WHERE` boolean logic | Supported foundation | `AND`, `OR`, `NOT`, and parentheses lower to SQL boolean predicates |
 | `WHERE ... IS NULL` / `IS NOT NULL` | Supported foundation | Lowers to SQL `IS NULL` / `IS NOT NULL` |
 | Inline node property maps | Supported foundation | Normalized to equality predicates, e.g. `(n:Service {tier: 'prod'})` |
 | Inline relationship property maps | Supported foundation | Anonymous relationships get internal variables for property predicates |
@@ -53,6 +54,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, property projection aliases, and non-negative integer offsets/limits |
 | `OPTIONAL MATCH` | Rejected | Needs nullability-aware IR and SQL lowering |
 | Multiple `MATCH` clauses | Rejected | Needs multi-pattern planning and join ordering rules |
+| `WHERE XOR` | Rejected | Not portable across target SQL dialects |
 | Undirected or bidirectional relationships | Rejected | Needs explicit graph-expansion semantics |
 | Variable-length paths | Rejected | Needs recursive/path expansion semantics |
 | Path variables and path values | Rejected | Needs graph value representation |
