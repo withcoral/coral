@@ -1,6 +1,8 @@
 //! Persists the installed source catalog in top-level `config.toml`.
 
-use std::collections::BTreeMap;
+#![expect(dead_code, reason = "used in next stack PR")]
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig, MemorySize, QueryMemoryConfig};
 use serde::{Deserialize, Serialize};
@@ -14,11 +16,13 @@ use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
 use crate::storage::fs::{self as storage_fs, FileLock};
 use crate::workspaces::WorkspaceName;
+use crate::workspaces::{WorkspaceRecord, WorkspaceStore};
 
 #[derive(Debug, Clone)]
 pub(crate) struct AppConfig {
     version: u32,
     engine: PersistedEngineConfig,
+    workspaces: WorkspaceCatalog,
     catalog: SourceCatalog,
 }
 
@@ -27,12 +31,21 @@ impl Default for AppConfig {
         Self {
             version: default_config_version(),
             engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
         }
     }
 }
 
 impl AppConfig {
+    pub(crate) fn workspaces(&self) -> Vec<WorkspaceRecord> {
+        self.workspaces.list()
+    }
+
+    pub(crate) fn has_workspace(&self, workspace_name: &WorkspaceName) -> bool {
+        self.workspaces.contains(workspace_name)
+    }
+
     pub(crate) fn workspace_sources(&self, workspace_name: &WorkspaceName) -> Vec<InstalledSource> {
         self.catalog.workspace_sources(workspace_name)
     }
@@ -215,6 +228,37 @@ impl From<&InstalledSource> for PersistedInstalledSource {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceCatalog(BTreeSet<WorkspaceName>);
+
+impl Default for WorkspaceCatalog {
+    fn default() -> Self {
+        Self(BTreeSet::from([WorkspaceName::default()]))
+    }
+}
+
+impl WorkspaceCatalog {
+    pub(crate) fn list(&self) -> Vec<WorkspaceRecord> {
+        self.0
+            .iter()
+            .cloned()
+            .map(|name| WorkspaceRecord { name })
+            .collect()
+    }
+
+    pub(crate) fn contains(&self, workspace_name: &WorkspaceName) -> bool {
+        self.0.contains(workspace_name)
+    }
+
+    pub(crate) fn insert(&mut self, workspace_name: WorkspaceName) -> bool {
+        self.0.insert(workspace_name)
+    }
+
+    pub(crate) fn remove(&mut self, workspace_name: &WorkspaceName) -> bool {
+        self.0.remove(workspace_name)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SourceCatalog(BTreeMap<WorkspaceName, BTreeMap<SourceName, InstalledSource>>);
 
@@ -289,6 +333,13 @@ impl SourceCatalog {
         }
 
         removed
+    }
+
+    pub(crate) fn remove_workspace(
+        &mut self,
+        workspace_name: &WorkspaceName,
+    ) -> Option<BTreeMap<SourceName, InstalledSource>> {
+        self.0.remove(workspace_name)
     }
 }
 
@@ -427,31 +478,76 @@ impl ConfigStore {
         self.load_config().map(|config| config.catalog)
     }
 
-    fn update_catalog<T>(
+    fn update_config<T>(
         &self,
-        update: impl FnOnce(&mut SourceCatalog) -> T,
+        update: impl FnOnce(&mut AppConfig) -> Result<T, AppError>,
     ) -> Result<T, AppError> {
         let _lock = self.lock_exclusive()?;
         let mut config = self.load_unlocked()?;
-        let result = update(&mut config.catalog);
+        let result = update(&mut config)?;
         self.save_unlocked(&config)?;
         Ok(result)
+    }
+
+    pub(crate) fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>, AppError> {
+        self.load_config().map(|config| config.workspaces())
+    }
+
+    pub(crate) fn create_workspace(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<WorkspaceRecord, AppError> {
+        self.update_config(|config| {
+            if config.workspaces.insert(workspace_name.clone()) {
+                Ok(WorkspaceRecord {
+                    name: workspace_name.clone(),
+                })
+            } else {
+                Err(AppError::WorkspaceAlreadyExists(workspace_name.to_string()))
+            }
+        })
+    }
+
+    pub(crate) fn delete_workspace(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Option<WorkspaceRecord>, AppError> {
+        self.update_config(|config| {
+            if workspace_name == &WorkspaceName::default() {
+                return Err(AppError::FailedPrecondition(
+                    "default workspace cannot be removed".to_string(),
+                ));
+            }
+            let removed = config.workspaces.remove(workspace_name);
+            if removed {
+                config.catalog.remove_workspace(workspace_name);
+            }
+            Ok(removed.then(|| WorkspaceRecord {
+                name: workspace_name.clone(),
+            }))
+        })
     }
 
     pub(crate) fn list_workspace_sources(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledSource>, AppError> {
-        self.load_catalog()
-            .map(|catalog| catalog.workspace_sources(workspace_name))
+        let config = self.load_config()?;
+        if !config.has_workspace(workspace_name) {
+            return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
+        }
+        Ok(config.workspace_sources(workspace_name))
     }
 
     pub(crate) fn list_workspace_source_names(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<String>, AppError> {
-        self.load_catalog()
-            .map(|catalog| catalog.workspace_source_names(workspace_name))
+        let config = self.load_config()?;
+        if !config.has_workspace(workspace_name) {
+            return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
+        }
+        Ok(config.catalog.workspace_source_names(workspace_name))
     }
 
     pub(crate) fn get_source(
@@ -459,7 +555,12 @@ impl ConfigStore {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
-        self.load_catalog()?
+        let config = self.load_config()?;
+        if !config.has_workspace(workspace_name) {
+            return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
+        }
+        config
+            .catalog
             .get_source(workspace_name, source_name)
             .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
     }
@@ -469,7 +570,13 @@ impl ConfigStore {
         workspace_name: &WorkspaceName,
         source: InstalledSource,
     ) -> Result<(), AppError> {
-        self.update_catalog(|catalog| catalog.upsert_source(workspace_name, source))
+        self.update_config(|config| {
+            if !config.has_workspace(workspace_name) {
+                return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
+            }
+            config.catalog.upsert_source(workspace_name, source);
+            Ok(())
+        })
     }
 
     pub(crate) fn remove_source(
@@ -477,9 +584,51 @@ impl ConfigStore {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<(), AppError> {
-        self.update_catalog(|catalog| {
-            catalog.remove_source(workspace_name, source_name);
+        self.update_config(|config| {
+            if !config.has_workspace(workspace_name) {
+                return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
+            }
+            config.catalog.remove_source(workspace_name, source_name);
+            Ok(())
         })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ConfigWorkspaceStore {
+    config_store: ConfigStore,
+}
+
+impl ConfigWorkspaceStore {
+    pub(crate) fn new(config_store: ConfigStore) -> Self {
+        Self { config_store }
+    }
+}
+
+impl WorkspaceStore for ConfigWorkspaceStore {
+    fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>, AppError> {
+        self.config_store.list_workspaces()
+    }
+
+    fn create_workspace(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<WorkspaceRecord, AppError> {
+        self.config_store.create_workspace(workspace_name)
+    }
+
+    fn list_workspace_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledSource>, AppError> {
+        self.config_store.list_workspace_sources(workspace_name)
+    }
+
+    fn delete_workspace(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Option<WorkspaceRecord>, AppError> {
+        self.config_store.delete_workspace(workspace_name)
     }
 }
 
@@ -495,13 +644,19 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
     doc["version"] = value(i64::from(config.version));
     render_engine_config(&mut doc, &config.engine);
 
-    // Remove and fully rebuild the workspaces section so removed sources don't linger.
+    // Remove and fully rebuild the workspaces section so removed sources and
+    // removed empty workspaces don't linger.
     doc.remove("workspaces");
+
+    for workspace_name in config.workspaces.keys() {
+        ensure_implicit_table(&mut doc["workspaces"]);
+        ensure_explicit_table(&mut doc["workspaces"][workspace_name]);
+    }
 
     for (workspace_name, workspace) in &config.workspaces {
         for (source_name, source) in &workspace.sources {
             ensure_implicit_table(&mut doc["workspaces"]);
-            ensure_implicit_table(&mut doc["workspaces"][workspace_name]);
+            ensure_explicit_table(&mut doc["workspaces"][workspace_name]);
             ensure_implicit_table(&mut doc["workspaces"][workspace_name]["sources"]);
 
             let source_item = &mut doc["workspaces"][workspace_name]["sources"][source_name];
@@ -598,13 +753,24 @@ fn ensure_implicit_table(item: &mut Item) {
         .set_implicit(true);
 }
 
+fn ensure_explicit_table(item: &mut Item) {
+    if !item.is_table() {
+        *item = toml_edit::table();
+    }
+    item.as_table_mut()
+        .expect("table item must be available")
+        .set_implicit(false);
+}
+
 impl TryFrom<PersistedAppConfig> for AppConfig {
     type Error = AppError;
 
     fn try_from(value: PersistedAppConfig) -> Result<Self, Self::Error> {
+        let mut workspaces = WorkspaceCatalog::default();
         let mut catalog = SourceCatalog::default();
         for (workspace_name, workspace_config) in value.workspaces {
             let workspace_name = WorkspaceName::parse(&workspace_name)?;
+            workspaces.insert(workspace_name.clone());
             for (source_name, source) in workspace_config.sources {
                 let source_name = SourceName::parse(&source_name)?;
                 catalog.upsert_source(&workspace_name, source.into_installed_source(source_name));
@@ -613,6 +779,7 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
         Ok(Self {
             version: value.version,
             engine: value.engine,
+            workspaces,
             catalog,
         })
     }
@@ -621,6 +788,11 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
 impl From<&AppConfig> for PersistedAppConfig {
     fn from(value: &AppConfig) -> Self {
         let mut workspaces = BTreeMap::new();
+        for workspace in value.workspaces.list() {
+            workspaces
+                .entry(workspace.name.as_str().to_string())
+                .or_insert_with(PersistedWorkspaceConfig::default);
+        }
         for (workspace_name, sources) in &value.catalog.0 {
             let workspace_config = workspaces
                 .entry(workspace_name.as_str().to_string())
@@ -808,8 +980,8 @@ mod tests {
 
     use super::{
         AppConfig, PersistedAppConfig, PersistedEngineConfig, PersistedMemoryConfig,
-        RawFeatureContainerState, RawFeatureValue, SourceCatalog, load_raw_feature_overrides,
-        render_config, set_raw_feature_override,
+        RawFeatureContainerState, RawFeatureValue, SourceCatalog, WorkspaceCatalog,
+        load_raw_feature_overrides, render_config, set_raw_feature_override,
     };
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
@@ -881,6 +1053,7 @@ mod tests {
         let config = AppConfig {
             version: 1,
             engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog,
         };
 
@@ -895,6 +1068,46 @@ mod tests {
     }
 
     #[test]
+    fn renders_empty_workspaces_as_explicit_tables() {
+        let mut workspaces = WorkspaceCatalog::default();
+        workspaces.insert(WorkspaceName::parse("work").expect("workspace"));
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces,
+            catalog: SourceCatalog::default(),
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+
+        assert!(raw.contains("[workspaces.default]"));
+        assert!(raw.contains("[workspaces.work]"));
+    }
+
+    #[test]
+    fn loads_empty_workspace_tables() {
+        let raw = r"
+version = 1
+
+[workspaces.default]
+
+[workspaces.work]
+";
+
+        let config = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(raw).expect("workspace config should parse"),
+        )
+        .expect("config");
+        let names = config
+            .workspaces()
+            .into_iter()
+            .map(|workspace| workspace.name.as_str().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["default", "work"]);
+    }
+
+    #[test]
     fn omits_empty_versions_from_rendered_source_entries() {
         let workspace_name = default_workspace();
         let mut source = installed_source("github");
@@ -905,6 +1118,7 @@ mod tests {
         let config = AppConfig {
             version: 1,
             engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog,
         };
 
@@ -1090,6 +1304,7 @@ limit = 2147483648
                 },
                 ..PersistedEngineConfig::default()
             },
+            workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
         };
 
@@ -1115,6 +1330,7 @@ flag = true
                 },
                 ..PersistedEngineConfig::default()
             },
+            workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
         };
 
@@ -1140,6 +1356,7 @@ flag = true
         let config = AppConfig {
             version: 1,
             engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
         };
 
@@ -1274,6 +1491,7 @@ max_concurrency = 0
         let config = AppConfig {
             version: 1,
             engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog,
         };
 
@@ -1379,6 +1597,7 @@ origin = "bundled"
         let config = AppConfig {
             version: 1,
             engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog,
         };
 
