@@ -379,6 +379,20 @@ impl<'a> Lowerer<'a> {
     ) -> Result<String, CoreError> {
         let property = self.render_property_ref(&predicate.property)?;
         match (&predicate.operator, &predicate.rhs) {
+            (ComparisonOperator::In, PredicateRhs::List(literals)) => {
+                if literals.is_empty() {
+                    return Ok("FALSE".to_string());
+                }
+                let rendered = literals
+                    .iter()
+                    .map(render_literal)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok(format!("{property} IN ({rendered})"))
+            }
+            (ComparisonOperator::In, _) => Err(CoreError::internal(
+                "validated IN predicate did not contain a literal list",
+            )),
             (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
                 Ok(format!("{property} IS NULL"))
             }
@@ -406,6 +420,9 @@ impl<'a> Lowerer<'a> {
         match rhs {
             PredicateRhs::Literal(literal) => Ok(render_literal(literal)),
             PredicateRhs::Property(property) => self.render_property_ref(property),
+            PredicateRhs::List(_) => Err(CoreError::internal(
+                "validated literal list predicate reached generic RHS renderer",
+            )),
         }
     }
 
@@ -464,6 +481,7 @@ fn render_operator(operator: ComparisonOperator) -> &'static str {
         ComparisonOperator::GreaterThanOrEqual => ">=",
         ComparisonOperator::LessThan => "<",
         ComparisonOperator::LessThanOrEqual => "<=",
+        ComparisonOperator::In => "IN",
     }
 }
 
@@ -944,6 +962,59 @@ relationships: []
             translation
                 .sql()
                 .contains("WHERE \"n0\".\"team\" = \"n1\".\"tier\""),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_in_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates = vec![PropertyPredicate {
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "tier".to_string(),
+            },
+            operator: ComparisonOperator::In,
+            rhs: PredicateRhs::List(vec![
+                Literal::String("prod".to_string()),
+                Literal::String("dev".to_string()),
+            ]),
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("IN predicate should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE \"n1\".\"tier\" IN ('prod', 'dev')"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_empty_in_lists_as_false() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates = vec![PropertyPredicate {
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "tier".to_string(),
+            },
+            operator: ComparisonOperator::In,
+            rhs: PredicateRhs::List(Vec::new()),
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("empty IN predicate should lower");
+
+        assert!(
+            translation.sql().contains("WHERE FALSE"),
             "{}",
             translation.sql()
         );

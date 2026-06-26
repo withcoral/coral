@@ -31,6 +31,8 @@ pub enum ComparisonOperator {
     LessThan,
     /// Less-than-or-equal comparison.
     LessThanOrEqual,
+    /// List membership comparison.
+    In,
 }
 
 /// Literal value supported by the initial graph IR.
@@ -62,6 +64,8 @@ pub enum PredicateRhs {
     Literal(Literal),
     /// Compare against another graph property.
     Property(PropertyRef),
+    /// Compare against a literal list.
+    List(Vec<Literal>),
 }
 
 /// Node pattern in the shared graph IR.

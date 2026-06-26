@@ -45,6 +45,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Multi-hop relationship chains | Supported foundation | Forward, reverse, and mixed chains compile through the shared graph IR |
 | `WHERE` property comparisons | Supported foundation | String, integer, boolean, null literal, and property-to-property comparisons |
 | `WHERE` boolean logic | Supported foundation | `AND`, `OR`, `NOT`, and parentheses lower to SQL boolean predicates |
+| `WHERE ... IN [...]` | Supported foundation | Literal scalar lists lower to SQL `IN`; empty lists lower to `FALSE` |
 | `WHERE ... IS NULL` / `IS NOT NULL` | Supported foundation | Lowers to SQL `IS NULL` / `IS NOT NULL` |
 | Inline node property maps | Supported foundation | Normalized to equality predicates, e.g. `(n:Service {tier: 'prod'})` |
 | Inline relationship property maps | Supported foundation | Anonymous relationships get internal variables for property predicates |
@@ -55,6 +56,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `OPTIONAL MATCH` | Rejected | Needs nullability-aware IR and SQL lowering |
 | Multiple `MATCH` clauses | Rejected | Needs multi-pattern planning and join ordering rules |
 | `WHERE XOR` | Rejected | Not portable across target SQL dialects |
+| `WHERE ... IN` with null list values | Rejected | Needs explicit Cypher null-membership semantics |
 | Undirected or bidirectional relationships | Rejected | Needs explicit graph-expansion semantics |
 | Variable-length paths | Rejected | Needs recursive/path expansion semantics |
 | Path variables and path values | Rejected | Needs graph value representation |

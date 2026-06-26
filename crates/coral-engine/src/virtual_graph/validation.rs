@@ -379,12 +379,54 @@ impl<'a> GraphPlanValidator<'a> {
         self.validate_property_ref(&predicate.property, format!("{path}.property"))?;
         match &predicate.rhs {
             PredicateRhs::Literal(literal) => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
                 Self::validate_literal_predicate(path, predicate.operator, literal)
             }
             PredicateRhs::Property(property) => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
                 self.validate_property_ref(property, format!("{path}.rhs"))
             }
+            PredicateRhs::List(literals) => {
+                if predicate.operator != ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "literal lists are only supported with IN predicates",
+                    )
+                    .into_core_error());
+                }
+                Self::validate_in_list(path, literals)
+            }
         }
+    }
+
+    fn validate_in_list(path: impl Into<String>, literals: &[Literal]) -> Result<(), CoreError> {
+        let path = path.into();
+        for (index, literal) in literals.iter().enumerate() {
+            if matches!(literal, Literal::Null) {
+                return Err(Diagnostic::new(
+                    "UNSUPPORTED_IN_LIST",
+                    format!("{path}.rhs[{index}]"),
+                    "null values in IN lists are not supported yet",
+                )
+                .into_core_error());
+            }
+        }
+        Ok(())
     }
 
     fn validate_literal_predicate(
@@ -678,6 +720,52 @@ relationships:
 
         assert!(
             error.to_string().contains("INVALID_NULL_COMPARISON"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_null_values_in_in_lists() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicates = vec![PropertyPredicate {
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "tier".to_string(),
+            },
+            operator: ComparisonOperator::In,
+            rhs: PredicateRhs::List(vec![Literal::String("prod".to_string()), Literal::Null]),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("null values in IN list should fail validation");
+
+        assert!(
+            error.to_string().contains("UNSUPPORTED_IN_LIST"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_list_rhs_without_in_operator() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicates = vec![PropertyPredicate {
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "tier".to_string(),
+            },
+            operator: ComparisonOperator::Equal,
+            rhs: PredicateRhs::List(vec![Literal::String("prod".to_string())]),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("literal list without IN should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_PREDICATE_OPERAND"),
             "{error:?}"
         );
     }

@@ -530,6 +530,9 @@ fn compile_predicate_expression(
         Expression::Comparison { lhs, operators, .. } => Ok(PredicateExpression::Comparison(
             compile_comparison(lhs, operators.as_slice(), path)?,
         )),
+        Expression::In { lhs, rhs, .. } => Ok(PredicateExpression::Comparison(
+            compile_in_predicate(lhs, rhs, path)?,
+        )),
         Expression::IsNull {
             operand, negated, ..
         } => Ok(PredicateExpression::Comparison(PropertyPredicate {
@@ -608,6 +611,19 @@ fn compile_comparison(
     })
 }
 
+fn compile_in_predicate(
+    lhs: &Expression,
+    rhs: &Expression,
+    path: impl Into<String>,
+) -> Result<PropertyPredicate, CoreError> {
+    let path = path.into();
+    Ok(PropertyPredicate {
+        property: compile_property_ref(lhs, format!("{path}.lhs"))?,
+        operator: ComparisonOperator::In,
+        rhs: PredicateRhs::List(compile_literal_list(rhs, format!("{path}.rhs"))?),
+    })
+}
+
 fn compile_predicate_rhs(
     expression: &Expression,
     path: impl Into<String>,
@@ -644,6 +660,30 @@ fn compile_property_ref(
         _ => Err(unsupported(
             path,
             "only variable.property expressions are supported here",
+        )),
+    }
+}
+
+fn compile_literal_list(
+    expression: &Expression,
+    path: impl Into<String>,
+) -> Result<Vec<Literal>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_literal_list(inner, path),
+        Expression::Literal(CypherLiteral::List(list)) => list
+            .elements
+            .iter()
+            .enumerate()
+            .map(|(index, expression)| compile_literal(expression, format!("{path}[{index}]")))
+            .collect(),
+        Expression::Parameter(_) => Err(unsupported(
+            path,
+            "parameters are not supported in virtual graph queries yet",
+        )),
+        _ => Err(unsupported(
+            path,
+            "IN predicates require a literal list right-hand side",
         )),
     }
 }
@@ -1023,6 +1063,31 @@ mod tests {
     }
 
     #[test]
+    fn compiles_in_predicates_with_literal_lists() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service.tier IN ['prod', 'dev'] \
+             RETURN service.name",
+        )
+        .expect("query should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::In,
+                rhs: PredicateRhs::List(vec![
+                    Literal::String("prod".to_string()),
+                    Literal::String("dev".to_string()),
+                ]),
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_or_predicates_as_boolean_expression_tree() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -1312,6 +1377,13 @@ mod tests {
             "MATCH (service:Service) \
              WHERE service.tier = 'prod' XOR service.tier IS NULL \
              RETURN service.name",
+        );
+    }
+
+    #[test]
+    fn rejects_parameterized_in_predicates() {
+        assert_unsupported(
+            "MATCH (service:Service) WHERE service.tier IN $tiers RETURN service.name",
         );
     }
 
