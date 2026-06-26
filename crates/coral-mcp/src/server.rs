@@ -738,8 +738,8 @@ fn finish_tool_call(
     match outcome {
         Ok(ToolCallOutcome::Success(value)) => {
             let result = build_tool_result(value);
-            telemetry::record_protocol_result(span, &result);
-            result
+            telemetry::record_success(span);
+            Ok(result)
         }
         Ok(ToolCallOutcome::ToolError { operation, status }) => {
             telemetry::record_tonic_status(span, &status);

@@ -1,58 +1,27 @@
 use std::collections::HashMap;
-use std::fmt::Write as _;
 
 use coral_client::{DecodedStatusError, decode_status_error};
-use rmcp::{
-    ErrorData,
-    model::{CallToolResult, Content},
-};
+use rmcp::{ErrorData, model::CallToolResult};
 use serde::Serialize;
-use serde_json::{Map, Value};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct ToolError {
     pub(crate) summary: String,
     pub(crate) detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) hint: Option<String>,
     pub(crate) grpc_code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<String>,
     pub(crate) retryable: bool,
     pub(crate) metadata: HashMap<String, String>,
 }
 
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "callers always pass an owned ToolError that is not used after this call"
-)]
 pub(crate) fn tool_error_result(error: ToolError) -> CallToolResult {
-    let mut text = format!("Error: {}", error.summary);
-    if !error.detail.is_empty() {
-        write!(text, "\nDetail: {}", error.detail).expect("writing to String cannot fail");
-    }
-    if let Some(hint) = &error.hint {
-        write!(text, "\nHint: {hint}").expect("writing to String cannot fail");
-    }
-
-    let metadata = error
-        .metadata
-        .iter()
-        .map(|(key, value)| (key.clone(), Value::String(value.clone())))
-        .collect::<Map<_, _>>();
-
-    let structured = serde_json::to_value(StructuredToolErrorValue {
-        error: ToolErrorValue {
-            summary: &error.summary,
-            detail: &error.detail,
-            hint: error.hint.as_deref(),
-            grpc_code: &error.grpc_code,
-            reason: error.reason.as_deref(),
-            retryable: error.retryable,
-            metadata: Value::Object(metadata),
-        },
-    })
-    .expect("tool error value serializes");
+    let structured = serde_json::to_value(StructuredToolErrorValue { error })
+        .expect("tool error value serializes");
     let mut result = CallToolResult::structured_error(structured);
-    result.content = vec![Content::text(text)];
+    result.content = Vec::new();
     result
 }
 
@@ -142,21 +111,8 @@ pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
 }
 
 #[derive(Serialize)]
-struct StructuredToolErrorValue<'a> {
-    error: ToolErrorValue<'a>,
-}
-
-#[derive(Serialize)]
-struct ToolErrorValue<'a> {
-    summary: &'a str,
-    detail: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    hint: Option<&'a str>,
-    grpc_code: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<&'a str>,
-    retryable: bool,
-    metadata: Value,
+struct StructuredToolErrorValue {
+    error: ToolError,
 }
 
 #[derive(Serialize)]
@@ -200,6 +156,7 @@ mod tests {
             metadata: HashMap::new(),
         });
         assert_eq!(result.is_error, Some(true));
+        assert!(result.content.is_empty());
         let json = result.structured_content.expect("structured content");
         assert_eq!(json["error"]["grpc_code"], "InvalidArgument");
         assert_eq!(json["error"]["retryable"], false);
