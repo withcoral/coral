@@ -1,5 +1,7 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
+use std::sync::{Arc, Mutex};
+
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
@@ -90,47 +92,40 @@ impl ToolCallOutcome {
     }
 }
 
-#[derive(Debug, Default)]
-struct EpisodeTag {
-    episode_id: Option<String>,
-    episode_id_metadata: Option<MetadataValue<Ascii>>,
+/// The episode a session is currently attributing intent-bearing tool calls to.
+///
+/// Held per MCP session and mutated only inside the synchronous critical section of
+/// [`CoralMcpServer::resolve_episode_metadata`]. `normalized_intent` is the segmentation key —
+/// a call whose normalized intent matches reuses `episode_id`; a change mints a new one.
+#[derive(Clone, Debug)]
+struct CurrentEpisode {
+    normalized_intent: String,
+    episode_id: String,
 }
 
-impl EpisodeTag {
-    fn from_tool_request(
-        options: &McpOptions,
-        arguments: Option<&Map<String, Value>>,
-    ) -> Result<Self, ErrorData> {
-        if !options.episodes_enabled {
-            return Ok(Self::default());
-        }
-        let episode_id = optional_episode_id_argument(arguments, "episode_id")?;
-        let episode_id_metadata = episode_id
-            .as_deref()
-            .map(|episode_id| {
-                episode_id.parse().map_err(|error| {
-                    ErrorData::invalid_params(
-                        format!("argument 'episode_id' is not valid metadata: {error}"),
-                        None,
-                    )
-                })
-            })
-            .transpose()?;
-        Ok(Self {
-            episode_id,
-            episode_id_metadata,
-        })
-    }
+/// Outcome of the segmentation decision; computed under the lock, acted on after it is dropped.
+enum EpisodeResolution {
+    /// No attribution: episodes off, `open_episode`, or no intent and no current episode.
+    Untagged,
+    /// Tag with an already-known episode id; no `OpenEpisode` RPC needed.
+    Reuse(String),
+    /// A new id was minted and made current; `OpenEpisode(id, intent)` must be issued.
+    Open { episode_id: String, intent: String },
+}
 
-    fn record_telemetry(&self, span: &tracing::Span) {
-        if let Some(episode_id) = self.episode_id.as_deref() {
-            telemetry::record_episode_id(span, episode_id);
-        }
-    }
+/// Normalize intent for boundary detection: trim and collapse internal ASCII whitespace runs to a
+/// single space. Case-sensitive — a v1 heuristic; fuzzy/embedding matching is a separate issue.
+fn normalize_intent(intent: &str) -> String {
+    intent.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 
-    fn into_metadata(self) -> Option<MetadataValue<Ascii>> {
-        self.episode_id_metadata
-    }
+fn episode_id_to_metadata(episode_id: &str) -> Result<MetadataValue<Ascii>, ErrorData> {
+    episode_id.parse().map_err(|error| {
+        ErrorData::invalid_params(
+            format!("argument 'episode_id' is not valid metadata: {error}"),
+            None,
+        )
+    })
 }
 
 #[derive(Clone)]
@@ -142,6 +137,10 @@ pub(crate) struct CoralMcpServer {
     episode: EpisodeClient,
     startup_context: McpStartupContext,
     options: McpOptions,
+    /// The session's current episode, used to segment intent-bearing tool calls. Shared via `Arc`
+    /// (one server instance per stdio session; rmcp dispatches calls on concurrent tasks) and
+    /// guarded by a `std::sync::Mutex` so the decide+mint critical section holds no `.await`.
+    current_episode: Arc<Mutex<Option<CurrentEpisode>>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -185,6 +184,7 @@ impl CoralMcpServer {
             episode: app.episode_client(),
             startup_context,
             options,
+            current_episode: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -328,20 +328,33 @@ impl CoralMcpServer {
         })
     }
 
+    /// Issue a single `OpenEpisode` RPC. Shared by the explicit `open_episode` tool and by
+    /// intent-driven segmentation in [`Self::resolve_episode_metadata`].
+    async fn open_episode_request(
+        &self,
+        episode_id: &str,
+        intent: &str,
+        parent_episode_id: Option<&str>,
+    ) -> Result<(), tonic::Status> {
+        let mut episode_client = self.episode.clone();
+        episode_client
+            .open_episode(Request::new(OpenEpisodeRequest {
+                workspace: Some(default_workspace()),
+                episode_id: episode_id.to_string(),
+                intent: intent.to_string(),
+                parent_episode_id: parent_episode_id.unwrap_or_default().to_string(),
+            }))
+            .await?;
+        Ok(())
+    }
+
     async fn open_episode(
         &self,
         intent: &str,
         parent_episode_id: Option<&str>,
     ) -> Result<EpisodeOpenedValue, tonic::Status> {
         let episode_id = format!("ep_{}", uuid::Uuid::new_v4().simple());
-        let mut episode_client = self.episode.clone();
-        episode_client
-            .open_episode(Request::new(OpenEpisodeRequest {
-                workspace: Some(default_workspace()),
-                episode_id: episode_id.clone(),
-                intent: intent.to_string(),
-                parent_episode_id: parent_episode_id.unwrap_or_default().to_string(),
-            }))
+        self.open_episode_request(&episode_id, intent, parent_episode_id)
             .await?;
         Ok(EpisodeOpenedValue {
             episode_id,
@@ -349,6 +362,101 @@ impl CoralMcpServer {
             message: "Episode opened.",
             instructions: "Pass this episode_id as episode_id on subsequent Coral MCP tool calls for this work.",
         })
+    }
+
+    /// Resolve the `coral-episode-id` metadata to attribute a tool call to, segmenting episodes from
+    /// the optional per-call `intent`. Returns `Ok(None)` when nothing should be tagged.
+    ///
+    /// Precedence (episodes on, data tools only):
+    /// 1. explicit `episode_id` arg wins (no segmentation);
+    /// 2. else `intent` matching the current episode reuses it; a changed/new intent mints a fresh
+    ///    `ep_<uuid>`, makes it current, and opens it via `OpenEpisode`;
+    /// 3. else (no intent) reuse the current episode if one exists, otherwise no tag.
+    ///
+    /// Intent is used only to drive segmentation and reaches the store via `OpenEpisode` — it is
+    /// never recorded on the span (store-only; spans carry just the opaque `episode.id`).
+    async fn resolve_episode_metadata(
+        &self,
+        name: &str,
+        arguments: Option<&Map<String, Value>>,
+        span: &tracing::Span,
+    ) -> Result<Option<MetadataValue<Ascii>>, ErrorData> {
+        if !self.options.episodes_enabled {
+            return Ok(None);
+        }
+        // Validate a stray `episode_id` even for `open_episode` (preserves the "reject bad
+        // episode_id" behavior), but never tag the open call itself.
+        let explicit_episode_id = optional_episode_id_argument(arguments, "episode_id")?;
+        if name == "open_episode" {
+            return Ok(None);
+        }
+        let intent = if self.tool_accepts_optional_intent(name) {
+            optional_intent_argument(arguments, "intent")?
+        } else {
+            None
+        };
+
+        // Option B: an explicit episode id wins; do not segment.
+        if let Some(explicit) = explicit_episode_id {
+            let metadata = episode_id_to_metadata(&explicit)?;
+            telemetry::record_episode_id(span, &explicit);
+            return Ok(Some(metadata));
+        }
+
+        // Synchronous decide+mint critical section: holds no `.await` (the rmcp-spawned future must
+        // be `Send`, so a held `std::sync::MutexGuard` across an await would not compile).
+        let resolution = {
+            let mut current = self
+                .current_episode
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match intent {
+                Some(intent) => {
+                    let normalized = normalize_intent(&intent);
+                    match current.as_ref() {
+                        Some(existing) if existing.normalized_intent == normalized => {
+                            EpisodeResolution::Reuse(existing.episode_id.clone())
+                        }
+                        _ => {
+                            let episode_id = format!("ep_{}", uuid::Uuid::new_v4().simple());
+                            *current = Some(CurrentEpisode {
+                                normalized_intent: normalized,
+                                episode_id: episode_id.clone(),
+                            });
+                            EpisodeResolution::Open { episode_id, intent }
+                        }
+                    }
+                }
+                None => match current.as_ref() {
+                    Some(existing) => EpisodeResolution::Reuse(existing.episode_id.clone()),
+                    None => EpisodeResolution::Untagged,
+                },
+            }
+        };
+
+        let episode_id = match resolution {
+            EpisodeResolution::Untagged => return Ok(None),
+            EpisodeResolution::Reuse(episode_id) => episode_id,
+            EpisodeResolution::Open { episode_id, intent } => {
+                // Segmented episodes are roots (lineage comes from explicit open_episode). Best
+                // effort: a failed open must not fail the user's data call — log and still tag, so
+                // attribution telemetry stays meaningful and we honor "open once per intent".
+                if let Err(status) = self
+                    .open_episode_request(&episode_id, &intent, None)
+                    .await
+                {
+                    tracing::warn!(
+                        error = %status,
+                        episode_id = %episode_id,
+                        "failed to open episode for intent segmentation"
+                    );
+                }
+                episode_id
+            }
+        };
+        let metadata = episode_id_to_metadata(&episode_id)?;
+        telemetry::record_episode_id(span, &episode_id);
+        Ok(Some(metadata))
     }
 
     async fn submit_feedback_value(
@@ -489,7 +597,6 @@ impl CoralMcpServer {
             }
             "open_episode" if self.options.episodes_enabled => {
                 let arguments = open_episode_arguments(request.arguments.as_ref())?;
-                telemetry::record_tool_intent(span, &arguments.intent);
                 match self
                     .open_episode(&arguments.intent, arguments.parent_episode_id.as_deref())
                     .await
@@ -622,21 +729,22 @@ impl ServerHandler for CoralMcpServer {
                 search_catalog_tool(&tool_context),
                 describe_table_tool(),
                 list_columns_tool(),
-            ]
-            .into_iter()
-            .map(with_intent_argument)
-            .collect::<Vec<_>>();
+            ];
             if self.options.episodes_enabled {
-                tools = tools.into_iter().map(with_episode_id_argument).collect();
+                // `intent` (segmentation input) and `episode_id` (explicit attribution) are only
+                // advertised when episodes are on. `open_episode` already declares its own `intent`.
+                tools = tools
+                    .into_iter()
+                    .map(with_intent_argument)
+                    .map(with_episode_id_argument)
+                    .collect();
                 tools.push(open_episode_tool());
             }
             if self.options.feedback_enabled {
-                let feedback = with_intent_argument(feedback_tool());
-                let feedback = if self.options.episodes_enabled {
-                    with_episode_id_argument(feedback)
-                } else {
-                    feedback
-                };
+                let mut feedback = feedback_tool();
+                if self.options.episodes_enabled {
+                    feedback = with_episode_id_argument(with_intent_argument(feedback));
+                }
                 tools.push(feedback);
             }
             Ok(ListToolsResult::with_all_items(tools))
@@ -651,29 +759,18 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let span =
             telemetry::call_tool_span(request.name.as_ref(), self.options.trace_parent.as_deref());
-        let inject_episode_metadata = request.name.as_ref() != "open_episode";
-        let tool_intent = if self.tool_accepts_optional_intent(request.name.as_ref()) {
-            optional_intent_argument(request.arguments.as_ref(), "intent")
-        } else {
-            Ok(None)
-        };
-        let episode_tag = EpisodeTag::from_tool_request(&self.options, request.arguments.as_ref());
-        let outcome = match (tool_intent, episode_tag) {
-            (Ok(tool_intent), Ok(episode_tag)) => {
-                if let Some(intent) = tool_intent.as_deref() {
-                    telemetry::record_tool_intent(&span, intent);
-                }
-                episode_tag.record_telemetry(&span);
-                let episode_id_metadata = inject_episode_metadata
-                    .then(|| episode_tag.into_metadata())
-                    .flatten();
+        let outcome = match self
+            .resolve_episode_metadata(request.name.as_ref(), request.arguments.as_ref(), &span)
+            .await
+        {
+            Ok(episode_id_metadata) => {
                 telemetry::instrument(
                     span.clone(),
                     with_episode_metadata(episode_id_metadata, self.dispatch_tool(request, &span)),
                 )
                 .await
             }
-            (Err(error), _) | (_, Err(error)) => Err(error),
+            Err(error) => Err(error),
         };
         finish_tool_call(&span, outcome)
     }

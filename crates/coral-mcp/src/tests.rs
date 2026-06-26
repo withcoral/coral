@@ -287,6 +287,26 @@ fn assert_tool_advertises_intent(tool: &Tool) {
     );
 }
 
+fn assert_tool_omits_intent(tool: &Tool) {
+    assert!(
+        !tool_input_properties(tool).contains_key("intent"),
+        "tool '{}' should not advertise intent by default",
+        tool.name
+    );
+}
+
+/// Read the per-workspace episode records (one JSON object per JSONL line) for the default workspace.
+fn read_episode_records(temp: &TempDir) -> Vec<Value> {
+    let episodes_path = temp
+        .path()
+        .join("coral-config/workspaces/default/episodes/episodes.jsonl");
+    fs::read_to_string(&episodes_path)
+        .expect("episode file should exist")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("episode JSONL should parse"))
+        .collect()
+}
+
 fn assert_nullable_episode_id_schema(schema: &Value, label: &str) {
     let any_of = schema
         .get("anyOf")
@@ -557,7 +577,7 @@ async fn mcp_episode_tool_is_disabled_by_default() {
         "open_episode should not be listed by default"
     );
     for tool in &tools {
-        assert_tool_advertises_intent(tool);
+        assert_tool_omits_intent(tool);
         assert_tool_omits_episode_id(tool);
     }
 
@@ -574,12 +594,185 @@ async fn mcp_episode_tool_is_disabled_by_default() {
             .to_string()
             .contains("tool 'open_episode' not found")
     );
+
+    // A stray `intent` on a data call is ignored when episodes are off — no segmentation, no store.
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": "SELECT 1 AS ok",
+                "intent": "Investigate customer renewal risk"
+            }))),
+        )
+        .await
+        .expect("sql should run with episodes disabled");
+    assert_eq!(sql.is_error, Some(false));
     assert!(
         !temp
             .path()
             .join("coral-config/workspaces/default/episodes/episodes.jsonl")
             .exists()
     );
+
+    session.shutdown().await;
+}
+
+/// Open an episodes-enabled MCP session for the segmentation tests below.
+async fn start_episodes_session(temp: &TempDir) -> TestSession {
+    start_session_with_options(
+        temp,
+        McpOptions {
+            episodes_enabled: true,
+            ..McpOptions::default()
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn mcp_intent_opens_one_episode_then_reuses_while_stable() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_episodes_session(&temp).await;
+    let client = &session.client;
+
+    for _ in 0..2 {
+        let result = client
+            .call_tool(
+                CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                    "sql": "SELECT 1 AS ok",
+                    "intent": "Investigate customer renewal risk"
+                }))),
+            )
+            .await
+            .expect("sql with intent");
+        assert_eq!(result.is_error, Some(false));
+    }
+
+    // Same intent across both calls → a single root episode, opened once.
+    let records = read_episode_records(&temp);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["intent"], "Investigate customer renewal risk");
+    assert_eq!(records[0]["parent_episode_id"], Value::Null);
+    assert!(records[0]["id"].as_str().expect("id").starts_with("ep_"));
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_changed_intent_opens_a_new_episode() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_episodes_session(&temp).await;
+    let client = &session.client;
+
+    for intent in ["Investigate renewal risk", "Draft the renewal email"] {
+        client
+            .call_tool(
+                CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                    "sql": "SELECT 1 AS ok",
+                    "intent": intent
+                }))),
+            )
+            .await
+            .expect("sql with intent");
+    }
+
+    let records = read_episode_records(&temp);
+    assert_eq!(records.len(), 2);
+    let intents = records
+        .iter()
+        .map(|record| record["intent"].as_str().expect("intent").to_string())
+        .collect::<Vec<_>>();
+    assert!(intents.contains(&"Investigate renewal risk".to_string()));
+    assert!(intents.contains(&"Draft the renewal email".to_string()));
+    // Intent-segmented episodes are roots; lineage is not inferred from the intent stream.
+    for record in &records {
+        assert_eq!(record["parent_episode_id"], Value::Null);
+    }
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_intent_normalization_collapses_whitespace_into_one_episode() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_episodes_session(&temp).await;
+    let client = &session.client;
+
+    for intent in ["renewal   risk", "renewal risk"] {
+        client
+            .call_tool(
+                CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                    "sql": "SELECT 1 AS ok",
+                    "intent": intent
+                }))),
+            )
+            .await
+            .expect("sql with intent");
+    }
+
+    // Internal-whitespace-only difference normalizes equal → reuse, so just one episode.
+    let records = read_episode_records(&temp);
+    assert_eq!(records.len(), 1);
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_explicit_episode_id_wins_over_intent() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_episodes_session(&temp).await;
+    let client = &session.client;
+
+    let root = client
+        .call_tool(
+            CallToolRequestParams::new("open_episode").with_arguments(json_object(&json!({
+                "intent": "Investigate renewal risk"
+            }))),
+        )
+        .await
+        .expect("open episode");
+    let episode_id = root.structured_content.expect("structured")["episode_id"]
+        .as_str()
+        .expect("episode id")
+        .to_string();
+    assert_eq!(read_episode_records(&temp).len(), 1);
+
+    // A different intent alongside an explicit episode_id must not open a new episode.
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": "SELECT 1 AS ok",
+                "episode_id": episode_id,
+                "intent": "A completely different task"
+            }))),
+        )
+        .await
+        .expect("tagged sql");
+    assert_eq!(sql.is_error, Some(false));
+    assert_eq!(read_episode_records(&temp).len(), 1);
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_concurrent_same_intent_opens_single_episode() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_episodes_session(&temp).await;
+    let client = &session.client;
+
+    let call = || {
+        client.call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": "SELECT 1 AS ok",
+                "intent": "Investigate renewal risk"
+            }))),
+        )
+    };
+    // Two concurrent calls with the same new intent must mint exactly one episode (mint-under-lock).
+    let (a, b) = tokio::join!(call(), call());
+    a.expect("first concurrent sql");
+    b.expect("second concurrent sql");
+
+    assert_eq!(read_episode_records(&temp).len(), 1);
 
     session.shutdown().await;
 }
