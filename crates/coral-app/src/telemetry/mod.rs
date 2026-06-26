@@ -43,6 +43,9 @@ static METER_PROVIDER: Mutex<Option<SdkMeterProvider>> = Mutex::new(None);
 const METRICS_INTERVAL: Duration = Duration::from_secs(5);
 const OTLP_TRACE_DENIED_TARGETS: &[&str] = &["coral.http.body", "coral.mcp.body"];
 const LOCAL_TRACE_EXCLUDED_RPC_SERVICES: &[&str] = &["coral.v1.TraceService"];
+pub(crate) const QUERY_TRACE_SOURCES_ATTR: &str = "coral.query.sources";
+pub(crate) const QUERY_TRACE_TABLES_ATTR: &str = "coral.query.tables";
+pub(crate) const QUERY_TRACE_TABLE_FUNCTIONS_ATTR: &str = "coral.query.table_functions";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InstalledLocalTraceStore {
