@@ -307,6 +307,13 @@ impl<'a> GraphPlanValidator<'a> {
                 Projection::Property { property, .. } => {
                     self.validate_property_ref(property, format!("projections[{index}].property"))?;
                 }
+                Projection::Key { variable, .. } => {
+                    self.validate_key_projection(
+                        variable,
+                        format!("projections[{index}].variable"),
+                    )?;
+                }
+                Projection::Literal { .. } | Projection::CountAll { .. } => {}
                 Projection::Aggregate {
                     function, target, ..
                 } => {
@@ -316,7 +323,6 @@ impl<'a> GraphPlanValidator<'a> {
                         format!("projections[{index}].target"),
                     )?;
                 }
-                Projection::CountAll { .. } => {}
             }
         }
         for (index, predicate) in self.plan.predicates.iter().enumerate() {
@@ -359,7 +365,10 @@ impl<'a> GraphPlanValidator<'a> {
             .iter()
             .filter_map(|projection| match projection {
                 Projection::Property { property, .. } => Some(property),
-                Projection::CountAll { .. } | Projection::Aggregate { .. } => None,
+                Projection::Key { .. }
+                | Projection::Literal { .. }
+                | Projection::CountAll { .. }
+                | Projection::Aggregate { .. } => None,
             })
             .collect()
     }
@@ -440,6 +449,14 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 | Projection::CountAll {
                     alias: projection_alias,
+                }
+                | Projection::Key {
+                    alias: projection_alias,
+                    ..
+                }
+                | Projection::Literal {
+                    alias: projection_alias,
+                    ..
                 }
                 | Projection::Aggregate {
                     alias: projection_alias,
@@ -554,6 +571,40 @@ impl<'a> GraphPlanValidator<'a> {
                             .into_core_error())
                         }
                     }
+                }
+            }
+        }
+    }
+
+    fn validate_key_projection(
+        &self,
+        variable: &str,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        let binding = self.bindings.get(variable).ok_or_else(|| {
+            Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                path.clone(),
+                format!("unknown graph variable '{variable}'"),
+            )
+            .into_core_error()
+        })?;
+        match binding.kind() {
+            ValidatedBindingKind::Node(_) => Ok(()),
+            ValidatedBindingKind::Relationship(relationship) => {
+                if relationship.key.is_some() {
+                    Ok(())
+                } else {
+                    Err(Diagnostic::new(
+                        "INVALID_KEY_PROJECTION",
+                        path,
+                        format!(
+                            "id({variable}) requires relationship type '{}' to declare a key column",
+                            relationship.relationship_type
+                        ),
+                    )
+                    .into_core_error())
                 }
             }
         }
@@ -931,6 +982,25 @@ relationships:
         graph
             .validate_graph_plan(&plan)
             .expect("keyed relationship aggregate target should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_keyless_relationship_key_projections() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Key {
+            variable: "owns".to_string(),
+            alias: "ownership_id".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("keyless relationship id projection should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_KEY_PROJECTION"),
+            "{error:?}"
+        );
     }
 
     #[test]

@@ -42,18 +42,18 @@ struct CompiledRelationship {
 
 #[derive(Debug, Default)]
 struct CypherCompileContext {
-    count_variable_arguments: BTreeMap<(usize, usize), String>,
+    variable_function_arguments: BTreeMap<(usize, usize), String>,
 }
 
 impl CypherCompileContext {
     fn from_source(cypher: &str) -> Self {
         Self {
-            count_variable_arguments: collect_count_variable_arguments(cypher),
+            variable_function_arguments: collect_variable_function_arguments(cypher),
         }
     }
 
-    fn count_variable_argument(&self, function: &FunctionInvocation) -> Option<&str> {
-        self.count_variable_arguments
+    fn variable_function_argument(&self, function: &FunctionInvocation) -> Option<&str> {
+        self.variable_function_arguments
             .get(&(function.span.start, function.span.end))
             .map(String::as_str)
     }
@@ -203,11 +203,8 @@ fn compile_terminal_with_clause(
                 "terminal WITH projections support graph properties and aggregates, not graph variable aliases",
             ));
         }
-        plan.projections.push(compile_projection(
-            item,
-            format!("with.items[{index}]"),
-            context,
-        )?);
+        let projection = compile_projection(item, format!("with.items[{index}]"), context, plan)?;
+        plan.projections.push(projection);
     }
 
     if let Some(order) = &with.order {
@@ -347,7 +344,10 @@ fn compile_terminal_alias_order_expression(
 fn projection_output_alias(projection: &Projection) -> Option<&str> {
     match projection {
         Projection::Property { alias, .. } => alias.as_deref(),
-        Projection::CountAll { alias } | Projection::Aggregate { alias, .. } => Some(alias),
+        Projection::Key { alias, .. }
+        | Projection::Literal { alias, .. }
+        | Projection::CountAll { alias }
+        | Projection::Aggregate { alias, .. } => Some(alias),
     }
 }
 
@@ -759,11 +759,8 @@ fn compile_return(
     }
 
     for (index, item) in return_clause.items.iter().enumerate() {
-        plan.projections.push(compile_projection(
-            item,
-            format!("return.items[{index}]"),
-            context,
-        )?);
+        let projection = compile_projection(item, format!("return.items[{index}]"), context, plan)?;
+        plan.projections.push(projection);
     }
 
     if let Some(order) = &return_clause.order {
@@ -832,6 +829,14 @@ fn projection_order_expression_for_alias(
             Projection::CountAll {
                 alias: projection_alias,
             }
+            | Projection::Key {
+                alias: projection_alias,
+                ..
+            }
+            | Projection::Literal {
+                alias: projection_alias,
+                ..
+            }
             | Projection::Aggregate {
                 alias: projection_alias,
                 ..
@@ -869,6 +874,7 @@ fn compile_projection(
     item: &ProjectionItem,
     path: impl Into<String>,
     context: &CypherCompileContext,
+    plan: &GraphPlan,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
     match &item.expression {
@@ -878,6 +884,12 @@ fn compile_projection(
                 .as_ref()
                 .map_or_else(|| "count".to_string(), variable_name),
         }),
+        Expression::FunctionCall(function) if is_id_function(function) => {
+            compile_id_projection(function, item, path, plan, context)
+        }
+        Expression::FunctionCall(function) if is_type_function(function) => {
+            compile_type_projection(function, item, path, plan, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             compile_aggregate_projection(function, item, path, context)
         }
@@ -892,6 +904,89 @@ fn compile_projection(
             property: compile_property_ref(expression, format!("{path}.expression"))?,
             alias: item.alias.as_ref().map(variable_name),
         }),
+    }
+}
+
+fn compile_id_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    let variable = compile_single_variable_function_argument(
+        function,
+        format!("{path}.expression.arguments"),
+        "id() supports exactly one graph variable argument",
+        context,
+    )?;
+    if !plan_uses_variable(plan, &variable) {
+        return Err(unsupported(
+            format!("{path}.expression.arguments[0]"),
+            format!("id() argument '{variable}' is not a bound graph variable"),
+        ));
+    }
+    Ok(Projection::Key {
+        variable,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "id".to_string(), variable_name),
+    })
+}
+
+fn compile_type_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    let variable = compile_single_variable_function_argument(
+        function,
+        format!("{path}.expression.arguments"),
+        "type() supports exactly one relationship variable argument",
+        context,
+    )?;
+    let relationship = plan
+        .relationships
+        .iter()
+        .find(|relationship| relationship.variable.as_deref() == Some(variable.as_str()))
+        .ok_or_else(|| {
+            unsupported(
+                format!("{path}.expression.arguments[0]"),
+                format!("type() argument '{variable}' is not a named relationship variable"),
+            )
+        })?;
+    Ok(Projection::Literal {
+        literal: Literal::String(relationship.relationship_type.clone()),
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "type".to_string(), variable_name),
+    })
+}
+
+fn compile_single_variable_function_argument(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    message: &'static str,
+    context: &CypherCompileContext,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    match function.arguments.as_slice() {
+        [Expression::Parenthesized(inner)] => match inner.as_ref() {
+            Expression::Variable(variable) => Ok(variable_name(variable)),
+            _ => Err(unsupported(format!("{path}[0]"), message)),
+        },
+        [Expression::Variable(variable)] => Ok(variable_name(variable)),
+        [] => context
+            .variable_function_argument(function)
+            .map(str::to_string)
+            .ok_or_else(|| unsupported(path, message)),
+        _ => Err(unsupported(path, message)),
     }
 }
 
@@ -932,7 +1027,7 @@ fn compile_function_aggregate_target(
     match function.arguments.as_slice() {
         [argument] => compile_aggregate_target(argument, format!("{path}.expression.arguments[0]")),
         [] if function_kind == AggregateFunction::Count => {
-            let variable = context.count_variable_argument(function).ok_or_else(|| {
+            let variable = context.variable_function_argument(function).ok_or_else(|| {
                 unsupported(
                     format!("{path}.expression.arguments"),
                     "count() supports exactly one graph property or node variable argument; use count(*) to count rows",
@@ -952,23 +1047,20 @@ fn compile_function_aggregate_target(
     }
 }
 
-fn collect_count_variable_arguments(cypher: &str) -> BTreeMap<(usize, usize), String> {
+fn collect_variable_function_arguments(cypher: &str) -> BTreeMap<(usize, usize), String> {
     // decypher's high-level AST currently drops variable-only function
-    // arguments such as count(n); the lossless CST keeps them by span.
+    // arguments such as count(n), id(n), and type(r); the lossless CST keeps
+    // them by span.
     let parse = decypher::parse_cst(cypher);
     let tree = parse.tree();
     tree.syntax()
         .descendants()
         .filter(|node| node.kind() == SyntaxKind::FUNCTION_INVOCATION)
-        .filter_map(|node| count_variable_argument_from_cst(&node))
+        .filter_map(|node| variable_function_argument_from_cst(&node))
         .collect()
 }
 
-fn count_variable_argument_from_cst(node: &SyntaxNode) -> Option<((usize, usize), String)> {
-    if !function_invocation_name_is_count(node) {
-        return None;
-    }
-
+fn variable_function_argument_from_cst(node: &SyntaxNode) -> Option<((usize, usize), String)> {
     let mut variables = node
         .children()
         .filter(|child| child.kind() == SyntaxKind::VARIABLE);
@@ -979,13 +1071,6 @@ fn count_variable_argument_from_cst(node: &SyntaxNode) -> Option<((usize, usize)
     let variable = variable_name_from_cst(&variable)?;
     let range = node.text_range();
     Some(((range.start().into(), range.end().into()), variable))
-}
-
-fn function_invocation_name_is_count(node: &SyntaxNode) -> bool {
-    node.children()
-        .find(|child| child.kind() == SyntaxKind::FUNCTION_NAME)
-        .and_then(|name| name.first_token())
-        .is_some_and(|token| token.text().eq_ignore_ascii_case("count"))
 }
 
 fn variable_name_from_cst(node: &SyntaxNode) -> Option<String> {
@@ -1043,6 +1128,20 @@ fn is_exists_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("exists")
+    )
+}
+
+fn is_id_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("id")
+    )
+}
+
+fn is_type_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("type")
     )
 }
 
@@ -1838,6 +1937,41 @@ mod tests {
         );
         assert_eq!(plan.skip, Some(1));
         assert_eq!(plan.limit, Some(5));
+    }
+
+    #[test]
+    fn compiles_id_and_type_projections() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             RETURN id(person) AS person_id, id(owns) AS ownership_id, type(owns) AS relationship_type \
+             ORDER BY ownership_id",
+        )
+        .expect("id() and type() projections should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Key {
+                    variable: "person".to_string(),
+                    alias: "person_id".to_string(),
+                },
+                Projection::Key {
+                    variable: "owns".to_string(),
+                    alias: "ownership_id".to_string(),
+                },
+                Projection::Literal {
+                    literal: Literal::String("OWNS".to_string()),
+                    alias: "relationship_type".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("ownership_id".to_string()),
+                direction: OrderDirection::Ascending,
+            }]
+        );
     }
 
     #[test]
@@ -2809,6 +2943,8 @@ mod tests {
     #[test]
     fn rejects_unsupported_return_functions() {
         assert_unsupported("MATCH (service:Service) RETURN stdev(service.id) AS total");
+        assert_unsupported("MATCH (service:Service) RETURN id(missing)");
+        assert_unsupported("MATCH (service:Service) RETURN type(service)");
     }
 
     #[test]

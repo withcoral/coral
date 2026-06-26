@@ -114,6 +114,20 @@ pub enum Projection {
         /// Optional output alias.
         alias: Option<String>,
     },
+    /// Project the stable mapped key for a graph variable.
+    Key {
+        /// Graph variable.
+        variable: String,
+        /// Output alias.
+        alias: String,
+    },
+    /// Project a literal value.
+    Literal {
+        /// Literal to project.
+        literal: Literal,
+        /// Output alias.
+        alias: String,
+    },
     /// Project `COUNT(*)`.
     CountAll {
         /// Output alias.

@@ -412,6 +412,20 @@ impl<'a> Lowerer<'a> {
                         .unwrap_or_else(|| format!("{}_{}", property.variable, property.property));
                     rendered.push(format!("{expression} AS {}", quote_ident(&alias)));
                 }
+                Projection::Key { variable, alias } => {
+                    rendered.push(format!(
+                        "{} AS {}",
+                        self.render_binding_key_ref(variable)?,
+                        quote_ident(alias)
+                    ));
+                }
+                Projection::Literal { literal, alias } => {
+                    rendered.push(format!(
+                        "{} AS {}",
+                        render_literal(literal),
+                        quote_ident(alias)
+                    ));
+                }
                 Projection::CountAll { alias } => {
                     rendered.push(format!("COUNT(*) AS {}", quote_ident(alias)));
                 }
@@ -479,9 +493,26 @@ impl<'a> Lowerer<'a> {
             .iter()
             .filter_map(|projection| match projection {
                 Projection::Property { property, .. } => Some(property),
-                Projection::CountAll { .. } | Projection::Aggregate { .. } => None,
+                Projection::Key { .. }
+                | Projection::Literal { .. }
+                | Projection::CountAll { .. }
+                | Projection::Aggregate { .. } => None,
             })
             .map(|property| self.render_property_ref(property))
+            .chain(
+                self.validated
+                    .plan()
+                    .projections
+                    .iter()
+                    .filter_map(|projection| match projection {
+                        Projection::Key { variable, .. } => Some(variable),
+                        Projection::Property { .. }
+                        | Projection::Literal { .. }
+                        | Projection::CountAll { .. }
+                        | Projection::Aggregate { .. } => None,
+                    })
+                    .map(|variable| self.render_binding_key_ref(variable)),
+            )
             .collect::<Result<Vec<_>, _>>()?;
         if properties.is_empty() {
             Ok(String::new())
@@ -927,6 +958,43 @@ relationships:
             "SELECT \"n1\".\"service_name\" AS \"neighbor\" FROM \"ops\".\"services\" AS \"n0\" \
              JOIN \"ops\".\"service_dependencies\" AS \"r0\" ON (\"r0\".\"from_service_id\" = \"n0\".\"id\" OR \"r0\".\"to_service_id\" = \"n0\".\"id\") \
              JOIN \"ops\".\"services\" AS \"n1\" ON ((\"r0\".\"from_service_id\" = \"n0\".\"id\" AND \"r0\".\"to_service_id\" = \"n1\".\"id\") OR (\"r0\".\"to_service_id\" = \"n0\".\"id\" AND \"r0\".\"from_service_id\" = \"n1\".\"id\"))"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_key_and_literal_projections() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.relationships
+            .get_mut(0)
+            .expect("ownership plan should include one relationship")
+            .variable = Some("owns".to_string());
+        plan.projections = vec![
+            Projection::Key {
+                variable: "person".to_string(),
+                alias: "person_id".to_string(),
+            },
+            Projection::Key {
+                variable: "owns".to_string(),
+                alias: "ownership_id".to_string(),
+            },
+            Projection::Literal {
+                literal: Literal::String("OWNS".to_string()),
+                alias: "relationship_type".to_string(),
+            },
+        ];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("key and literal projections should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n0\".\"id\" AS \"person_id\", \"r0\".\"ownership_id\" AS \"ownership_id\", 'OWNS' AS \"relationship_type\" \
+             FROM \"ops\".\"people\" AS \"n0\" \
+             JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"service_id\" = \"n1\".\"id\" \
+             WHERE \"n1\".\"tier\" = 'prod' ORDER BY \"n0\".\"full_name\" ASC LIMIT 25"
         );
     }
 
