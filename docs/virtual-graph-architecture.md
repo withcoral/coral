@@ -14,7 +14,8 @@ string rendering.
 - **Frontend parsers**: Cypher, GraphQL, and future GQL-style frontends compile
   into the shared graph IR.
 - **Shared graph IR**: typed nodes, relationships, predicates, projections,
-  ordering, aggregation, and limits.
+  ordering, aggregation, and limits. Predicate operands can compare properties
+  against literals or other graph properties.
 - **Plan validation**: resolves IR variables to declaration mappings, checks
   endpoint labels, property references, aggregate restrictions, and connected
   join shape before any SQL is rendered.

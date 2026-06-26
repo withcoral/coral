@@ -2,8 +2,8 @@ use std::path::Path;
 
 use coral_engine::{
     ComparisonOperator, CoralQuery, GraphDeclaration, GraphDirection, GraphLiteral,
-    GraphOrderDirection, GraphOrderKey, GraphPlan, GraphProjection, GraphPropertyPredicate,
-    GraphPropertyRef, NodePattern, RelationshipPattern,
+    GraphOrderDirection, GraphOrderKey, GraphPlan, GraphPredicateRhs, GraphProjection,
+    GraphPropertyPredicate, GraphPropertyRef, NodePattern, RelationshipPattern,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -114,6 +114,52 @@ async fn cypher_inline_node_property_maps_execute_as_predicates() {
         vec![
             json!({"service": "billing-api"}),
             json!({"service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_property_to_property_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[:OWNS]->(service:Service) \
+         WHERE person.team = service.team \
+         RETURN person.name AS owner, service.name AS service \
+         ORDER BY owner, service",
+    )
+    .await
+    .expect("property comparison Cypher query should execute");
+    let graph_rows = execution_to_rows(execution.execution());
+
+    let sql_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT people.full_name AS owner, services.service_name AS service \
+             FROM ops.people \
+             JOIN ops.ownerships ON ownerships.person_id = people.id \
+             JOIN ops.services ON ownerships.service_id = services.id \
+             WHERE people.team = services.owning_team \
+             ORDER BY people.full_name, services.service_name",
+        )
+        .await
+        .expect("equivalent SQL should execute"),
+    );
+
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api"}),
+            json!({"owner": "Grace Hopper", "service": "deployments"}),
+            json!({"owner": "Katherine Johnson", "service": "experiments"}),
         ]
     );
 }
@@ -507,7 +553,7 @@ fn owner_service_plan() -> GraphPlan {
                 property: "tier".to_string(),
             },
             operator: ComparisonOperator::Equal,
-            literal: GraphLiteral::String("prod".to_string()),
+            rhs: GraphPredicateRhs::Literal(GraphLiteral::String("prod".to_string())),
         }],
         order_by: vec![GraphOrderKey {
             property: GraphPropertyRef {
@@ -534,10 +580,10 @@ fn write_ops_fixture(dir: &Path) {
         dir,
         "services.jsonl",
         &[
-            json!({"id": 10, "service_name": "billing-api", "tier": "prod"}),
-            json!({"id": 20, "service_name": "deployments", "tier": "prod"}),
-            json!({"id": 30, "service_name": "experiments", "tier": "dev"}),
-            json!({"id": 40, "service_name": "legacy-sync", "tier": null}),
+            json!({"id": 10, "service_name": "billing-api", "tier": "prod", "owning_team": "platform"}),
+            json!({"id": 20, "service_name": "deployments", "tier": "prod", "owning_team": "infra"}),
+            json!({"id": 30, "service_name": "experiments", "tier": "dev", "owning_team": "analytics"}),
+            json!({"id": 40, "service_name": "legacy-sync", "tier": null, "owning_team": "platform"}),
         ],
     );
     write_jsonl_file(
@@ -586,7 +632,8 @@ fn ops_manifest(dir: &Path) -> Value {
                 "columns": [
                     { "name": "id", "type": "Int64" },
                     { "name": "service_name", "type": "Utf8" },
-                    { "name": "tier", "type": "Utf8" }
+                    { "name": "tier", "type": "Utf8" },
+                    { "name": "owning_team", "type": "Utf8" }
                 ]
             },
             {
@@ -634,6 +681,7 @@ nodes:
     properties:
       name: service_name
       tier: tier
+      team: owning_team
 relationships:
   - type: OWNS
     table: { schema: ops, name: ownerships }

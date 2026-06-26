@@ -16,7 +16,7 @@ use decypher::ast::query::{
 use super::diagnostic::Diagnostic;
 use super::ir::{
     ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection, OrderKey,
-    Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+    PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -224,7 +224,10 @@ fn compile_inline_properties(
                 property: key.name.name.clone(),
             },
             operator: ComparisonOperator::Equal,
-            literal: compile_literal(expression, format!("{path}.entries[{index}].value"))?,
+            rhs: PredicateRhs::Literal(compile_literal(
+                expression,
+                format!("{path}.entries[{index}].value"),
+            )?),
         });
     }
     Ok(predicates)
@@ -490,7 +493,7 @@ fn append_predicates(
                 } else {
                     ComparisonOperator::Equal
                 },
-                literal: Literal::Null,
+                rhs: PredicateRhs::Literal(Literal::Null),
             });
             Ok(())
         }
@@ -517,8 +520,22 @@ fn compile_comparison(
     Ok(PropertyPredicate {
         property: compile_property_ref(lhs, format!("{path}.lhs"))?,
         operator: compile_comparison_operator(*operator, format!("{path}.operator"))?,
-        literal: compile_literal(rhs, format!("{path}.rhs"))?,
+        rhs: compile_predicate_rhs(rhs, format!("{path}.rhs"))?,
     })
+}
+
+fn compile_predicate_rhs(
+    expression: &Expression,
+    path: impl Into<String>,
+) -> Result<PredicateRhs, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_predicate_rhs(inner, path),
+        Expression::PropertyLookup { .. } => Ok(PredicateRhs::Property(compile_property_ref(
+            expression, path,
+        )?)),
+        _ => Ok(PredicateRhs::Literal(compile_literal(expression, path)?)),
+    }
 }
 
 fn compile_property_ref(
@@ -781,6 +798,31 @@ mod tests {
     }
 
     #[test]
+    fn compiles_property_to_property_predicates() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[:OWNS]->(service:Service) \
+             WHERE person.team = service.team \
+             RETURN service.name",
+        )
+        .expect("query should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "person".to_string(),
+                    property: "team".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "team".to_string(),
+                }),
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_count_star_projection() {
         let plan = compile_cypher("MATCH (service:Service) RETURN count(*) AS services")
             .expect("query should compile");
@@ -809,7 +851,7 @@ mod tests {
                         property: "tier".to_string(),
                     },
                     operator: ComparisonOperator::Equal,
-                    literal: Literal::String("prod".to_string()),
+                    rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
                 },
                 PropertyPredicate {
                     property: PropertyRef {
@@ -817,7 +859,7 @@ mod tests {
                         property: "active".to_string(),
                     },
                     operator: ComparisonOperator::Equal,
-                    literal: Literal::Boolean(true),
+                    rhs: PredicateRhs::Literal(Literal::Boolean(true)),
                 },
             ]
         );
@@ -849,7 +891,7 @@ mod tests {
                     property: "source".to_string(),
                 },
                 operator: ComparisonOperator::Equal,
-                literal: Literal::String("catalog".to_string()),
+                rhs: PredicateRhs::Literal(Literal::String("catalog".to_string())),
             }]
         );
     }
@@ -882,7 +924,7 @@ mod tests {
                     property: "source".to_string(),
                 },
                 operator: ComparisonOperator::Equal,
-                literal: Literal::String("catalog".to_string()),
+                rhs: PredicateRhs::Literal(Literal::String("catalog".to_string())),
             }]
         );
     }
@@ -923,7 +965,7 @@ mod tests {
                     property: "tier".to_string(),
                 },
                 operator: ComparisonOperator::Equal,
-                literal: Literal::Null,
+                rhs: PredicateRhs::Literal(Literal::Null),
             }]
         );
     }

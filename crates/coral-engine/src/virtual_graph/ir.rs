@@ -55,6 +55,15 @@ pub struct PropertyRef {
     pub property: String,
 }
 
+/// Right-hand side of a property predicate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PredicateRhs {
+    /// Compare against a literal value.
+    Literal(Literal),
+    /// Compare against another graph property.
+    Property(PropertyRef),
+}
+
 /// Node pattern in the shared graph IR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodePattern {
@@ -103,8 +112,8 @@ pub struct PropertyPredicate {
     pub property: PropertyRef,
     /// Comparison operator.
     pub operator: ComparisonOperator,
-    /// Right-hand literal value.
-    pub literal: Literal,
+    /// Right-hand comparison operand.
+    pub rhs: PredicateRhs,
 }
 
 /// Ordering key in the shared graph IR.

@@ -79,7 +79,7 @@ pub use virtual_graph::{
     ComparisonOperator, Declaration as GraphDeclaration, Diagnostic as GraphDiagnostic,
     Direction as GraphDirection, GraphExecution, GraphPlan, GraphQueryPlan,
     Literal as GraphLiteral, NodePattern, OrderDirection as GraphOrderDirection,
-    OrderKey as GraphOrderKey, Projection as GraphProjection,
+    OrderKey as GraphOrderKey, PredicateRhs as GraphPredicateRhs, Projection as GraphProjection,
     PropertyPredicate as GraphPropertyPredicate, PropertyRef as GraphPropertyRef,
     RelationshipPattern, SqlTranslation as GraphSqlTranslation, compile_cypher,
 };

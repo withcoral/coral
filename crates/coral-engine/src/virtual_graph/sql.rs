@@ -4,7 +4,8 @@ use std::fmt::Write as _;
 use super::declaration::{Declaration, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    ComparisonOperator, Direction, GraphPlan, Literal, OrderDirection, Projection, PropertyRef,
+    ComparisonOperator, Direction, GraphPlan, Literal, OrderDirection, PredicateRhs, Projection,
+    PropertyRef,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -333,23 +334,34 @@ impl<'a> Lowerer<'a> {
         predicate: &super::ir::PropertyPredicate,
     ) -> Result<String, CoreError> {
         let property = self.render_property_ref(&predicate.property)?;
-        match (&predicate.operator, &predicate.literal) {
-            (ComparisonOperator::Equal, Literal::Null) => Ok(format!("{property} IS NULL")),
-            (ComparisonOperator::NotEqual, Literal::Null) => Ok(format!("{property} IS NOT NULL")),
+        match (&predicate.operator, &predicate.rhs) {
+            (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
+                Ok(format!("{property} IS NULL"))
+            }
+            (ComparisonOperator::NotEqual, PredicateRhs::Literal(Literal::Null)) => {
+                Ok(format!("{property} IS NOT NULL"))
+            }
             (
                 ComparisonOperator::GreaterThan
                 | ComparisonOperator::GreaterThanOrEqual
                 | ComparisonOperator::LessThan
                 | ComparisonOperator::LessThanOrEqual,
-                Literal::Null,
+                PredicateRhs::Literal(Literal::Null),
             ) => Err(CoreError::internal(
                 "validated graph predicate contained an invalid null comparison",
             )),
             _ => Ok(format!(
                 "{property} {} {}",
                 render_operator(predicate.operator),
-                render_literal(&predicate.literal)
+                self.render_predicate_rhs(&predicate.rhs)?
             )),
+        }
+    }
+
+    fn render_predicate_rhs(&self, rhs: &PredicateRhs) -> Result<String, CoreError> {
+        match rhs {
+            PredicateRhs::Literal(literal) => Ok(render_literal(literal)),
+            PredicateRhs::Property(property) => self.render_property_ref(property),
         }
     }
 
@@ -433,7 +445,7 @@ mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
         ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection, OrderKey,
-        Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+        PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
     };
 
     const GRAPH: &str = r"
@@ -781,7 +793,7 @@ relationships: []
                     property: "display".to_string(),
                 },
                 operator: ComparisonOperator::Equal,
-                literal: Literal::String("Ada's laptop".to_string()),
+                rhs: PredicateRhs::Literal(Literal::String("Ada's laptop".to_string())),
             }],
             order_by: Vec::new(),
             limit: None,
@@ -822,7 +834,7 @@ relationships: []
                         property: "tier".to_string(),
                     },
                     operator: ComparisonOperator::Equal,
-                    literal: Literal::Null,
+                    rhs: PredicateRhs::Literal(Literal::Null),
                 },
                 PropertyPredicate {
                     property: PropertyRef {
@@ -830,7 +842,7 @@ relationships: []
                         property: "name".to_string(),
                     },
                     operator: ComparisonOperator::NotEqual,
-                    literal: Literal::Null,
+                    rhs: PredicateRhs::Literal(Literal::Null),
                 },
             ],
             order_by: Vec::new(),
@@ -845,6 +857,35 @@ relationships: []
             translation.sql(),
             "SELECT \"n0\".\"service_name\" AS \"service\" FROM \"ops\".\"services\" AS \"n0\" \
              WHERE \"n0\".\"tier\" IS NULL AND \"n0\".\"service_name\" IS NOT NULL"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_property_rhs_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates = vec![PropertyPredicate {
+            property: PropertyRef {
+                variable: "person".to_string(),
+                property: "team".to_string(),
+            },
+            operator: ComparisonOperator::Equal,
+            rhs: PredicateRhs::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "tier".to_string(),
+            }),
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("property comparison should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE \"n0\".\"team\" = \"n1\".\"tier\""),
+            "{}",
+            translation.sql()
         );
     }
 
@@ -893,7 +934,7 @@ relationships: []
             .get_mut(0)
             .expect("ownership fixture should include a predicate");
         predicate.operator = ComparisonOperator::GreaterThan;
-        predicate.literal = Literal::Null;
+        predicate.rhs = PredicateRhs::Literal(Literal::Null);
 
         let error = graph
             .lower_graph_plan(&plan)
@@ -966,7 +1007,7 @@ relationships: []
                     property: "tier".to_string(),
                 },
                 operator: ComparisonOperator::Equal,
-                literal: Literal::String("prod".to_string()),
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
             }],
             order_by: vec![OrderKey {
                 property: PropertyRef {

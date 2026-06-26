@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::declaration::{Declaration, Node, Relationship};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    ComparisonOperator, GraphPlan, Literal, Projection, PropertyPredicate, PropertyRef,
-    RelationshipPattern,
+    ComparisonOperator, GraphPlan, Literal, PredicateRhs, Projection, PropertyPredicate,
+    PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -317,7 +317,22 @@ impl<'a> GraphPlanValidator<'a> {
         predicate: &PropertyPredicate,
     ) -> Result<(), CoreError> {
         self.validate_property_ref(&predicate.property, format!("predicates[{index}].property"))?;
-        match (&predicate.operator, &predicate.literal) {
+        match &predicate.rhs {
+            PredicateRhs::Literal(literal) => {
+                Self::validate_literal_predicate(index, predicate.operator, literal)
+            }
+            PredicateRhs::Property(property) => {
+                self.validate_property_ref(property, format!("predicates[{index}].rhs"))
+            }
+        }
+    }
+
+    fn validate_literal_predicate(
+        index: usize,
+        operator: ComparisonOperator,
+        literal: &Literal,
+    ) -> Result<(), CoreError> {
+        match (operator, literal) {
             (
                 ComparisonOperator::GreaterThan
                 | ComparisonOperator::GreaterThanOrEqual
@@ -461,8 +476,8 @@ fn validate_variable(path: impl Into<String>, variable: &str) -> Result<(), Core
 mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
-        Direction, NodePattern, OrderDirection, OrderKey, Projection, PropertyRef,
-        RelationshipPattern,
+        Direction, NodePattern, OrderDirection, OrderKey, PredicateRhs, Projection,
+        PropertyPredicate, PropertyRef, RelationshipPattern,
     };
 
     const GRAPH: &str = r"
@@ -524,6 +539,29 @@ relationships:
         let error = graph
             .validate_graph_plan(&plan)
             .expect_err("unknown property should fail validation");
+
+        assert!(error.to_string().contains("UNKNOWN_PROPERTY"), "{error:?}");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_unknown_rhs_properties_before_lowering() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicates = vec![PropertyPredicate {
+            property: PropertyRef {
+                variable: "person".to_string(),
+                property: "name".to_string(),
+            },
+            operator: ComparisonOperator::Equal,
+            rhs: PredicateRhs::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "missing".to_string(),
+            }),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("unknown RHS property should fail validation");
 
         assert!(error.to_string().contains("UNKNOWN_PROPERTY"), "{error:?}");
     }
