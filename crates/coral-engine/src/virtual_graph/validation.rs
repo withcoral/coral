@@ -377,19 +377,34 @@ impl<'a> GraphPlanValidator<'a> {
         let mut joined_nodes = BTreeSet::new();
         joined_nodes.insert(first_node.variable.as_str());
 
-        for (index, pattern) in self.plan.relationships.iter().enumerate() {
-            let left_joined = joined_nodes.contains(pattern.left.as_str());
-            let right_joined = joined_nodes.contains(pattern.right.as_str());
-            if !left_joined && !right_joined {
+        let mut remaining_relationships =
+            (0..self.plan.relationships.len()).collect::<BTreeSet<_>>();
+        while !remaining_relationships.is_empty() {
+            let mut progressed = false;
+            for index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
+                let pattern = self.plan.relationships.get(index).ok_or_else(|| {
+                    CoreError::internal("validated relationship index was out of bounds")
+                })?;
+                let left_joined = joined_nodes.contains(pattern.left.as_str());
+                let right_joined = joined_nodes.contains(pattern.right.as_str());
+                if left_joined || right_joined {
+                    joined_nodes.insert(pattern.left.as_str());
+                    joined_nodes.insert(pattern.right.as_str());
+                    remaining_relationships.remove(&index);
+                    progressed = true;
+                }
+            }
+            if !progressed {
+                let index = *remaining_relationships
+                    .first()
+                    .ok_or_else(|| CoreError::internal("remaining relationship set was empty"))?;
                 return Err(Diagnostic::new(
                     "DISCONNECTED_PATTERN",
                     format!("relationships[{index}]"),
-                    "relationship does not connect to an already joined node",
+                    "relationship is not connected to the first node pattern",
                 )
                 .into_core_error());
             }
-            joined_nodes.insert(pattern.left.as_str());
-            joined_nodes.insert(pattern.right.as_str());
         }
 
         for node in &self.plan.nodes {
@@ -511,6 +526,74 @@ relationships:
             .expect_err("unknown property should fail validation");
 
         assert!(error.to_string().contains("UNKNOWN_PROPERTY"), "{error:?}");
+    }
+
+    #[test]
+    fn validate_graph_plan_accepts_out_of_order_connected_relationships() {
+        let graph = Declaration::from_yaml(
+            r"
+version: 1
+name: dependencies
+nodes:
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+    properties:
+      name: service_name
+relationships:
+  - type: DEPENDS_ON
+    table: { schema: ops, name: service_dependencies }
+    from: { label: Service, key: from_service_id }
+    to: { label: Service, key: to_service_id }
+",
+        )
+        .expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "source".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "middle".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "target".to_string(),
+                    label: "Service".to_string(),
+                },
+            ],
+            relationships: vec![
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "middle".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "target".to_string(),
+                },
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "source".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "middle".to_string(),
+                },
+            ],
+            projections: vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "target".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("target".to_string()),
+            }],
+            predicates: Vec::new(),
+            order_by: Vec::new(),
+            limit: None,
+        };
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("connected relationships should validate independent of order");
     }
 
     #[test]

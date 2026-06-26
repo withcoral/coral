@@ -677,6 +677,76 @@ relationships:
     }
 
     #[test]
+    fn lower_graph_plan_reorders_connected_relationships() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "source".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "middle".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "target".to_string(),
+                    label: "Service".to_string(),
+                },
+            ],
+            relationships: vec![
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "middle".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "target".to_string(),
+                },
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "source".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "middle".to_string(),
+                },
+            ],
+            projections: vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "source".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("source".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("target".to_string()),
+                },
+            ],
+            predicates: Vec::new(),
+            order_by: Vec::new(),
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("connected out-of-order relationship plan should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n0\".\"service_name\" AS \"source\", \"n2\".\"service_name\" AS \"target\" \
+             FROM \"ops\".\"services\" AS \"n0\" \
+             JOIN \"ops\".\"service_dependencies\" AS \"r1\" ON \"r1\".\"from_service_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"services\" AS \"n1\" ON \"r1\".\"to_service_id\" = \"n1\".\"id\" \
+             JOIN \"ops\".\"service_dependencies\" AS \"r0\" ON \"r0\".\"from_service_id\" = \"n1\".\"id\" \
+             JOIN \"ops\".\"services\" AS \"n2\" ON \"r0\".\"to_service_id\" = \"n2\".\"id\""
+        );
+    }
+
+    #[test]
     fn lower_graph_plan_quotes_identifiers_and_literals() {
         let graph = Declaration::from_yaml(
             r#"

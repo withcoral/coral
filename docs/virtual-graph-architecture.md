@@ -19,7 +19,8 @@ string rendering.
   endpoint labels, property references, aggregate restrictions, and connected
   join shape before any SQL is rendered.
 - **SQL lowering**: the only layer that renders DataFusion SQL. It owns
-  identifier quoting, join shape, predicate placement, and translated SQL.
+  identifier quoting, deterministic join planning for connected patterns,
+  predicate placement, and translated SQL.
 - **Execution integration**: graph declarations are validated against the
   runtime catalog before translation, and translated SQL executes through the
   existing `CoralQuery::execute_sql` and `CoralQuery::explain_sql` paths.
