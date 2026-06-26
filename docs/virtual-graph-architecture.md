@@ -41,7 +41,8 @@ The foundation slice establishes:
   columns, and required-filter constraints.
 - a typed shared graph query plan.
 - SQL lowering for node scans, directed relationship traversals, property
-  projections, property predicates, ordering, `COUNT(*)`, and `LIMIT`.
+  projections, connected multi-hop paths, property predicates, ordering,
+  `COUNT(*)`, and `LIMIT`.
 - `CoralQuery::execute_graph_plan` and `CoralQuery::explain_graph_plan`
   wrappers that validate declarations against the built runtime catalog,
   preserve translated SQL and diagnostics, and reuse the existing SQL execution
@@ -65,6 +66,7 @@ The supported foundation subset is intentionally narrow:
 - exactly one read-only single-part query;
 - one non-optional `MATCH` path with named, single-label nodes;
 - directed, typed relationships;
+- connected multi-hop relationship chains;
 - `WHERE` comparisons joined by `AND`;
 - inline node property maps normalized to equality predicates;
 - inline relationship property maps normalized to equality predicates, with

@@ -19,6 +19,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | --- | --- | --- |
 | Node scans | Supported foundation | One table per label |
 | Directed relationship traversals | Supported foundation | Forward and reverse traversal lower to joins |
+| Connected multi-hop paths | Supported foundation | Linear and closed connected patterns lower to deterministic joins |
 | Property projections | Supported foundation | Node keys and exposed properties |
 | Property predicates | Supported foundation | Conjunctive comparisons |
 | `COUNT(*)` | Supported foundation | Standalone aggregate projection only |
@@ -38,6 +39,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Single `MATCH ... RETURN` | Supported foundation | One non-optional MATCH clause with one connected path pattern |
 | Labeled node patterns | Supported foundation | Requires named node variables and exactly one static label |
 | Typed directed relationships | Supported foundation | Requires one static relationship type and one arrowhead |
+| Multi-hop relationship chains | Supported foundation | Forward, reverse, and mixed chains compile through the shared graph IR |
 | `WHERE` property comparisons | Supported foundation | String, integer, boolean, and null literals; comparisons joined by `AND` |
 | `WHERE ... IS NULL` / `IS NOT NULL` | Supported foundation | Lowers to SQL `IS NULL` / `IS NOT NULL` |
 | Inline node property maps | Supported foundation | Normalized to equality predicates, e.g. `(n:Service {tier: 'prod'})` |

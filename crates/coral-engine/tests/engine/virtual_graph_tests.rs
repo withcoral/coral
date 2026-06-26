@@ -147,6 +147,81 @@ async fn cypher_inline_relationship_property_maps_execute_as_predicates() {
 }
 
 #[tokio::test]
+async fn cypher_multihop_paths_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person)-[:OWNS]->(service:Service)-[:DEPENDS_ON {criticality: 'runtime'}]->(dependency:Service) \
+         RETURN owner.name AS owner, service.name AS service, dependency.name AS dependency \
+         ORDER BY owner, service, dependency",
+    )
+    .await
+    .expect("multi-hop Cypher query should execute");
+    let graph_rows = execution_to_rows(execution.execution());
+
+    let sql_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT people.full_name AS owner, service.service_name AS service, dependency.service_name AS dependency \
+             FROM ops.people AS people \
+             JOIN ops.ownerships AS ownerships ON ownerships.person_id = people.id \
+             JOIN ops.services AS service ON ownerships.service_id = service.id \
+             JOIN ops.service_dependencies AS dependencies ON dependencies.from_service_id = service.id \
+             JOIN ops.services AS dependency ON dependencies.to_service_id = dependency.id \
+             WHERE dependencies.criticality = 'runtime' \
+             ORDER BY people.full_name, service.service_name, dependency.service_name",
+        )
+        .await
+        .expect("equivalent SQL should execute"),
+    );
+
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![json!({
+            "owner": "Ada Lovelace",
+            "service": "billing-api",
+            "dependency": "deployments",
+        })]
+    );
+}
+
+#[tokio::test]
+async fn cypher_reverse_multihop_paths_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (dependency:Service)<-[:DEPENDS_ON]-(service:Service)<-[:OWNS]-(owner:Person) \
+         WHERE dependency.name = 'deployments' \
+         RETURN owner.name AS owner, service.name AS service, dependency.name AS dependency",
+    )
+    .await
+    .expect("reverse multi-hop Cypher query should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "owner": "Ada Lovelace",
+            "service": "billing-api",
+            "dependency": "deployments",
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_is_null_predicates_execute_with_sql_null_semantics() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -474,6 +549,15 @@ fn write_ops_fixture(dir: &Path) {
             json!({"person_id": 3, "service_id": 30, "since": "2024-03-15", "source": "catalog"}),
         ],
     );
+    write_jsonl_file(
+        dir,
+        "service_dependencies.jsonl",
+        &[
+            json!({"from_service_id": 10, "to_service_id": 20, "criticality": "runtime", "source": "catalog"}),
+            json!({"from_service_id": 20, "to_service_id": 30, "criticality": "dev", "source": "deploy"}),
+            json!({"from_service_id": 10, "to_service_id": 30, "criticality": "optional", "source": "catalog"}),
+        ],
+    );
 }
 
 fn ops_manifest(dir: &Path) -> Value {
@@ -516,6 +600,18 @@ fn ops_manifest(dir: &Path) -> Value {
                     { "name": "since", "type": "Utf8" },
                     { "name": "source", "type": "Utf8" }
                 ]
+            },
+            {
+                "name": "service_dependencies",
+                "description": "Synthetic service dependency edges",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "service_dependencies.jsonl" },
+                "columns": [
+                    { "name": "from_service_id", "type": "Int64" },
+                    { "name": "to_service_id", "type": "Int64" },
+                    { "name": "criticality", "type": "Utf8" },
+                    { "name": "source", "type": "Utf8" }
+                ]
             }
         ]
     })
@@ -545,5 +641,12 @@ relationships:
     to: { label: Service, key: service_id }
     properties:
       since: since
+      source: source
+  - type: DEPENDS_ON
+    table: { schema: ops, name: service_dependencies }
+    from: { label: Service, key: from_service_id }
+    to: { label: Service, key: to_service_id }
+    properties:
+      criticality: criticality
       source: source
 ";
