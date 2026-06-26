@@ -34,6 +34,9 @@ pub(crate) mod service;
 use crate::bootstrap::AppError;
 pub use config::TelemetryConfig;
 use config::{DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
+pub(crate) use local_store::{
+    TraceQueryHistoryEntry, TraceQueryTableFunctionUsage, TraceQueryTableUsage, TraceStoreError,
+};
 
 static INIT: OnceLock<Result<TracingInitState, String>> = OnceLock::new();
 static PROVIDER: Mutex<Option<SdkTracerProvider>> = Mutex::new(None);
