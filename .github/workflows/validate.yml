@@ -188,7 +188,7 @@ jobs:
           )
 
           for package in "${packages[@]}"; do
-            cargo nextest run -p "$package" --all-targets --all-features --locked --no-fail-fast
+            cargo nextest run -p "$package" --all-targets --all-features --locked --no-fail-fast --no-tests pass
             cargo clean -p "$package"
           done
 
