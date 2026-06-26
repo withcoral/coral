@@ -17,8 +17,9 @@ string rendering.
   ordering, aggregation, and limits.
 - **SQL lowering**: the only layer that renders DataFusion SQL. It owns
   identifier quoting, join shape, predicate placement, and translated SQL.
-- **Execution integration**: translated SQL executes through the existing
-  `CoralQuery::execute_sql` and `CoralQuery::explain_sql` paths.
+- **Execution integration**: graph declarations are validated against the
+  runtime catalog before translation, and translated SQL executes through the
+  existing `CoralQuery::execute_sql` and `CoralQuery::explain_sql` paths.
 
 ## Non-Negotiables
 
@@ -42,8 +43,9 @@ The foundation slice establishes:
 - SQL lowering for node scans, directed relationship traversals, property
   projections, property predicates, ordering, `COUNT(*)`, and `LIMIT`.
 - `CoralQuery::execute_graph_plan` and `CoralQuery::explain_graph_plan`
-  wrappers that preserve translated SQL and diagnostics while reusing the
-  existing SQL execution path.
+  wrappers that validate declarations against the built runtime catalog,
+  preserve translated SQL and diagnostics, and reuse the existing SQL execution
+  path.
 - a strict read-only Cypher frontend based on `decypher` that accepts the first
   supported `MATCH ... RETURN` subset, rejects writes and unsupported GQL
   features structurally, and feeds the same shared graph query plan.

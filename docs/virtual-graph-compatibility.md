@@ -10,7 +10,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | v1 YAML declarations | Supported foundation | Nodes, relationships, table refs, keys, properties |
 | Duplicate label/type rejection | Supported foundation | Prevents ambiguous lowering |
 | Endpoint label validation | Supported foundation | Relationship endpoints must reference declared node labels |
-| Catalog validation | Supported foundation | Checks mapped tables, columns, and required-filter constraints |
+| Catalog validation | Supported foundation | Checks mapped tables, columns, and required-filter constraints during explicit validation and query execution/explain |
 | Multiple mappings per relationship type | Deferred | Needs disambiguation rules before support |
 
 ## Shared Graph IR

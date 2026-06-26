@@ -227,6 +227,88 @@ async fn execute_cypher_rejects_writes_before_runtime_execution() {
 }
 
 #[tokio::test]
+async fn execute_graph_plan_validates_declaration_against_runtime_catalog() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(
+        r"
+version: 1
+name: missing_table
+nodes:
+  - label: Service
+    table: { schema: ops, name: missing_services }
+    key: id
+    properties:
+      name: service_name
+relationships: []
+",
+    )
+    .expect("graph should parse");
+    let plan = GraphPlan {
+        nodes: vec![NodePattern {
+            variable: "service".to_string(),
+            label: "Service".to_string(),
+        }],
+        relationships: Vec::new(),
+        projections: vec![GraphProjection::Property {
+            property: GraphPropertyRef {
+                variable: "service".to_string(),
+                property: "name".to_string(),
+            },
+            alias: Some("service".to_string()),
+        }],
+        predicates: Vec::new(),
+        order_by: Vec::new(),
+        limit: None,
+    };
+
+    let error = CoralQuery::execute_graph_plan(&[source], test_runtime(), &graph, &plan)
+        .await
+        .expect_err("missing mapped table should fail before SQL planning");
+
+    assert!(
+        error.to_string().contains("MAPPED_TABLE_NOT_FOUND"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn explain_cypher_validates_declaration_columns_against_runtime_catalog() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(
+        r"
+version: 1
+name: missing_column
+nodes:
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+    properties:
+      name: missing_service_name
+relationships: []
+",
+    )
+    .expect("graph should parse");
+
+    let error = CoralQuery::explain_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) RETURN service.name AS service",
+    )
+    .await
+    .expect_err("missing mapped column should fail before SQL planning");
+
+    assert!(
+        error.to_string().contains("MAPPED_COLUMN_NOT_FOUND"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
 async fn virtual_graph_declaration_validates_against_synthetic_catalog() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
