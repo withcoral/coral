@@ -682,6 +682,13 @@ fn aggregate_function_name(function: AggregateFunction) -> &'static str {
     }
 }
 
+fn is_exists_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("exists")
+    )
+}
+
 fn qualified_function_name(function: &FunctionInvocation) -> String {
     function
         .name
@@ -747,6 +754,9 @@ fn compile_predicate_expression(
             },
             rhs: PredicateRhs::Literal(Literal::Null),
         })),
+        Expression::FunctionCall(function) if is_exists_function(function) => Ok(
+            PredicateExpression::Comparison(compile_exists_predicate(function, path)?),
+        ),
         Expression::PropertyLookup { .. } => {
             Ok(PredicateExpression::Comparison(PropertyPredicate {
                 property: compile_property_ref(expression, path)?,
@@ -759,6 +769,24 @@ fn compile_predicate_expression(
             "WHERE only supports property comparisons combined with AND, OR, and NOT",
         )),
     }
+}
+
+fn compile_exists_predicate(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+) -> Result<PropertyPredicate, CoreError> {
+    let path = path.into();
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "exists() supports exactly one variable.property argument",
+        ));
+    };
+    Ok(PropertyPredicate {
+        property: compile_property_ref(argument, format!("{path}.arguments[0]"))?,
+        operator: ComparisonOperator::NotEqual,
+        rhs: PredicateRhs::Literal(Literal::Null),
+    })
 }
 
 fn append_predicate_expression(expression: PredicateExpression, plan: &mut GraphPlan) {
@@ -1832,6 +1860,42 @@ mod tests {
                 rhs: PredicateRhs::Literal(Literal::Null),
             }]
         );
+    }
+
+    #[test]
+    fn compiles_exists_property_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) WHERE exists(service.tier) RETURN service.name",
+        )
+        .expect("exists property query should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::NotEqual,
+                rhs: PredicateRhs::Literal(Literal::Null),
+            }]
+        );
+
+        let negated = compile_cypher(
+            "MATCH (service:Service) WHERE NOT exists(service.tier) RETURN service.name",
+        )
+        .expect("negated exists property query should compile");
+        assert!(matches!(
+            negated.predicate,
+            Some(PredicateExpression::Not { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_exists_without_single_property_argument() {
+        assert_unsupported("MATCH (service:Service) WHERE exists() RETURN service.name");
+        assert_unsupported("MATCH (service:Service) WHERE exists(1) RETURN service.name");
+        assert_unsupported("MATCH (service:Service) WHERE exists(service) RETURN service.name");
     }
 
     #[test]
