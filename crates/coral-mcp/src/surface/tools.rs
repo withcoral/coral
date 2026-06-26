@@ -10,6 +10,7 @@ use coral_api::{CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_INTENT_MAX_CHARS};
 
 use super::{
     Pagination, connected_source_names_text, parse_pagination, parse_pagination_with_limits,
+    sql_input_schema, sql_output_schema,
 };
 
 const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by open_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
@@ -85,27 +86,15 @@ pub(crate) struct OpenEpisodeArguments {
 }
 
 pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
-    Tool::new(
-        "sql",
-        sql_tool_description(context),
-        json_object_schema(&json!({
-            "type": "object",
-            "required": ["sql"],
-            "properties": {
-                "sql": {
-                    "type": "string",
-                    "description": "One read-only SQL statement to execute against the Coral database and its configured connected source schemas."
-                }
-            }
-        })),
-    )
-    .with_annotations(
-        ToolAnnotations::with_title("Run SQL")
-            .read_only(true)
-            .destructive(false)
-            .idempotent(true)
-            .open_world(true),
-    )
+    Tool::new("sql", sql_tool_description(context), sql_input_schema())
+        .with_raw_output_schema(sql_output_schema())
+        .with_annotations(
+            ToolAnnotations::with_title("Run SQL")
+                .read_only(true)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(true),
+        )
 }
 
 pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
@@ -496,12 +485,12 @@ pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorDat
 fn sql_tool_description(context: &ToolDescriptionContext) -> String {
     if context.visible_table_count == 0 {
         format!(
-            "Execute read-only SQL against the Coral database. {} No user tables are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first.",
+            "Execute 1 to 10 independent read-only SQL queries against the Coral database using queries[]. Each entry must be independent and must not depend on another entry's rows, errors, or side effects. {} No user tables are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first.",
             context.connected_sources_sentence()
         )
     } else {
         format!(
-            "Execute read-only SQL against the Coral database across connected Coral sources/schemas. {} {} table(s) are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates to combine tables in one statement.",
+            "Execute 1 to 10 independent read-only SQL queries against the Coral database across connected Coral sources/schemas using queries[]. Each entry must be independent and must not depend on another entry's rows, errors, or side effects. {} {} table(s) are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates inside one query when work is dependent.",
             context.connected_sources_sentence(),
             context.visible_table_count
         )
@@ -1045,12 +1034,20 @@ mod tests {
             .input_schema
             .get("properties")
             .and_then(Value::as_object)
-            .and_then(|properties| properties.get("sql"))
+            .and_then(|properties| {
+                assert!(!properties.contains_key("sql"));
+                properties.get("queries")
+            })
             .and_then(Value::as_object)
-            .and_then(|sql| sql.get("description"))
+            .and_then(|queries| {
+                assert_eq!(queries.get("minItems"), Some(&json!(1)));
+                assert_eq!(queries.get("maxItems"), Some(&json!(10)));
+                queries.get("description")
+            })
             .and_then(Value::as_str)
-            .expect("sql input description");
-        assert!(sql_input_description.contains("connected source schemas"));
+            .expect("queries input description");
+        assert!(sql_input_description.contains("independent"));
+        assert!(sql_tool.output_schema.is_some());
 
         let search_description = search_catalog_tool(&context)
             .description

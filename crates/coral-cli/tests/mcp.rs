@@ -189,6 +189,31 @@ fn assert_raw_tools_list_contract(response: &Value) {
             )
         });
     }
+    let sql_tool = tools
+        .iter()
+        .find(|tool| tool.get("name").and_then(Value::as_str) == Some("sql"))
+        .expect("sql tool should be advertised");
+    let sql_properties = sql_tool
+        .pointer("/inputSchema/properties")
+        .and_then(Value::as_object)
+        .expect("sql input properties");
+    assert!(!sql_properties.contains_key("sql"));
+    assert_eq!(
+        sql_tool.pointer("/inputSchema/required/0"),
+        Some(&json!("queries"))
+    );
+    assert_eq!(
+        sql_tool.pointer("/inputSchema/properties/queries/minItems"),
+        Some(&json!(1))
+    );
+    assert_eq!(
+        sql_tool.pointer("/inputSchema/properties/queries/maxItems"),
+        Some(&json!(10))
+    );
+    assert_eq!(
+        sql_tool.pointer("/outputSchema/type"),
+        Some(&json!("object"))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -891,11 +916,15 @@ async fn assert_sql_tool(
     let sql = structured_tool_content(
         client,
         CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-            "sql": "SELECT text FROM local_messages.messages ORDER BY text"
+            "queries": ["SELECT text FROM local_messages.messages ORDER BY text"]
         }))),
     )
     .await?;
-    assert_eq!(sql["rows"][0]["text"], "hello");
+    assert_eq!(sql["total_count"], 1);
+    assert_eq!(sql["success_count"], 1);
+    assert_eq!(sql["error_count"], 0);
+    assert_eq!(sql["results"][0]["status"], "success");
+    assert_eq!(sql["results"][0]["rows"][0]["text"], "hello");
     Ok(())
 }
 
@@ -907,7 +936,7 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
     let invalid_sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "DELETE FROM local_messages.messages"
+                "queries": ["DELETE FROM local_messages.messages"]
             }))),
         )
         .await?;
@@ -924,6 +953,30 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
     assert_eq!(
         catalog.structured_content.expect("structured content")["items"][0]["name"],
         "local_messages.events"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_sql_rejects_malformed_queries_before_backend_dispatch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client(&server).await?;
+
+    client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": []
+            }))),
+        )
+        .await
+        .expect_err("empty queries should fail as invalid params");
+    assert!(
+        server.execute_sql_requests().is_empty(),
+        "malformed queries must not reach backend"
     );
 
     client.cancel().await?;

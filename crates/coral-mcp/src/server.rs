@@ -30,14 +30,14 @@ use tonic::{
 use crate::{
     McpOptions,
     surface::{
-        CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
-        describe_table_tool, describe_table_value, feedback_tool, guide_resource,
-        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_tool,
-        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
-        open_episode_arguments, open_episode_tool, optional_episode_id_argument,
-        required_string_argument, search_catalog_arguments, search_catalog_tool,
-        search_catalog_value, sql_tool, status_to_error_data, tables_resource,
-        tables_resource_content, tool_error_from_status, tool_error_result,
+        CatalogToolKind, SqlBatchValue, SqlQueryResultValue, ToolDescriptionContext,
+        build_tool_result, describe_table_arguments, describe_table_tool, describe_table_value,
+        feedback_tool, guide_resource, guide_resource_content, initial_instructions,
+        list_catalog_arguments, list_catalog_tool, list_catalog_value, list_columns_arguments,
+        list_columns_tool, list_columns_value, open_episode_arguments, open_episode_tool,
+        optional_episode_id_argument, required_string_argument, search_catalog_arguments,
+        search_catalog_tool, search_catalog_value, sql_arguments, sql_tool, status_to_error_data,
+        tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
         with_episode_id_argument,
     },
     telemetry,
@@ -55,11 +55,6 @@ enum ToolCallOutcome {
         operation: &'static str,
         status: tonic::Status,
     },
-}
-
-#[derive(Serialize)]
-struct SqlRowsValue {
-    rows: Vec<Value>,
 }
 
 #[derive(Serialize)]
@@ -319,13 +314,19 @@ impl CoralMcpServer {
             .map_err(|error| tonic::Status::internal(error.to_string()))
     }
 
-    async fn execute_sql_value(
-        &self,
-        request: Request<ExecuteSqlRequest>,
-    ) -> Result<Value, tonic::Status> {
-        serialize_tool_value(SqlRowsValue {
-            rows: self.query_rows(request).await?,
-        })
+    async fn execute_sql_batch_value(&self, queries: Vec<String>) -> Result<Value, tonic::Status> {
+        let mut results = Vec::with_capacity(queries.len());
+        for (index, sql) in queries.into_iter().enumerate() {
+            let request = Request::new(ExecuteSqlRequest {
+                workspace: Some(default_workspace()),
+                sql,
+            });
+            results.push(SqlQueryResultValue::Success {
+                index,
+                rows: self.query_rows(request).await?,
+            });
+        }
+        serialize_tool_value(SqlBatchValue::from_successes(results))
     }
 
     async fn open_episode(
@@ -461,14 +462,10 @@ impl CoralMcpServer {
     ) -> Result<ToolCallOutcome, ErrorData> {
         match request.name.as_ref() {
             "sql" => {
-                let sql = required_string_argument(request.arguments.as_ref(), "sql")?;
-                let request = Request::new(ExecuteSqlRequest {
-                    workspace: Some(default_workspace()),
-                    sql,
-                });
+                let arguments = sql_arguments(request.arguments.as_ref())?;
                 Ok(ToolCallOutcome::from_value_result(
                     "Query",
-                    self.execute_sql_value(request).await,
+                    self.execute_sql_batch_value(arguments.queries).await,
                 ))
             }
             "list_catalog" => {

@@ -427,7 +427,7 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
     let sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "SELECT 1 AS ok",
+                "queries": ["SELECT 1 AS ok"],
                 "episode_id": child_episode_id
             }))),
         )
@@ -435,14 +435,14 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
         .expect("tagged sql");
     assert_eq!(sql.is_error, Some(false));
     assert_eq!(
-        sql.structured_content.expect("sql structured")["rows"][0]["ok"],
+        sql.structured_content.expect("sql structured")["results"][0]["rows"][0]["ok"],
         "1"
     );
 
     let invalid_episode_id = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "SELECT 1",
+                "queries": ["SELECT 1"],
                 "episode_id": "has space"
             }))),
         )
@@ -562,12 +562,12 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
     let sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "SELECT table_name FROM coral.tables WHERE schema_name = 'coral' ORDER BY table_name"
+                "queries": ["SELECT table_name FROM coral.tables WHERE schema_name = 'coral' ORDER BY table_name"]
             }))),
         )
         .await
         .expect("sql system catalog");
-    let sql_rows = sql.structured_content.as_ref().expect("structured sql")["rows"]
+    let sql_rows = sql.structured_content.as_ref().expect("structured sql")["results"][0]["rows"]
         .as_array()
         .expect("sql rows");
     assert_eq!(
@@ -1474,13 +1474,13 @@ async fn mcp_tool_error_does_not_end_session() {
     let sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "SELECT text FROM local_messages.messages ORDER BY text"
+                "queries": ["SELECT text FROM local_messages.messages ORDER BY text"]
             }))),
         )
         .await
         .expect("sql");
     assert_eq!(
-        sql.structured_content.expect("structured content")["rows"][0]["text"],
+        sql.structured_content.expect("structured content")["results"][0]["rows"][0]["text"],
         "hello"
     );
     assert_eq!(sql.is_error, Some(false));
@@ -1488,7 +1488,7 @@ async fn mcp_tool_error_does_not_end_session() {
     let invalid_sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "DELETE FROM local_messages.messages"
+                "queries": ["DELETE FROM local_messages.messages"]
             }))),
         )
         .await
@@ -1542,14 +1542,14 @@ async fn mcp_sql_returns_large_int64_as_string() {
     let sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "SELECT CAST(-8504475857937456387 AS BIGINT) AS user_id"
+                "queries": ["SELECT CAST(-8504475857937456387 AS BIGINT) AS user_id"]
             }))),
         )
         .await
         .expect("sql");
     assert_eq!(sql.is_error, Some(false));
 
-    let rows = &sql.structured_content.expect("structured content")["rows"];
+    let rows = &sql.structured_content.expect("structured content")["results"][0]["rows"];
     assert_eq!(
         rows[0]["user_id"],
         Value::String("-8504475857937456387".to_string()),
