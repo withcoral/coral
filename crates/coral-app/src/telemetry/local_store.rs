@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use opentelemetry::trace::{SpanId, SpanKind, Status};
@@ -26,6 +26,10 @@ const JSONL_MAX_FILE_ROWS: usize = 50_000;
 const JSONL_MAX_FILE_AGE: Duration = Duration::from_hours(24);
 const JSONL_PRUNE_INTERVAL: Duration = Duration::from_hours(1);
 const JSONL_FILE_MTIME_SPAN_END_TOLERANCE: Duration = Duration::from_secs(2);
+type ActiveTraceWriter = Arc<Mutex<RollingJsonlWriter>>;
+type WeakActiveTraceWriter = Weak<Mutex<RollingJsonlWriter>>;
+type ActiveTraceWriterRegistry = Mutex<HashMap<PathBuf, Vec<WeakActiveTraceWriter>>>;
+static ACTIVE_TRACE_WRITERS: OnceLock<ActiveTraceWriterRegistry> = OnceLock::new();
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LocalTraceStoreError {
@@ -78,9 +82,15 @@ pub(crate) struct JsonlSpanExporter {
 }
 
 impl JsonlSpanExporter {
-    pub(crate) fn new(dir: PathBuf, retention: Duration) -> Result<Self, LocalTraceStoreError> {
+    pub(crate) fn new(
+        dir: impl Into<PathBuf>,
+        retention: Duration,
+    ) -> Result<Self, LocalTraceStoreError> {
+        let dir = dir.into();
+        let writer = Arc::new(Mutex::new(RollingJsonlWriter::new(dir.clone(), retention)?));
+        register_active_trace_writer(&dir, &writer);
         Ok(Self {
-            writer: Arc::new(Mutex::new(RollingJsonlWriter::new(dir, retention)?)),
+            writer,
             resource_json: Arc::new(Mutex::new("{}".to_string())),
             shutdown_called: Arc::new(AtomicBool::new(false)),
         })
@@ -379,6 +389,27 @@ pub(crate) enum TraceStoreError {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error("failed to rewrite local trace store file {path}: {source}")]
+    WriteFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to remove local trace store file {path}: {source}")]
+    RemoveFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to restore local trace store file {path} after cleanup failure: {source}")]
+    RestoreFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("local trace store writer registry mutex poisoned")]
+    WriterRegistryPoisoned,
+    #[error("local trace store writer mutex poisoned")]
+    WriterPoisoned,
+    #[error("failed to close active local trace store writer before cleanup: {source}")]
+    CloseActiveWriter { source: LocalTraceStoreError },
     #[error("failed to decode local trace store file {path} line {line}: {source}")]
     DecodeLine {
         path: PathBuf,
@@ -525,6 +556,7 @@ struct TraceListAggregate {
 #[derive(Debug, Deserialize)]
 struct TraceSpanIdentityRecord {
     trace_id: String,
+    span_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -538,8 +570,18 @@ struct TraceQueryHistorySpanRecord {
     attributes_json: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct TraceWorkspaceSpanRecord {
+    trace_id: String,
+    span_id: String,
+    #[serde(default)]
+    parent_span_id: Option<String>,
+    attributes_json: String,
+}
+
+type TraceSpanKey = (String, String);
+
 impl TraceStore {
-    #[cfg(test)]
     pub(crate) fn new(dir: PathBuf) -> Self {
         Self {
             dir,
@@ -571,6 +613,16 @@ impl TraceStore {
     ) -> Result<TraceDetailRecord, TraceStoreError> {
         let traces = self.clone();
         task::spawn_blocking(move || traces.get_trace_sync(&trace_id))
+            .await
+            .map_err(|source| TraceStoreError::Worker { source })?
+    }
+
+    pub(crate) async fn delete_traces_for_workspace(
+        &self,
+        workspace_name: String,
+    ) -> Result<usize, TraceStoreError> {
+        let traces = self.clone();
+        task::spawn_blocking(move || traces.delete_traces_for_workspace_sync(&workspace_name))
             .await
             .map_err(|source| TraceStoreError::Worker { source })?
     }
@@ -699,6 +751,31 @@ impl TraceStore {
         Ok(entries)
     }
 
+    fn delete_traces_for_workspace_sync(
+        &self,
+        workspace_name: &str,
+    ) -> Result<usize, TraceStoreError> {
+        if !self.dir.exists() {
+            return Ok(0);
+        }
+
+        close_active_trace_writers_for_dir(&self.dir)?;
+
+        self.prune_expired()?;
+        let files = self.jsonl_files_by_modified()?;
+        let span_keys = read_workspace_trace_span_keys(&files, workspace_name)?;
+        if span_keys.is_empty() {
+            return Ok(0);
+        }
+        let affected_trace_ids = span_keys
+            .iter()
+            .map(|(trace_id, _span_id)| trace_id.clone())
+            .collect::<HashSet<_>>();
+
+        rewrite_trace_files_excluding_span_keys(&files, &span_keys)?;
+        Ok(affected_trace_ids.len())
+    }
+
     fn prune_expired(&self) -> Result<(), TraceStoreError> {
         if let Some(retention) = self.retention
             && self.dir.exists()
@@ -763,6 +840,46 @@ fn span_jsonl_file(path: &Path) -> bool {
                 name.strip_prefix("spans")
                     .is_some_and(|suffix| suffix.starts_with('-'))
             })
+}
+
+fn active_trace_writers() -> &'static ActiveTraceWriterRegistry {
+    ACTIVE_TRACE_WRITERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_active_trace_writer(dir: &Path, writer: &ActiveTraceWriter) {
+    if let Ok(mut writers) = active_trace_writers().lock() {
+        writers
+            .entry(dir.to_path_buf())
+            .or_default()
+            .push(Arc::downgrade(writer));
+    }
+}
+
+fn active_trace_writers_for_dir(dir: &Path) -> Result<Vec<ActiveTraceWriter>, TraceStoreError> {
+    let mut writers = active_trace_writers()
+        .lock()
+        .map_err(|_poisoned| TraceStoreError::WriterRegistryPoisoned)?;
+    let registered = writers.entry(dir.to_path_buf()).or_default();
+    let mut active = Vec::new();
+    registered.retain(|writer| match writer.upgrade() {
+        Some(writer) => {
+            active.push(writer);
+            true
+        }
+        None => false,
+    });
+    Ok(active)
+}
+
+fn close_active_trace_writers_for_dir(dir: &Path) -> Result<(), TraceStoreError> {
+    for writer in active_trace_writers_for_dir(dir)? {
+        writer
+            .lock()
+            .map_err(|_poisoned| TraceStoreError::WriterPoisoned)?
+            .close_current()
+            .map_err(|source| TraceStoreError::CloseActiveWriter { source })?;
+    }
+    Ok(())
 }
 
 impl TracePrimaryCandidate {
@@ -1153,6 +1270,247 @@ fn read_query_history_spans_file(
     Ok(spans_by_id.into_values().collect())
 }
 
+fn read_workspace_trace_span_keys(
+    files: &[TraceStoreFile],
+    workspace_name: &str,
+) -> Result<HashSet<TraceSpanKey>, TraceStoreError> {
+    let mut spans = Vec::new();
+    for file in files {
+        spans.extend(read_workspace_trace_spans_file(&file.path)?);
+    }
+    Ok(workspace_trace_span_keys(spans, workspace_name))
+}
+
+fn read_workspace_trace_spans_file(
+    path: &Path,
+) -> Result<Vec<TraceWorkspaceSpanRecord>, TraceStoreError> {
+    let file = File::open(path).map_err(|source| TraceStoreError::OpenFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut reader = BufReader::new(file);
+    let mut spans = Vec::new();
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes_read =
+            reader
+                .read_line(&mut line)
+                .map_err(|source| TraceStoreError::ReadFile {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        let complete_line = line.ends_with('\n');
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.trim().is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<TraceWorkspaceSpanRecord>(trimmed) {
+            Ok(record) => spans.push(record),
+            Err(_source) if !complete_line => break,
+            Err(_source) => {}
+        }
+    }
+
+    Ok(spans)
+}
+
+fn workspace_trace_span_keys(
+    spans: Vec<TraceWorkspaceSpanRecord>,
+    workspace_name: &str,
+) -> HashSet<TraceSpanKey> {
+    let mut spans_by_trace: HashMap<String, HashMap<String, TraceWorkspaceSpanRecord>> =
+        HashMap::new();
+    let mut children_by_trace: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
+
+    for span in spans {
+        if let Some(parent_span_id) = span.parent_span_id.as_ref() {
+            children_by_trace
+                .entry(span.trace_id.clone())
+                .or_default()
+                .entry(parent_span_id.clone())
+                .or_default()
+                .push(span.span_id.clone());
+        }
+        spans_by_trace
+            .entry(span.trace_id.clone())
+            .or_default()
+            .insert(span.span_id.clone(), span);
+    }
+
+    let mut span_keys = HashSet::new();
+    for (trace_id, trace_spans) in &spans_by_trace {
+        for span in trace_spans.values() {
+            if attributes_match_workspace(&span.attributes_json, workspace_name) {
+                collect_workspace_span_tree(
+                    trace_id,
+                    &span.span_id,
+                    workspace_name,
+                    &spans_by_trace,
+                    &children_by_trace,
+                    &mut span_keys,
+                );
+            }
+        }
+    }
+    span_keys
+}
+
+fn collect_workspace_span_tree(
+    trace_id: &str,
+    root_span_id: &str,
+    workspace_name: &str,
+    spans_by_trace: &HashMap<String, HashMap<String, TraceWorkspaceSpanRecord>>,
+    children_by_trace: &HashMap<String, HashMap<String, Vec<String>>>,
+    span_keys: &mut HashSet<TraceSpanKey>,
+) {
+    let mut pending = vec![(root_span_id.to_string(), true)];
+    while let Some((span_id, is_root)) = pending.pop() {
+        let Some(span) = spans_by_trace
+            .get(trace_id)
+            .and_then(|trace_spans| trace_spans.get(&span_id))
+        else {
+            continue;
+        };
+        if !is_root
+            && workspace_attribute(&span.attributes_json)
+                .is_some_and(|workspace| workspace != workspace_name)
+        {
+            continue;
+        }
+        if !span_keys.insert((trace_id.to_string(), span_id.clone())) {
+            continue;
+        }
+        if let Some(children) = children_by_trace
+            .get(trace_id)
+            .and_then(|trace_children| trace_children.get(&span_id))
+        {
+            pending.extend(children.iter().cloned().map(|child| (child, false)));
+        }
+    }
+}
+
+fn rewrite_trace_files_excluding_span_keys(
+    files: &[TraceStoreFile],
+    span_keys: &HashSet<TraceSpanKey>,
+) -> Result<(), TraceStoreError> {
+    let mut rewrites = Vec::new();
+    for file in files {
+        if let Some(rewrite) = plan_trace_file_rewrite(&file.path, span_keys)? {
+            rewrites.push(rewrite);
+        }
+    }
+
+    let mut snapshots = Vec::new();
+    for rewrite in rewrites {
+        let path = rewrite.snapshot.path.clone();
+        let result = if rewrite.kept.is_empty() {
+            fs::remove_file(&path).map_err(|source| TraceStoreError::RemoveFile {
+                path: path.clone(),
+                source,
+            })
+        } else {
+            storage_fs::write_atomic(&path, &rewrite.kept).map_err(|source| {
+                TraceStoreError::WriteFile {
+                    path: path.clone(),
+                    source,
+                }
+            })
+        };
+        if let Err(error) = result {
+            restore_trace_file_snapshots(snapshots)?;
+            return Err(error);
+        }
+        snapshots.push(rewrite.snapshot);
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct TraceFileSnapshot {
+    path: PathBuf,
+    original: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct TraceFileRewrite {
+    snapshot: TraceFileSnapshot,
+    kept: Vec<u8>,
+}
+
+fn plan_trace_file_rewrite(
+    path: &Path,
+    span_keys: &HashSet<TraceSpanKey>,
+) -> Result<Option<TraceFileRewrite>, TraceStoreError> {
+    let original = fs::read(path).map_err(|source| TraceStoreError::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut reader = BufReader::new(original.as_slice());
+    let mut kept = Vec::new();
+    let mut removed = false;
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes_read =
+            reader
+                .read_line(&mut line)
+                .map_err(|source| TraceStoreError::ReadFile {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        let complete_line = line.ends_with('\n');
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.trim().is_empty() {
+            kept.extend_from_slice(line.as_bytes());
+            continue;
+        }
+
+        match serde_json::from_str::<TraceSpanIdentityRecord>(trimmed) {
+            Ok(identity)
+                if span_keys.contains(&(identity.trace_id.clone(), identity.span_id.clone())) =>
+            {
+                removed = true;
+            }
+            Ok(_identity) => kept.extend_from_slice(line.as_bytes()),
+            Err(_source) if !complete_line => kept.extend_from_slice(line.as_bytes()),
+            Err(_source) => kept.extend_from_slice(line.as_bytes()),
+        }
+    }
+
+    if !removed {
+        return Ok(None);
+    }
+    let snapshot = TraceFileSnapshot {
+        path: path.to_path_buf(),
+        original,
+    };
+    Ok(Some(TraceFileRewrite { snapshot, kept }))
+}
+
+fn restore_trace_file_snapshots(snapshots: Vec<TraceFileSnapshot>) -> Result<(), TraceStoreError> {
+    for snapshot in snapshots.into_iter().rev() {
+        storage_fs::write_atomic(&snapshot.path, &snapshot.original).map_err(|source| {
+            TraceStoreError::RestoreFile {
+                path: snapshot.path,
+                source,
+            }
+        })?;
+    }
+    Ok(())
+}
+
 fn summary_from_spans(trace_id: &str, spans: &[TraceSpanRecord]) -> TraceSummaryRecord {
     let start_time_unix_nanos = spans
         .iter()
@@ -1345,6 +1703,16 @@ fn span_record(resource_json: &str, span: &SpanData) -> TraceSpanRecord {
 
 fn parse_attributes(attributes_json: &str) -> Option<JsonValue> {
     serde_json::from_str(attributes_json).ok()
+}
+
+fn attributes_match_workspace(attributes_json: &str, workspace_name: &str) -> bool {
+    workspace_attribute(attributes_json).is_some_and(|workspace| workspace == workspace_name)
+}
+
+fn workspace_attribute(attributes_json: &str) -> Option<String> {
+    parse_attributes(attributes_json)
+        .as_ref()
+        .and_then(|attributes| attr_string(attributes, "workspace"))
 }
 
 fn status_from_attributes(attributes: Option<&JsonValue>) -> Option<StoredTraceStatus> {
