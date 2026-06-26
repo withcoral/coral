@@ -242,6 +242,7 @@ export CORAL_CONFIG_DIR=/path/to/coral-config
 Important files include:
 
 - `config.toml` for installed-source metadata and non-secret variables
+- `state.sqlite3` for Coral-owned internal state, such as local feedback reports and episode metadata
 - imported source specs under `workspaces/<workspace>/sources/<source>/manifest.yaml`
 - source secrets stored separately within the same local trust boundary
 

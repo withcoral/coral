@@ -66,6 +66,10 @@ impl AppStateLayout {
         self.config_dir.join("telemetry").join("traces")
     }
 
+    pub(crate) fn app_database_file(&self) -> PathBuf {
+        self.config_dir.join("state.sqlite3")
+    }
+
     pub(crate) fn workspaces_root(&self) -> PathBuf {
         self.config_dir.join("workspaces")
     }
@@ -78,17 +82,18 @@ impl AppStateLayout {
         self.workspace_dir(workspace_name).join("sources")
     }
 
+    #[cfg(test)]
     pub(crate) fn feedback_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.workspace_dir(workspace_name).join("feedback")
     }
 
+    #[cfg(test)]
     pub(crate) fn feedback_reports_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.feedback_dir(workspace_name).join("reports.jsonl")
     }
 
-    /// Per-workspace episode log (JSONL) for experimental trajectory memory. The
-    /// episode store appends `OpenEpisode` records here; indexing and retrieval
-    /// land in a later PR.
+    /// Legacy per-workspace episode log path kept for layout regression tests.
+    #[cfg(test)]
     pub(crate) fn episodes_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.workspace_dir(workspace_name)
             .join("episodes")
@@ -209,6 +214,7 @@ mod tests {
         let source_name = SourceName::parse("github").expect("source");
 
         assert_eq!(layout.config_file(), config_dir.join("config.toml"));
+        assert_eq!(layout.app_database_file(), config_dir.join("state.sqlite3"));
         assert_eq!(
             layout.manifest_file(&workspace_name, &source_name),
             config_dir

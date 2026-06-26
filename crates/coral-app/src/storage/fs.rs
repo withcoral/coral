@@ -1,7 +1,7 @@
 //! Filesystem helpers for private directories, atomic writes, and file locks.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write as _};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
@@ -39,27 +39,6 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_file_private(&temp_path, bytes)?;
     replace_atomic(&temp_path, path)?;
     set_file_permissions_private(path)?;
-    Ok(())
-}
-
-pub(crate) fn append_file_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        ensure_dir(parent)?;
-    }
-    let mut file = open_append_file_private(path)?;
-    set_file_permissions_private(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    // Best-effort: try to durably link the (possibly freshly created) file into
-    // its directory so a crash is less likely to lose it. Like `replace_atomic`,
-    // the parent-directory fsync is best-effort — opening or fsyncing a directory
-    // is not portable (e.g. it fails on Windows), so a failure here is ignored
-    // rather than surfaced.
-    if let Some(parent) = path.parent()
-        && let Ok(dir) = fs::File::open(parent)
-    {
-        drop(dir.sync_all());
-    }
     Ok(())
 }
 
@@ -124,22 +103,6 @@ fn open_lock_file(path: &Path) -> io::Result<File> {
         .read(true)
         .write(true)
         .open(path)
-}
-
-#[cfg(unix)]
-fn open_append_file_private(path: &Path) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(path)
-}
-
-#[cfg(not(unix))]
-fn open_append_file_private(path: &Path) -> io::Result<File> {
-    OpenOptions::new().create(true).append(true).open(path)
 }
 
 #[cfg(unix)]

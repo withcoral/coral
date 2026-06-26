@@ -1,15 +1,11 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
 use uuid::Uuid;
 
 use crate::bootstrap::AppError;
 use crate::feedback::publisher::FeedbackPublisher;
-#[cfg(test)]
-use crate::feedback::publisher::NoopFeedbackPublisher;
-use crate::state::AppStateLayout;
-use crate::storage::fs::{self as storage_fs, FileLock};
+use crate::storage::app::{AppStore, StoredFeedbackReport};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, Clone)]
@@ -55,33 +51,15 @@ impl FeedbackUpload {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct PersistedFeedbackReport<'a> {
-    id: &'a str,
-    workspace: &'a str,
-    created_at: String,
-    trying_to_do: &'a str,
-    tried: &'a str,
-    stuck: &'a str,
-}
-
 #[derive(Clone)]
 pub(crate) struct FeedbackManager {
-    layout: AppStateLayout,
+    store: AppStore,
     publisher: Arc<dyn FeedbackPublisher>,
 }
 
 impl FeedbackManager {
-    #[cfg(test)]
-    pub(crate) fn new(layout: AppStateLayout) -> Self {
-        Self::with_publisher(layout, Arc::new(NoopFeedbackPublisher))
-    }
-
-    pub(crate) fn with_publisher(
-        layout: AppStateLayout,
-        publisher: Arc<dyn FeedbackPublisher>,
-    ) -> Self {
-        Self { layout, publisher }
+    pub(crate) fn with_publisher(store: AppStore, publisher: Arc<dyn FeedbackPublisher>) -> Self {
+        Self { store, publisher }
     }
 
     pub(crate) fn submit_feedback(
@@ -113,19 +91,20 @@ impl FeedbackManager {
     }
 
     fn append_report(&self, report: &FeedbackReport) -> Result<(), AppError> {
-        let _lock = FileLock::exclusive(self.layout.state_lock())?;
-        let file = self.layout.feedback_reports_file(&report.workspace);
-        let persisted = PersistedFeedbackReport {
-            id: &report.id,
-            workspace: report.workspace.as_str(),
-            created_at: report.created_at.to_rfc3339(),
-            trying_to_do: &report.trying_to_do,
-            tried: &report.tried,
-            stuck: &report.stuck,
+        let persisted = StoredFeedbackReport {
+            id: report.id.clone(),
+            workspace: report.workspace.as_str().to_string(),
+            created_at_rfc3339: report.created_at.to_rfc3339(),
+            trying_to_do: report.trying_to_do.clone(),
+            tried: report.tried.clone(),
+            stuck: report.stuck.clone(),
         };
-        let mut line = serde_json::to_vec(&persisted)?;
-        line.push(b'\n');
-        storage_fs::append_file_private(&file, &line)?;
+        let mut uow = self.store.begin_write()?;
+        {
+            let mut feedback = uow.feedback();
+            feedback.append_report(&persisted)?;
+        }
+        uow.commit()?;
         Ok(())
     }
 }
@@ -142,28 +121,30 @@ fn required_text(field: &str, value: &str) -> Result<String, AppError> {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::indexing_slicing,
-        reason = "JSONL shape assertions intentionally fail loudly in tests"
-    )]
+    use std::{sync::Arc, time::Duration};
 
-    use std::{fs, sync::Arc, time::Duration};
-
-    use serde_json::Value;
     use tempfile::TempDir;
 
     use super::{FeedbackManager, FeedbackReport, FeedbackUpload};
-    use crate::feedback::publisher::FeedbackPublisher;
+    use crate::feedback::publisher::{FeedbackPublisher, NoopFeedbackPublisher};
     use crate::state::AppStateLayout;
+    use crate::storage::app::AppStore;
     use crate::workspaces::WorkspaceName;
 
-    #[tokio::test]
-    async fn submit_feedback_appends_workspace_jsonl_record() {
+    fn manager() -> (TempDir, AppStore, FeedbackManager) {
         let temp = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral-config")))
             .expect("layout should resolve");
+        let store = AppStore::sqlite(layout.app_database_file()).expect("sqlite app store");
+        let manager =
+            FeedbackManager::with_publisher(store.clone(), Arc::new(NoopFeedbackPublisher));
+        (temp, store, manager)
+    }
+
+    #[tokio::test]
+    async fn submit_feedback_appends_workspace_record() {
+        let (_temp, store, manager) = manager();
         let workspace = WorkspaceName::default();
-        let manager = FeedbackManager::new(layout.clone());
 
         let submission = manager
             .submit_feedback(&workspace, " trying ", " tried ", " stuck ")
@@ -172,30 +153,26 @@ mod tests {
 
         assert_eq!(report.workspace.as_str(), "default");
         assert_eq!(report.trying_to_do, "trying");
-        let raw = fs::read_to_string(layout.feedback_reports_file(&workspace))
-            .expect("feedback file should exist");
-        let lines = raw.lines().collect::<Vec<_>>();
-        assert_eq!(lines.len(), 1);
-        let value: Value = serde_json::from_str(lines[0]).expect("jsonl record should parse");
-        assert_eq!(value["id"], report.id);
-        assert_eq!(value["workspace"], "default");
-        assert_eq!(value["trying_to_do"], "trying");
-        assert_eq!(value["tried"], "tried");
-        assert_eq!(value["stuck"], "stuck");
+        let reports = store
+            .test_read_feedback_reports(workspace.as_str())
+            .expect("read feedback reports");
+        assert_eq!(reports.len(), 1);
+        let persisted = reports.first().expect("one report");
+        assert_eq!(persisted.id, report.id);
+        assert_eq!(persisted.workspace, "default");
+        assert_eq!(persisted.trying_to_do, "trying");
+        assert_eq!(persisted.tried, "tried");
+        assert_eq!(persisted.stuck, "stuck");
         assert!(
-            value["created_at"]
-                .as_str()
-                .is_some_and(|value| !value.is_empty())
+            !persisted.created_at_rfc3339.is_empty(),
+            "created_at should be persisted"
         );
     }
 
     #[tokio::test]
     async fn submit_feedback_rejects_blank_fields_before_persisting() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("coral-config")))
-            .expect("layout should resolve");
+        let (_temp, store, manager) = manager();
         let workspace = WorkspaceName::default();
-        let manager = FeedbackManager::new(layout.clone());
 
         let error = manager
             .submit_feedback(&workspace, "trying", " ", "stuck")
@@ -206,7 +183,12 @@ mod tests {
                 .to_string()
                 .contains("missing string argument 'tried'")
         );
-        assert!(!layout.feedback_reports_file(&workspace).exists());
+        assert!(
+            store
+                .test_read_feedback_reports(workspace.as_str())
+                .expect("read feedback reports")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -214,10 +196,11 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral-config")))
             .expect("layout should resolve");
+        let store = AppStore::sqlite(layout.app_database_file()).expect("sqlite app store");
         let workspace = WorkspaceName::default();
         let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
         let manager = FeedbackManager::with_publisher(
-            layout.clone(),
+            store.clone(),
             Arc::new(PendingFeedbackPublisher {
                 started: started_tx,
             }),
@@ -232,7 +215,13 @@ mod tests {
             .await
             .expect("hosted publish task should start")
             .expect("hosted publish task should signal start");
-        assert!(layout.feedback_reports_file(&workspace).exists());
+        assert_eq!(
+            store
+                .test_read_feedback_reports(workspace.as_str())
+                .expect("read feedback reports")
+                .len(),
+            1
+        );
     }
 
     struct PendingFeedbackPublisher {

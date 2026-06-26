@@ -53,6 +53,7 @@ use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
+use crate::storage::app::{AppStorageConfig, AppStore};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
@@ -261,6 +262,8 @@ impl ServerBuilder {
             internal_trace_store_dir.clone(),
         )?;
         let config_store = ConfigStore::new(layout.clone());
+        let app_storage_config = AppStorageConfig::load(&layout)?;
+        let app_store = AppStore::open(&layout, &app_storage_config)?;
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
@@ -271,8 +274,8 @@ impl ServerBuilder {
             layout.clone(),
         );
         let feedback_manager =
-            FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
-        let episode_store = EpisodeStore::new(layout.clone());
+            FeedbackManager::with_publisher(app_store.clone(), self.config.feedback_publisher);
+        let episode_store = EpisodeStore::new(app_store);
         let body_capture_max_bytes = telemetry_config
             .trace_history
             .http_body_recording_max_bytes();
@@ -657,9 +660,11 @@ mod tests {
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::episode::store::EpisodeStore;
     use crate::feedback::manager::FeedbackManager;
+    use crate::feedback::publisher::NoopFeedbackPublisher;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore};
+    use crate::storage::app::AppStore;
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
     use crate::workspaces::WorkspaceName;
@@ -746,15 +751,14 @@ enabled = false
             .await
             .expect("OpenEpisode is served regardless of the episodes feature");
 
-        // The handler ran the full path through to the per-workspace episode log.
+        // The handler ran the full path through to the configured app store.
         let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
-        let raw = std::fs::read_to_string(layout.episodes_file(&WorkspaceName::default()))
-            .expect("episode file should exist");
-        assert!(raw.contains("ep_smoke"), "episode id should be persisted");
-        assert!(
-            raw.contains("find the HR onboarding form"),
-            "intent should be persisted"
-        );
+        let app_store = AppStore::sqlite(layout.app_database_file()).expect("sqlite app store");
+        let episode = app_store
+            .test_read_episode(WorkspaceName::default().as_str(), "ep_smoke")
+            .expect("read episode")
+            .expect("episode id should be persisted");
+        assert_eq!(episode.intent, "find the HR onboarding form");
         server.shutdown().await.expect("shutdown");
     }
 
@@ -772,8 +776,10 @@ enabled = false
             credential_manager.clone(),
             layout.clone(),
         );
-        let feedback_manager = FeedbackManager::new(layout.clone());
-        let episode_store = EpisodeStore::new(layout.clone());
+        let app_store = AppStore::sqlite(layout.app_database_file()).expect("sqlite app store");
+        let feedback_manager =
+            FeedbackManager::with_publisher(app_store.clone(), Arc::new(NoopFeedbackPublisher));
+        let episode_store = EpisodeStore::new(app_store);
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1152,8 +1158,10 @@ tables:
             credential_manager.clone(),
             layout.clone(),
         );
-        let feedback_manager = FeedbackManager::new(layout.clone());
-        let episode_store = EpisodeStore::new(layout.clone());
+        let app_store = AppStore::sqlite(layout.app_database_file()).expect("sqlite app store");
+        let feedback_manager =
+            FeedbackManager::with_publisher(app_store.clone(), Arc::new(NoopFeedbackPublisher));
+        let episode_store = EpisodeStore::new(app_store);
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1256,8 +1264,10 @@ tables:
             credential_manager.clone(),
             layout.clone(),
         );
-        let feedback_manager = FeedbackManager::new(layout.clone());
-        let episode_store = EpisodeStore::new(layout.clone());
+        let app_store = AppStore::sqlite(layout.app_database_file()).expect("sqlite app store");
+        let feedback_manager =
+            FeedbackManager::with_publisher(app_store.clone(), Arc::new(NoopFeedbackPublisher));
+        let episode_store = EpisodeStore::new(app_store);
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1357,8 +1367,10 @@ tables:
             credential_manager.clone(),
             layout.clone(),
         );
-        let feedback_manager = FeedbackManager::new(layout.clone());
-        let episode_store = EpisodeStore::new(layout.clone());
+        let app_store = AppStore::sqlite(layout.app_database_file()).expect("sqlite app store");
+        let feedback_manager =
+            FeedbackManager::with_publisher(app_store.clone(), Arc::new(NoopFeedbackPublisher));
+        let episode_store = EpisodeStore::new(app_store);
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,

@@ -29,5 +29,6 @@ coral-telemetry.workspace = true
 [dev-dependencies]
 coral-app.workspace = true
 jsonschema.workspace = true
+rusqlite.workspace = true
 tempfile.workspace = true
 tonic-types.workspace = true

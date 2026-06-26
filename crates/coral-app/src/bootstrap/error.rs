@@ -9,6 +9,7 @@ use tonic::{Code, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 
 use crate::credentials::CredentialsError;
+use crate::storage::app::AppStorageError;
 
 /// Errors surfaced by the local application layer.
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +66,12 @@ pub enum AppError {
     /// Credential material access failed.
     #[error(transparent)]
     Credentials(#[from] CredentialsError),
+    /// Configured application storage backend is not available.
+    #[error("unsupported app storage backend '{0}'")]
+    UnsupportedAppStorageBackend(String),
+    /// Application storage failed.
+    #[error("app storage: {0}")]
+    AppStorage(String),
     /// The Coral config directory could not be discovered from defaults.
     #[error("failed to determine Coral config directory")]
     MissingConfigDir,
@@ -200,9 +207,8 @@ fn app_code(error: &AppError) -> Code {
         | AppError::MissingOrIncompatibleV4Materialization { .. }
         | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
-        | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {
-            Code::FailedPrecondition
-        }
+        | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_))
+        | AppError::UnsupportedAppStorageBackend(_) => Code::FailedPrecondition,
         AppError::Unavailable(_) => Code::Unavailable,
         AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => Code::NotFound,
         AppError::Io(_)
@@ -213,7 +219,19 @@ fn app_code(error: &AppError) -> Code {
         | AppError::Json(_)
         | AppError::Transport(_)
         | AppError::TaskJoin(_)
-        | AppError::Credentials(_) => Code::Internal,
+        | AppError::Credentials(_)
+        | AppError::AppStorage(_) => Code::Internal,
+    }
+}
+
+impl From<AppStorageError> for AppError {
+    fn from(error: AppStorageError) -> Self {
+        match error {
+            AppStorageError::UnsupportedBackend { backend } => {
+                Self::UnsupportedAppStorageBackend(backend)
+            }
+            error => Self::AppStorage(error.to_string()),
+        }
     }
 }
 

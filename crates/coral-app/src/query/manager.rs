@@ -564,6 +564,8 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::Transport(_) => "TRANSPORT",
         AppError::TaskJoin(_) => "TASK_JOIN",
         AppError::Credentials(_) => "CREDENTIALS",
+        AppError::UnsupportedAppStorageBackend(_) => "UNSUPPORTED_APP_STORAGE_BACKEND",
+        AppError::AppStorage(_) => "APP_STORAGE",
         AppError::MissingConfigDir => "MISSING_CONFIG_DIR",
     }
 }

@@ -11,9 +11,23 @@ Coral writes source installation state to `config.toml` when you run commands su
 
 This state includes installed-source metadata and non-secret source variables. Source secrets are stored separately within the same local trust boundary.
 
+Coral-owned internal state, such as local feedback reports and episode metadata, is stored in the configured app storage backend. The default backend is SQLite at `state.sqlite3` in the local state directory.
+
 <Note>
   Prefer the `coral source` commands for source state instead of editing workspace entries manually.
 </Note>
+
+## App storage
+
+Application storage is configured under `[storage]`.
+
+```toml
+[storage]
+backend = "sqlite"
+sqlite_path = "/path/to/coral-state.sqlite3"
+```
+
+`backend` defaults to `sqlite`, and `sqlite_path` defaults to `state.sqlite3` in the local state directory. Relative `sqlite_path` values are resolved from the local state directory. `postgres` is reserved for a future backend; current builds fail at startup if it is selected.
 
 ## Runtime features
 

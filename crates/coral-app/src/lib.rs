@@ -11,13 +11,16 @@
 //! # Main Internal Areas
 //!
 //! - [`ServerBuilder`] starts the local application server with filesystem
-//!   config, managed source resources, and plaintext credential material storage.
+//!   config, database-backed internal app storage, managed source resources, and
+//!   credential material storage.
 //! - [`RunningServer`] owns the running local gRPC server task.
 //! - [`AppError`] is the transport-neutral application error type used during
 //!   bootstrap and management operations.
 //! - `sources/` owns managed-source lifecycle and the reviewable installed
 //!   source contract.
 //! - `state/` owns persisted config-dir layout and config storage.
+//! - `storage/` owns app-storage abstractions and concrete local storage
+//!   backends.
 //! - `credentials/` owns credential-set identity and credential material
 //!   persistence.
 //! - `query/` owns query-time source loading and `coral-engine`

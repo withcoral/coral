@@ -21,6 +21,7 @@ use rmcp::{
     model::{CallToolRequestParams, ReadResourceRequestParams, Tool},
     service::RunningService,
 };
+use rusqlite::Connection;
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use tonic::Request;
@@ -243,6 +244,72 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
         app_server: server,
         mcp_server_task,
     }
+}
+
+fn app_database_path(temp: &TempDir) -> PathBuf {
+    temp.path().join("coral-config/state.sqlite3")
+}
+
+fn open_app_database(temp: &TempDir) -> Connection {
+    Connection::open(app_database_path(temp)).expect("open app storage database")
+}
+
+fn read_episode_records(temp: &TempDir) -> Vec<Value> {
+    let connection = open_app_database(temp);
+    let mut statement = connection
+        .prepare(
+            r"
+SELECT episode_id, workspace, intent, parent_episode_id
+FROM episodes
+ORDER BY rowid ASC
+",
+        )
+        .expect("prepare episode record query");
+    let rows = statement
+        .query_map([], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "workspace": row.get::<_, String>(1)?,
+                "intent": row.get::<_, String>(2)?,
+                "parent_episode_id": row.get::<_, Option<String>>(3)?,
+            }))
+        })
+        .expect("query episode records");
+    rows.collect::<Result<Vec<_>, _>>()
+        .expect("read episode records")
+}
+
+fn count_episode_records(temp: &TempDir) -> i64 {
+    open_app_database(temp)
+        .query_row("SELECT COUNT(*) FROM episodes", [], |row| row.get(0))
+        .expect("count episode records")
+}
+
+fn read_feedback_records(temp: &TempDir) -> Vec<Value> {
+    let connection = open_app_database(temp);
+    let mut statement = connection
+        .prepare(
+            r"
+SELECT report_id, workspace, created_at, trying_to_do, tried, stuck
+FROM feedback_reports
+ORDER BY rowid ASC
+",
+        )
+        .expect("prepare feedback record query");
+    let rows = statement
+        .query_map([], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "workspace": row.get::<_, String>(1)?,
+                "created_at": row.get::<_, String>(2)?,
+                "trying_to_do": row.get::<_, String>(3)?,
+                "tried": row.get::<_, String>(4)?,
+                "stuck": row.get::<_, String>(5)?,
+            }))
+        })
+        .expect("query feedback records");
+    rows.collect::<Result<Vec<_>, _>>()
+        .expect("read feedback records")
 }
 
 fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
@@ -469,14 +536,7 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
             .contains("argument 'episode_id' must be graphic ASCII")
     );
 
-    let episodes_path = temp
-        .path()
-        .join("coral-config/workspaces/default/episodes/episodes.jsonl");
-    let raw = fs::read_to_string(&episodes_path).expect("episode file should exist");
-    let records = raw
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("episode JSONL should parse"))
-        .collect::<Vec<_>>();
+    let records = read_episode_records(&temp);
     assert_eq!(records.len(), 2);
     let root_record = records
         .iter()
@@ -506,8 +566,7 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
             .to_string()
             .contains("missing string argument 'intent'")
     );
-    let raw_after_error = fs::read_to_string(&episodes_path).expect("episode file should exist");
-    assert_eq!(raw_after_error.lines().count(), 2);
+    assert_eq!(count_episode_records(&temp), 2);
 
     session.shutdown().await;
 }
@@ -542,12 +601,7 @@ async fn mcp_episode_tool_is_disabled_by_default() {
             .to_string()
             .contains("tool 'open_episode' not found")
     );
-    assert!(
-        !temp
-            .path()
-            .join("coral-config/workspaces/default/episodes/episodes.jsonl")
-            .exists()
-    );
+    assert_eq!(count_episode_records(&temp), 0);
 
     session.shutdown().await;
 }
@@ -1334,14 +1388,9 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
     assert_eq!(structured["message"], "Feedback report stored.");
     assert!(structured.get("upload").is_none());
 
-    let raw = fs::read_to_string(
-        temp.path()
-            .join("coral-config/workspaces/default/feedback/reports.jsonl"),
-    )
-    .expect("feedback file should exist");
-    let records = raw.lines().collect::<Vec<_>>();
+    let records = read_feedback_records(&temp);
     assert_eq!(records.len(), 1);
-    let record: Value = serde_json::from_str(records[0]).expect("feedback JSONL should parse");
+    let record = records.first().expect("feedback record");
     assert_eq!(record["id"], structured["feedback_id"]);
     assert_eq!(record["workspace"], "default");
     assert_eq!(record["trying_to_do"], "Fix failing tests");
@@ -1370,12 +1419,7 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             .contains("missing string argument 'tried'")
     );
 
-    let raw_after_error = fs::read_to_string(
-        temp.path()
-            .join("coral-config/workspaces/default/feedback/reports.jsonl"),
-    )
-    .expect("feedback file should still exist");
-    assert_eq!(raw_after_error.lines().count(), 1);
+    assert_eq!(read_feedback_records(&temp).len(), 1);
 
     session.shutdown().await;
 }
@@ -1451,12 +1495,7 @@ async fn mcp_feedback_tool_is_disabled_by_default() {
         .await
         .expect_err("feedback should not be exposed by default");
     assert!(feedback.to_string().contains("tool 'feedback' not found"));
-    assert!(
-        !temp
-            .path()
-            .join("coral-config/workspaces/default/feedback/reports.jsonl")
-            .exists()
-    );
+    assert!(read_feedback_records(&temp).is_empty());
 
     session.shutdown().await;
 }

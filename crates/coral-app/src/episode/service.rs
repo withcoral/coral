@@ -90,7 +90,7 @@ fn open_episode_status(error: &EpisodeStoreError) -> Status {
     match error {
         EpisodeStoreError::Conflict { .. } => Status::failed_precondition(error.to_string()),
         EpisodeStoreError::InvalidIntent { .. } => Status::invalid_argument(error.to_string()),
-        EpisodeStoreError::Io(_) | EpisodeStoreError::Serde(_) => {
+        EpisodeStoreError::Io(_) | EpisodeStoreError::Serde(_) | EpisodeStoreError::Storage(_) => {
             warn!(%error, "failed to persist episode");
             Status::internal("failed to persist episode")
         }
@@ -99,8 +99,6 @@ fn open_episode_status(error: &EpisodeStoreError) -> Status {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use coral_api::v1::{OpenEpisodeRequest, Workspace};
     use tempfile::TempDir;
     use tonic::{Code, Request};
@@ -108,14 +106,16 @@ mod tests {
     use super::super::store::EpisodeStore;
     use super::{EpisodeService, EpisodeServiceApi};
     use crate::state::AppStateLayout;
+    use crate::storage::app::AppStore;
     use crate::workspaces::WorkspaceName;
 
-    fn service() -> (TempDir, AppStateLayout, EpisodeService) {
+    fn service() -> (TempDir, AppStore, EpisodeService) {
         let dir = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(dir.path().join("coral-config")))
             .expect("layout should resolve");
-        let service = EpisodeService::new(EpisodeStore::new(layout.clone()));
-        (dir, layout, service)
+        let app_store = AppStore::sqlite(layout.app_database_file()).expect("sqlite app store");
+        let service = EpisodeService::new(EpisodeStore::new(app_store.clone()));
+        (dir, app_store, service)
     }
 
     fn request(
@@ -136,7 +136,7 @@ mod tests {
 
     #[tokio::test]
     async fn open_episode_persists_record() {
-        let (_dir, layout, service) = service();
+        let (_dir, app_store, service) = service();
         service
             .open_episode(request(
                 Some("acme"),
@@ -148,17 +148,16 @@ mod tests {
             .expect("open episode");
 
         let workspace = WorkspaceName::parse("acme").expect("workspace");
-        let raw = fs::read_to_string(layout.episodes_file(&workspace)).expect("episode file");
-        let records: Vec<_> = raw.lines().filter(|line| !line.trim().is_empty()).collect();
-        assert_eq!(records.len(), 1);
-        let record = records.first().expect("one record");
-        assert!(record.contains("ep_1"));
-        assert!(record.contains("find the HR onboarding form"));
+        let record = app_store
+            .test_read_episode(workspace.as_str(), "ep_1")
+            .expect("read episode")
+            .expect("episode persisted");
+        assert_eq!(record.intent, "find the HR onboarding form");
     }
 
     #[tokio::test]
     async fn open_child_episode_records_parent() {
-        let (_dir, layout, service) = service();
+        let (_dir, app_store, service) = service();
         service
             .open_episode(request(Some("acme"), "parent_ep", "root task", None))
             .await
@@ -174,13 +173,16 @@ mod tests {
             .expect("open child");
 
         let workspace = WorkspaceName::parse("acme").expect("workspace");
-        let raw = fs::read_to_string(layout.episodes_file(&workspace)).expect("episode file");
-        assert!(raw.contains(r#""parent_episode_id":"parent_ep""#));
+        let record = app_store
+            .test_read_episode(workspace.as_str(), "child_ep")
+            .expect("read episode")
+            .expect("child persisted");
+        assert_eq!(record.parent_episode_id.as_deref(), Some("parent_ep"));
     }
 
     #[tokio::test]
     async fn reopen_identical_is_ok() {
-        let (_dir, _layout, service) = service();
+        let (_dir, _app_store, service) = service();
         service
             .open_episode(request(Some("acme"), "ep_1", "same intent", None))
             .await
@@ -193,7 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn reopen_with_different_intent_conflicts() {
-        let (_dir, _layout, service) = service();
+        let (_dir, _app_store, service) = service();
         service
             .open_episode(request(Some("acme"), "ep_1", "intent A", None))
             .await
@@ -207,7 +209,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_workspace_is_invalid_argument() {
-        let (_dir, _layout, service) = service();
+        let (_dir, _app_store, service) = service();
         let status = service
             .open_episode(request(None, "ep_1", "intent", None))
             .await
@@ -217,7 +219,7 @@ mod tests {
 
     #[tokio::test]
     async fn blank_episode_id_is_invalid_argument() {
-        let (_dir, _layout, service) = service();
+        let (_dir, _app_store, service) = service();
         let status = service
             .open_episode(request(Some("acme"), "   ", "intent", None))
             .await
@@ -227,7 +229,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_ascii_episode_id_is_invalid_argument() {
-        let (_dir, _layout, service) = service();
+        let (_dir, _app_store, service) = service();
         // A non-ASCII id cannot round-trip as the `coral-episode-id` metadata
         // value, so the boundary rejects it before it reaches the store.
         let status = service
