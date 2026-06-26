@@ -234,11 +234,16 @@ impl<'a> GraphPlanValidator<'a> {
         let right_node =
             self.node_binding_for_path(&pattern.right, format!("relationships[{index}].right"))?;
 
-        let (expected_left, expected_right) = match pattern.direction {
-            super::ir::Direction::Outgoing => (&relationship.from.label, &relationship.to.label),
-            super::ir::Direction::Incoming => (&relationship.to.label, &relationship.from.label),
+        let matches_forward =
+            left_node.label == relationship.from.label && right_node.label == relationship.to.label;
+        let matches_reverse =
+            left_node.label == relationship.to.label && right_node.label == relationship.from.label;
+        let valid = match pattern.direction {
+            super::ir::Direction::Outgoing => matches_forward,
+            super::ir::Direction::Incoming => matches_reverse,
+            super::ir::Direction::Undirected => matches_forward || matches_reverse,
         };
-        if left_node.label != *expected_left || right_node.label != *expected_right {
+        if !valid {
             return Err(Diagnostic::new(
                 "RELATIONSHIP_ENDPOINT_MISMATCH",
                 format!("relationships[{index}]"),
@@ -800,6 +805,47 @@ relationships:
                 .relationship_type,
             "OWNS"
         );
+    }
+
+    #[test]
+    fn validate_graph_plan_accepts_undirected_reversed_relationship_labels() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "OWNS".to_string(),
+                left: "service".to_string(),
+                direction: Direction::Undirected,
+                right: "person".to_string(),
+            }],
+            distinct: false,
+            projections: vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "person".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("owner".to_string()),
+            }],
+            predicates: Vec::new(),
+            predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("undirected relationship should validate in either endpoint order");
     }
 
     #[test]

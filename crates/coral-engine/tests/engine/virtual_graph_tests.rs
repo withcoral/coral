@@ -387,6 +387,39 @@ async fn cypher_connected_comma_patterns_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_undirected_relationships_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service)-[:DEPENDS_ON]-(neighbor:Service) \
+         WHERE service.name = 'deployments' \
+         RETURN neighbor.name AS neighbor \
+         ORDER BY neighbor",
+    )
+    .await
+    .expect("undirected relationship Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" OR "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"neighbor": "billing-api"}),
+            json!({"neighbor": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_disconnected_comma_patterns_are_rejected_before_sql_planning() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

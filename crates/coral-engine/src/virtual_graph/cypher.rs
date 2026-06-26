@@ -679,10 +679,7 @@ fn compile_relationship(
         CypherRelationshipDirection::Right => Direction::Outgoing,
         CypherRelationshipDirection::Left => Direction::Incoming,
         CypherRelationshipDirection::Both | CypherRelationshipDirection::Undirected => {
-            return Err(unsupported(
-                format!("{path}.direction"),
-                "relationships must be directed with exactly one arrowhead",
-            ));
+            Direction::Undirected
         }
     };
 
@@ -2544,8 +2541,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_undirected_relationships() {
-        assert_unsupported("MATCH (a:Service)-[:DEPENDS_ON]-(b:Service) RETURN a.name");
+    fn compiles_undirected_relationships() {
+        let plan = compile_cypher("MATCH (a:Service)-[:DEPENDS_ON]-(b:Service) RETURN a.name")
+            .expect("undirected relationship should compile");
+
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "DEPENDS_ON".to_string(),
+                left: "a".to_string(),
+                direction: Direction::Undirected,
+                right: "b".to_string(),
+            }]
+        );
     }
 
     #[test]

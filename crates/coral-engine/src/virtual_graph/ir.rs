@@ -7,6 +7,8 @@ pub enum Direction {
     Outgoing,
     /// `(left)<-[:TYPE]-(right)`.
     Incoming,
+    /// `(left)-[:TYPE]-(right)`.
+    Undirected,
 }
 
 /// Sort direction for graph query ordering.

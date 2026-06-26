@@ -57,6 +57,12 @@ struct Lowerer<'a> {
     from_clause: String,
 }
 
+#[derive(Debug, Clone)]
+struct RelationshipOrientation {
+    left_relationship_key: String,
+    right_relationship_key: String,
+}
+
 impl<'a> Lowerer<'a> {
     fn new(validated: ValidatedGraphPlan<'a>) -> Self {
         Self {
@@ -173,29 +179,18 @@ impl<'a> Lowerer<'a> {
         let quoted_relationship_alias = quote_ident(&relationship_alias);
 
         if left_joined && right_joined {
-            let left_condition = Self::relationship_join_condition(
+            let condition = Self::relationship_pair_condition(
                 validated,
                 relationship,
-                pattern.direction,
                 &relationship_alias,
-                &pattern.left,
-                true,
-            )?;
-            let right_condition = Self::relationship_join_condition(
-                validated,
-                relationship,
-                pattern.direction,
-                &relationship_alias,
-                &pattern.right,
-                false,
+                pattern,
             )?;
             write!(
                 from_clause,
-                " JOIN {} AS {} ON {} AND {}",
+                " JOIN {} AS {} ON {}",
                 render_table_ref(&relationship.table),
                 quoted_relationship_alias,
-                left_condition,
-                right_condition
+                condition
             )
             .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
         } else if left_joined {
@@ -238,24 +233,16 @@ impl<'a> Lowerer<'a> {
             (pattern.right.as_str(), pattern.left.as_str(), false)
         };
         let unknown_node = validated.node_binding(unknown_variable)?;
-        let relationship_join = Self::relationship_join_condition(
+        let relationship_join = Self::relationship_known_node_condition(
             validated,
             relationship,
-            pattern.direction,
+            pattern,
             relationship_alias,
             known_variable,
             known_is_left,
         )?;
         let unknown_table_ref = render_table_ref(&unknown_node.table);
         let unknown_alias = validated.binding(unknown_variable)?.alias().to_string();
-        let unknown_join = Self::relationship_join_condition(
-            validated,
-            relationship,
-            pattern.direction,
-            relationship_alias,
-            unknown_variable,
-            !known_is_left,
-        )?;
 
         write!(
             from_clause,
@@ -265,6 +252,20 @@ impl<'a> Lowerer<'a> {
             relationship_join
         )
         .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        let unknown_join = if pattern.direction == Direction::Undirected
+            && Self::relationship_orientations(validated, relationship, pattern)?.len() > 1
+        {
+            Self::relationship_pair_condition(validated, relationship, relationship_alias, pattern)?
+        } else {
+            Self::relationship_known_node_condition(
+                validated,
+                relationship,
+                pattern,
+                relationship_alias,
+                unknown_variable,
+                !known_is_left,
+            )?
+        };
         write!(
             from_clause,
             " JOIN {} AS {} ON {}",
@@ -277,32 +278,127 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    fn relationship_join_condition(
+    fn relationship_pair_condition(
         validated: &ValidatedGraphPlan<'a>,
         relationship: &Relationship,
-        direction: Direction,
+        relationship_alias: &str,
+        pattern: &'a super::ir::RelationshipPattern,
+    ) -> Result<String, CoreError> {
+        let orientations = Self::relationship_orientations(validated, relationship, pattern)?;
+        let left_binding = validated.binding(&pattern.left)?;
+        let right_binding = validated.binding(&pattern.right)?;
+        let left_node = validated.node_binding(&pattern.left)?;
+        let right_node = validated.node_binding(&pattern.right)?;
+
+        let has_multiple_orientations = orientations.len() > 1;
+        let conditions = orientations
+            .iter()
+            .map(|orientation| {
+                let condition = format!(
+                    "{}.{} = {}.{} AND {}.{} = {}.{}",
+                    quote_ident(relationship_alias),
+                    quote_ident(&orientation.left_relationship_key),
+                    quote_ident(left_binding.alias()),
+                    quote_ident(&left_node.key),
+                    quote_ident(relationship_alias),
+                    quote_ident(&orientation.right_relationship_key),
+                    quote_ident(right_binding.alias()),
+                    quote_ident(&right_node.key)
+                );
+                if has_multiple_orientations {
+                    format!("({condition})")
+                } else {
+                    condition
+                }
+            })
+            .collect::<Vec<_>>();
+        Self::render_condition_disjunction(&conditions)
+    }
+
+    fn relationship_known_node_condition(
+        validated: &ValidatedGraphPlan<'a>,
+        relationship: &Relationship,
+        pattern: &'a super::ir::RelationshipPattern,
         relationship_alias: &str,
         node_variable: &str,
         node_is_left: bool,
     ) -> Result<String, CoreError> {
+        let orientations = Self::relationship_orientations(validated, relationship, pattern)?;
         let node_binding = validated.binding(node_variable)?;
-        let ValidatedBindingKind::Node(node) = node_binding.kind() else {
-            return Err(CoreError::internal(
-                "relationship endpoint was not a node binding",
-            ));
-        };
-        let endpoint_column = match (direction, node_is_left) {
-            (Direction::Outgoing, true) | (Direction::Incoming, false) => &relationship.from.key,
-            (Direction::Outgoing, false) | (Direction::Incoming, true) => &relationship.to.key,
-        };
+        let node = validated.node_binding(node_variable)?;
 
-        Ok(format!(
-            "{}.{} = {}.{}",
-            quote_ident(relationship_alias),
-            quote_ident(endpoint_column),
-            quote_ident(node_binding.alias()),
-            quote_ident(&node.key)
-        ))
+        let conditions = orientations
+            .iter()
+            .map(|orientation| {
+                let relationship_key = if node_is_left {
+                    orientation.left_relationship_key.as_str()
+                } else {
+                    orientation.right_relationship_key.as_str()
+                };
+                format!(
+                    "{}.{} = {}.{}",
+                    quote_ident(relationship_alias),
+                    quote_ident(relationship_key),
+                    quote_ident(node_binding.alias()),
+                    quote_ident(&node.key)
+                )
+            })
+            .collect::<Vec<_>>();
+        Self::render_condition_disjunction(&conditions)
+    }
+
+    fn relationship_orientations(
+        validated: &ValidatedGraphPlan<'a>,
+        relationship: &Relationship,
+        pattern: &'a super::ir::RelationshipPattern,
+    ) -> Result<Vec<RelationshipOrientation>, CoreError> {
+        match pattern.direction {
+            Direction::Outgoing => Ok(vec![RelationshipOrientation {
+                left_relationship_key: relationship.from.key.clone(),
+                right_relationship_key: relationship.to.key.clone(),
+            }]),
+            Direction::Incoming => Ok(vec![RelationshipOrientation {
+                left_relationship_key: relationship.to.key.clone(),
+                right_relationship_key: relationship.from.key.clone(),
+            }]),
+            Direction::Undirected => {
+                let left_node = validated.node_binding(&pattern.left)?;
+                let right_node = validated.node_binding(&pattern.right)?;
+                let mut orientations = Vec::with_capacity(2);
+                if left_node.label == relationship.from.label
+                    && right_node.label == relationship.to.label
+                {
+                    orientations.push(RelationshipOrientation {
+                        left_relationship_key: relationship.from.key.clone(),
+                        right_relationship_key: relationship.to.key.clone(),
+                    });
+                }
+                if left_node.label == relationship.to.label
+                    && right_node.label == relationship.from.label
+                {
+                    orientations.push(RelationshipOrientation {
+                        left_relationship_key: relationship.to.key.clone(),
+                        right_relationship_key: relationship.from.key.clone(),
+                    });
+                }
+                if orientations.is_empty() {
+                    return Err(CoreError::internal(
+                        "validated undirected relationship had no endpoint orientation",
+                    ));
+                }
+                Ok(orientations)
+            }
+        }
+    }
+
+    fn render_condition_disjunction(conditions: &[String]) -> Result<String, CoreError> {
+        match conditions {
+            [] => Err(CoreError::internal(
+                "relationship join had no endpoint condition",
+            )),
+            [condition] => Ok(condition.clone()),
+            _ => Ok(format!("({})", conditions.join(" OR "))),
+        }
     }
 
     fn render_select(&self) -> Result<String, CoreError> {
@@ -739,7 +835,55 @@ relationships:
     }
 
     #[test]
-    fn lower_graph_plan_reorders_connected_relationships() {
+    fn lower_graph_plan_renders_undirected_distinct_label_relationship_sql() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "OWNS".to_string(),
+                left: "service".to_string(),
+                direction: Direction::Undirected,
+                right: "person".to_string(),
+            }],
+            distinct: false,
+            projections: vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "person".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("owner".to_string()),
+            }],
+            predicates: Vec::new(),
+            predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("undirected relationship should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n1\".\"full_name\" AS \"owner\" FROM \"ops\".\"services\" AS \"n0\" \
+             JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"service_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"person_id\" = \"n1\".\"id\""
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_undirected_same_label_relationship_sql() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let plan = GraphPlan {
             nodes: vec![
@@ -748,53 +892,41 @@ relationships:
                     label: "Service".to_string(),
                 },
                 NodePattern {
-                    variable: "middle".to_string(),
-                    label: "Service".to_string(),
-                },
-                NodePattern {
-                    variable: "target".to_string(),
+                    variable: "neighbor".to_string(),
                     label: "Service".to_string(),
                 },
             ],
-            relationships: vec![
-                RelationshipPattern {
-                    variable: None,
-                    relationship_type: "DEPENDS_ON".to_string(),
-                    left: "middle".to_string(),
-                    direction: Direction::Outgoing,
-                    right: "target".to_string(),
-                },
-                RelationshipPattern {
-                    variable: None,
-                    relationship_type: "DEPENDS_ON".to_string(),
-                    left: "source".to_string(),
-                    direction: Direction::Outgoing,
-                    right: "middle".to_string(),
-                },
-            ],
+            relationships: vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "DEPENDS_ON".to_string(),
+                left: "source".to_string(),
+                direction: Direction::Undirected,
+                right: "neighbor".to_string(),
+            }],
+            distinct: false,
             projections: vec![Projection::Property {
                 property: PropertyRef {
-                    variable: "target".to_string(),
+                    variable: "neighbor".to_string(),
                     property: "name".to_string(),
                 },
-                alias: Some("target".to_string()),
+                alias: Some("neighbor".to_string()),
             }],
             predicates: Vec::new(),
+            predicate: None,
             order_by: Vec::new(),
+            skip: None,
             limit: None,
         };
 
         let translation = graph
             .lower_graph_plan(&plan)
-            .expect("connected relationships should lower independent of order");
+            .expect("undirected same-label relationship should lower");
 
         assert_eq!(
             translation.sql(),
-            "SELECT \"n2\".\"service_name\" AS \"target\" FROM \"ops\".\"services\" AS \"n0\" \
-             JOIN \"ops\".\"service_dependencies\" AS \"r1\" ON \"r1\".\"from_service_id\" = \"n0\".\"id\" \
-             JOIN \"ops\".\"services\" AS \"n1\" ON \"r1\".\"to_service_id\" = \"n1\".\"id\" \
-             JOIN \"ops\".\"service_dependencies\" AS \"r0\" ON \"r0\".\"from_service_id\" = \"n1\".\"id\" \
-             JOIN \"ops\".\"services\" AS \"n2\" ON \"r0\".\"to_service_id\" = \"n2\".\"id\""
+            "SELECT \"n1\".\"service_name\" AS \"neighbor\" FROM \"ops\".\"services\" AS \"n0\" \
+             JOIN \"ops\".\"service_dependencies\" AS \"r0\" ON (\"r0\".\"from_service_id\" = \"n0\".\"id\" OR \"r0\".\"to_service_id\" = \"n0\".\"id\") \
+             JOIN \"ops\".\"services\" AS \"n1\" ON ((\"r0\".\"from_service_id\" = \"n0\".\"id\" AND \"r0\".\"to_service_id\" = \"n1\".\"id\") OR (\"r0\".\"to_service_id\" = \"n0\".\"id\" AND \"r0\".\"from_service_id\" = \"n1\".\"id\"))"
         );
     }
 
