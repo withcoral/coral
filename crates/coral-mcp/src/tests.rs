@@ -18,7 +18,7 @@ use coral_client::{
 use jsonschema::JSONSchema;
 use rmcp::{
     RoleClient, ServiceExt,
-    model::{CallToolRequestParams, ReadResourceRequestParams, Tool},
+    model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams, Tool},
     service::RunningService,
 };
 use serde_json::{Map, Value, json};
@@ -324,6 +324,17 @@ fn assert_matches_output_schema(tool: &Tool, value: &Value) {
     }
 }
 
+fn assert_structured_content_only(result: &CallToolResult) {
+    assert!(
+        result.content.is_empty(),
+        "tool results should not duplicate structured payloads as text content"
+    );
+    assert!(
+        result.structured_content.is_some(),
+        "tool result should expose structured_content"
+    );
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -389,6 +400,7 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
         .await
         .expect("open root episode");
     assert_eq!(root.is_error, Some(false));
+    assert_structured_content_only(&root);
     let root = root.structured_content.expect("root structured content");
     assert_matches_output_schema(open_episode_tool, &root);
     let root_episode_id = root["episode_id"]
@@ -415,6 +427,7 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
         .await
         .expect("open child episode");
     assert_eq!(child.is_error, Some(false));
+    assert_structured_content_only(&child);
     let child = child.structured_content.expect("child structured content");
     assert_matches_output_schema(open_episode_tool, &child);
     let child_episode_id = child["episode_id"]
@@ -434,6 +447,7 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
         .await
         .expect("tagged sql");
     assert_eq!(sql.is_error, Some(false));
+    assert_structured_content_only(&sql);
     assert_eq!(
         sql.structured_content.expect("sql structured")["results"][0]["rows"][0]["ok"],
         "1"
@@ -567,6 +581,7 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
         )
         .await
         .expect("sql system catalog");
+    assert_structured_content_only(&sql);
     let sql_rows = sql.structured_content.as_ref().expect("structured sql")["results"][0]["rows"]
         .as_array()
         .expect("sql rows");
@@ -586,9 +601,9 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
             }))),
         )
         .await
-        .expect("list system catalog")
-        .structured_content
-        .expect("structured catalog");
+        .expect("list system catalog");
+    assert_structured_content_only(&catalog);
+    let catalog = catalog.structured_content.expect("structured catalog");
     assert_eq!(catalog["total"], expected_tables.len());
     assert_eq!(
         catalog["items"]

@@ -1,11 +1,7 @@
 use coral_client::{DecodedStatusError, decode_status_error};
-use rmcp::{
-    ErrorData,
-    model::{CallToolResult, Content},
-};
+use rmcp::{ErrorData, model::CallToolResult};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::fmt::Write as _;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ToolError {
@@ -21,18 +17,10 @@ pub(crate) struct ToolError {
 }
 
 pub(crate) fn tool_error_result(error: ToolError) -> CallToolResult {
-    let mut text = format!("Error: {}", error.summary);
-    if !error.detail.is_empty() {
-        write!(text, "\nDetail: {}", error.detail).expect("writing to String cannot fail");
-    }
-    if let Some(hint) = &error.hint {
-        write!(text, "\nHint: {hint}").expect("writing to String cannot fail");
-    }
-
     let structured = serde_json::to_value(StructuredToolErrorValue { error })
         .expect("tool error value serializes");
     let mut result = CallToolResult::structured_error(structured);
-    result.content = vec![Content::text(text)];
+    result.content = Vec::new();
     result
 }
 
@@ -167,6 +155,7 @@ mod tests {
             metadata: HashMap::new(),
         });
         assert_eq!(result.is_error, Some(true));
+        assert!(result.content.is_empty());
         let json = result.structured_content.expect("structured content");
         assert_eq!(json["error"]["grpc_code"], "InvalidArgument");
         assert_eq!(json["error"]["retryable"], false);

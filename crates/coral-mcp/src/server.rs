@@ -806,7 +806,7 @@ fn finish_tool_call(
         Ok(ToolCallOutcome::Payload(payload)) => match payload.status {
             ToolPayloadStatus::Success => {
                 telemetry::record_success(span);
-                build_tool_result(payload.value)
+                Ok(build_tool_result(payload.value))
             }
             ToolPayloadStatus::Error => {
                 telemetry::record_tool_payload_error(
@@ -814,7 +814,9 @@ fn finish_tool_call(
                     "sql_batch_partial_failure",
                     "One or more SQL queries failed",
                 );
-                Ok(CallToolResult::structured_error(payload.value))
+                let mut result = CallToolResult::structured_error(payload.value);
+                result.content = Vec::new();
+                Ok(result)
             }
         },
         Ok(ToolCallOutcome::ToolError { operation, status }) => {

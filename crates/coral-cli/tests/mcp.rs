@@ -102,6 +102,10 @@ async fn structured_tool_content(
 ) -> Result<Value, Box<dyn std::error::Error>> {
     let result = client.call_tool(request).await?;
     assert_eq!(result.is_error, Some(false));
+    assert!(
+        result.content.is_empty(),
+        "tool results should not duplicate structured payloads as text content"
+    );
     Ok(result.structured_content.expect("structured content"))
 }
 
@@ -944,6 +948,10 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
         )
         .await?;
     assert_eq!(mixed_sql.is_error, Some(true));
+    assert!(
+        mixed_sql.content.is_empty(),
+        "tool errors should not include text fallback content"
+    );
     let mixed_sql = mixed_sql.structured_content.expect("structured content");
     assert_eq!(mixed_sql["total_count"], 2);
     assert_eq!(mixed_sql["success_count"], 1);
@@ -962,6 +970,7 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
         .call_tool(CallToolRequestParams::new("list_catalog"))
         .await?;
     assert_eq!(catalog.is_error, Some(false));
+    assert!(catalog.content.is_empty());
     assert_eq!(
         catalog.structured_content.expect("structured content")["items"][0]["name"],
         "local_messages.events"

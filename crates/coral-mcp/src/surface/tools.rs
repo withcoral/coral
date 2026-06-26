@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rmcp::{
     ErrorData,
-    model::{CallToolResult, Content, Tool, ToolAnnotations},
+    model::{CallToolResult, Tool, ToolAnnotations},
 };
 use serde_json::{Map, Value, json};
 
@@ -474,12 +474,10 @@ pub(crate) fn optional_episode_id_argument(
     Ok(Some(value.to_string()))
 }
 
-pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
-    let compact = serde_json::to_string(&value)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+pub(crate) fn build_tool_result(value: Value) -> CallToolResult {
     let mut result = CallToolResult::structured(value);
-    result.content = vec![Content::text(compact)];
-    Ok(result)
+    result.content = Vec::new();
+    result
 }
 
 fn sql_tool_description(context: &ToolDescriptionContext) -> String {
@@ -977,7 +975,7 @@ mod tests {
     };
 
     #[test]
-    fn success_tool_result_text_uses_compact_json() {
+    fn success_tool_result_uses_structured_content_only() {
         let value = json!({
             "rows": [
                 {
@@ -991,17 +989,9 @@ mod tests {
             ]
         });
 
-        let result = build_tool_result(value.clone()).expect("tool result");
+        let result = build_tool_result(value.clone());
 
-        let text = result
-            .content
-            .first()
-            .and_then(|content| content.as_text())
-            .expect("text content");
-        assert_eq!(
-            text.text,
-            r#"{"rows":[{"id":1,"text":"hello"},{"id":2,"text":"world"}]}"#
-        );
+        assert!(result.content.is_empty());
         assert_eq!(
             result.structured_content.expect("structured content"),
             value
