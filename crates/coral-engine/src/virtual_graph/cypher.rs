@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection};
+use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection, With};
 use decypher::ast::expr::{
     BinaryOperator as CypherBinaryOperator, ComparisonOperator as CypherComparisonOperator,
     Expression, FunctionInvocation, Literal as CypherLiteral, NumberLiteral, UnaryOperator,
@@ -12,7 +12,8 @@ use decypher::ast::pattern::{
     RelationshipPattern as CypherRelationshipPattern,
 };
 use decypher::ast::query::{
-    Query, QueryBody, ReadingClause, SinglePartBody, SinglePartQuery, SingleQueryKind,
+    MultiPartQuery, MultiPartQueryPart, Query, QueryBody, ReadingClause, SinglePartBody,
+    SinglePartQuery, SingleQueryKind,
 };
 use decypher::cst::{AstNode as _, AstToken as _, Ident};
 use decypher::syntax::{SyntaxKind, SyntaxNode};
@@ -90,60 +91,21 @@ fn compile_query(query: &Query, context: &CypherCompileContext) -> Result<GraphP
             "only read-only single MATCH queries are supported",
         ));
     };
-    let SingleQueryKind::SinglePart(single_part) = &single_query.kind else {
-        return Err(unsupported(
-            "query",
-            "WITH, UNION, and multi-part queries are not supported yet",
-        ));
-    };
-
-    compile_single_part(single_part, context)
+    match &single_query.kind {
+        SingleQueryKind::SinglePart(single_part) => compile_single_part(single_part, context),
+        SingleQueryKind::MultiPart(multi_part) => {
+            compile_transparent_multi_part(multi_part, context)
+        }
+    }
 }
 
 fn compile_single_part(
     query: &SinglePartQuery,
     context: &CypherCompileContext,
 ) -> Result<GraphPlan, CoreError> {
-    let match_clause = match query.reading_clauses.as_slice() {
-        [ReadingClause::Match(match_clause)] => match_clause,
-        [] => {
-            return Err(unsupported(
-                "match",
-                "exactly one MATCH clause is required before RETURN",
-            ));
-        }
-        [ReadingClause::Unwind(_)] => {
-            return Err(unsupported("match", "UNWIND is not supported"));
-        }
-        [ReadingClause::InQueryCall(_) | ReadingClause::CallSubquery(_)] => {
-            return Err(unsupported("match", "CALL is not supported"));
-        }
-        [ReadingClause::LoadCsv(_)] => {
-            return Err(unsupported("match", "LOAD CSV is not supported"));
-        }
-        _ => {
-            return Err(unsupported(
-                "match",
-                "only one MATCH clause is supported per query",
-            ));
-        }
-    };
+    let match_clause = single_match_clause(&query.reading_clauses, "match")?;
 
-    let return_clause = match &query.body {
-        SinglePartBody::Return(return_clause) => return_clause,
-        SinglePartBody::Updating { .. } => {
-            return Err(unsupported(
-                "query",
-                "write clauses are not supported by Coral virtual graphs",
-            ));
-        }
-        SinglePartBody::Finish(_) => {
-            return Err(unsupported(
-                "query",
-                "FINISH is not supported because virtual graph queries must return rows",
-            ));
-        }
-    };
+    let return_clause = return_clause_from_single_part(query, "query")?;
 
     let mut plan = compile_match(match_clause)?;
     if let Some(where_clause) = &match_clause.where_clause {
@@ -154,12 +116,180 @@ fn compile_single_part(
     Ok(plan)
 }
 
+fn compile_transparent_multi_part(
+    query: &MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<GraphPlan, CoreError> {
+    let mut plan = GraphPlan::default();
+    for (index, part) in query.parts.iter().enumerate() {
+        compile_transparent_multi_part_part(part, index, &mut plan)?;
+    }
+
+    match query.final_part.reading_clauses.as_slice() {
+        [] => {}
+        clauses => {
+            let match_clause = single_match_clause(clauses, "final_part.match")?;
+            compile_match_into(match_clause, &mut plan)?;
+            if let Some(where_clause) = &match_clause.where_clause {
+                let predicate = compile_predicate_expression(where_clause, "final_part.where")?;
+                append_predicate_expression(predicate, &mut plan);
+            }
+        }
+    }
+    let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
+    compile_return(return_clause, &mut plan, context)?;
+    Ok(plan)
+}
+
+fn compile_transparent_multi_part_part(
+    part: &MultiPartQueryPart,
+    index: usize,
+    plan: &mut GraphPlan,
+) -> Result<(), CoreError> {
+    if !part.updating_clauses.is_empty() {
+        return Err(unsupported(
+            format!("parts[{index}].updating_clauses"),
+            "write clauses are not supported by Coral virtual graphs",
+        ));
+    }
+    let match_clause = single_match_clause(&part.reading_clauses, format!("parts[{index}].match"))?;
+    compile_match_into(match_clause, plan)?;
+    if let Some(where_clause) = &match_clause.where_clause {
+        let predicate =
+            compile_predicate_expression(where_clause, format!("parts[{index}].where"))?;
+        append_predicate_expression(predicate, plan);
+    }
+    validate_transparent_with(&part.with, plan, format!("parts[{index}].with"))
+}
+
+fn validate_transparent_with(
+    with: &With,
+    plan: &GraphPlan,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    if with.distinct {
+        return Err(unsupported(
+            format!("{path}.distinct"),
+            "WITH DISTINCT requires staged query planning and is not supported yet",
+        ));
+    }
+    if with.star {
+        return Err(unsupported(
+            format!("{path}.star"),
+            "WITH * requires scoped query planning and is not supported yet",
+        ));
+    }
+    if with.order.is_some() || with.skip.is_some() || with.limit.is_some() {
+        return Err(unsupported(
+            path.clone(),
+            "WITH ORDER BY, SKIP, and LIMIT require staged query planning and are not supported yet",
+        ));
+    }
+    if with.where_clause.is_some() {
+        return Err(unsupported(
+            format!("{path}.where"),
+            "WITH WHERE requires staged query planning and is not supported yet",
+        ));
+    }
+    if with.items.is_empty() {
+        return Err(unsupported(
+            format!("{path}.items"),
+            "WITH must carry every currently bound variable in this transparent subset",
+        ));
+    }
+
+    let mut carried = BTreeSet::new();
+    for (index, item) in with.items.iter().enumerate() {
+        if item.alias.is_some() {
+            return Err(unsupported(
+                format!("{path}.items[{index}].alias"),
+                "WITH aliases require scoped query planning and are not supported yet",
+            ));
+        }
+        let Expression::Variable(variable) = &item.expression else {
+            return Err(unsupported(
+                format!("{path}.items[{index}].expression"),
+                "transparent WITH only supports pass-through graph variables",
+            ));
+        };
+        carried.insert(variable_name(variable));
+    }
+
+    let bound = bound_graph_variables(plan);
+    if carried != bound {
+        return Err(unsupported(
+            format!("{path}.items"),
+            "transparent WITH must carry every currently bound graph variable without dropping or adding variables",
+        ));
+    }
+
+    Ok(())
+}
+
+fn bound_graph_variables(plan: &GraphPlan) -> BTreeSet<String> {
+    plan.nodes
+        .iter()
+        .map(|node| node.variable.clone())
+        .chain(
+            plan.relationships
+                .iter()
+                .filter_map(|relationship| relationship.variable.clone()),
+        )
+        .collect()
+}
+
+fn single_match_clause(
+    reading_clauses: &[ReadingClause],
+    path: impl Into<String>,
+) -> Result<&Match, CoreError> {
+    let path = path.into();
+    match reading_clauses {
+        [ReadingClause::Match(match_clause)] => Ok(match_clause),
+        [] => Err(unsupported(
+            path,
+            "exactly one MATCH clause is required before RETURN",
+        )),
+        [ReadingClause::Unwind(_)] => Err(unsupported(path, "UNWIND is not supported")),
+        [ReadingClause::InQueryCall(_) | ReadingClause::CallSubquery(_)] => {
+            Err(unsupported(path, "CALL is not supported"))
+        }
+        [ReadingClause::LoadCsv(_)] => Err(unsupported(path, "LOAD CSV is not supported")),
+        _ => Err(unsupported(
+            path,
+            "only one MATCH clause is supported per query",
+        )),
+    }
+}
+
+fn return_clause_from_single_part(
+    query: &SinglePartQuery,
+    path: impl Into<String>,
+) -> Result<&Return, CoreError> {
+    let path = path.into();
+    match &query.body {
+        SinglePartBody::Return(return_clause) => Ok(return_clause),
+        SinglePartBody::Updating { .. } => Err(unsupported(
+            path,
+            "write clauses are not supported by Coral virtual graphs",
+        )),
+        SinglePartBody::Finish(_) => Err(unsupported(
+            path,
+            "FINISH is not supported because virtual graph queries must return rows",
+        )),
+    }
+}
+
 fn compile_match(match_clause: &Match) -> Result<GraphPlan, CoreError> {
+    let mut plan = GraphPlan::default();
+    compile_match_into(match_clause, &mut plan)?;
+    Ok(plan)
+}
+
+fn compile_match_into(match_clause: &Match, plan: &mut GraphPlan) -> Result<(), CoreError> {
     if match_clause.optional {
         return Err(unsupported("match", "OPTIONAL MATCH is not supported yet"));
     }
-
-    let mut plan = GraphPlan::default();
 
     if match_clause.pattern.parts.is_empty() {
         return Err(unsupported(
@@ -185,7 +315,7 @@ fn compile_match(match_clause: &Match) -> Result<GraphPlan, CoreError> {
 
         let start_node = compile_node(
             start,
-            &plan,
+            plan,
             format!("match.pattern.parts[{part_index}].nodes[0]"),
         )?;
         let mut previous_variable = start_node.variable.clone();
@@ -199,7 +329,7 @@ fn compile_match(match_clause: &Match) -> Result<GraphPlan, CoreError> {
                 "match.pattern.parts[{part_index}].nodes[{}]",
                 chain_index + 1
             );
-            let next_node = compile_node(&chain.node, &plan, node_path)?;
+            let next_node = compile_node(&chain.node, plan, node_path)?;
             let next_variable = next_node.variable.clone();
             let relationship_index = plan.relationships.len();
             let relationship_path =
@@ -209,7 +339,7 @@ fn compile_match(match_clause: &Match) -> Result<GraphPlan, CoreError> {
                 &previous_variable,
                 &next_variable,
                 relationship_index,
-                &plan,
+                plan,
                 relationship_path,
             )?;
             previous_variable = next_variable;
@@ -222,7 +352,7 @@ fn compile_match(match_clause: &Match) -> Result<GraphPlan, CoreError> {
         }
     }
 
-    Ok(plan)
+    Ok(())
 }
 
 fn compile_node(
@@ -1280,6 +1410,67 @@ mod tests {
     }
 
     #[test]
+    fn compiles_transparent_with_pass_through() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH service \
+             MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+             RETURN service.name AS source, target.name AS target \
+             ORDER BY source, target",
+        )
+        .expect("transparent WITH query should compile");
+
+        assert_eq!(
+            plan.nodes,
+            vec![
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "target".to_string(),
+                    label: "Service".to_string(),
+                },
+            ]
+        );
+        assert_eq!(plan.relationships.len(), 1);
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("source".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("target".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_transparent_with_before_return() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH service \
+             RETURN service.name AS service \
+             ORDER BY service",
+        )
+        .expect("transparent WITH before RETURN should compile");
+
+        assert_eq!(plan.nodes.len(), 1);
+        assert_eq!(plan.relationships.len(), 0);
+        assert_eq!(plan.projections.len(), 1);
+    }
+
+    #[test]
     fn compiles_reverse_relationship_direction() {
         let plan = compile_cypher(
             "MATCH (service:Service)<-[ownership:OWNS]-(person:Person) \
@@ -1932,6 +2123,20 @@ mod tests {
     #[test]
     fn rejects_optional_match() {
         assert_unsupported("OPTIONAL MATCH (service:Service) RETURN service.name");
+    }
+
+    #[test]
+    fn rejects_non_transparent_with_boundaries() {
+        assert_unsupported("MATCH (service:Service) WITH DISTINCT service RETURN service.name");
+        assert_unsupported("MATCH (service:Service) WITH * RETURN service.name");
+        assert_unsupported("MATCH (service:Service) WITH service.name AS name RETURN name");
+        assert_unsupported("MATCH (service:Service) WITH service LIMIT 1 RETURN service.name");
+        assert_unsupported(
+            "MATCH (service:Service) WITH service WHERE service.tier = 'prod' RETURN service.name",
+        );
+        assert_unsupported(
+            "MATCH (person:Person)-[:OWNS]->(service:Service) WITH service RETURN service.name",
+        );
     }
 
     #[test]
