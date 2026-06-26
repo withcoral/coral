@@ -103,13 +103,7 @@ coral source test youtrack
     ├─ tags
     └─ users
     Query tests
-    5 declared · 5 passed · 0 failed
-
-    ✓ SELECT login, name FROM youtrack.users LIMIT 5
-      3 rows
-
-    ✓ SELECT short_name, name FROM youtrack.projects LIMIT 5
-      1 row
+    4 declared · 4 passed · 0 failed
 
     ✓ SELECT id, summary FROM youtrack.issues LIMIT 5
       4 rows
@@ -117,8 +111,11 @@ coral source test youtrack
     ✓ SELECT id, name FROM youtrack.agile_boards LIMIT 5
       0 rows
 
-    ✓ SELECT id, name FROM youtrack.groups LIMIT 5
-      4 rows
+    ✓ SELECT id, name FROM youtrack.tags LIMIT 5
+      2 rows
+
+    ✓ SELECT id, name, query FROM youtrack.saved_searches LIMIT 5
+      1 row
 ```
 
 Query examples:

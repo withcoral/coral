@@ -30,11 +30,10 @@ request_headers:
     value: application/json
 
 test_queries:
-  - SELECT login, name FROM youtrack.users LIMIT 5
-  - SELECT short_name, name FROM youtrack.projects LIMIT 5
   - SELECT id, summary FROM youtrack.issues LIMIT 5
   - SELECT id, name FROM youtrack.agile_boards LIMIT 5
-  - SELECT id, name FROM youtrack.groups LIMIT 5
+  - SELECT id, name FROM youtrack.tags LIMIT 5
+  - SELECT id, name, query FROM youtrack.saved_searches LIMIT 5
 
 tables:
   # ──────────────────────────────────────────────────────────────────────────
@@ -201,21 +200,27 @@ tables:
           path:
             - description
       - name: created_at
-        type: Int64
+        type: Timestamp
         nullable: true
         description: Unix timestamp in milliseconds.
         expr:
-          kind: path
-          path:
-            - created
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - created
       - name: updated_at
-        type: Int64
+        type: Timestamp
         nullable: true
         description: Unix timestamp in milliseconds.
         expr:
-          kind: path
-          path:
-            - updated
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - updated
       - name: query
         type: Utf8
         nullable: true
@@ -231,7 +236,7 @@ tables:
   - name: comments
     description: Comments on a specific issue.
     guide: |
-      Requires an `issue_id` filter (the string ID, not the readable ID) to retrieve comments.
+      Requires an `issue_id` filter (either the database ID or the project-readable issue ID) to retrieve comments.
     filters:
       - name: issue_id
         required: true
@@ -274,19 +279,25 @@ tables:
           path:
             - text
       - name: created_at
-        type: Int64
+        type: Timestamp
         nullable: true
         expr:
-          kind: path
-          path:
-            - created
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - created
       - name: updated_at
-        type: Int64
+        type: Timestamp
         nullable: true
         expr:
-          kind: path
-          path:
-            - updated
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - updated
 
   # ──────────────────────────────────────────────────────────────────────────
   # tags
@@ -426,21 +437,27 @@ tables:
           path:
             - name
       - name: start_date
-        type: Int64
+        type: Timestamp
         nullable: true
         description: Unix timestamp in milliseconds.
         expr:
-          kind: path
-          path:
-            - start
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - start
       - name: finish_date
-        type: Int64
+        type: Timestamp
         nullable: true
         description: Unix timestamp in milliseconds.
         expr:
-          kind: path
-          path:
-            - finish
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - finish
 
   # ──────────────────────────────────────────────────────────────────────────
   # groups
