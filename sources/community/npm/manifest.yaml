@@ -1,10 +1,12 @@
 name: npm
-version: 0.1.0
+version: 0.2.0
 dsl_version: 3
 backend: http
 description: >-
-  Search the npm package registry and retrieve search-result summary data via
-  the public npm registry REST API. No authentication required.
+  Query the public npm registry REST API (registry.npmjs.org). The `search`
+  table returns ranked search-result summaries; the `packages` table returns
+  full metadata for a single package by name (versions, repository, publish
+  timestamps, maintainers, license, README). No authentication required.
 base_url: https://registry.npmjs.org
 
 test_queries:
@@ -14,6 +16,9 @@ test_queries:
   - >-
     SELECT name, version, description
     FROM npm.search WHERE text = 'react' LIMIT 1
+  - >-
+    SELECT name, latest_version
+    FROM npm.packages WHERE package_name = 'react' LIMIT 1
 
 tables:
   - name: search
@@ -314,3 +319,155 @@ tables:
         expr:
           kind: from_filter
           key: maintenance_weight
+
+  - name: packages
+    description: >
+      Full metadata for a single npm package, fetched by name. One row per
+      package. Filter on package_name (required). Scoped packages like
+      @types/node are supported.
+    guide: >
+      Look up a single npm package's metadata by name. Requires package_name
+      and maps to GET /{package_name} on registry.npmjs.org. Scoped packages
+      such as @types/node are supported (the slash is part of the name).
+      Returns exactly one row. Use repository__url to bridge to a git host, and
+      time__modified to gauge how recently the package was published. For
+      download counts use the separate npm_downloads source.
+    filters:
+      - name: package_name
+        required: true
+    request:
+      method: GET
+      path: "/{{filter.package_name}}"
+    response:
+      rows_path: []
+      row_strategy: direct
+    columns:
+      - name: package_name
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Package name queried (echoes the WHERE filter).
+        expr:
+          kind: from_filter
+          key: package_name
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Canonical package name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Package description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: latest_version
+        type: Utf8
+        nullable: true
+        description: Version currently tagged 'latest'.
+        expr:
+          kind: path
+          path:
+            - dist-tags
+            - latest
+      - name: homepage
+        type: Utf8
+        nullable: true
+        description: Project homepage URL.
+        expr:
+          kind: path
+          path:
+            - homepage
+      - name: repository__url
+        type: Utf8
+        nullable: true
+        description: Repository URL (typically git+https://github.com/owner/repo).
+        expr:
+          kind: path
+          path:
+            - repository
+            - url
+      - name: time__created
+        type: Timestamp
+        nullable: true
+        description: First-publish timestamp (RFC3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - time
+              - created
+      - name: time__modified
+        type: Timestamp
+        nullable: true
+        description: Most-recent-publish timestamp, any version (RFC3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - time
+              - modified
+      - name: maintainers
+        type: Json
+        nullable: true
+        description: Array of maintainer {name,email} objects.
+        expr:
+          kind: path
+          path:
+            - maintainers
+      - name: keywords
+        type: Json
+        nullable: true
+        description: Array of keyword strings.
+        expr:
+          kind: path
+          path:
+            - keywords
+      - name: dist_tags
+        type: Json
+        nullable: true
+        description: Object of {tag -> version}.
+        expr:
+          kind: path
+          path:
+            - dist-tags
+      - name: license
+        type: Utf8
+        nullable: true
+        description: SPDX license string.
+        expr:
+          kind: path
+          path:
+            - license
+      - name: bugs__url
+        type: Utf8
+        nullable: true
+        description: Issue tracker URL.
+        expr:
+          kind: path
+          path:
+            - bugs
+            - url
+      - name: readme
+        type: Utf8
+        nullable: true
+        description: README markdown for the latest published version.
+        expr:
+          kind: path
+          path:
+            - readme
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw npm registry document.
+        expr:
+          kind: current_row

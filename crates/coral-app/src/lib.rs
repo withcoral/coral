@@ -33,10 +33,19 @@
 //! - `coral-engine` owns the data plane: backend registration, `DataFusion`
 //!   runtime assembly, and `SQL` execution over validated specs.
 //!
+#![cfg_attr(
+    test,
+    expect(
+        unused_crate_dependencies,
+        reason = "wiremock and opentelemetry-proto are only used by integration test targets in this crate's dev-dependencies."
+    )
+)]
+
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
 mod catalog;
 mod credentials;
+mod episode;
 pub mod features;
 mod feedback;
 mod identity;

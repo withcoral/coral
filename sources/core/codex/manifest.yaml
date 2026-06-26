@@ -14,8 +14,11 @@ tables:
       Reads current Codex session JSONL files under
       `~/.codex/sessions/<year>/<month>/<day>/`.
 
-      Filter on `year`, `month`, and `day` to prune files before scanning.
-      Use JSON functions such as `json_get_str(payload, 'cwd')` and
+      Filter on `year`, `month`, and `day` to prune files before scanning. Use
+      `session_path`, `session_file`, and one-based `event_index` values to
+      group events into a stable JSONL session and preserve ordering within
+      that session. Use JSON functions such as
+      `json_get_str(payload, 'cwd')` and
       `json_get_str(payload, 'model_provider')` for nested event payloads.
     source:
       location: file://~/.codex/sessions/
@@ -36,6 +39,13 @@ tables:
           path:
             kind: segment
             index: 2
+      metadata:
+        - name: session_path
+          kind: relative_path
+        - name: session_file
+          kind: file_stem
+        - name: event_index
+          kind: line_number
     columns:
       - name: timestamp
         type: Utf8

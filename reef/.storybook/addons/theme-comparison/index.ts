@@ -1,0 +1,1 @@
+export { themeComparisonDecorator } from './decorator'

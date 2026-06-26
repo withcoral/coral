@@ -13,13 +13,26 @@
 - `crates/coral-mcp`: MCP stdio adapter over `coral-client`.
 - `crates/coral-spec`: declarative source-spec parsing, validation,
   input discovery, and normalized source-definition models.
+- `crates/coral-telemetry`: cross-crate telemetry helpers that are independent
+  of app bootstrap, query runtime, and adapter surfaces.
+- `ui`: embedded Coral app UI built into the CLI release flow.
+- `reef`: React Router/Wax frontend shell. It is validated independently from
+  `ui` and is not built by Rust crate build scripts.
 - `plugins/coral`: Agent plugin packaging. `plugins/coral/skills` is the
   canonical in-repo home for maintained Coral agent skills.
 
 ## Rules
 
 - Run `make rust-checks` before submitting PRs that include changes to Rust code.
+- Run `make schema-check` before submitting PRs that touch generated source
+  manifest schemas or the Rust helpers that generate them. Use
+  `make schema-generate` to refresh generated schema files. The Validate
+  workflow enforces this through its `schema-freshness` job when schema inputs
+  change.
 - UI changes must pass `npm run check --prefix ui` (oxfmt + oxlint) before submitting.
+- Reef changes must pass `npm run check --prefix reef`,
+  `npm run typecheck --prefix reef`, `npm test --prefix reef`, and
+  `npm run build --prefix reef` before submitting.
 - Run `make perf-check` before submitting PRs that could affect CLI startup,
   local server bootstrap, source registration, or `coral.tables` catalog query
   latency. CI installs the bundled `github` source with fake credentials and
@@ -35,6 +48,17 @@
 - Keep transport contract concerns in `coral-api`, source-spec concerns in
   `coral-spec`, app/state concerns in `coral-app`, and query/runtime
   concerns in `coral-engine`.
+- Keep app-owned runtime package assembly in `coral-app`. `coral-engine`
+  should compile generic runtime components, not interpret DSL v4 authored
+  manifests, materialized fingerprints, semantic IR, or projection catalogs.
+- For DSL v4 materialization, the user owns when a source is generated or
+  regenerated. Coral materializes at source add, queries only from the
+  installed materialized package, never silently refreshes descriptors or
+  projections, and should fail loudly on missing or incompatible artifacts with
+  guidance to re-add the source.
+- Keep cross-crate W3C trace-context propagation helpers in
+  `coral-telemetry`; do not make `coral-app`, `coral-client`, `coral-engine`,
+  or `coral-mcp` depend on each other just to share telemetry carrier logic.
 - Keep shared Arrow IPC decoding and result rendering in `coral-client`.
 - Treat `coral-app` as an internal composition root even if sibling crates use
   its bootstrap seam today.
@@ -44,13 +68,26 @@
   runtime/bootstrap env reads, `coral-cli` owns CLI-surface env reads, and
   other crates should receive explicit values from callers instead of reading
   ambient process environment directly.
-- Changes to CLI or MCP surfaces must include corresponding documentation
-  updates under `docs/` in the same change.
+- Keep docs lean and readable. For CLI or MCP changes, update `docs/` only
+  when the change affects a public surface or captures important user-facing or
+  contributor-facing knowledge. Do not document every implementation detail.
+  When docs are warranted, choose the best existing location first and make the
+  amount of space match the feature's user-facing weight and visibility.
+- Keep stable bundled sources under `sources/core/**`; put preview DSL v4 source
+  specs under `sources/core-v4/**` with distinct manifest names such as
+  `<name>_v4`. Do not bundle `sources/core-v4` into the binary; install preview
+  v4 sources with `coral source add --file`. Do not replace or migrate an
+  existing v3 source merely because a preview v4 spec exists.
 - Changes to `scripts/install.sh` must keep the `Validate` workflow's
   install-script matrix in sync with every OS/architecture target that the
   installer supports.
 - Keep general repository automation in `xtask`; reserve `scripts/` for the
   bash Coral installer and installer-specific support.
+- Keep `xtask` organized by workflow: docs generation lives under
+  `xtask/src/docs/`, shared source-manifest discovery lives in
+  `xtask/src/sources.rs`, performance checks live in `xtask/src/perf.rs`, and
+  skill export lives in `xtask/src/skills.rs`. Release signing and
+  notarization automation lives in `xtask/src/release.rs`.
 - `make docs-check` intentionally skips the aggregate community source catalog.
   Any PR may leave that generated page stale so unrelated changes do not fail
   on aggregate community catalog drift; keep docs freshness strict for bundled
@@ -105,8 +142,9 @@ source-authoring instructions.
 For meta changes:
 
 - Update the nearest relevant `AGENTS.md` in the same change.
-- Update `docs/`, generated docs, or docs tooling when the changed behavior is
-  user-facing or docs-authoring-facing.
+- Update `docs/`, generated docs, or docs tooling only when the changed
+  behavior is user-facing or docs-authoring-facing, and use the smallest useful
+  edit in the best existing location.
 - Preserve provenance: keep observed repo facts, project direction, local
   preferences, and generated context separate instead of merging them into one
   untraceable rule.

@@ -39,16 +39,17 @@ LIMIT 10;
 
 | Filter pattern | Tables | Example |
 |---|---|---|
-| `package_name` + `ecosystem` + `version` | 1 | `WHERE package_name = 'lodash' AND ecosystem = 'npm' AND version = '4.17.15'` |
+| `package_name` + `ecosystem` | 1 | `WHERE package_name = 'lodash' AND ecosystem = 'npm'` |
 | `commit` | 1 | `WHERE commit = '<sha>'` |
 | `id` | 1 | `WHERE id = 'CVE-2021-44228'` |
 
 ### query_by_version
 
-Matches OSV vulnerability records for a given package name, ecosystem, and
-version. Maps to `POST /v1/query` and paginates via `nextPageToken`. Optional
-filters: none (purl is mutually exclusive with package_name and ecosystem and
-is not exposed in this table).
+Matches OSV vulnerability records for a package name and ecosystem. Requires
+`package_name` and `ecosystem`; `version` is optional and narrows results when
+provided. Maps to `POST /v1/query` and paginates via `next_page_token`. `purl`
+is mutually exclusive with `package_name` and `ecosystem` and is not exposed in
+this table.
 
 ### query_by_commit
 

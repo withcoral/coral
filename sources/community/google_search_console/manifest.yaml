@@ -1,0 +1,1182 @@
+name: google_search_console
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Google Search Console sites, sitemaps, and search performance by date,
+  query, page, country, device, and search appearance from the Google Search
+  Console API.
+inputs:
+  GOOGLE_SEARCH_CONSOLE_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Use an OAuth 2.0 access token with the Search Console readonly scope.
+      For interactive setup, run
+      `coral source add --interactive --file sources/community/google_search_console/manifest.yaml`
+      and choose "Connect Google Search Console". Create a Google Cloud OAuth
+      Desktop app client with the Search Console API enabled, then enter its
+      client ID and client secret when prompted.
+
+      The OAuth flow requests:
+      https://www.googleapis.com/auth/webmasters.readonly
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Google Search Console
+          description: Use Google OAuth to retrieve a Search Console access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_ID
+              secret:
+                input: GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/webmasters.readonly
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Google Search Console OAuth access token.
+base_url: https://www.googleapis.com/webmasters/v3
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GOOGLE_SEARCH_CONSOLE_ACCESS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT site_url, permission_level FROM google_search_console.sites LIMIT 1
+
+tables:
+  - name: sites
+    description: >
+      Lists all verified properties (sites) accessible to the authenticated
+      user. Returns the site URL and the user's permission level. Use the
+      encoded_site_url values from this table as required filter values in the
+      performance tables.
+    guide: >
+      Start here to discover site URLs.
+      `SELECT site_url, encoded_site_url, permission_level FROM google_search_console.sites`.
+      The encoded_site_url values returned are convenience encodings for common
+      URL-prefix and `sc-domain:` properties. Source-spec expressions only
+      escape `/` and `:` here, so unusual URL-prefix properties with path
+      segments, query strings, fragments, spaces, or other reserved characters
+      should be manually percent-encoded or copy-checked before use.
+    request:
+      method: GET
+      path: /sites
+    response:
+      rows_path:
+        - siteEntry
+    pagination:
+      mode: none
+    columns:
+      - name: site_url
+        type: Utf8
+        nullable: false
+        description: >-
+          Property URL as registered in Search Console. URL-prefix
+          properties include protocol and trailing slash (e.g.
+          https://example.com/). Domain properties use the sc-domain:
+          prefix (e.g. sc-domain:example.com).
+        expr:
+          kind: path
+          path:
+            - siteUrl
+      - name: encoded_site_url
+        type: Utf8
+        nullable: false
+        description: >-
+          Convenience encoded property URL for common URL-prefix and sc-domain
+          properties. This column escapes / and : only; manually percent-encode
+          or copy-check unusual URL-prefix properties before using them in
+          performance table filters.
+        expr:
+          kind: replace
+          expr:
+            kind: replace
+            expr:
+              kind: path
+              path:
+                - siteUrl
+            from: "/"
+            to: "%2F"
+          from: ":"
+          to: "%3A"
+      - name: permission_level
+        type: Utf8
+        nullable: true
+        description: >-
+          User's permission level for this property (siteOwner,
+          siteFullUser, siteRestrictedUser, siteUnverifiedUser).
+        expr:
+          kind: path
+          path:
+            - permissionLevel
+
+  - name: sitemaps
+    description: >
+      Lists submitted sitemap entries for a Search Console property, including
+      sitemap index entries when a sitemap_index filter is provided.
+    guide: >
+      Requires encoded_site_url. Start with google_search_console.sites to
+      discover the required encoded_site_url value. `SELECT path, type,
+      last_submitted, warnings, errors FROM google_search_console.sitemaps
+      WHERE encoded_site_url = 'https%3A%2F%2Fexample.com%2F'`.
+    filters:
+      - name: encoded_site_url
+        required: true
+        description: URL-encoded property URL from google_search_console.sites.
+      - name: sitemap_index
+        required: false
+        description: Optional sitemap index URL used to list entries within that index.
+    request:
+      method: GET
+      path: /sites/{{filter.encoded_site_url}}/sitemaps
+      query:
+        - name: sitemapIndex
+          from: filter
+          key: sitemap_index
+    response:
+      rows_path:
+        - sitemap
+    pagination:
+      mode: none
+    columns:
+      - name: encoded_site_url
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Encoded site URL from required filter.
+        expr:
+          kind: from_filter
+          key: encoded_site_url
+      - name: sitemap_index
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Sitemap index URL from optional filter, when provided.
+        expr:
+          kind: from_filter
+          key: sitemap_index
+      - name: path
+        type: Utf8
+        nullable: false
+        description: URL of the sitemap.
+        expr:
+          kind: path
+          path:
+            - path
+      - name: last_submitted
+        type: Timestamp
+        nullable: true
+        description: Last time this sitemap was submitted.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastSubmitted
+      - name: last_downloaded
+        type: Timestamp
+        nullable: true
+        description: Last time Google downloaded this sitemap.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastDownloaded
+      - name: is_pending
+        type: Boolean
+        nullable: true
+        description: Whether processing is still pending for this sitemap.
+        expr:
+          kind: path
+          path:
+            - isPending
+      - name: is_sitemaps_index
+        type: Boolean
+        nullable: true
+        description: Whether this sitemap is a sitemap index.
+        expr:
+          kind: path
+          path:
+            - isSitemapsIndex
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Sitemap type, such as sitemap, rssFeed, atomFeed, urlList, or notSitemap.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: warnings
+        type: Int64
+        nullable: true
+        description: Number of non-critical warnings found for this sitemap.
+        expr:
+          kind: path
+          path:
+            - warnings
+      - name: errors
+        type: Int64
+        nullable: true
+        description: Number of errors found for this sitemap.
+        expr:
+          kind: path
+          path:
+            - errors
+      - name: contents
+        type: Json
+        nullable: true
+        description: Content-type breakdown reported for this sitemap.
+        expr:
+          kind: path
+          path:
+            - contents
+
+  - name: search_performance
+    description: >
+      Aggregate Search Analytics metrics (clicks, impressions, CTR, and
+      position when supported) for a site within a date range, without
+      dimension grouping. Returns a single row with totals.
+    fetch_limit_default: 1
+    guide: >
+      Requires encoded_site_url, start_date, and end_date filters. The encoded_site_url
+      must match a Search Console site URL path encoding exactly. The optional
+      `type` filter defaults to Google's `web` Search result type when omitted.
+      For discover and googleNews, prefer clicks, impressions, and CTR; Google
+      does not expose the same position surface for every result type.
+      `SELECT * FROM google_search_console.search_performance
+      WHERE encoded_site_url = 'https%3A%2F%2Fexample.com%2F'
+      AND start_date = '2025-01-01' AND end_date = '2025-01-31'`.
+    filters:
+      - name: encoded_site_url
+        required: true
+      - name: start_date
+        required: true
+      - name: end_date
+        required: true
+      - name: type
+        required: false
+        description: >
+          Search Analytics result type. Defaults to web when omitted. Valid
+          values include web, image, video, news, discover, and googleNews;
+          Google may reject unsupported type, dimension, and metric combinations.
+    request:
+      method: POST
+      path: /sites/{{filter.encoded_site_url}}/searchAnalytics/query
+      body:
+        - path:
+            - startDate
+          from: filter
+          key: start_date
+        - path:
+            - endDate
+          from: filter
+          key: end_date
+        - path:
+            - type
+          from: filter
+          key: type
+        - path:
+            - rowLimit
+          from: literal
+          value: 1
+    response:
+      rows_path:
+        - rows
+    pagination:
+      mode: none
+    columns:
+      - name: encoded_site_url
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Encoded site URL from required filter.
+        expr:
+          kind: from_filter
+          key: encoded_site_url
+      - name: start_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Start date from required filter (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: start_date
+      - name: end_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: End date from required filter (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: end_date
+      - name: type
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search result type filter requested for this query.
+        expr:
+          kind: from_filter
+          key: type
+      - name: clicks
+        type: Int64
+        nullable: true
+        description: Total click count from Google Search results.
+        expr:
+          kind: path
+          path:
+            - clicks
+      - name: impressions
+        type: Int64
+        nullable: true
+        description: Total number of times the site appeared in search results.
+        expr:
+          kind: path
+          path:
+            - impressions
+      - name: ctr
+        type: Float64
+        nullable: true
+        description: Click-through rate (clicks / impressions).
+        expr:
+          kind: path
+          path:
+            - ctr
+      - name: position
+        type: Float64
+        nullable: true
+        description: Average position when supported for the requested result type.
+        expr:
+          kind: path
+          path:
+            - position
+
+  - name: performance_by_date
+    description: >
+      Search performance metrics grouped by date. Each row represents one
+      day's clicks, impressions, CTR, and average position when supported.
+      Days with zero data are omitted by the API.
+    fetch_limit_default: 1000
+    guide: >
+      Requires encoded_site_url, start_date, and end_date filters. The optional
+      `type` filter defaults to Google's `web` Search result type when omitted.
+      Date grouping is a good starting point for non-web result types; for
+      discover and googleNews, avoid relying on position because Google does
+      not expose the same position surface for every result type.
+      `SELECT date, clicks, impressions, ctr, position
+      FROM google_search_console.performance_by_date
+      WHERE encoded_site_url = 'https%3A%2F%2Fexample.com%2F'
+      AND start_date = '2025-01-01' AND end_date = '2025-01-31'`.
+    filters:
+      - name: encoded_site_url
+        required: true
+      - name: start_date
+        required: true
+      - name: end_date
+        required: true
+      - name: type
+        required: false
+        description: >
+          Search Analytics result type. Defaults to web when omitted. Valid
+          values include web, image, video, news, discover, and googleNews;
+          Google may reject unsupported type, dimension, and metric combinations.
+    request:
+      method: POST
+      path: /sites/{{filter.encoded_site_url}}/searchAnalytics/query
+      body:
+        - path:
+            - startDate
+          from: filter
+          key: start_date
+        - path:
+            - endDate
+          from: filter
+          key: end_date
+        - path:
+            - type
+          from: filter
+          key: type
+        - path:
+            - dimensions
+          from: literal
+          value:
+            - date
+        - path:
+            - rowLimit
+          from: literal
+          value: 1000
+    response:
+      rows_path:
+        - rows
+    pagination:
+      mode: none
+    columns:
+      - name: encoded_site_url
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Encoded site URL from required filter.
+        expr:
+          kind: from_filter
+          key: encoded_site_url
+      - name: start_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Start date from required filter (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: start_date
+      - name: end_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: End date from required filter (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: end_date
+      - name: type
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search result type filter requested for this query.
+        expr:
+          kind: from_filter
+          key: type
+      - name: date
+        type: Utf8
+        nullable: true
+        description: Date for this row (YYYY-MM-DD).
+        expr:
+          kind: path
+          path:
+            - keys
+            - "0"
+      - name: clicks
+        type: Int64
+        nullable: true
+        description: Click count from Google Search results.
+        expr:
+          kind: path
+          path:
+            - clicks
+      - name: impressions
+        type: Int64
+        nullable: true
+        description: Number of times the site appeared in search results.
+        expr:
+          kind: path
+          path:
+            - impressions
+      - name: ctr
+        type: Float64
+        nullable: true
+        description: Click-through rate (clicks / impressions).
+        expr:
+          kind: path
+          path:
+            - ctr
+      - name: position
+        type: Float64
+        nullable: true
+        description: Average position when supported for the requested result type.
+        expr:
+          kind: path
+          path:
+            - position
+
+  - name: performance_by_query
+    description: >
+      Search performance metrics grouped by search query (keyword). Each
+      row represents one query's clicks, impressions, CTR, and average
+      position when supported. Results are sorted by click count descending.
+    fetch_limit_default: 1000
+    guide: >
+      Requires encoded_site_url, start_date, and end_date filters. The optional
+      `type` filter defaults to Google's `web` Search result type when omitted.
+      Use query grouping with Search result types such as web, image, video, or
+      news. Google does not support query grouping for Discover, and unsupported
+      type/dimension combinations return API errors.
+      `SELECT query, clicks, impressions, ctr, position
+      FROM google_search_console.performance_by_query
+      WHERE encoded_site_url = 'https%3A%2F%2Fexample.com%2F'
+      AND start_date = '2025-01-01' AND end_date = '2025-01-31'
+      AND type = 'web'
+      LIMIT 50`.
+    filters:
+      - name: encoded_site_url
+        required: true
+      - name: start_date
+        required: true
+      - name: end_date
+        required: true
+      - name: type
+        required: false
+        description: >
+          Search Analytics result type. Defaults to web when omitted. Use query
+          grouping with Search result types such as web, image, video, or news;
+          Google does not support query grouping for Discover.
+    request:
+      method: POST
+      path: /sites/{{filter.encoded_site_url}}/searchAnalytics/query
+      body:
+        - path:
+            - startDate
+          from: filter
+          key: start_date
+        - path:
+            - endDate
+          from: filter
+          key: end_date
+        - path:
+            - type
+          from: filter
+          key: type
+        - path:
+            - dimensions
+          from: literal
+          value:
+            - query
+        - path:
+            - rowLimit
+          from: literal
+          value: 1000
+    response:
+      rows_path:
+        - rows
+    pagination:
+      mode: none
+    columns:
+      - name: encoded_site_url
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Encoded site URL from required filter.
+        expr:
+          kind: from_filter
+          key: encoded_site_url
+      - name: start_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Start date from required filter (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: start_date
+      - name: end_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: End date from required filter (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: end_date
+      - name: type
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search result type filter requested for this query.
+        expr:
+          kind: from_filter
+          key: type
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Search query (keyword) used by the user.
+        expr:
+          kind: path
+          path:
+            - keys
+            - "0"
+      - name: clicks
+        type: Int64
+        nullable: true
+        description: Click count from Google Search results.
+        expr:
+          kind: path
+          path:
+            - clicks
+      - name: impressions
+        type: Int64
+        nullable: true
+        description: Number of times the site appeared in search results.
+        expr:
+          kind: path
+          path:
+            - impressions
+      - name: ctr
+        type: Float64
+        nullable: true
+        description: Click-through rate (clicks / impressions).
+        expr:
+          kind: path
+          path:
+            - ctr
+      - name: position
+        type: Float64
+        nullable: true
+        description: Average position when supported for the requested result type.
+        expr:
+          kind: path
+          path:
+            - position
+
+  - name: performance_by_page
+    description: >
+      Search performance metrics grouped by landing page URL. Each row
+      represents one page's clicks, impressions, CTR, and average position
+      when supported.
+    fetch_limit_default: 1000
+    guide: >
+      Requires encoded_site_url, start_date, and end_date filters. The optional
+      `type` filter defaults to Google's `web` Search result type when omitted.
+      Page grouping can be useful across result types, but position may not be
+      available for discover or googleNews; unsupported type/dimension
+      combinations return Google API errors.
+      `SELECT page, clicks, impressions, ctr, position
+      FROM google_search_console.performance_by_page
+      WHERE encoded_site_url = 'https%3A%2F%2Fexample.com%2F'
+      AND start_date = '2025-01-01' AND end_date = '2025-01-31'
+      LIMIT 50`.
+    filters:
+      - name: encoded_site_url
+        required: true
+      - name: start_date
+        required: true
+      - name: end_date
+        required: true
+      - name: type
+        required: false
+        description: >
+          Search Analytics result type. Defaults to web when omitted. Valid
+          values include web, image, video, news, discover, and googleNews;
+          Google may reject unsupported type, dimension, and metric combinations.
+    request:
+      method: POST
+      path: /sites/{{filter.encoded_site_url}}/searchAnalytics/query
+      body:
+        - path:
+            - startDate
+          from: filter
+          key: start_date
+        - path:
+            - endDate
+          from: filter
+          key: end_date
+        - path:
+            - type
+          from: filter
+          key: type
+        - path:
+            - dimensions
+          from: literal
+          value:
+            - page
+        - path:
+            - rowLimit
+          from: literal
+          value: 1000
+    response:
+      rows_path:
+        - rows
+    pagination:
+      mode: none
+    columns:
+      - name: encoded_site_url
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Encoded site URL from required filter.
+        expr:
+          kind: from_filter
+          key: encoded_site_url
+      - name: start_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Start date from required filter (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: start_date
+      - name: end_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: End date from required filter (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: end_date
+      - name: type
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search result type filter requested for this query.
+        expr:
+          kind: from_filter
+          key: type
+      - name: page
+        type: Utf8
+        nullable: true
+        description: Landing page URL that appeared in search results.
+        expr:
+          kind: path
+          path:
+            - keys
+            - "0"
+      - name: clicks
+        type: Int64
+        nullable: true
+        description: Click count from Google Search results.
+        expr:
+          kind: path
+          path:
+            - clicks
+      - name: impressions
+        type: Int64
+        nullable: true
+        description: Number of times the page appeared in search results.
+        expr:
+          kind: path
+          path:
+            - impressions
+      - name: ctr
+        type: Float64
+        nullable: true
+        description: Click-through rate (clicks / impressions).
+        expr:
+          kind: path
+          path:
+            - ctr
+      - name: position
+        type: Float64
+        nullable: true
+        description: Average position when supported for the requested result type.
+        expr:
+          kind: path
+          path:
+            - position
+
+  - name: performance_by_country
+    description: >
+      Search performance metrics grouped by country. Each row represents
+      one country's clicks, impressions, CTR, and average position when
+      supported.
+      Countries use lowercase ISO 3166-1 alpha-3 codes (e.g. usa, gbr, deu).
+    fetch_limit_default: 1000
+    guide: >
+      Requires encoded_site_url, start_date, and end_date filters. The optional
+      `type` filter defaults to Google's `web` Search result type when omitted.
+      Country grouping can be useful across result types, but position may not
+      be available for discover or googleNews; unsupported type/dimension
+      combinations return Google API errors.
+      `SELECT country, clicks, impressions, ctr, position
+      FROM google_search_console.performance_by_country
+      WHERE encoded_site_url = 'https%3A%2F%2Fexample.com%2F'
+      AND start_date = '2025-01-01' AND end_date = '2025-01-31'
+      LIMIT 20`.
+    filters:
+      - name: encoded_site_url
+        required: true
+      - name: start_date
+        required: true
+      - name: end_date
+        required: true
+      - name: type
+        required: false
+        description: >
+          Search Analytics result type. Defaults to web when omitted. Valid
+          values include web, image, video, news, discover, and googleNews;
+          Google may reject unsupported type, dimension, and metric combinations.
+    request:
+      method: POST
+      path: /sites/{{filter.encoded_site_url}}/searchAnalytics/query
+      body:
+        - path:
+            - startDate
+          from: filter
+          key: start_date
+        - path:
+            - endDate
+          from: filter
+          key: end_date
+        - path:
+            - type
+          from: filter
+          key: type
+        - path:
+            - dimensions
+          from: literal
+          value:
+            - country
+        - path:
+            - rowLimit
+          from: literal
+          value: 1000
+    response:
+      rows_path:
+        - rows
+    pagination:
+      mode: none
+    columns:
+      - name: encoded_site_url
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Encoded site URL from required filter.
+        expr:
+          kind: from_filter
+          key: encoded_site_url
+      - name: start_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Start date from required filter (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: start_date
+      - name: end_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: End date from required filter (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: end_date
+      - name: type
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search result type filter requested for this query.
+        expr:
+          kind: from_filter
+          key: type
+      - name: country
+        type: Utf8
+        nullable: true
+        description: Country code (ISO 3166-1 alpha-3, e.g. usa, gbr, deu).
+        expr:
+          kind: path
+          path:
+            - keys
+            - "0"
+      - name: clicks
+        type: Int64
+        nullable: true
+        description: Click count from Google Search results.
+        expr:
+          kind: path
+          path:
+            - clicks
+      - name: impressions
+        type: Int64
+        nullable: true
+        description: Number of times the site appeared in search results.
+        expr:
+          kind: path
+          path:
+            - impressions
+      - name: ctr
+        type: Float64
+        nullable: true
+        description: Click-through rate (clicks / impressions).
+        expr:
+          kind: path
+          path:
+            - ctr
+      - name: position
+        type: Float64
+        nullable: true
+        description: Average position when supported for the requested result type.
+        expr:
+          kind: path
+          path:
+            - position
+
+  - name: performance_by_device
+    description: >
+      Search performance metrics grouped by device type. Each row
+      represents one device type's clicks, impressions, CTR, and average
+      position when supported. Device values are MOBILE, DESKTOP, or TABLET.
+    fetch_limit_default: 1000
+    guide: >
+      Requires encoded_site_url, start_date, and end_date filters. The optional
+      `type` filter defaults to Google's `web` Search result type when omitted.
+      Device grouping can be useful across result types, but position may not
+      be available for discover or googleNews; unsupported type/dimension
+      combinations return Google API errors.
+      `SELECT device, clicks, impressions, ctr, position
+      FROM google_search_console.performance_by_device
+      WHERE encoded_site_url = 'https%3A%2F%2Fexample.com%2F'
+      AND start_date = '2025-01-01' AND end_date = '2025-01-31'`.
+    filters:
+      - name: encoded_site_url
+        required: true
+      - name: start_date
+        required: true
+      - name: end_date
+        required: true
+      - name: type
+        required: false
+        description: >
+          Search Analytics result type. Defaults to web when omitted. Valid
+          values include web, image, video, news, discover, and googleNews;
+          Google may reject unsupported type, dimension, and metric combinations.
+    request:
+      method: POST
+      path: /sites/{{filter.encoded_site_url}}/searchAnalytics/query
+      body:
+        - path:
+            - startDate
+          from: filter
+          key: start_date
+        - path:
+            - endDate
+          from: filter
+          key: end_date
+        - path:
+            - type
+          from: filter
+          key: type
+        - path:
+            - dimensions
+          from: literal
+          value:
+            - device
+        - path:
+            - rowLimit
+          from: literal
+          value: 1000
+    response:
+      rows_path:
+        - rows
+    pagination:
+      mode: none
+    columns:
+      - name: encoded_site_url
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Encoded site URL from required filter.
+        expr:
+          kind: from_filter
+          key: encoded_site_url
+      - name: start_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Start date from required filter (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: start_date
+      - name: end_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: End date from required filter (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: end_date
+      - name: type
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search result type filter requested for this query.
+        expr:
+          kind: from_filter
+          key: type
+      - name: device
+        type: Utf8
+        nullable: true
+        description: Device type (MOBILE, DESKTOP, or TABLET).
+        expr:
+          kind: path
+          path:
+            - keys
+            - "0"
+      - name: clicks
+        type: Int64
+        nullable: true
+        description: Click count from Google Search results.
+        expr:
+          kind: path
+          path:
+            - clicks
+      - name: impressions
+        type: Int64
+        nullable: true
+        description: Number of times the site appeared in search results.
+        expr:
+          kind: path
+          path:
+            - impressions
+      - name: ctr
+        type: Float64
+        nullable: true
+        description: Click-through rate (clicks / impressions).
+        expr:
+          kind: path
+          path:
+            - ctr
+      - name: position
+        type: Float64
+        nullable: true
+        description: Average position when supported for the requested result type.
+        expr:
+          kind: path
+          path:
+            - position
+
+  - name: performance_by_search_appearance
+    description: >
+      Search performance metrics grouped by Search appearance feature. Use this
+      table to discover the Search appearance values available for a property
+      and compare clicks, impressions, CTR, and average position when
+      supported by result feature.
+    fetch_limit_default: 1000
+    guide: >
+      Requires encoded_site_url, start_date, and end_date filters. The optional
+      `type` filter defaults to Google's `web` Search result type when omitted.
+      Search appearance is safest with web Search results. Google may reject
+      unsupported non-web type/searchAppearance combinations.
+      `SELECT search_appearance, clicks, impressions, ctr, position
+      FROM google_search_console.performance_by_search_appearance
+      WHERE encoded_site_url = 'https%3A%2F%2Fexample.com%2F'
+      AND start_date = '2025-01-01' AND end_date = '2025-01-31'
+      LIMIT 50`.
+    filters:
+      - name: encoded_site_url
+        required: true
+      - name: start_date
+        required: true
+      - name: end_date
+        required: true
+      - name: type
+        required: false
+        description: >
+          Search Analytics result type. Defaults to web when omitted. Search
+          appearance is safest with web Search results; Google may reject
+          unsupported non-web type/searchAppearance combinations.
+    request:
+      method: POST
+      path: /sites/{{filter.encoded_site_url}}/searchAnalytics/query
+      body:
+        - path:
+            - startDate
+          from: filter
+          key: start_date
+        - path:
+            - endDate
+          from: filter
+          key: end_date
+        - path:
+            - type
+          from: filter
+          key: type
+        - path:
+            - dimensions
+          from: literal
+          value:
+            - searchAppearance
+        - path:
+            - rowLimit
+          from: literal
+          value: 1000
+    response:
+      rows_path:
+        - rows
+    pagination:
+      mode: none
+    columns:
+      - name: encoded_site_url
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Encoded site URL from required filter.
+        expr:
+          kind: from_filter
+          key: encoded_site_url
+      - name: start_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Start date from required filter (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: start_date
+      - name: end_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: End date from required filter (YYYY-MM-DD).
+        expr:
+          kind: from_filter
+          key: end_date
+      - name: type
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Search result type filter requested for this query.
+        expr:
+          kind: from_filter
+          key: type
+      - name: search_appearance
+        type: Utf8
+        nullable: true
+        description: Search result feature value returned by Search Console.
+        expr:
+          kind: path
+          path:
+            - keys
+            - "0"
+      - name: clicks
+        type: Int64
+        nullable: true
+        description: Click count from Google Search results.
+        expr:
+          kind: path
+          path:
+            - clicks
+      - name: impressions
+        type: Int64
+        nullable: true
+        description: Number of times the result feature appeared in search results.
+        expr:
+          kind: path
+          path:
+            - impressions
+      - name: ctr
+        type: Float64
+        nullable: true
+        description: Click-through rate (clicks / impressions).
+        expr:
+          kind: path
+          path:
+            - ctr
+      - name: position
+        type: Float64
+        nullable: true
+        description: Average position when supported for the requested result type.
+        expr:
+          kind: path
+          path:
+            - position
