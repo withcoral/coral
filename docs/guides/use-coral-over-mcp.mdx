@@ -251,9 +251,7 @@ Each entry must be one independent read-only SQL statement. Coral starts entries
 
 `queries` must contain 1 to 10 non-blank strings. Missing `queries`, an empty array, more than 10 entries, non-string entries, and blank strings are MCP argument errors and do not dispatch any SQL.
 
-<Note>
-This is a breaking MCP contract change: update existing calls from `sql: "SELECT ..."` to `queries: ["SELECT ..."]`.
-</Note>
+
 
 ### Searching a provider's data
 
