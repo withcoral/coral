@@ -2262,7 +2262,7 @@ impl<'a> GraphPlanValidator<'a> {
         self.validate_exists_relationship_variables(predicate, &local_nodes, &path)?;
         let relationships =
             self.resolve_exists_relationship_mappings(predicate, &local_nodes, &path)?;
-        Self::validate_exists_pattern_connectivity(predicate, &local_nodes, &path)?;
+        Self::validate_exists_pattern_not_empty(predicate, &path)?;
         let scope = ExistsPredicateValidationContext {
             relationships: &relationships,
             local_nodes: &local_nodes,
@@ -2532,63 +2532,18 @@ impl<'a> GraphPlanValidator<'a> {
         }
     }
 
-    fn validate_exists_pattern_connectivity(
+    fn validate_exists_pattern_not_empty(
         predicate: &ExistsPatternPredicate,
-        local_nodes: &BTreeMap<&str, &Node>,
         path: &str,
     ) -> Result<(), CoreError> {
-        if predicate.relationships.is_empty() {
+        if predicate.relationships.is_empty() && predicate.nodes.is_empty() {
             return Err(Diagnostic::new(
                 "UNSUPPORTED_EXISTS_PATTERN",
-                format!("{path}.relationships"),
-                "EXISTS pattern predicates require at least one relationship pattern",
+                format!("{path}.pattern"),
+                "EXISTS pattern predicates require at least one local node or relationship pattern",
             )
             .into_core_error());
         }
-
-        let mut reachable = BTreeSet::new();
-        for relationship in &predicate.relationships {
-            for endpoint in [relationship.left.as_str(), relationship.right.as_str()] {
-                if !local_nodes.contains_key(endpoint) {
-                    reachable.insert(endpoint);
-                }
-            }
-        }
-        if reachable.is_empty() {
-            return Err(Diagnostic::new(
-                "UNSUPPORTED_EXISTS_PATTERN",
-                format!("{path}.relationships"),
-                "EXISTS pattern predicates must be anchored to at least one previously bound node variable",
-            )
-            .into_core_error());
-        }
-
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for relationship in &predicate.relationships {
-                let left = relationship.left.as_str();
-                let right = relationship.right.as_str();
-                if reachable.contains(left) || reachable.contains(right) {
-                    changed |= reachable.insert(left);
-                    changed |= reachable.insert(right);
-                }
-            }
-        }
-
-        for (index, relationship) in predicate.relationships.iter().enumerate() {
-            if !reachable.contains(relationship.left.as_str())
-                && !reachable.contains(relationship.right.as_str())
-            {
-                return Err(Diagnostic::new(
-                    "UNSUPPORTED_EXISTS_PATTERN",
-                    format!("{path}.relationships[{index}]"),
-                    "EXISTS pattern relationship components must be connected to a previously bound node variable",
-                )
-                .into_core_error());
-            }
-        }
-
         Ok(())
     }
 

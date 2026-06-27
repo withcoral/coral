@@ -1528,13 +1528,87 @@ async fn cypher_exists_match_subqueries_apply_where_from_each_inner_match_clause
 }
 
 #[tokio::test]
-async fn cypher_exists_match_subqueries_reject_disconnected_inner_components() {
+async fn cypher_exists_match_subqueries_support_node_only_patterns() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
     let source = build_source(ops_manifest(temp.path()));
     let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
 
-    let error = CoralQuery::execute_cypher(
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (team:Team) \
+         WHERE EXISTS { \
+           MATCH (service:Service) \
+           WHERE service.team = team.name AND service.tier = 'prod' \
+         } \
+         RETURN team.name AS team \
+         ORDER BY team",
+    )
+    .await
+    .expect("Cypher EXISTS node-only subquery should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("EXISTS (SELECT 1 FROM \"ops\".\"services\" AS \"__coral_exists_n0\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"team": "infra"}), json!({"team": "platform"}),]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_match_subqueries_support_uncorrelated_relationship_patterns() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (team:Team) \
+         WHERE EXISTS { \
+           MATCH (:Service)-[:DEPENDS_ON]->(dependency:Service) \
+           WHERE dependency.tier = 'dev' \
+         } \
+         RETURN team.name AS team \
+         ORDER BY team",
+    )
+    .await
+    .expect("Cypher EXISTS uncorrelated relationship subquery should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("EXISTS (SELECT 1 FROM \"ops\".\"service_dependencies\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"team": "analytics"}),
+            json!({"team": "infra"}),
+            json!({"team": "platform"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_match_subqueries_support_disconnected_inner_components() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
         &[source],
         test_runtime(),
         &graph,
@@ -1542,16 +1616,25 @@ async fn cypher_exists_match_subqueries_reject_disconnected_inner_components() {
          WHERE EXISTS { \
            MATCH (service)-[:DEPENDS_ON]->(:Service), (:Service)-[:DEPENDS_ON]->(:Service) \
          } \
-         RETURN service.name AS service",
+         RETURN service.name AS service \
+         ORDER BY service",
     )
     .await
-    .expect_err("disconnected EXISTS MATCH components should be rejected");
+    .expect("Cypher EXISTS MATCH disconnected inner components should execute");
 
     assert!(
-        error
-            .to_string()
-            .contains("must be connected to a previously bound node variable"),
-        "{error}"
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"service_dependencies\" AS \"__coral_exists_r1\" ON TRUE"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
     );
 }
 

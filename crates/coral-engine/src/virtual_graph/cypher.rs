@@ -8027,7 +8027,7 @@ fn compile_regular_query_count_subquery_pattern(
         feature_name,
         missing_match_message,
     )?;
-    compile_scoped_plan_delta_count_subquery(scoped.plan, plan, scoped.delta, path, feature_name)
+    compile_scoped_plan_delta_count_subquery(scoped.plan, scoped.delta, path, feature_name)
 }
 
 fn compile_regular_query_scoped_plan(
@@ -8173,28 +8173,19 @@ fn compile_scoped_plan_delta_predicate(
 
 fn compile_scoped_plan_delta_pattern(
     exists_plan: GraphPlan,
-    plan: &GraphPlan,
+    _plan: &GraphPlan,
     delta: ScopedPlanDelta,
     path: impl Into<String>,
     feature_name: &'static str,
 ) -> Result<ExistsPatternPredicate, CoreError> {
-    compile_scoped_plan_delta_relationship_pattern(
-        exists_plan,
-        plan,
-        delta,
-        path,
-        feature_name,
-        true,
-    )
+    compile_scoped_plan_delta_relationship_pattern(exists_plan, delta, path, feature_name)
 }
 
 fn compile_scoped_plan_delta_relationship_pattern(
     mut exists_plan: GraphPlan,
-    plan: &GraphPlan,
     delta: ScopedPlanDelta,
     path: impl Into<String>,
     feature_name: &'static str,
-    require_outer_anchor: bool,
 ) -> Result<ExistsPatternPredicate, CoreError> {
     let path = path.into();
     let relationships = exists_plan
@@ -8202,25 +8193,15 @@ fn compile_scoped_plan_delta_relationship_pattern(
         .get(delta.relationship_base..)
         .ok_or_else(|| CoreError::internal("EXISTS relationship slice was invalid"))?
         .to_vec();
-    if relationships.is_empty() {
-        return Err(unsupported(
-            format!("{path}.pattern.relationships"),
-            format!("{feature_name} require at least one relationship pattern"),
-        ));
-    }
-    let has_outer_anchor = if require_outer_anchor {
-        let outer_variables = bound_graph_variables(plan);
-        relationships.iter().any(|relationship| {
-            outer_variables.contains(&relationship.left)
-                || outer_variables.contains(&relationship.right)
-        })
-    } else {
-        true
-    };
-    if !has_outer_anchor {
+    let nodes = exists_plan
+        .nodes
+        .get(delta.nodes_before..)
+        .ok_or_else(|| CoreError::internal("EXISTS node slice was invalid"))?
+        .to_vec();
+    if relationships.is_empty() && nodes.is_empty() {
         return Err(unsupported(
             format!("{path}.pattern"),
-            format!("{feature_name} must be anchored to a currently bound graph variable"),
+            format!("{feature_name} require at least one local node or relationship pattern"),
         ));
     }
 
@@ -8228,11 +8209,7 @@ fn compile_scoped_plan_delta_relationship_pattern(
         take_scoped_plan_delta_predicates(&mut exists_plan, delta, &path, feature_name)?;
 
     Ok(ExistsPatternPredicate {
-        nodes: exists_plan
-            .nodes
-            .get(delta.nodes_before..)
-            .ok_or_else(|| CoreError::internal("EXISTS node slice was invalid"))?
-            .to_vec(),
+        nodes,
         relationships,
         predicates,
     })
@@ -8240,7 +8217,6 @@ fn compile_scoped_plan_delta_relationship_pattern(
 
 fn compile_scoped_plan_delta_count_subquery(
     mut count_plan: GraphPlan,
-    plan: &GraphPlan,
     delta: ScopedPlanDelta,
     path: impl Into<String>,
     feature_name: &'static str,
@@ -8254,11 +8230,9 @@ fn compile_scoped_plan_delta_count_subquery(
     if !relationships.is_empty() {
         return compile_scoped_plan_delta_relationship_pattern(
             count_plan,
-            plan,
             delta,
             path,
             feature_name,
-            false,
         )
         .map(CountSubqueryPattern::Relationships);
     }

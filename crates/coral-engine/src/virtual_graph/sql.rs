@@ -1837,12 +1837,17 @@ impl<'a> Lowerer<'a> {
     ) -> Result<String, CoreError> {
         let local_nodes = self.exists_local_node_map(predicate)?;
         let relationship_bindings = self.exists_relationship_bindings(predicate, &local_nodes)?;
-        if relationship_bindings.is_empty() {
-            return Err(CoreError::internal(
-                "validated EXISTS pattern had no relationship bindings",
-            ));
-        }
         let local_aliases = Self::exists_local_node_aliases(predicate);
+        if relationship_bindings.is_empty() {
+            return self.render_scoped_node_select(
+                &predicate.nodes,
+                &predicate.predicates,
+                select_expression,
+                &local_nodes,
+                &local_aliases,
+                "EXISTS",
+            );
+        }
         let mut from_clause = relationship_bindings
             .iter()
             .enumerate()
@@ -1916,13 +1921,39 @@ impl<'a> Lowerer<'a> {
         }
         let local_nodes = self.scoped_local_node_map(nodes)?;
         let local_aliases = Self::count_local_node_aliases(nodes);
+        self.render_scoped_node_select(
+            nodes,
+            predicates,
+            "COUNT(*)",
+            &local_nodes,
+            &local_aliases,
+            "COUNT",
+        )
+    }
+
+    fn render_scoped_node_select<'b>(
+        &self,
+        nodes: &'b [NodePattern],
+        predicates: &[PropertyPredicate],
+        select_expression: &str,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+        context: &str,
+    ) -> Result<String, CoreError> {
+        if nodes.is_empty() {
+            return Err(CoreError::internal(format!(
+                "validated {context} node subquery had no node bindings"
+            )));
+        }
         let mut from_clause = String::new();
         for (index, node) in nodes.iter().enumerate() {
             let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
-                CoreError::internal("validated COUNT local node mapping was missing")
+                CoreError::internal(format!(
+                    "validated {context} local node mapping was missing"
+                ))
             })?;
             let alias = local_aliases.get(node.variable.as_str()).ok_or_else(|| {
-                CoreError::internal("validated COUNT local node alias was missing")
+                CoreError::internal(format!("validated {context} local node alias was missing"))
             })?;
             if index > 0 {
                 from_clause.push_str(" JOIN ");
@@ -1933,7 +1964,9 @@ impl<'a> Lowerer<'a> {
                 render_table_ref(&node_mapping.table),
                 quote_ident(alias)
             )
-            .map_err(|_| CoreError::internal("failed to render COUNT node subquery SQL"))?;
+            .map_err(|_| {
+                CoreError::internal(format!("failed to render {context} node subquery SQL"))
+            })?;
             if index > 0 {
                 from_clause.push_str(" ON TRUE");
             }
@@ -1946,8 +1979,8 @@ impl<'a> Lowerer<'a> {
                 self.render_exists_property_predicate(
                     property_predicate,
                     &relationships,
-                    &local_nodes,
-                    &local_aliases,
+                    local_nodes,
+                    local_aliases,
                 )
             })
             .collect::<Result<Vec<_>, CoreError>>()?;
@@ -1957,7 +1990,7 @@ impl<'a> Lowerer<'a> {
             format!(" WHERE {}", conditions.join(" AND "))
         };
         Ok(format!(
-            "(SELECT COUNT(*) FROM {from_clause}{where_clause})"
+            "(SELECT {select_expression} FROM {from_clause}{where_clause})"
         ))
     }
 
