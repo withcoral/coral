@@ -786,6 +786,72 @@ async fn graphql_flat_aggregate_fields_match_equivalent_sql() {
 }
 
 #[tokio::test]
+async fn graphql_statistical_aggregate_fields_match_equivalent_sql() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let graph_execution = CoralQuery::execute_graphql(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          Service(where: { tier: { eq: "prod" } }) {
+            sampleRisk: _stDev(field: risk)
+            populationRisk: _stDevP(field: risk)
+            distinctTotalRisk: _sumDistinct(field: risk)
+            distinctAverageRisk: _avgDistinct(field: risk)
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("GraphQL statistical aggregate fields should execute");
+
+    assert!(
+        graph_execution
+            .translated_sql()
+            .contains("STDDEV_SAMP(\"n0\".\"risk_score\") AS \"sampleRisk\""),
+        "{}",
+        graph_execution.translated_sql()
+    );
+    assert!(
+        graph_execution
+            .translated_sql()
+            .contains("SUM(DISTINCT \"n0\".\"risk_score\") AS \"distinctTotalRisk\""),
+        "{}",
+        graph_execution.translated_sql()
+    );
+
+    let sql_execution = CoralQuery::execute_sql(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        "SELECT STDDEV_SAMP(risk_score) AS \"sampleRisk\", \
+                STDDEV_POP(risk_score) AS \"populationRisk\", \
+                SUM(DISTINCT risk_score) AS \"distinctTotalRisk\", \
+                AVG(DISTINCT risk_score) AS \"distinctAverageRisk\" \
+         FROM ops.services \
+         WHERE tier = 'prod'",
+    )
+    .await
+    .expect("equivalent SQL should execute");
+
+    let graph_rows = execution_to_rows(graph_execution.execution());
+    let sql_rows = execution_to_rows(&sql_execution);
+    assert_eq!(graph_rows, sql_rows);
+
+    let row = graph_rows
+        .first()
+        .expect("aggregate query should return one row");
+    assert_close(row["sampleRisk"].as_f64().unwrap(), 0.282_842_712_474_619);
+    assert_close(row["populationRisk"].as_f64().unwrap(), 0.2);
+    assert_close(row["distinctTotalRisk"].as_f64().unwrap(), 1.4);
+    assert_close(row["distinctAverageRisk"].as_f64().unwrap(), 0.7);
+}
+
+#[tokio::test]
 async fn graphql_collect_aggregate_fields_match_equivalent_sql() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -648,17 +648,31 @@ fn compile_property_field(
 }
 
 fn is_node_aggregate_field(name: &str) -> bool {
-    matches!(
-        name,
-        "_count"
-            | "_countDistinct"
-            | "_collect"
-            | "_collectDistinct"
-            | "_sum"
-            | "_avg"
-            | "_min"
-            | "_max"
-    )
+    name == "_count" || graphql_property_aggregate_field(name).is_some()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GraphqlPropertyAggregateField {
+    function: AggregateFunction,
+    distinct: bool,
+}
+
+fn graphql_property_aggregate_field(name: &str) -> Option<GraphqlPropertyAggregateField> {
+    let (function, distinct) = match name {
+        "_countDistinct" => (AggregateFunction::Count, true),
+        "_collect" => (AggregateFunction::Collect, false),
+        "_collectDistinct" => (AggregateFunction::Collect, true),
+        "_sum" => (AggregateFunction::Sum, false),
+        "_sumDistinct" => (AggregateFunction::Sum, true),
+        "_avg" => (AggregateFunction::Avg, false),
+        "_avgDistinct" => (AggregateFunction::Avg, true),
+        "_stDev" => (AggregateFunction::StdDev, false),
+        "_stDevP" => (AggregateFunction::StdDevP, false),
+        "_min" => (AggregateFunction::Min, false),
+        "_max" => (AggregateFunction::Max, false),
+        _ => return None,
+    };
+    Some(GraphqlPropertyAggregateField { function, distinct })
 }
 
 fn compile_node_aggregate_field(
@@ -678,74 +692,26 @@ fn compile_node_aggregate_field(
     }
 
     let alias = projection_alias(field, context);
-    let projection = match field.name.as_str() {
-        "_count" => compile_count_aggregate_field(field, context, path, compile_context, alias)?,
-        "_countDistinct" => compile_property_aggregate_field(
+    if field.name == "_count" {
+        return Ok(Some(compile_count_aggregate_field(
             field,
             context,
             path,
             compile_context,
-            AggregateFunction::Count,
-            true,
             alias,
-        )?,
-        "_collect" => compile_property_aggregate_field(
-            field,
-            context,
-            path,
-            compile_context,
-            AggregateFunction::Collect,
-            false,
-            alias,
-        )?,
-        "_collectDistinct" => compile_property_aggregate_field(
-            field,
-            context,
-            path,
-            compile_context,
-            AggregateFunction::Collect,
-            true,
-            alias,
-        )?,
-        "_sum" => compile_property_aggregate_field(
-            field,
-            context,
-            path,
-            compile_context,
-            AggregateFunction::Sum,
-            false,
-            alias,
-        )?,
-        "_avg" => compile_property_aggregate_field(
-            field,
-            context,
-            path,
-            compile_context,
-            AggregateFunction::Avg,
-            false,
-            alias,
-        )?,
-        "_min" => compile_property_aggregate_field(
-            field,
-            context,
-            path,
-            compile_context,
-            AggregateFunction::Min,
-            false,
-            alias,
-        )?,
-        "_max" => compile_property_aggregate_field(
-            field,
-            context,
-            path,
-            compile_context,
-            AggregateFunction::Max,
-            false,
-            alias,
-        )?,
-        _ => unreachable!("aggregate field name was checked"),
-    };
-    Ok(Some(projection))
+        )?));
+    }
+    let aggregate = graphql_property_aggregate_field(&field.name)
+        .ok_or_else(|| CoreError::internal("aggregate field name was checked"))?;
+    Ok(Some(compile_property_aggregate_field(
+        field,
+        context,
+        path,
+        compile_context,
+        aggregate.function,
+        aggregate.distinct,
+        alias,
+    )?))
 }
 
 fn compile_count_aggregate_field(
@@ -3491,6 +3457,65 @@ mod tests {
     }
 
     #[test]
+    fn compiles_graphql_statistical_aggregate_fields() {
+        let plan = compile_graphql(
+            r"
+            query {
+              Service {
+                sampleRisk: _stDev(field: risk)
+                populationRisk: _stDevP(field: risk)
+                distinctTotalRisk: _sumDistinct(field: risk)
+                distinctAverageRisk: _avgDistinct(field: risk)
+              }
+            }
+            ",
+        )
+        .expect("GraphQL statistical aggregate fields should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Aggregate {
+                    function: AggregateFunction::StdDev,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "sampleRisk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::StdDevP,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "populationRisk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Sum,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: true,
+                    alias: "distinctTotalRisk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Avg,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: true,
+                    alias: "distinctAverageRisk".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_graphql_collect_aggregate_fields() {
         let plan = compile_graphql(
             r"
@@ -5711,6 +5736,10 @@ nodes:
             sdl.contains("  _collectDistinct(field: PersonAggregateField!): [CoralGraphValue!]")
         );
         assert!(sdl.contains("  _avg(field: PersonAggregateField!): CoralGraphValue"));
+        assert!(sdl.contains("  _sumDistinct(field: PersonAggregateField!): CoralGraphValue"));
+        assert!(sdl.contains("  _avgDistinct(field: PersonAggregateField!): CoralGraphValue"));
+        assert!(sdl.contains("  _stDev(field: PersonAggregateField!): CoralGraphValue"));
+        assert!(sdl.contains("  _stDevP(field: PersonAggregateField!): CoralGraphValue"));
         assert!(sdl.contains(
             "out_OWNS(to: PersonOutOWNSToLabel!, where: ServiceWhere, relationshipWhere: OWNSRelationshipWhere): [Service!]!"
         ));

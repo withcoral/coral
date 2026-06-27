@@ -341,7 +341,27 @@ fn push_node_type(sdl: &mut String, graph: &Declaration, node: &Node) {
         .expect("writing GraphQL SDL to string should not fail");
         writeln!(
             sdl,
+            "  _sumDistinct(field: {aggregate_field_type}!): CoralGraphValue"
+        )
+        .expect("writing GraphQL SDL to string should not fail");
+        writeln!(
+            sdl,
             "  _avg(field: {aggregate_field_type}!): CoralGraphValue"
+        )
+        .expect("writing GraphQL SDL to string should not fail");
+        writeln!(
+            sdl,
+            "  _avgDistinct(field: {aggregate_field_type}!): CoralGraphValue"
+        )
+        .expect("writing GraphQL SDL to string should not fail");
+        writeln!(
+            sdl,
+            "  _stDev(field: {aggregate_field_type}!): CoralGraphValue"
+        )
+        .expect("writing GraphQL SDL to string should not fail");
+        writeln!(
+            sdl,
+            "  _stDevP(field: {aggregate_field_type}!): CoralGraphValue"
         )
         .expect("writing GraphQL SDL to string should not fail");
         writeln!(
