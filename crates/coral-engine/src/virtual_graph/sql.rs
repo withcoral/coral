@@ -2006,6 +2006,18 @@ fn render_union_outer_projection_item(item: &GraphUnionOuterProjectionItem) -> S
         GraphUnionOuterProjectionItem::CountAll { alias } => {
             format!("COUNT(*) AS {}", quote_ident(alias))
         }
+        GraphUnionOuterProjectionItem::Aggregate {
+            function,
+            source,
+            distinct,
+            alias,
+        } => format!(
+            "{}({}{}) AS {}",
+            render_aggregate_function(*function),
+            if *distinct { "DISTINCT " } else { "" },
+            quote_ident(source),
+            quote_ident(alias)
+        ),
     }
 }
 

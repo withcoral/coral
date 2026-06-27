@@ -911,6 +911,17 @@ pub enum GraphUnionOuterProjectionItem {
         /// Output alias for the count projection.
         alias: String,
     },
+    /// Aggregate a column produced by every union branch.
+    Aggregate {
+        /// Aggregate function.
+        function: AggregateFunction,
+        /// Branch output column to aggregate.
+        source: String,
+        /// Whether the aggregate applies distinct semantics.
+        distinct: bool,
+        /// Output alias.
+        alias: String,
+    },
 }
 
 impl GraphUnionOuterProjectionItem {
@@ -919,7 +930,7 @@ impl GraphUnionOuterProjectionItem {
     pub fn output_name(&self) -> String {
         match self {
             Self::Column { name } => name.clone(),
-            Self::CountAll { alias } => alias.clone(),
+            Self::CountAll { alias } | Self::Aggregate { alias, .. } => alias.clone(),
         }
     }
 }

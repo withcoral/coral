@@ -276,6 +276,44 @@ async fn cypher_static_node_label_alternatives_grouped_count_after_union() {
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_grouped_count_property_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN owner.name AS owner, count(service.tier) AS tiered_services \
+         ORDER BY owner",
+    )
+    .await
+    .expect("static label alternatives with grouped outer count(property) should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COUNT(\"__coral_agg_1\") AS \"tiered_services\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "tiered_services": 1}),
+            json!({"owner": "Grace Hopper", "tiered_services": 1}),
+            json!({"owner": "Katherine Johnson", "tiered_services": 1}),
+            json!({"owner": "analytics", "tiered_services": 1}),
+            json!({"owner": "infra", "tiered_services": 1}),
+            json!({"owner": "platform", "tiered_services": 1}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_union_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
