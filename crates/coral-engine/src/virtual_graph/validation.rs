@@ -7,7 +7,7 @@ use super::ir::{
     GraphPlan, KeyPredicate, Literal, OptionalMatchScope, OrderExpression, PredicateExpression,
     PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyPredicate, PropertyRef, RelationshipPattern,
+    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarExpression,
 };
 use crate::CoreError;
 
@@ -473,6 +473,12 @@ impl<'a> GraphPlanValidator<'a> {
                     Self::validate_literal_list_projection(
                         literals,
                         format!("projections[{index}].literals"),
+                    )?;
+                }
+                Projection::Expression { expression, .. } => {
+                    self.validate_scalar_expression(
+                        expression,
+                        format!("projections[{index}].expression"),
                     )?;
                 }
                 Projection::Aggregate {
@@ -954,6 +960,7 @@ impl<'a> GraphPlanValidator<'a> {
                 | Projection::RelationshipType { .. }
                 | Projection::Literal { .. }
                 | Projection::LiteralList { .. }
+                | Projection::Expression { .. }
                 | Projection::CountAll { .. }
                 | Projection::Aggregate { .. } => None,
             })
@@ -1151,6 +1158,10 @@ impl<'a> GraphPlanValidator<'a> {
                     ..
                 }
                 | Projection::LiteralList {
+                    alias: projection_alias,
+                    ..
+                }
+                | Projection::Expression {
                     alias: projection_alias,
                     ..
                 }
@@ -1878,6 +1889,32 @@ impl<'a> GraphPlanValidator<'a> {
         Ok(())
     }
 
+    fn validate_scalar_expression(
+        &self,
+        expression: &ScalarExpression,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        match expression {
+            ScalarExpression::Property(property) => self.validate_property_ref(property, path),
+            ScalarExpression::Literal(_) => Ok(()),
+            ScalarExpression::Coalesce { expressions } => {
+                if expressions.len() < 2 {
+                    return Err(Diagnostic::new(
+                        "INVALID_SCALAR_EXPRESSION",
+                        path,
+                        "coalesce expressions require at least two arguments",
+                    )
+                    .into_core_error());
+                }
+                for (index, expression) in expressions.iter().enumerate() {
+                    self.validate_scalar_expression(expression, format!("{path}[{index}]"))?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn validate_property_ref(
         &self,
         property: &PropertyRef,
@@ -2515,6 +2552,52 @@ relationships:
                 "{error:?}"
             );
         }
+    }
+
+    #[test]
+    fn validate_graph_plan_accepts_scalar_expression_projections() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Expression {
+            expression: ScalarExpression::Coalesce {
+                expressions: vec![
+                    ScalarExpression::Property(PropertyRef {
+                        variable: "person".to_string(),
+                        property: "name".to_string(),
+                    }),
+                    ScalarExpression::Literal(Literal::String("unknown".to_string())),
+                ],
+            },
+            alias: "owner_name".to_string(),
+        }];
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("scalar expression projection should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_unknown_properties_in_scalar_expression_projections() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Expression {
+            expression: ScalarExpression::Coalesce {
+                expressions: vec![
+                    ScalarExpression::Property(PropertyRef {
+                        variable: "person".to_string(),
+                        property: "missing".to_string(),
+                    }),
+                    ScalarExpression::Literal(Literal::String("unknown".to_string())),
+                ],
+            },
+            alias: "owner_name".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("unknown scalar expression property should fail validation");
+
+        assert!(error.to_string().contains("UNKNOWN_PROPERTY"), "{error:?}");
     }
 
     #[test]

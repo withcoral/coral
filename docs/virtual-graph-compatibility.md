@@ -75,6 +75,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Inline relationship property maps | Supported foundation | Anonymous relationships get internal variables for property predicates |
 | `RETURN` property projections | Supported foundation | Optional aliases are supported |
 | `RETURN` literal projections | Supported foundation | Supports string, integer, finite float, boolean, null, scalar parameters, and non-empty homogeneous literal/list-parameter lists; empty, all-null, and mixed-type lists are rejected |
+| `RETURN coalesce(...)` | Supported foundation | Projection-only scalar expression over graph properties, scalar literals, scalar parameters, and nested `coalesce`; direct predicate/order expression support is deferred |
 | `RETURN DISTINCT` | Supported foundation | Supported for projected rows; `ORDER BY` with `DISTINCT` must use projected properties |
 | `RETURN count(*)` | Supported foundation | Supported as a standalone aggregate projection |
 | `RETURN count(property)` | Supported foundation | Supports `count(property)` and `count(DISTINCT property)` |

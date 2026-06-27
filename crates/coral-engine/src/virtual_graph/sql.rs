@@ -8,7 +8,7 @@ use super::ir::{
     GraphPlan, KeyPredicate, Literal, OrderDirection, OrderExpression, PredicateExpression,
     PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyRef,
+    PropertyRef, ScalarExpression,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -523,89 +523,7 @@ impl<'a> Lowerer<'a> {
     fn render_select(&self) -> Result<String, CoreError> {
         let mut rendered = Vec::with_capacity(self.validated.plan().projections.len());
         for projection in &self.validated.plan().projections {
-            match projection {
-                Projection::Property { property, alias } => {
-                    let expression = self.render_property_ref(property)?;
-                    let alias = alias
-                        .clone()
-                        .unwrap_or_else(|| format!("{}_{}", property.variable, property.property));
-                    rendered.push(format!("{expression} AS {}", quote_ident(&alias)));
-                }
-                Projection::Key { variable, alias } => {
-                    rendered.push(format!(
-                        "{} AS {}",
-                        self.render_binding_key_ref(variable)?,
-                        quote_ident(alias)
-                    ));
-                }
-                Projection::ElementId { variable, alias } => {
-                    rendered.push(format!(
-                        "{} AS {}",
-                        self.render_binding_element_id_ref(variable)?,
-                        quote_ident(alias)
-                    ));
-                }
-                Projection::NodeLabels {
-                    variable,
-                    label,
-                    alias,
-                } => {
-                    rendered.push(format!(
-                        "{} AS {}",
-                        self.render_node_labels_ref(variable, label)?,
-                        quote_ident(alias)
-                    ));
-                }
-                Projection::PropertyKeys { variable, alias } => {
-                    rendered.push(format!(
-                        "{} AS {}",
-                        self.render_property_keys_ref(variable)?,
-                        quote_ident(alias)
-                    ));
-                }
-                Projection::RelationshipType {
-                    variable,
-                    relationship_type,
-                    alias,
-                } => {
-                    rendered.push(format!(
-                        "{} AS {}",
-                        self.render_relationship_type_ref(variable, relationship_type)?,
-                        quote_ident(alias)
-                    ));
-                }
-                Projection::Literal { literal, alias } => {
-                    rendered.push(format!(
-                        "{} AS {}",
-                        render_literal(literal),
-                        quote_ident(alias)
-                    ));
-                }
-                Projection::LiteralList { literals, alias } => {
-                    rendered.push(format!(
-                        "{} AS {}",
-                        render_literal_list(literals),
-                        quote_ident(alias)
-                    ));
-                }
-                Projection::CountAll { alias } => {
-                    rendered.push(format!("COUNT(*) AS {}", quote_ident(alias)));
-                }
-                Projection::Aggregate {
-                    function,
-                    target,
-                    distinct,
-                    alias,
-                } => {
-                    rendered.push(format!(
-                        "{}({}{}) AS {}",
-                        render_aggregate_function(*function),
-                        if *distinct { "DISTINCT " } else { "" },
-                        self.render_aggregate_target(*function, target)?,
-                        quote_ident(alias)
-                    ));
-                }
-            }
+            rendered.push(self.render_projection_select_item(projection)?);
         }
         Ok(format!(
             "SELECT {}{}",
@@ -616,6 +534,79 @@ impl<'a> Lowerer<'a> {
             },
             rendered.join(", ")
         ))
+    }
+
+    fn render_projection_select_item(&self, projection: &Projection) -> Result<String, CoreError> {
+        match projection {
+            Projection::Property { property, alias } => {
+                let expression = self.render_property_ref(property)?;
+                let alias = alias
+                    .clone()
+                    .unwrap_or_else(|| format!("{}_{}", property.variable, property.property));
+                Ok(format!("{expression} AS {}", quote_ident(&alias)))
+            }
+            Projection::Key { variable, alias } => Ok(format!(
+                "{} AS {}",
+                self.render_binding_key_ref(variable)?,
+                quote_ident(alias)
+            )),
+            Projection::ElementId { variable, alias } => Ok(format!(
+                "{} AS {}",
+                self.render_binding_element_id_ref(variable)?,
+                quote_ident(alias)
+            )),
+            Projection::NodeLabels {
+                variable,
+                label,
+                alias,
+            } => Ok(format!(
+                "{} AS {}",
+                self.render_node_labels_ref(variable, label)?,
+                quote_ident(alias)
+            )),
+            Projection::PropertyKeys { variable, alias } => Ok(format!(
+                "{} AS {}",
+                self.render_property_keys_ref(variable)?,
+                quote_ident(alias)
+            )),
+            Projection::RelationshipType {
+                variable,
+                relationship_type,
+                alias,
+            } => Ok(format!(
+                "{} AS {}",
+                self.render_relationship_type_ref(variable, relationship_type)?,
+                quote_ident(alias)
+            )),
+            Projection::Literal { literal, alias } => Ok(format!(
+                "{} AS {}",
+                render_literal(literal),
+                quote_ident(alias)
+            )),
+            Projection::LiteralList { literals, alias } => Ok(format!(
+                "{} AS {}",
+                render_literal_list(literals),
+                quote_ident(alias)
+            )),
+            Projection::Expression { expression, alias } => Ok(format!(
+                "{} AS {}",
+                self.render_scalar_expression(expression)?,
+                quote_ident(alias)
+            )),
+            Projection::CountAll { alias } => Ok(format!("COUNT(*) AS {}", quote_ident(alias))),
+            Projection::Aggregate {
+                function,
+                target,
+                distinct,
+                alias,
+            } => Ok(format!(
+                "{}({}{}) AS {}",
+                render_aggregate_function(*function),
+                if *distinct { "DISTINCT " } else { "" },
+                self.render_aggregate_target(*function, target)?,
+                quote_ident(alias)
+            )),
+        }
     }
 
     fn render_where(&self) -> Result<String, CoreError> {
@@ -707,6 +698,9 @@ impl<'a> Lowerer<'a> {
                 }
                 Projection::PropertyKeys { variable, .. } => {
                     expressions.push(self.render_property_keys_ref(variable)?);
+                }
+                Projection::Expression { expression, .. } => {
+                    expressions.push(self.render_scalar_expression(expression)?);
                 }
                 Projection::Literal { .. }
                 | Projection::LiteralList { .. }
@@ -1236,6 +1230,7 @@ impl<'a> Lowerer<'a> {
             } => self.render_relationship_type_ref(variable, relationship_type),
             Projection::Literal { literal, .. } => Ok(render_literal(literal)),
             Projection::LiteralList { literals, .. } => Ok(render_literal_list(literals)),
+            Projection::Expression { expression, .. } => self.render_scalar_expression(expression),
             Projection::CountAll { .. } => Ok("COUNT(*)".to_string()),
             Projection::Aggregate {
                 function,
@@ -1295,6 +1290,21 @@ impl<'a> Lowerer<'a> {
             quote_ident(column)
         ))
     }
+
+    fn render_scalar_expression(&self, expression: &ScalarExpression) -> Result<String, CoreError> {
+        match expression {
+            ScalarExpression::Property(property) => self.render_property_ref(property),
+            ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
+            ScalarExpression::Coalesce { expressions } => {
+                let rendered = expressions
+                    .iter()
+                    .map(|expression| self.render_scalar_expression(expression))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ");
+                Ok(format!("COALESCE({rendered})"))
+            }
+        }
+    }
 }
 
 fn render_table_ref(table: &TableRef) -> String {
@@ -1341,6 +1351,7 @@ fn projection_output_alias(projection: &Projection) -> Option<&str> {
         | Projection::RelationshipType { alias, .. }
         | Projection::Literal { alias, .. }
         | Projection::LiteralList { alias, .. }
+        | Projection::Expression { alias, .. }
         | Projection::CountAll { alias }
         | Projection::Aggregate { alias, .. } => Some(alias),
     }

@@ -1082,6 +1082,42 @@ async fn cypher_literal_projections_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_coalesce_projections_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, coalesce(service.tier, 'unassigned') AS service_tier \
+         ORDER BY service",
+    )
+    .await
+    .expect("coalesce projection query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COALESCE(\"n0\".\"tier\", 'unassigned') AS \"service_tier\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "service_tier": "prod"}),
+            json!({"service": "deployments", "service_tier": "prod"}),
+            json!({"service": "experiments", "service_tier": "dev"}),
+            json!({"service": "legacy-sync", "service_tier": "unassigned"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_literal_list_projections_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

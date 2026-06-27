@@ -28,6 +28,7 @@ use super::ir::{
     OrderExpression, OrderKey, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
     ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
     PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
+    ScalarExpression,
 };
 use crate::CoreError;
 
@@ -367,6 +368,10 @@ fn set_projection_output_alias(projection: &mut Projection, alias: String) {
             alias: projection_alias,
             ..
         }
+        | Projection::Expression {
+            alias: projection_alias,
+            ..
+        }
         | Projection::CountAll {
             alias: projection_alias,
         }
@@ -447,6 +452,7 @@ fn projection_output_alias(projection: &Projection) -> Option<&str> {
         | Projection::RelationshipType { alias, .. }
         | Projection::Literal { alias, .. }
         | Projection::LiteralList { alias, .. }
+        | Projection::Expression { alias, .. }
         | Projection::CountAll { alias }
         | Projection::Aggregate { alias, .. } => Some(alias),
     }
@@ -1282,6 +1288,10 @@ fn projection_order_expression_for_alias(
                 alias: projection_alias,
                 ..
             }
+            | Projection::Expression {
+                alias: projection_alias,
+                ..
+            }
             | Projection::Aggregate {
                 alias: projection_alias,
                 ..
@@ -1347,6 +1357,9 @@ fn compile_projection(
         Expression::FunctionCall(function) if is_keys_function(function) => {
             compile_keys_projection(function, item, path, context)
         }
+        Expression::FunctionCall(function) if is_coalesce_function(function) => {
+            compile_coalesce_projection(function, item, path, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             compile_aggregate_projection(function, item, path, context)
         }
@@ -1386,6 +1399,80 @@ fn compile_literal_projection(
                 .as_ref()
                 .map_or_else(|| "list".to_string(), variable_name),
         }),
+    }
+}
+
+fn compile_coalesce_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_coalesce_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "coalesce".to_string(), variable_name),
+    })
+}
+
+fn compile_coalesce_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    if function.arguments.len() < 2 {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "coalesce() requires at least two arguments",
+        ));
+    }
+    let expressions = function
+        .arguments
+        .iter()
+        .enumerate()
+        .map(|(index, expression)| {
+            compile_scalar_expression(expression, format!("{path}.arguments[{index}]"), context)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ScalarExpression::Coalesce { expressions })
+}
+
+fn compile_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_scalar_expression(inner, path, context),
+        Expression::PropertyLookup { .. } => Ok(ScalarExpression::Property(compile_property_ref(
+            expression, path,
+        )?)),
+        expression if is_literal_expression(expression) => Ok(ScalarExpression::Literal(
+            compile_literal(expression, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_coalesce_function(function) => {
+            compile_coalesce_scalar_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) => Err(unsupported(
+            path,
+            format!(
+                "scalar function '{}' is not supported here",
+                qualified_function_name(function)
+            ),
+        )),
+        _ => Err(unsupported(
+            path,
+            "coalesce() arguments must be variable.property expressions, scalar literals, scalar parameters, or nested coalesce() expressions",
+        )),
     }
 }
 
@@ -1795,6 +1882,13 @@ fn is_keys_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("keys")
+    )
+}
+
+fn is_coalesce_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("coalesce")
     )
 }
 
@@ -4518,6 +4612,60 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn compiles_coalesce_projection() {
+        let parameters = BTreeMap::from([(
+            "fallback".to_string(),
+            CypherParameterValue::Literal(Literal::String("unassigned".to_string())),
+        )]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (service:Service) \
+             RETURN coalesce(service.team, service.tier, $fallback) AS owner_team",
+            &parameters,
+        )
+        .expect("coalesce projection should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: ScalarExpression::Coalesce {
+                    expressions: vec![
+                        ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "team".to_string(),
+                        }),
+                        ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "tier".to_string(),
+                        }),
+                        ScalarExpression::Literal(Literal::String("unassigned".to_string())),
+                    ],
+                },
+                alias: "owner_team".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_coalesce_projections() {
+        for (cypher, expected) in [
+            (
+                "MATCH (service:Service) RETURN coalesce(service.team) AS owner_team",
+                "at least two arguments",
+            ),
+            (
+                "MATCH (service:Service) RETURN coalesce(id(service), 'unknown') AS owner_team",
+                "scalar function 'id'",
+            ),
+        ] {
+            let error = compile_cypher(cypher).expect_err("query should be rejected");
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     #[test]

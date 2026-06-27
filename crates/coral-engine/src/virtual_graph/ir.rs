@@ -125,6 +125,20 @@ pub struct RelationshipPattern {
     pub right: String,
 }
 
+/// Scalar value expression in the shared graph IR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScalarExpression {
+    /// A mapped graph property.
+    Property(PropertyRef),
+    /// A scalar literal.
+    Literal(Literal),
+    /// Return the first non-null scalar expression.
+    Coalesce {
+        /// Candidate expressions in priority order.
+        expressions: Vec<ScalarExpression>,
+    },
+}
+
 /// Projection in the shared graph IR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Projection {
@@ -187,6 +201,13 @@ pub enum Projection {
     LiteralList {
         /// Literal list elements.
         literals: Vec<Literal>,
+        /// Output alias.
+        alias: String,
+    },
+    /// Project a scalar expression.
+    Expression {
+        /// Scalar expression to project.
+        expression: ScalarExpression,
         /// Output alias.
         alias: String,
     },
