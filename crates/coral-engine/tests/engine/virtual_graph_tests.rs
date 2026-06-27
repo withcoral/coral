@@ -1456,6 +1456,64 @@ async fn cypher_scalar_cast_expressions_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_nullable_scalar_cast_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {name: 'billing-api'}) \
+         RETURN toStringOrNull(service.id) AS id_text, \
+                toIntegerOrNull(service.id) AS id_int, \
+                toIntegerOrNull('not-an-int') AS invalid_int, \
+                toFloatOrNull('not-a-float') AS invalid_float, \
+                toBooleanOrNull('not-a-bool') AS invalid_bool",
+    )
+    .await
+    .expect("nullable scalar cast expression query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("TRY_CAST(\"n0\".\"id\" AS VARCHAR) AS \"id_text\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("TRY_CAST('not-an-int' AS BIGINT) AS \"invalid_int\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("TRY_CAST('not-a-float' AS DOUBLE) AS \"invalid_float\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("TRY_CAST('not-a-bool' AS BOOLEAN) AS \"invalid_bool\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "id_text": "10",
+            "id_int": 10,
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_arithmetic_scalar_expressions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

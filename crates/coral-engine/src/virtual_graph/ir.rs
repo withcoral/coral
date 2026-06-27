@@ -166,6 +166,26 @@ pub enum ScalarExpression {
         /// Inner expression to cast.
         expression: Box<ScalarExpression>,
     },
+    /// Try to cast a scalar expression to a string value, returning null on failure.
+    ToStringOrNull {
+        /// Inner expression to cast.
+        expression: Box<ScalarExpression>,
+    },
+    /// Try to cast a scalar expression to an integer value, returning null on failure.
+    ToIntegerOrNull {
+        /// Inner expression to cast.
+        expression: Box<ScalarExpression>,
+    },
+    /// Try to cast a scalar expression to a floating-point value, returning null on failure.
+    ToFloatOrNull {
+        /// Inner expression to cast.
+        expression: Box<ScalarExpression>,
+    },
+    /// Try to cast a scalar expression to a boolean value, returning null on failure.
+    ToBooleanOrNull {
+        /// Inner expression to cast.
+        expression: Box<ScalarExpression>,
+    },
     /// Convert a scalar expression to lowercase.
     ToLower {
         /// Inner expression to normalize.

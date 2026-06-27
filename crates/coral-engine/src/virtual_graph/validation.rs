@@ -18,6 +18,10 @@ macro_rules! unary_scalar_expression_pattern {
             | ScalarExpression::ToInteger { .. }
             | ScalarExpression::ToFloat { .. }
             | ScalarExpression::ToBoolean { .. }
+            | ScalarExpression::ToStringOrNull { .. }
+            | ScalarExpression::ToIntegerOrNull { .. }
+            | ScalarExpression::ToFloatOrNull { .. }
+            | ScalarExpression::ToBooleanOrNull { .. }
             | ScalarExpression::ToLower { .. }
             | ScalarExpression::ToUpper { .. }
             | ScalarExpression::Trim { .. }
@@ -896,6 +900,10 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::ToInteger { expression }
             | ScalarExpression::ToFloat { expression }
             | ScalarExpression::ToBoolean { expression }
+            | ScalarExpression::ToStringOrNull { expression }
+            | ScalarExpression::ToIntegerOrNull { expression }
+            | ScalarExpression::ToFloatOrNull { expression }
+            | ScalarExpression::ToBooleanOrNull { expression }
             | ScalarExpression::ToLower { expression }
             | ScalarExpression::ToUpper { expression }
             | ScalarExpression::Trim { expression }

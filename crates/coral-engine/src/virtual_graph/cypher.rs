@@ -1666,6 +1666,66 @@ fn compile_to_boolean_scalar_expression(
     })
 }
 
+fn compile_to_string_or_null_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::ToStringOrNull {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function,
+            path,
+            "toStringOrNull",
+            context,
+        )?),
+    })
+}
+
+fn compile_to_integer_or_null_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::ToIntegerOrNull {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function,
+            path,
+            "toIntegerOrNull",
+            context,
+        )?),
+    })
+}
+
+fn compile_to_float_or_null_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::ToFloatOrNull {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function,
+            path,
+            "toFloatOrNull",
+            context,
+        )?),
+    })
+}
+
+fn compile_to_boolean_or_null_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::ToBooleanOrNull {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function,
+            path,
+            "toBooleanOrNull",
+            context,
+        )?),
+    })
+}
+
 fn compile_to_lower_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -2215,6 +2275,14 @@ fn compile_scalar_function_expression(
         compile_to_float_scalar_expression(function, path.clone(), context)?
     } else if is_to_boolean_function(function) {
         compile_to_boolean_scalar_expression(function, path.clone(), context)?
+    } else if is_to_string_or_null_function(function) {
+        compile_to_string_or_null_scalar_expression(function, path.clone(), context)?
+    } else if is_to_integer_or_null_function(function) {
+        compile_to_integer_or_null_scalar_expression(function, path.clone(), context)?
+    } else if is_to_float_or_null_function(function) {
+        compile_to_float_or_null_scalar_expression(function, path.clone(), context)?
+    } else if is_to_boolean_or_null_function(function) {
+        compile_to_boolean_or_null_scalar_expression(function, path.clone(), context)?
     } else if is_to_lower_function(function) {
         compile_to_lower_scalar_expression(function, path.clone(), context)?
     } else if is_to_upper_function(function) {
@@ -2339,7 +2407,7 @@ fn compile_scalar_expression(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
 }
@@ -2597,7 +2665,7 @@ fn compile_scalar_predicate_rhs(
                 Some(expression) => Ok(ScalarPredicateRhs::Expression(expression)),
                 None => Err(unsupported(
                     path,
-                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
                 )),
             }
         }
@@ -2609,7 +2677,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
 }
@@ -2970,6 +3038,34 @@ fn is_to_boolean_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("toBoolean")
+    )
+}
+
+fn is_to_string_or_null_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("toStringOrNull")
+    )
+}
+
+fn is_to_integer_or_null_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("toIntegerOrNull")
+    )
+}
+
+fn is_to_float_or_null_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("toFloatOrNull")
+    )
+}
+
+fn is_to_boolean_or_null_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("toBooleanOrNull")
     )
 }
 
@@ -7072,6 +7168,68 @@ mod tests {
                 direction: OrderDirection::Ascending,
             }]
         ));
+    }
+
+    #[test]
+    fn compiles_nullable_scalar_cast_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE toIntegerOrNull(service.id) = 10 \
+             RETURN toStringOrNull(service.id) AS id_text, \
+                    toFloatOrNull(service.risk) AS risk_float, \
+                    toBooleanOrNull(service.active) AS active_bool \
+             ORDER BY toIntegerOrNull(service.id)",
+        )
+        .expect("nullable scalar cast expressions should compile");
+
+        assert!(matches!(
+            &plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::ToIntegerOrNull { .. },
+                operator: ComparisonOperator::Equal,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::ToStringOrNull { .. },
+                    alias
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::ToFloatOrNull { .. },
+                    ..
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::ToBooleanOrNull { .. },
+                    ..
+                },
+            ] if alias == "id_text"
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::ToIntegerOrNull { .. }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
+    }
+
+    #[test]
+    fn rejects_nullable_scalar_casts_with_unsupported_arity() {
+        for cypher in [
+            "MATCH (service:Service) RETURN toStringOrNull() AS value",
+            "MATCH (service:Service) RETURN toIntegerOrNull(service.id, 10) AS value",
+            "MATCH (service:Service) RETURN toFloatOrNull() AS value",
+            "MATCH (service:Service) RETURN toBooleanOrNull(service.active, false) AS value",
+        ] {
+            let error = compile_cypher(cypher).expect_err("wrong arity should be rejected");
+            assert!(
+                error.to_string().contains("requires exactly one argument"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

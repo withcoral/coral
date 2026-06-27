@@ -1397,6 +1397,10 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::ToInteger { .. }
             | ScalarExpression::ToFloat { .. }
             | ScalarExpression::ToBoolean { .. }
+            | ScalarExpression::ToStringOrNull { .. }
+            | ScalarExpression::ToIntegerOrNull { .. }
+            | ScalarExpression::ToFloatOrNull { .. }
+            | ScalarExpression::ToBooleanOrNull { .. }
             | ScalarExpression::ToLower { .. }
             | ScalarExpression::ToUpper { .. }
             | ScalarExpression::Trim { .. }
@@ -1456,19 +1460,11 @@ impl<'a> Lowerer<'a> {
         &self,
         expression: &ScalarExpression,
     ) -> Result<Option<String>, CoreError> {
+        if let Some(rendered) = self.render_scalar_cast_expression(expression)? {
+            return Ok(Some(rendered));
+        }
+
         match expression {
-            ScalarExpression::ToString { expression } => {
-                self.render_cast_expression(expression, "VARCHAR").map(Some)
-            }
-            ScalarExpression::ToInteger { expression } => {
-                self.render_cast_expression(expression, "BIGINT").map(Some)
-            }
-            ScalarExpression::ToFloat { expression } => {
-                self.render_cast_expression(expression, "DOUBLE").map(Some)
-            }
-            ScalarExpression::ToBoolean { expression } => {
-                self.render_cast_expression(expression, "BOOLEAN").map(Some)
-            }
             ScalarExpression::ToLower { expression } => self
                 .render_unary_function_expression("LOWER", expression)
                 .map(Some),
@@ -1558,6 +1554,39 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn render_scalar_cast_expression(
+        &self,
+        expression: &ScalarExpression,
+    ) -> Result<Option<String>, CoreError> {
+        match expression {
+            ScalarExpression::ToString { expression } => {
+                self.render_cast_expression(expression, "VARCHAR").map(Some)
+            }
+            ScalarExpression::ToInteger { expression } => {
+                self.render_cast_expression(expression, "BIGINT").map(Some)
+            }
+            ScalarExpression::ToFloat { expression } => {
+                self.render_cast_expression(expression, "DOUBLE").map(Some)
+            }
+            ScalarExpression::ToBoolean { expression } => {
+                self.render_cast_expression(expression, "BOOLEAN").map(Some)
+            }
+            ScalarExpression::ToStringOrNull { expression } => self
+                .render_try_cast_expression(expression, "VARCHAR")
+                .map(Some),
+            ScalarExpression::ToIntegerOrNull { expression } => self
+                .render_try_cast_expression(expression, "BIGINT")
+                .map(Some),
+            ScalarExpression::ToFloatOrNull { expression } => self
+                .render_try_cast_expression(expression, "DOUBLE")
+                .map(Some),
+            ScalarExpression::ToBooleanOrNull { expression } => self
+                .render_try_cast_expression(expression, "BOOLEAN")
+                .map(Some),
+            _ => Ok(None),
+        }
+    }
+
     fn render_cast_expression(
         &self,
         expression: &ScalarExpression,
@@ -1565,6 +1594,17 @@ impl<'a> Lowerer<'a> {
     ) -> Result<String, CoreError> {
         Ok(format!(
             "CAST({} AS {target_type})",
+            self.render_scalar_expression(expression)?
+        ))
+    }
+
+    fn render_try_cast_expression(
+        &self,
+        expression: &ScalarExpression,
+        target_type: &str,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "TRY_CAST({} AS {target_type})",
             self.render_scalar_expression(expression)?
         ))
     }
@@ -3139,6 +3179,75 @@ relationships: []
             "{}",
             translation.sql()
         );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_nullable_scalar_cast_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.projections = vec![
+            expression_projection(
+                "id_text",
+                ScalarExpression::ToStringOrNull {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "id".to_string(),
+                    })),
+                },
+            ),
+            expression_projection(
+                "risk_float",
+                ScalarExpression::ToFloatOrNull {
+                    expression: Box::new(service_risk_expression()),
+                },
+            ),
+            expression_projection(
+                "active_bool",
+                ScalarExpression::ToBooleanOrNull {
+                    expression: Box::new(ScalarExpression::Literal(Literal::String(
+                        "true".to_string(),
+                    ))),
+                },
+            ),
+        ];
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::ToIntegerOrNull {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "id".to_string(),
+                })),
+            },
+            operator: ComparisonOperator::GreaterThan,
+            rhs: ScalarPredicateRhs::Expression(integer_literal(0)),
+        }));
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::Scalar(ScalarExpression::ToIntegerOrNull {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "id".to_string(),
+                })),
+            }),
+            direction: OrderDirection::Ascending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("nullable scalar casts should lower");
+
+        for expected in [
+            "TRY_CAST(\"n1\".\"id\" AS VARCHAR) AS \"id_text\"",
+            "TRY_CAST(\"n1\".\"risk_score\" AS DOUBLE) AS \"risk_float\"",
+            "TRY_CAST('true' AS BOOLEAN) AS \"active_bool\"",
+            "WHERE TRY_CAST(\"n1\".\"id\" AS BIGINT) > 0",
+            "ORDER BY TRY_CAST(\"n1\".\"id\" AS BIGINT) ASC",
+        ] {
+            assert!(
+                translation.sql().contains(expected),
+                "{}",
+                translation.sql()
+            );
+        }
     }
 
     #[test]
