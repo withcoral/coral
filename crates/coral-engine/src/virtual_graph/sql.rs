@@ -5,11 +5,11 @@ use super::declaration::{Declaration, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator, Direction,
-    ElementIdPredicate, GraphPlan, GraphQuery, GraphUnion, GraphUnionOuterProjection, KeyPredicate,
-    Literal, OrderDirection, OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate,
-    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
-    PropertyKeyMembershipPredicate, PropertyRef, ScalarCaseAlternative, ScalarExpression,
-    ScalarPredicate, ScalarPredicateRhs,
+    ElementIdPredicate, GraphPlan, GraphQuery, GraphUnion, GraphUnionOuterProjectionItem,
+    KeyPredicate, Literal, OrderDirection, OrderExpression, PredicateExpression, PredicateRhs,
+    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
+    ProjectionPredicateRhs, PropertyKeyMembershipPredicate, PropertyRef, ScalarCaseAlternative,
+    ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -1950,6 +1950,18 @@ fn render_union_outer_sql(sql: String, union: &GraphUnion) -> Result<String, Cor
         "SELECT {distinct}{projection} FROM ({sql}) AS {}",
         quote_ident("__coral_union_outer")
     );
+    if let Some(outer_projection) = &union.outer_projection
+        && !outer_projection.group_by.is_empty()
+    {
+        let groups = outer_projection
+            .group_by
+            .iter()
+            .map(|column| quote_ident(column))
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(outer_sql, " GROUP BY {groups}")
+            .map_err(|_| CoreError::internal("failed to render graph union GROUP BY"))?;
+    }
     if !union.order_by.is_empty() {
         let mut keys = Vec::with_capacity(union.order_by.len());
         for (index, key) in union.order_by.iter().enumerate() {
@@ -1977,11 +1989,23 @@ fn render_union_outer_sql(sql: String, union: &GraphUnion) -> Result<String, Cor
 }
 
 fn render_union_outer_projection(union: &GraphUnion) -> String {
-    match &union.outer_projection {
-        Some(GraphUnionOuterProjection::CountAll { alias }) => {
+    let Some(outer_projection) = &union.outer_projection else {
+        return "*".to_string();
+    };
+    outer_projection
+        .items
+        .iter()
+        .map(render_union_outer_projection_item)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn render_union_outer_projection_item(item: &GraphUnionOuterProjectionItem) -> String {
+    match item {
+        GraphUnionOuterProjectionItem::Column { name } => quote_ident(name),
+        GraphUnionOuterProjectionItem::CountAll { alias } => {
             format!("COUNT(*) AS {}", quote_ident(alias))
         }
-        None => "*".to_string(),
     }
 }
 

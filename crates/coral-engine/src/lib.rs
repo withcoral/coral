@@ -84,6 +84,7 @@ pub use virtual_graph::{
     GraphExecution, GraphPlan, GraphQuery, GraphQueryPlan, GraphUnion as GraphQueryUnion,
     GraphUnionBranch as GraphQueryUnionBranch,
     GraphUnionOuterProjection as GraphQueryUnionOuterProjection,
+    GraphUnionOuterProjectionItem as GraphQueryUnionOuterProjectionItem,
     GraphqlVariableValue as GraphGraphqlVariableValue, Literal as GraphLiteral, NodePattern,
     OrderDirection as GraphOrderDirection, OrderExpression as GraphOrderExpression,
     OrderKey as GraphOrderKey, PredicateExpression as GraphPredicateExpression,

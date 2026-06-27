@@ -27,12 +27,12 @@ use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator, Direction,
     ElementIdPredicate, GraphPlan, GraphQuery, GraphUnion, GraphUnionBranch,
-    GraphUnionOuterProjection, KeyPredicate, Literal, NodePattern, OptionalMatchScope,
-    OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
-    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
-    ProjectionPredicateRhs, PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef,
-    RelationshipPattern, ScalarCaseAlternative, ScalarExpression, ScalarPredicate,
-    ScalarPredicateRhs,
+    GraphUnionOuterProjection, GraphUnionOuterProjectionItem, KeyPredicate, Literal, NodePattern,
+    OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
+    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
+    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
+    ScalarPredicate, ScalarPredicateRhs,
 };
 use crate::CoreError;
 
@@ -324,11 +324,11 @@ fn compile_single_query_as_graph_query(
     }
 
     validate_static_label_type_alternative_expansion_supported(single_query, &path)?;
-    let outer_projection = compile_static_alternative_outer_projection(single_query, &path)?;
+    let outer_projection_plan = analyze_static_alternative_outer_projection(single_query, &path)?;
     for variant in &mut variants {
         apply_static_alternative_outer_projection_rewrite(
             variant,
-            outer_projection.as_ref(),
+            outer_projection_plan.as_ref(),
             &path,
         )?;
         clear_final_return_outer_modifiers(variant, &path)?;
@@ -341,6 +341,14 @@ fn compile_single_query_as_graph_query(
         .first()
         .map(GraphPlan::projection_output_names)
         .ok_or_else(|| CoreError::internal("Cypher query expansion produced no graph plans"))?;
+    let outer_projection = compile_static_alternative_outer_projection(
+        outer_projection_plan.as_ref(),
+        &projection_names,
+    )?;
+    let projection_names = outer_projection.as_ref().map_or_else(
+        || projection_names.clone(),
+        GraphUnionOuterProjection::output_names,
+    );
     let order_by =
         compile_static_alternative_outer_order_by(single_query, &projection_names, &path)?;
     let (skip, limit) = compile_static_alternative_outer_skip_limit(single_query, context, &path)?;
@@ -391,42 +399,149 @@ fn clear_final_return_outer_modifiers(
     Ok(())
 }
 
-fn compile_static_alternative_outer_projection(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StaticAlternativeOuterProjectionPlan {
+    items: Vec<StaticAlternativeOuterProjectionItem>,
+    group_item_indices: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StaticAlternativeOuterProjectionItem {
+    Column { return_index: usize },
+    CountAll { alias: String },
+}
+
+fn analyze_static_alternative_outer_projection(
     single_query: &SingleQuery,
     path: &str,
-) -> Result<Option<GraphUnionOuterProjection>, CoreError> {
+) -> Result<Option<StaticAlternativeOuterProjectionPlan>, CoreError> {
     let return_clause = final_return_clause(single_query, path)?;
-    Ok(count_star_projection_alias(return_clause)
-        .map(|alias| GraphUnionOuterProjection::CountAll { alias }))
+    let mut items = Vec::new();
+    let mut group_item_indices = Vec::new();
+    let mut has_count_all = false;
+
+    for (index, item) in return_clause.items.iter().enumerate() {
+        if let Some(alias) = count_star_item_alias(item) {
+            has_count_all = true;
+            items.push(StaticAlternativeOuterProjectionItem::CountAll { alias });
+        } else if expression_contains_aggregate(&item.expression) {
+            return Err(unsupported(
+                format!("{path}.return.items[{index}].expression"),
+                "static label/type alternatives with property or non-count aggregate RETURN projections require staged query planning and are not supported yet",
+            ));
+        } else if has_count_all
+            || return_clause
+                .items
+                .iter()
+                .any(|candidate| matches!(candidate.expression, Expression::CountStar { .. }))
+        {
+            group_item_indices.push(index);
+            items.push(StaticAlternativeOuterProjectionItem::Column {
+                return_index: index,
+            });
+        }
+    }
+
+    if has_count_all {
+        return Ok(Some(StaticAlternativeOuterProjectionPlan {
+            items,
+            group_item_indices,
+        }));
+    }
+    Ok(None)
+}
+
+fn compile_static_alternative_outer_projection(
+    plan: Option<&StaticAlternativeOuterProjectionPlan>,
+    branch_projection_names: &[String],
+) -> Result<Option<GraphUnionOuterProjection>, CoreError> {
+    let Some(plan) = plan else {
+        return Ok(None);
+    };
+    let mut group_names = BTreeMap::new();
+    for (position, return_index) in plan.group_item_indices.iter().enumerate() {
+        let name = branch_projection_names
+            .get(position)
+            .cloned()
+            .ok_or_else(|| {
+                CoreError::internal("static alternative group projection names were not aligned")
+            })?;
+        group_names.insert(*return_index, name);
+    }
+
+    let mut items = Vec::with_capacity(plan.items.len());
+    for item in &plan.items {
+        match item {
+            StaticAlternativeOuterProjectionItem::Column { return_index } => {
+                let name = group_names.get(return_index).cloned().ok_or_else(|| {
+                    CoreError::internal(
+                        "static alternative group projection item had no branch output name",
+                    )
+                })?;
+                items.push(GraphUnionOuterProjectionItem::Column { name });
+            }
+            StaticAlternativeOuterProjectionItem::CountAll { alias } => {
+                items.push(GraphUnionOuterProjectionItem::CountAll {
+                    alias: alias.clone(),
+                });
+            }
+        }
+    }
+
+    Ok(Some(GraphUnionOuterProjection {
+        items,
+        group_by: plan
+            .group_item_indices
+            .iter()
+            .map(|return_index| {
+                group_names.get(return_index).cloned().ok_or_else(|| {
+                    CoreError::internal(
+                        "static alternative group projection item had no GROUP BY name",
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?,
+    }))
 }
 
 fn apply_static_alternative_outer_projection_rewrite(
     single_query: &mut SingleQuery,
-    outer_projection: Option<&GraphUnionOuterProjection>,
+    outer_projection: Option<&StaticAlternativeOuterProjectionPlan>,
     path: &str,
 ) -> Result<(), CoreError> {
-    let Some(GraphUnionOuterProjection::CountAll { alias }) = outer_projection else {
+    let Some(outer_projection) = outer_projection else {
         return Ok(());
     };
     let return_clause = final_return_clause_mut(single_query, path)?;
-    let span = return_clause.span;
     return_clause.distinct = false;
-    return_clause.items = vec![ProjectionItem {
-        expression: Expression::Literal(CypherLiteral::Number(NumberLiteral::Integer(1))),
-        alias: Some(Variable {
-            name: SymbolicName {
-                name: alias.clone(),
-                span,
-            },
-        }),
-    }];
+    if outer_projection.group_item_indices.is_empty() {
+        let span = return_clause.span;
+        return_clause.items = vec![ProjectionItem {
+            expression: Expression::Literal(CypherLiteral::Number(NumberLiteral::Integer(1))),
+            alias: Some(Variable {
+                name: SymbolicName {
+                    name: "__coral_count_row".to_string(),
+                    span,
+                },
+            }),
+        }];
+    } else {
+        return_clause.items = outer_projection
+            .group_item_indices
+            .iter()
+            .map(|index| {
+                return_clause.items.get(*index).cloned().ok_or_else(|| {
+                    CoreError::internal(
+                        "static alternative group projection index was out of bounds",
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?;
+    }
     Ok(())
 }
 
-fn count_star_projection_alias(return_clause: &Return) -> Option<String> {
-    let [item] = return_clause.items.as_slice() else {
-        return None;
-    };
+fn count_star_item_alias(item: &ProjectionItem) -> Option<String> {
     if !matches!(item.expression, Expression::CountStar { .. }) {
         return None;
     }
@@ -1210,14 +1325,12 @@ fn validate_return_allows_static_label_type_alternative_expansion(
     return_clause: &Return,
     path: &str,
 ) -> Result<(), CoreError> {
-    if count_star_projection_alias(return_clause).is_some() {
-        return Ok(());
-    }
     for (index, item) in return_clause.items.iter().enumerate() {
-        if expression_contains_aggregate(&item.expression) {
+        if count_star_item_alias(item).is_none() && expression_contains_aggregate(&item.expression)
+        {
             return Err(unsupported(
                 format!("{path}.return.items[{index}].expression"),
-                "static label/type alternatives with aggregate RETURN projections require staged query planning and are not supported yet",
+                "static label/type alternatives with property or non-count aggregate RETURN projections require staged query planning and are not supported yet",
             ));
         }
     }
@@ -8428,13 +8541,16 @@ mod tests {
         };
         assert_eq!(
             union.outer_projection,
-            Some(GraphUnionOuterProjection::CountAll {
-                alias: "count".to_string(),
+            Some(GraphUnionOuterProjection {
+                items: vec![GraphUnionOuterProjectionItem::CountAll {
+                    alias: "count".to_string(),
+                }],
+                group_by: Vec::new(),
             })
         );
         assert_eq!(
             union.first.projection_output_names(),
-            vec!["count".to_string()]
+            vec!["__coral_count_row".to_string()]
         );
     }
 
@@ -8460,12 +8576,91 @@ mod tests {
     }
 
     #[test]
-    fn rejects_static_label_alternatives_with_grouped_aggregate_projection() {
-        let error = compile_cypher_query(
+    fn compiles_static_label_alternatives_with_grouped_count_star() {
+        let query = compile_cypher_query(
             "MATCH (entity:Person|Team) \
              RETURN entity.name AS name, count(*) AS count",
         )
-        .expect_err("grouped aggregate projection should require staged planning");
+        .expect("grouped count(*) should compile as an outer union aggregate");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert_eq!(
+            union.outer_projection,
+            Some(GraphUnionOuterProjection {
+                items: vec![
+                    GraphUnionOuterProjectionItem::Column {
+                        name: "name".to_string(),
+                    },
+                    GraphUnionOuterProjectionItem::CountAll {
+                        alias: "count".to_string(),
+                    },
+                ],
+                group_by: vec!["name".to_string()],
+            })
+        );
+        assert_eq!(
+            union.first.projection_output_names(),
+            vec!["name".to_string()]
+        );
+    }
+
+    #[test]
+    fn compiles_static_label_alternatives_with_grouped_count_star_ordering() {
+        let query = compile_cypher_query(
+            "MATCH (entity:Person|Team) \
+             RETURN entity.name AS name, count(*) AS count \
+             ORDER BY count(*) DESC, entity.name",
+        )
+        .expect("grouped count(*) order expressions should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert_eq!(
+            union.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("count".to_string()),
+                    direction: OrderDirection::Descending,
+                },
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("name".to_string()),
+                    direction: OrderDirection::Ascending,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_static_label_alternatives_with_grouped_count_star_first() {
+        let query = compile_cypher_query(
+            "MATCH (entity:Person|Team) \
+             RETURN count(*) AS count, entity.name AS name",
+        )
+        .expect("grouped count(*) should preserve RETURN item order");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        let outer_projection = union
+            .outer_projection
+            .expect("expected an outer union projection");
+        assert_eq!(
+            outer_projection.output_names(),
+            vec!["count".to_string(), "name".to_string()]
+        );
+        assert_eq!(outer_projection.group_by, vec!["name".to_string()]);
+    }
+
+    #[test]
+    fn rejects_static_label_alternatives_with_non_count_aggregate_projection() {
+        let error = compile_cypher_query(
+            "MATCH (entity:Person|Team) \
+             RETURN entity.name AS name, sum(entity.score) AS score",
+        )
+        .expect_err("non-count aggregate projection should require staged planning");
 
         assert!(error.to_string().contains("aggregate RETURN"));
     }

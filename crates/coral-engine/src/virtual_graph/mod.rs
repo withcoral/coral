@@ -29,10 +29,10 @@ pub use graphql::{
 pub use graphql_schema::graphql_schema_sdl_for_graph;
 pub use ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
-    GraphPlan, GraphQuery, GraphUnion, GraphUnionBranch, GraphUnionOuterProjection, KeyPredicate,
-    Literal, NodePattern, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey,
-    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
-    RelationshipPattern,
+    GraphPlan, GraphQuery, GraphUnion, GraphUnionBranch, GraphUnionOuterProjection,
+    GraphUnionOuterProjectionItem, KeyPredicate, Literal, NodePattern, OptionalMatchScope,
+    OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
+    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
+    ProjectionPredicateRhs, PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 pub use sql::SqlTranslation;

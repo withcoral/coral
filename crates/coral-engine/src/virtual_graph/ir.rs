@@ -880,10 +880,46 @@ pub struct GraphUnionBranch {
 
 /// Projection applied after a graph union has combined all branch rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GraphUnionOuterProjection {
+pub struct GraphUnionOuterProjection {
+    /// Select-list items rendered by the outer union query.
+    pub items: Vec<GraphUnionOuterProjectionItem>,
+    /// Branch output columns used to group the outer union query.
+    pub group_by: Vec<String>,
+}
+
+impl GraphUnionOuterProjection {
+    /// Returns the tabular output names rendered for this outer projection.
+    #[must_use]
+    pub fn output_names(&self) -> Vec<String> {
+        self.items
+            .iter()
+            .map(GraphUnionOuterProjectionItem::output_name)
+            .collect()
+    }
+}
+
+/// One select-list item projected after a graph union.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphUnionOuterProjectionItem {
+    /// Re-project a column produced by every union branch.
+    Column {
+        /// Branch output column name.
+        name: String,
+    },
     /// Count all combined rows.
     CountAll {
         /// Output alias for the count projection.
         alias: String,
     },
+}
+
+impl GraphUnionOuterProjectionItem {
+    /// Returns the output name rendered for this outer projection item.
+    #[must_use]
+    pub fn output_name(&self) -> String {
+        match self {
+            Self::Column { name } => name.clone(),
+            Self::CountAll { alias } => alias.clone(),
+        }
+    }
 }
