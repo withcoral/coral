@@ -2477,7 +2477,7 @@ fn compile_terminal_with_graph_modifiers(
     {
         append_predicate_expression(predicate, &mut plan);
     }
-    apply_terminal_graph_with_modifiers(&part.with, &mut plan, context)?;
+    apply_terminal_graph_with_modifiers(&part.with, &mut plan, &state, context)?;
     compile_return(return_clause, &mut plan, &state, context)?;
     reject_ignored_path_variable_references(&plan, &state, "return")?;
     Ok(Some(plan))
@@ -2490,6 +2490,7 @@ fn with_has_row_modifiers(with: &With) -> bool {
 fn apply_terminal_graph_with_modifiers(
     with: &With,
     plan: &mut GraphPlan,
+    state: &CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     if let Some(order) = &with.order {
@@ -2499,6 +2500,7 @@ fn apply_terminal_graph_with_modifiers(
                     &item.expression,
                     &[],
                     plan,
+                    state,
                     context,
                     format!("with.order.items[{index}].expression"),
                 )?,
@@ -4672,6 +4674,7 @@ fn compile_return(
                     &item.expression,
                     &plan.projections,
                     plan,
+                    state,
                     context,
                     format!("return.order.items[{index}].expression"),
                 )?,
@@ -4695,13 +4698,14 @@ fn compile_order_expression(
     expression: &Expression,
     projections: &[Projection],
     plan: &GraphPlan,
+    state: &CypherCompileState,
     context: &CypherCompileContext,
     path: impl Into<String>,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
     match expression {
         Expression::Parenthesized(inner) => {
-            compile_order_expression(inner, projections, plan, context, path)
+            compile_order_expression(inner, projections, plan, state, context, path)
         }
         Expression::Variable(variable) => {
             projection_order_expression_for_alias(variable, projections, path)
@@ -4743,6 +4747,9 @@ fn compile_order_expression(
         }
         Expression::FunctionCall(function) if is_keys_function(function) => {
             compile_keys_order_expression(function, path, plan, context)
+        }
+        Expression::FunctionCall(function) if is_length_function(function) => {
+            compile_path_length_order_expression(function, path, state, context)
         }
         Expression::FunctionCall(function) => {
             if let Some(expression) =
@@ -5121,20 +5128,12 @@ fn compile_path_length_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    let variable = compile_single_variable_function_argument(
+    let length = compile_path_length_literal(
         function,
         format!("{path}.expression.arguments"),
-        "length() supports exactly one path variable argument",
+        state,
         context,
     )?;
-    let binding = state.path_variables.get(&variable).ok_or_else(|| {
-        unsupported(
-            format!("{path}.expression.arguments[0]"),
-            format!("length() argument '{variable}' is not a bound path variable"),
-        )
-    })?;
-    let length = i64::try_from(binding.length)
-        .map_err(|error| CoreError::internal(format!("path length overflow: {error}")))?;
     Ok(Projection::Expression {
         expression: ScalarExpression::Literal(Literal::Integer(length)),
         alias: item
@@ -5142,6 +5141,41 @@ fn compile_path_length_projection(
             .as_ref()
             .map_or_else(|| "length".to_string(), variable_name),
     })
+}
+
+fn compile_path_length_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    let path = path.into();
+    let length =
+        compile_path_length_literal(function, format!("{path}.arguments"), state, context)?;
+    Ok(OrderExpression::Literal(Literal::Integer(length)))
+}
+
+fn compile_path_length_literal(
+    function: &FunctionInvocation,
+    arguments_path: impl Into<String>,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<i64, CoreError> {
+    let arguments_path = arguments_path.into();
+    let variable = compile_single_variable_function_argument(
+        function,
+        arguments_path.clone(),
+        "length() supports exactly one path variable argument",
+        context,
+    )?;
+    let binding = state.path_variables.get(&variable).ok_or_else(|| {
+        unsupported(
+            format!("{arguments_path}[0]"),
+            format!("length() argument '{variable}' is not a bound path variable"),
+        )
+    })?;
+    i64::try_from(binding.length)
+        .map_err(|error| CoreError::internal(format!("path length overflow: {error}")))
 }
 
 fn compile_literal_projection(
@@ -10590,6 +10624,25 @@ mod tests {
     }
 
     #[test]
+    fn compiles_order_by_path_length() {
+        let plan = compile_cypher(
+            "MATCH path = (source:Service)-[:DEPENDS_ON*2]->(target:Service) \
+             RETURN source.name AS source, target.name AS target \
+             ORDER BY length(path) DESC",
+        )
+        .expect("path length ORDER BY should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Literal(Literal::Integer(2)),
+                direction: OrderDirection::Descending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_terminal_with_path_length_projection() {
         let plan = compile_cypher(
             "MATCH path = (source:Service)-[:DEPENDS_ON]->{2}(target:Service) \
@@ -10625,18 +10678,20 @@ mod tests {
 
     #[test]
     fn rejects_length_over_non_path_variable() {
-        let error = compile_cypher(
-            "MATCH (service:Service) \
-             RETURN length(service) AS length",
-        )
-        .expect_err("length() should only accept bound path variables");
+        for cypher in [
+            "MATCH (service:Service) RETURN length(service) AS length",
+            "MATCH (service:Service) RETURN service.name AS service ORDER BY length(service)",
+        ] {
+            let error = compile_cypher(cypher)
+                .expect_err("length() should only accept bound path variables");
 
-        assert!(
-            error
-                .to_string()
-                .contains("length() argument 'service' is not a bound path variable"),
-            "{error}"
-        );
+            assert!(
+                error
+                    .to_string()
+                    .contains("length() argument 'service' is not a bound path variable"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

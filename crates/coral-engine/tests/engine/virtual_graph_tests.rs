@@ -1064,6 +1064,27 @@ async fn cypher_bounded_variable_length_ranges_expand_to_union_all() {
         ]
     );
 
+    let ordered_execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH path = (source:Service)-[:DEPENDS_ON*1..2]->(target:Service) \
+         RETURN source.name AS source, target.name AS target \
+         ORDER BY length(path), source, target",
+    )
+    .await
+    .expect("bounded range path length ordering should execute");
+
+    assert_eq!(
+        execution_to_rows(ordered_execution.execution()),
+        vec![
+            json!({"source": "billing-api", "target": "deployments"}),
+            json!({"source": "billing-api", "target": "experiments"}),
+            json!({"source": "deployments", "target": "experiments"}),
+            json!({"source": "billing-api", "target": "experiments"}),
+        ]
+    );
+
     let count_execution = CoralQuery::execute_cypher(
         &[source],
         test_runtime(),
