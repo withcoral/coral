@@ -1406,6 +1406,136 @@ async fn graphql_order_by_object_variable_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_order_by_null_placement_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r"
+        query {
+          Service(
+            orderBy: [
+              { field: tier, direction: ASC, nulls: LAST }
+              { field: name, direction: ASC }
+            ]
+          ) {
+            service: name
+          }
+        }
+        ",
+    )
+    .await
+    .expect("GraphQL orderBy null placement query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ORDER BY \"n0\".\"tier\" ASC NULLS LAST, \"n0\".\"service_name\" ASC"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "experiments"}),
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn graphql_order_by_null_placement_variable_executes_against_synthetic_sources() {
+    fn object_map(
+        entries: impl IntoIterator<Item = (&'static str, GraphGraphqlVariableValue)>,
+    ) -> BTreeMap<String, GraphGraphqlVariableValue> {
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect()
+    }
+
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let variables = BTreeMap::from([(
+        "order".to_string(),
+        GraphGraphqlVariableValue::ObjectList(vec![
+            object_map([
+                (
+                    "field",
+                    GraphGraphqlVariableValue::Literal(GraphLiteral::String("tier".to_string())),
+                ),
+                (
+                    "direction",
+                    GraphGraphqlVariableValue::Literal(GraphLiteral::String("ASC".to_string())),
+                ),
+                (
+                    "nulls",
+                    GraphGraphqlVariableValue::Literal(GraphLiteral::String("LAST".to_string())),
+                ),
+            ]),
+            object_map([
+                (
+                    "field",
+                    GraphGraphqlVariableValue::Literal(GraphLiteral::String("name".to_string())),
+                ),
+                (
+                    "direction",
+                    GraphGraphqlVariableValue::Literal(GraphLiteral::String("DESC".to_string())),
+                ),
+                (
+                    "nulls",
+                    GraphGraphqlVariableValue::Literal(GraphLiteral::String(
+                        "NULLS_FIRST".to_string(),
+                    )),
+                ),
+            ]),
+        ]),
+    )]);
+
+    let execution = CoralQuery::execute_graphql_with_variables(
+        &[source],
+        test_runtime(),
+        &graph,
+        r"
+        query Services($order: [ServiceOrder!]!) {
+          Service(orderBy: $order) {
+            service: name
+          }
+        }
+        ",
+        &variables,
+    )
+    .await
+    .expect("GraphQL orderBy null placement variable query should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "ORDER BY \"n0\".\"tier\" ASC NULLS LAST, \"n0\".\"service_name\" DESC NULLS FIRST"
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "experiments"}),
+            json!({"service": "deployments"}),
+            json!({"service": "billing-api"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_shorthand_order_by_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -7138,6 +7268,7 @@ fn owner_service_plan() -> GraphPlan {
                 property: "name".to_string(),
             }),
             direction: GraphOrderDirection::Ascending,
+            nulls: None,
         }],
         skip: None,
         limit: Some(25),

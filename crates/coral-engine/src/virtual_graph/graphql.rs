@@ -13,8 +13,8 @@ use super::diagnostic::Diagnostic;
 use super::graphql_aggregate::graphql_property_aggregate_field;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
-    GraphPlan, KeyPredicate, Literal, NodePattern, OrderDirection, OrderExpression, OrderKey,
-    PredicateExpression, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
+    GraphPlan, KeyPredicate, Literal, NodePattern, NullOrder, OrderDirection, OrderExpression,
+    OrderKey, PredicateExpression, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
     RelationshipPattern,
 };
 use crate::CoreError;
@@ -2520,11 +2520,14 @@ fn compile_order_by_object(
     let Value::Object(object) = value else {
         return Err(unsupported(path, "GraphQL orderBy entries must be objects"));
     };
-    if !object.contains_key("field") && !object.contains_key("direction") {
+    if !object.contains_key("field")
+        && !object.contains_key("direction")
+        && !object.contains_key("nulls")
+    {
         return compile_order_by_shorthand_object(variable, object, path, context);
     }
     for name in object.keys() {
-        if name != "field" && name != "direction" {
+        if name != "field" && name != "direction" && name != "nulls" {
             return Err(unsupported(
                 format!("{path}.{name}"),
                 format!("unsupported GraphQL orderBy key '{name}'"),
@@ -2540,9 +2543,14 @@ fn compile_order_by_object(
         .map_or(Ok(OrderDirection::Ascending), |value| {
             compile_order_direction(value, format!("{path}.direction"), context)
         })?;
+    let nulls = object
+        .get("nulls")
+        .map(|value| compile_null_order(value, format!("{path}.nulls"), context))
+        .transpose()?;
     Ok(vec![OrderKey {
         expression: graphql_order_expression(variable, &field),
         direction,
+        nulls,
     }])
 }
 
@@ -2566,6 +2574,7 @@ fn compile_order_by_shorthand_object(
     Ok(vec![OrderKey {
         expression: graphql_order_expression(variable, field),
         direction: compile_order_direction(direction_value, format!("{path}.{field}"), context)?,
+        nulls: None,
     }])
 }
 
@@ -2575,11 +2584,14 @@ fn compile_order_by_variable_object(
     path: impl Into<String>,
 ) -> Result<Vec<OrderKey>, CoreError> {
     let path = path.into();
-    if !object.contains_key("field") && !object.contains_key("direction") {
+    if !object.contains_key("field")
+        && !object.contains_key("direction")
+        && !object.contains_key("nulls")
+    {
         return compile_order_by_variable_shorthand_object(variable, object, path);
     }
     for name in object.keys() {
-        if name != "field" && name != "direction" {
+        if name != "field" && name != "direction" && name != "nulls" {
             return Err(unsupported(
                 format!("{path}.{name}"),
                 format!("unsupported GraphQL orderBy key '{name}'"),
@@ -2595,9 +2607,14 @@ fn compile_order_by_variable_object(
         .map_or(Ok(OrderDirection::Ascending), |value| {
             compile_variable_order_direction(value, format!("{path}.direction"))
         })?;
+    let nulls = object
+        .get("nulls")
+        .map(|value| compile_variable_null_order(value, format!("{path}.nulls")))
+        .transpose()?;
     Ok(vec![OrderKey {
         expression: graphql_order_expression(variable, &field),
         direction,
+        nulls,
     }])
 }
 
@@ -2620,6 +2637,7 @@ fn compile_order_by_variable_shorthand_object(
     Ok(vec![OrderKey {
         expression: graphql_order_expression(variable, field),
         direction: compile_variable_order_direction(direction_value, format!("{path}.{field}"))?,
+        nulls: None,
     }])
 }
 
@@ -2646,6 +2664,16 @@ fn compile_order_direction(
     let path = path.into();
     let direction = compile_name_value(value, path.clone(), context)?;
     compile_order_direction_name(&direction, path)
+}
+
+fn compile_null_order(
+    value: &Value<'_, String>,
+    path: impl Into<String>,
+    context: &GraphqlCompileContext<'_, '_>,
+) -> Result<NullOrder, CoreError> {
+    let path = path.into();
+    let nulls = compile_name_value(value, path.clone(), context)?;
+    compile_null_order_name(&nulls, path)
 }
 
 fn compile_variable_literal(
@@ -2738,6 +2766,15 @@ fn compile_variable_order_direction(
     compile_order_direction_name(&direction, path)
 }
 
+fn compile_variable_null_order(
+    value: &GraphqlVariableValue,
+    path: impl Into<String>,
+) -> Result<NullOrder, CoreError> {
+    let path = path.into();
+    let nulls = compile_variable_name_value(value, path.clone())?;
+    compile_null_order_name(&nulls, path)
+}
+
 fn compile_order_direction_name(
     direction: &str,
     path: impl Into<String>,
@@ -2752,6 +2789,20 @@ fn compile_order_direction_name(
     Err(unsupported(
         path,
         "GraphQL orderBy direction must be ASC, ASCENDING, DESC, or DESCENDING",
+    ))
+}
+
+fn compile_null_order_name(nulls: &str, path: impl Into<String>) -> Result<NullOrder, CoreError> {
+    let path = path.into();
+    if nulls.eq_ignore_ascii_case("FIRST") || nulls.eq_ignore_ascii_case("NULLS_FIRST") {
+        return Ok(NullOrder::First);
+    }
+    if nulls.eq_ignore_ascii_case("LAST") || nulls.eq_ignore_ascii_case("NULLS_LAST") {
+        return Ok(NullOrder::Last);
+    }
+    Err(unsupported(
+        path,
+        "GraphQL orderBy nulls must be FIRST, LAST, NULLS_FIRST, or NULLS_LAST",
     ))
 }
 
@@ -3138,6 +3189,7 @@ mod tests {
                     property: "name".to_string(),
                 }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         );
         assert_eq!(plan.limit, Some(10));
@@ -3292,12 +3344,14 @@ mod tests {
                         variable: "service".to_string(),
                     },
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::ElementId {
                         variable: "service".to_string(),
                     },
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
             ]
         );
@@ -3330,6 +3384,7 @@ mod tests {
                         property: "risk".to_string(),
                     }),
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::Property(PropertyRef {
@@ -3337,6 +3392,48 @@ mod tests {
                         property: "name".to_string(),
                     }),
                     direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_graphql_order_by_null_placement() {
+        let plan = compile_graphql(
+            r"
+            query {
+              Service(
+                orderBy: [
+                  { field: tier, direction: ASC, nulls: LAST }
+                  { field: name, direction: DESC, nulls: FIRST }
+                ]
+              ) {
+                name
+              }
+            }
+            ",
+        )
+        .expect("GraphQL orderBy null placement should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: Some(NullOrder::Last),
+                },
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    }),
+                    direction: OrderDirection::Descending,
+                    nulls: Some(NullOrder::First),
                 },
             ]
         );
@@ -3878,6 +3975,7 @@ mod tests {
                     property: "name".to_string(),
                 }),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
         assert_eq!(plan.limit, Some(10));
@@ -4230,6 +4328,49 @@ mod tests {
                     property: "name".to_string(),
                 }),
                 direction: OrderDirection::Descending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_root_query_with_order_by_null_placement_variable() {
+        let variables = BTreeMap::from([(
+            "order".to_string(),
+            variable_object([
+                (
+                    "field",
+                    GraphqlVariableValue::Literal(Literal::String("tier".to_string())),
+                ),
+                (
+                    "direction",
+                    GraphqlVariableValue::Literal(Literal::String("ASC".to_string())),
+                ),
+                (
+                    "nulls",
+                    GraphqlVariableValue::Literal(Literal::String("NULLS_LAST".to_string())),
+                ),
+            ]),
+        )]);
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services($order: ServiceOrder!) {
+              Service(orderBy: $order) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect("GraphQL orderBy null placement variable should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: Some(NullOrder::Last),
             }]
         );
     }
@@ -4261,6 +4402,7 @@ mod tests {
                     property: "name".to_string(),
                 }),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
     }
@@ -4311,6 +4453,7 @@ mod tests {
                         property: "tier".to_string(),
                     }),
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::Property(PropertyRef {
@@ -4318,6 +4461,7 @@ mod tests {
                         property: "name".to_string(),
                     }),
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
             ]
         );
@@ -4377,6 +4521,7 @@ mod tests {
                     property: "name".to_string(),
                 }),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
         assert_eq!(plan.limit, Some(10));
@@ -4613,6 +4758,7 @@ mod tests {
                     property: "name".to_string(),
                 }),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
     }
@@ -5596,7 +5742,7 @@ nodes:
         let error = compile_graphql(
             r"
             {
-              Service(orderBy: { field: name, direction: ASC, nulls: LAST }) {
+              Service(orderBy: { field: name, direction: ASC, collation: CASE_INSENSITIVE }) {
                 name
               }
             }
@@ -5608,6 +5754,27 @@ nodes:
             error
                 .to_string()
                 .contains("unsupported GraphQL orderBy key"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_graphql_order_by_null_placement() {
+        let error = compile_graphql(
+            r"
+            {
+              Service(orderBy: { field: name, direction: ASC, nulls: MIDDLE }) {
+                name
+              }
+            }
+            ",
+        )
+        .expect_err("unknown orderBy null placement should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("GraphQL orderBy nulls must be FIRST, LAST"),
             "unexpected error: {error}"
         );
     }
@@ -5733,8 +5900,12 @@ nodes:
         assert!(sdl.contains("scalar CoralGraphValue"));
         assert!(sdl.contains("  ASCENDING"));
         assert!(sdl.contains("  DESCENDING"));
+        assert!(sdl.contains("enum CoralGraphNullOrder {\n  FIRST\n  LAST\n}"));
         assert!(sdl.contains(
             "Person(where: PersonWhere, orderBy: [PersonOrderBy!], limit: Int, first: Int, offset: Int, skip: Int, distinct: Boolean): [Person!]!"
+        ));
+        assert!(sdl.contains(
+            "input PersonOrderBy {\n  field: PersonOrderField!\n  direction: CoralGraphOrderDirection = ASC\n  nulls: CoralGraphNullOrder\n}"
         ));
         assert!(sdl.contains("input PersonWhere {"));
         assert!(sdl.contains("  _id: CoralGraphIdentityFilter"));

@@ -923,6 +923,7 @@ fn compile_static_alternative_outer_order_by(
                 Some(SortDirection::Descending) => OrderDirection::Descending,
                 Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
             },
+            nulls: None,
         });
     }
     Ok(order_by)
@@ -2120,6 +2121,7 @@ fn apply_terminal_graph_with_modifiers(
                     Some(SortDirection::Descending) => OrderDirection::Descending,
                     Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
                 },
+                nulls: None,
             });
         }
     }
@@ -2194,6 +2196,7 @@ fn compile_terminal_with_clause(
                     Some(SortDirection::Descending) => OrderDirection::Descending,
                     Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
                 },
+                nulls: None,
             });
         }
     }
@@ -2340,6 +2343,7 @@ fn apply_terminal_return_modifiers(
                     Some(SortDirection::Descending) => OrderDirection::Descending,
                     Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
                 },
+                nulls: None,
             });
         }
     }
@@ -4121,6 +4125,7 @@ fn compile_return(
                     Some(SortDirection::Descending) => OrderDirection::Descending,
                     Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
                 },
+                nulls: None,
             });
         }
     }
@@ -8878,6 +8883,7 @@ mod tests {
                     property: "name".to_string(),
                 }),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
         assert_eq!(plan.limit, Some(10));
@@ -9077,6 +9083,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("count".to_string()),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         );
     }
@@ -9130,10 +9137,12 @@ mod tests {
                 OrderKey {
                     expression: OrderExpression::ProjectionAlias("count".to_string()),
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::ProjectionAlias("name".to_string()),
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
             ]
         );
@@ -9199,10 +9208,12 @@ mod tests {
                 OrderKey {
                     expression: OrderExpression::ProjectionAlias("named_services".to_string()),
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::ProjectionAlias("name".to_string()),
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
             ]
         );
@@ -9254,10 +9265,12 @@ mod tests {
                 OrderKey {
                     expression: OrderExpression::ProjectionAlias("services".to_string()),
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::ProjectionAlias("name".to_string()),
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
             ]
         );
@@ -9366,6 +9379,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("total_risk".to_string()),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
     }
@@ -9423,6 +9437,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("name".to_string()),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
         assert_eq!(union.skip, Some(1));
@@ -9448,6 +9463,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("name".to_string()),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         );
     }
@@ -9469,6 +9485,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("name".to_string()),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         );
     }
@@ -9503,6 +9520,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("__coral_order_0".to_string()),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         );
     }
@@ -9548,6 +9566,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("owner".to_string()),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         );
     }
@@ -10196,6 +10215,7 @@ mod tests {
                 OrderKey {
                     expression: OrderExpression::ProjectionAlias("services".to_string()),
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::Property(PropertyRef {
@@ -10203,6 +10223,7 @@ mod tests {
                         property: "name".to_string(),
                     }),
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
             ]
         );
@@ -10245,6 +10266,7 @@ mod tests {
                 OrderKey {
                     expression: OrderExpression::ProjectionAlias("total_services".to_string()),
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::Property(PropertyRef {
@@ -10252,6 +10274,7 @@ mod tests {
                         property: "tier".to_string(),
                     }),
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
             ]
         );
@@ -10293,6 +10316,7 @@ mod tests {
                 OrderKey {
                     expression: OrderExpression::ProjectionAlias("total_services".to_string()),
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::Property(PropertyRef {
@@ -10300,6 +10324,7 @@ mod tests {
                         property: "tier".to_string(),
                     }),
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
             ]
         );
@@ -10341,6 +10366,7 @@ mod tests {
                 OrderKey {
                     expression: OrderExpression::ProjectionAlias("services".to_string()),
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::Property(PropertyRef {
@@ -10348,6 +10374,7 @@ mod tests {
                         property: "tier".to_string(),
                     }),
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
             ]
         );
@@ -10447,6 +10474,7 @@ mod tests {
                     property: "tier".to_string(),
                 }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         );
     }
@@ -10469,6 +10497,7 @@ mod tests {
                 OrderKey {
                     expression: OrderExpression::ProjectionAlias("services".to_string()),
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::Property(PropertyRef {
@@ -10476,6 +10505,7 @@ mod tests {
                         property: "tier".to_string(),
                     }),
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
             ]
         );
@@ -10511,6 +10541,7 @@ mod tests {
                     property: "risk".to_string(),
                 }),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
         assert_eq!(plan.skip, Some(1));
@@ -10555,6 +10586,7 @@ mod tests {
                     property: "risk".to_string(),
                 }),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
         assert_eq!(plan.limit, Some(1));
@@ -10602,6 +10634,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("ownership_id".to_string()),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         );
     }
@@ -10633,6 +10666,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("ownership_element_id".to_string()),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         );
     }
@@ -10659,6 +10693,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("service_labels".to_string()),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         );
     }
@@ -10680,12 +10715,14 @@ mod tests {
                         variable: "person".to_string(),
                     },
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::Key {
                         variable: "owns".to_string(),
                     },
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::RelationshipType {
@@ -10693,6 +10730,7 @@ mod tests {
                         relationship_type: "OWNS".to_string(),
                     },
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
             ]
         );
@@ -10715,12 +10753,14 @@ mod tests {
                         variable: "person".to_string(),
                     },
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::ElementId {
                         variable: "owns".to_string(),
                     },
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
             ]
         );
@@ -10743,6 +10783,7 @@ mod tests {
                     label: "Service".to_string(),
                 },
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
     }
@@ -10764,12 +10805,14 @@ mod tests {
                         variable: "service".to_string(),
                     },
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::PropertyKeys {
                         variable: "owns".to_string(),
                     },
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
             ]
         );
@@ -11100,6 +11143,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::Predicate(_)),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         ));
     }
@@ -11343,6 +11387,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::Literal(Literal::String("constant".to_string())),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         );
     }
@@ -11458,6 +11503,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::NullIf { .. }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -11500,6 +11546,7 @@ mod tests {
                     ],
                 }),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
     }
@@ -11542,6 +11589,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::Scalar(expected_expression),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         );
     }
@@ -11588,6 +11636,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::ToLower { .. }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -11634,6 +11683,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::RTrim { .. }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -11675,6 +11725,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::Trim { .. }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -11747,6 +11798,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::Replace { .. }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -11807,6 +11859,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::CharacterLength { .. }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -11938,6 +11991,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::Reverse { .. }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -12022,6 +12076,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::Round { places: None, .. }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -12095,6 +12150,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::Log { .. }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -12220,6 +12276,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::Radians { .. }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -12305,6 +12362,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::Literal(Literal::Float(e))),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }] if *e == ordered_float::OrderedFloat(std::f64::consts::E)
         ));
     }
@@ -12374,6 +12432,7 @@ mod tests {
                     ..
                 }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -12446,6 +12505,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::ToInteger { .. }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -12492,6 +12552,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::ToIntegerOrNull { .. }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -12579,6 +12640,7 @@ mod tests {
                     ..
                 }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -12632,6 +12694,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::Negate { .. }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -12693,6 +12756,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::Case { .. }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         ));
     }
@@ -12757,6 +12821,7 @@ mod tests {
                     ..
                 }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }] if matches!(
                 alternatives.as_slice(),
                 [ScalarCaseAlternative {
@@ -13093,6 +13158,7 @@ mod tests {
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::Coalesce { expressions }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }] if matches!(
                 expressions.as_slice(),
                 [
@@ -13187,10 +13253,12 @@ mod tests {
                 OrderKey {
                     expression: OrderExpression::Scalar(ScalarExpression::ToString { expression }),
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::Scalar(ScalarExpression::Coalesce { expressions }),
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
             ] if matches!(expression.as_ref(), ScalarExpression::Key { variable } if variable == "service")
                 && matches!(expressions.as_slice(), [
@@ -13844,6 +13912,7 @@ mod tests {
                     property: "name".to_string(),
                 }),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
     }
@@ -14439,6 +14508,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("named_services".to_string()),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
     }
@@ -14500,6 +14570,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("services".to_string()),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         );
     }
@@ -14580,6 +14651,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("average_risk".to_string()),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
     }
@@ -14704,6 +14776,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("services".to_string()),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
     }
@@ -14733,6 +14806,7 @@ mod tests {
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("services".to_string()),
                 direction: OrderDirection::Descending,
+                nulls: None,
             }]
         );
     }
@@ -14752,6 +14826,7 @@ mod tests {
                 OrderKey {
                     expression: OrderExpression::ProjectionAlias("services".to_string()),
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::Property(PropertyRef {
@@ -14759,6 +14834,7 @@ mod tests {
                         property: "tier".to_string(),
                     }),
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
             ]
         );
@@ -14779,10 +14855,12 @@ mod tests {
                 OrderKey {
                     expression: OrderExpression::ProjectionAlias("services".to_string()),
                     direction: OrderDirection::Descending,
+                    nulls: None,
                 },
                 OrderKey {
                     expression: OrderExpression::ProjectionAlias("average_risk".to_string()),
                     direction: OrderDirection::Ascending,
+                    nulls: None,
                 },
             ]
         );

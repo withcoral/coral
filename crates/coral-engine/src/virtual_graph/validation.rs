@@ -4255,6 +4255,7 @@ relationships:
                 property: "missing".to_string(),
             }),
             direction: OrderDirection::Ascending,
+            nulls: None,
         }];
 
         let error = graph
@@ -5376,6 +5377,7 @@ relationships:
                 property: "name".to_string(),
             }),
             direction: OrderDirection::Ascending,
+            nulls: None,
         }];
 
         let error = graph

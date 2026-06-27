@@ -44,6 +44,11 @@ enum CoralGraphOrderDirection {
   DESCENDING
 }
 
+enum CoralGraphNullOrder {
+  FIRST
+  LAST
+}
+
 ";
 
 const GRAPHQL_VALUE_FILTER_SDL: &str = r"input CoralGraphValueFilter {
@@ -277,7 +282,7 @@ fn push_node_aggregate_field_enum(sdl: &mut String, node: &Node) {
 fn push_node_order_input(sdl: &mut String, node: &Node) {
     write!(
         sdl,
-        "input {} {{\n  field: {}!\n  direction: CoralGraphOrderDirection = ASC\n}}\n\n",
+        "input {} {{\n  field: {}!\n  direction: CoralGraphOrderDirection = ASC\n  nulls: CoralGraphNullOrder\n}}\n\n",
         node_order_by_type(&node.label),
         node_order_field_type(&node.label)
     )

@@ -20,6 +20,15 @@ pub enum OrderDirection {
     Descending,
 }
 
+/// Explicit null placement for graph query ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NullOrder {
+    /// Null values sort before non-null values.
+    First,
+    /// Null values sort after non-null values.
+    Last,
+}
+
 /// Comparison operator for property predicates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComparisonOperator {
@@ -807,6 +816,8 @@ pub struct OrderKey {
     pub expression: OrderExpression,
     /// Sort direction.
     pub direction: OrderDirection,
+    /// Optional explicit null placement.
+    pub nulls: Option<NullOrder>,
 }
 
 /// Shared logical graph query plan consumed by SQL lowering.

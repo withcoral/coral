@@ -6,10 +6,10 @@ use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator, Direction,
     ElementIdPredicate, GraphPlan, GraphQuery, GraphUnion, GraphUnionOuterProjectionItem,
-    KeyPredicate, Literal, OrderDirection, OrderExpression, PredicateExpression, PredicateRhs,
-    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
-    ProjectionPredicateRhs, PropertyKeyMembershipPredicate, PropertyRef, ScalarCaseAlternative,
-    ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    KeyPredicate, Literal, NullOrder, OrderDirection, OrderExpression, PredicateExpression,
+    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
+    PropertyRef, ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -1376,13 +1376,15 @@ impl<'a> Lowerer<'a> {
 
         let mut keys = Vec::with_capacity(self.validated.plan().order_by.len());
         for key in &self.validated.plan().order_by {
+            let nulls = render_null_order(key.nulls);
             keys.push(format!(
-                "{} {}",
+                "{} {}{}",
                 self.render_order_expression(&key.expression)?,
                 match key.direction {
                     OrderDirection::Ascending => "ASC",
                     OrderDirection::Descending => "DESC",
-                }
+                },
+                nulls,
             ));
         }
         Ok(format!(" ORDER BY {}", keys.join(", ")))
@@ -2029,13 +2031,15 @@ fn render_union_outer_sql(sql: String, union: &GraphUnion) -> Result<String, Cor
     if !union.order_by.is_empty() {
         let mut keys = Vec::with_capacity(union.order_by.len());
         for (index, key) in union.order_by.iter().enumerate() {
+            let nulls = render_null_order(key.nulls);
             keys.push(format!(
-                "{} {}",
+                "{} {}{}",
                 render_union_outer_order_expression(&key.expression, index)?,
                 match key.direction {
                     OrderDirection::Ascending => "ASC",
                     OrderDirection::Descending => "DESC",
-                }
+                },
+                nulls,
             ));
         }
         write!(outer_sql, " ORDER BY {}", keys.join(", "))
@@ -2050,6 +2054,14 @@ fn render_union_outer_sql(sql: String, union: &GraphUnion) -> Result<String, Cor
             .map_err(|_| CoreError::internal("failed to render graph union SQL"))?;
     }
     Ok(outer_sql)
+}
+
+fn render_null_order(nulls: Option<NullOrder>) -> &'static str {
+    match nulls {
+        Some(NullOrder::First) => " NULLS FIRST",
+        Some(NullOrder::Last) => " NULLS LAST",
+        None => "",
+    }
 }
 
 fn render_union_outer_projection(union: &GraphUnion) -> String {
@@ -2871,6 +2883,7 @@ relationships:
                 variable: "service".to_string(),
             },
             direction: OrderDirection::Descending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -2974,6 +2987,7 @@ relationships:
         plan.order_by = vec![OrderKey {
             expression: OrderExpression::ProjectionAlias("service_count".to_string()),
             direction: OrderDirection::Descending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -3311,6 +3325,7 @@ relationships: []
                 variable: "owns".to_string(),
             },
             direction: OrderDirection::Descending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -3769,6 +3784,7 @@ relationships: []
                 relationship_type: "OWNS".to_string(),
             }),
             direction: OrderDirection::Ascending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -3846,6 +3862,7 @@ relationships: []
                 }),
             }),
             direction: OrderDirection::Ascending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -3922,6 +3939,7 @@ relationships: []
                 length: None,
             }),
             direction: OrderDirection::Ascending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -3994,6 +4012,7 @@ relationships: []
                 })),
             }),
             direction: OrderDirection::Ascending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -4070,6 +4089,7 @@ relationships: []
                 })),
             }),
             direction: OrderDirection::Ascending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -4147,6 +4167,7 @@ relationships: []
                 })),
             }),
             direction: OrderDirection::Ascending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -4226,6 +4247,7 @@ relationships: []
                 places: None,
             }),
             direction: OrderDirection::Ascending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -4304,6 +4326,7 @@ relationships: []
                 expression: Box::new(service_risk_expression()),
             }),
             direction: OrderDirection::Ascending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -4465,6 +4488,7 @@ relationships: []
                 x: Box::new(integer_literal(1)),
             }),
             direction: OrderDirection::Ascending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -4532,6 +4556,7 @@ relationships: []
                 })),
             }),
             direction: OrderDirection::Ascending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -4602,6 +4627,7 @@ relationships: []
                 right: Box::new(ScalarExpression::Literal(Literal::Integer(2))),
             }),
             direction: OrderDirection::Descending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -4818,6 +4844,7 @@ relationships: []
                 property: "tier".to_string(),
             }),
             direction: OrderDirection::Ascending,
+            nulls: None,
         }];
         plan.limit = None;
 
@@ -4882,6 +4909,7 @@ relationships: []
         plan.order_by = vec![OrderKey {
             expression: OrderExpression::ProjectionAlias("ownership_count".to_string()),
             direction: OrderDirection::Descending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -5095,6 +5123,7 @@ relationships: []
         plan.order_by = vec![OrderKey {
             expression: OrderExpression::ProjectionAlias("service_count".to_string()),
             direction: OrderDirection::Descending,
+            nulls: None,
         }];
 
         let translation = graph
@@ -5369,6 +5398,7 @@ relationships: []
                     property: "name".to_string(),
                 }),
                 direction: OrderDirection::Ascending,
+                nulls: None,
             }],
             skip: None,
             limit: Some(25),
