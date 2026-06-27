@@ -1436,6 +1436,9 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Round { expression, places } => {
                 self.render_round_expression(expression, places.as_deref())
             }
+            ScalarExpression::Negate { expression } => {
+                Ok(format!("-({})", self.render_scalar_expression(expression)?))
+            }
             ScalarExpression::Arithmetic {
                 operator,
                 left,
@@ -3038,6 +3041,83 @@ relationships: []
             translation
                 .sql()
                 .contains("ORDER BY round(\"n1\".\"risk_score\") ASC"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_unary_negation_scalar_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.projections = vec![
+            Projection::Expression {
+                expression: ScalarExpression::Negate {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    })),
+                },
+                alias: "inverse_risk".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Negate {
+                    expression: Box::new(ScalarExpression::Arithmetic {
+                        operator: ArithmeticOperator::Multiply,
+                        left: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "risk".to_string(),
+                        })),
+                        right: Box::new(ScalarExpression::Literal(Literal::Integer(100))),
+                    }),
+                },
+                alias: "inverse_points".to_string(),
+            },
+        ];
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::Negate {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "risk".to_string(),
+                })),
+            },
+            operator: ComparisonOperator::LessThan,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(0))),
+        }));
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::Scalar(ScalarExpression::Negate {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "risk".to_string(),
+                })),
+            }),
+            direction: OrderDirection::Ascending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("unary negation scalar expressions should lower");
+
+        assert!(
+            translation.sql().contains(
+                "SELECT -(\"n1\".\"risk_score\") AS \"inverse_risk\", \
+                 -((\"n1\".\"risk_score\" * 100)) AS \"inverse_points\""
+            ),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE -(\"n1\".\"risk_score\") < 0"),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("ORDER BY -(\"n1\".\"risk_score\") ASC"),
             "{}",
             translation.sql()
         );

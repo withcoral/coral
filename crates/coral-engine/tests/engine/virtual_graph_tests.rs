@@ -1861,6 +1861,44 @@ async fn cypher_numeric_scalar_expressions_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_unary_negation_scalar_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {name: 'billing-api'}) \
+         WHERE -service.risk < -0.8 \
+         RETURN service.name AS service, \
+                -service.risk AS inverse_risk, \
+                -(service.risk * 10) AS inverse_points \
+         ORDER BY -service.risk",
+    )
+    .await
+    .expect("unary negation scalar query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("-(\"n0\".\"risk_score\") < -0.8"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "service": "billing-api",
+            "inverse_risk": -0.9,
+            "inverse_points": -9.0,
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_scalar_null_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -807,7 +807,8 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::Reverse { expression }
             | ScalarExpression::Abs { expression }
             | ScalarExpression::Ceil { expression }
-            | ScalarExpression::Floor { expression } => {
+            | ScalarExpression::Floor { expression }
+            | ScalarExpression::Negate { expression } => {
                 Self::collect_scalar_expression_variables(expression, variables);
             }
             ScalarExpression::Round { expression, places } => {
@@ -1071,7 +1072,8 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::Reverse { expression }
             | ScalarExpression::Abs { expression }
             | ScalarExpression::Ceil { expression }
-            | ScalarExpression::Floor { expression } => {
+            | ScalarExpression::Floor { expression }
+            | ScalarExpression::Negate { expression } => {
                 Self::validate_scalar_expression_not_optional(
                     expression,
                     optional_variables,
@@ -2365,7 +2367,8 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::Reverse { expression }
             | ScalarExpression::Abs { expression }
             | ScalarExpression::Ceil { expression }
-            | ScalarExpression::Floor { expression } => {
+            | ScalarExpression::Floor { expression }
+            | ScalarExpression::Negate { expression } => {
                 self.validate_scalar_expression(expression, format!("{path}.expression"))
             }
             ScalarExpression::Round { expression, places } => {

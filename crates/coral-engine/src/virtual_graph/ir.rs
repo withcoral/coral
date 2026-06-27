@@ -256,6 +256,11 @@ pub enum ScalarExpression {
         /// Optional decimal places expression.
         places: Option<Box<ScalarExpression>>,
     },
+    /// Negate a numeric scalar expression.
+    Negate {
+        /// Inner expression to negate.
+        expression: Box<ScalarExpression>,
+    },
     /// Numeric binary arithmetic over scalar expressions.
     Arithmetic {
         /// Arithmetic operator.

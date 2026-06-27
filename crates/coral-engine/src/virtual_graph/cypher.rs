@@ -1145,6 +1145,10 @@ fn compile_order_expression(
         expression if is_literal_expression(expression) => Ok(OrderExpression::Literal(
             compile_literal(expression, path, context)?,
         )),
+        Expression::UnaryOp {
+            op: UnaryOperator::Negate,
+            ..
+        } => compile_arithmetic_order_expression(expression, path, context),
         Expression::BinaryOp { .. } => {
             compile_arithmetic_order_expression(expression, path, context)
         }
@@ -1431,7 +1435,11 @@ fn compile_projection(
         Expression::Parenthesized(inner) if is_arithmetic_expression(inner) => {
             compile_arithmetic_projection(item, path, context)
         }
-        Expression::BinaryOp { .. } => compile_arithmetic_projection(item, path, context),
+        Expression::UnaryOp {
+            op: UnaryOperator::Negate,
+            ..
+        }
+        | Expression::BinaryOp { .. } => compile_arithmetic_projection(item, path, context),
         Expression::Case(case) => compile_case_projection(case, item, path, context),
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_projection(function, item, path, plan, context)
@@ -2010,6 +2018,17 @@ fn compile_scalar_expression(
                 context,
             )?),
         }),
+        Expression::UnaryOp {
+            op: UnaryOperator::Negate,
+            operand,
+            ..
+        } => Ok(ScalarExpression::Negate {
+            expression: Box::new(compile_scalar_expression(
+                operand,
+                format!("{path}.operand"),
+                context,
+            )?),
+        }),
         Expression::Case(case) => compile_case_scalar_expression(case, path, context),
         Expression::FunctionCall(function) => {
             compile_scalar_function_expression(function, path.clone(), context)?.ok_or_else(|| {
@@ -2024,7 +2043,7 @@ fn compile_scalar_expression(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), or round() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), or round() expressions",
         )),
     }
 }
@@ -2222,6 +2241,13 @@ fn compile_optional_predicate_scalar_expression(
         Expression::BinaryOp { .. } => {
             Ok(Some(compile_scalar_expression(expression, path, context)?))
         }
+        Expression::UnaryOp {
+            op: UnaryOperator::Negate,
+            operand,
+            ..
+        } if !is_literal_expression(operand) => {
+            Ok(Some(compile_scalar_expression(expression, path, context)?))
+        }
         Expression::Case(case) => Ok(Some(compile_case_scalar_expression(case, path, context)?)),
         Expression::FunctionCall(function) => {
             compile_scalar_function_expression(function, path, context)
@@ -2238,9 +2264,13 @@ fn compile_scalar_predicate_rhs(
     let path = path.into();
     match expression {
         Expression::Parenthesized(inner) => compile_scalar_predicate_rhs(inner, path, context),
-        Expression::BinaryOp { .. } => Ok(ScalarPredicateRhs::Expression(
-            compile_scalar_expression(expression, path, context)?,
-        )),
+        Expression::BinaryOp { .. }
+        | Expression::UnaryOp {
+            op: UnaryOperator::Negate,
+            ..
+        } => Ok(ScalarPredicateRhs::Expression(compile_scalar_expression(
+            expression, path, context,
+        )?)),
         Expression::Case(case) => Ok(ScalarPredicateRhs::Expression(
             compile_case_scalar_expression(case, path, context)?,
         )),
@@ -2249,7 +2279,7 @@ fn compile_scalar_predicate_rhs(
                 Some(expression) => Ok(ScalarPredicateRhs::Expression(expression)),
                 None => Err(unsupported(
                     path,
-                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), or round() expressions",
+                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), or round() expressions",
                 )),
             }
         }
@@ -2261,7 +2291,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), or round() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), or round() expressions",
         )),
     }
 }
@@ -4300,6 +4330,10 @@ fn is_arithmetic_expression(expression: &Expression) -> bool {
                 | CypherBinaryOperator::Modulo
                 | CypherBinaryOperator::Power
         ),
+        Expression::UnaryOp {
+            op: UnaryOperator::Negate,
+            ..
+        } => true,
         _ => false,
     }
 }
@@ -6186,6 +6220,59 @@ mod tests {
                     operator: ArithmeticOperator::Modulo,
                     ..
                 }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
+    }
+
+    #[test]
+    fn compiles_unary_negation_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE -service.risk < -0.8 \
+             RETURN -service.risk AS inverse_risk, \
+                    -(service.risk * 100) AS inverse_points \
+             ORDER BY -service.risk",
+        )
+        .expect("unary negation scalar expressions should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Negate {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    })),
+                },
+                operator: ComparisonOperator::LessThan,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Float(
+                    OrderedFloat(-0.8)
+                ))),
+            }))
+        );
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Negate { expression },
+                    alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Negate {
+                        expression: nested
+                    },
+                    alias: nested_alias,
+                },
+            ] if alias == "inverse_risk"
+                && matches!(expression.as_ref(), ScalarExpression::Property(_))
+                && nested_alias == "inverse_points"
+                && matches!(nested.as_ref(), ScalarExpression::Arithmetic { .. })
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Negate { .. }),
                 direction: OrderDirection::Ascending,
             }]
         ));
