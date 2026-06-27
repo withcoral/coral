@@ -96,6 +96,12 @@ The supported foundation subset is intentionally narrow:
   `length(path)` over optional relationships via the presence-gated scalar
   expression IR and compiler-generated internal relationship bindings when an
   anonymous optional path needs a presence gate;
+- declaration-aware `RETURN *` expansion in runtime Cypher execution/explain
+  paths and `compile_cypher*_for_graph` helpers. Because Coral does not
+  materialize graph objects, star expansion lowers visible graph variables to
+  tabular metadata and property columns such as `service.__id`,
+  `service.__labels`, `dependency.__type`, and `service.name`; declaration-free
+  compile helpers keep rejecting `RETURN *`;
 - named node variables where the first binding has one static label and
   repeated bindings may omit the label;
 - directed, reverse, and undirected typed relationships;

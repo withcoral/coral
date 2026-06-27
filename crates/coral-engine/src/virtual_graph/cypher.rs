@@ -24,6 +24,7 @@ use decypher::syntax::{SyntaxKind, SyntaxNode};
 use ordered_float::OrderedFloat;
 use regex::Regex;
 
+use super::declaration::{Declaration, Relationship as DeclaredRelationship};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
@@ -158,16 +159,19 @@ struct CypherCompileState {
 struct CypherCompileContext {
     variable_function_arguments: BTreeMap<(usize, usize), String>,
     parameters: BTreeMap<String, CypherParameterValue>,
+    graph: Option<Declaration>,
 }
 
 impl CypherCompileContext {
-    fn from_source_with_parameters(
+    fn from_source_with_parameters_and_graph(
         cypher: &str,
         parameters: BTreeMap<String, CypherParameterValue>,
+        graph: Option<Declaration>,
     ) -> Self {
         Self {
             variable_function_arguments: collect_variable_function_arguments(cypher),
             parameters,
+            graph,
         }
     }
 
@@ -191,6 +195,16 @@ impl CypherCompileContext {
                 format!("Cypher parameter '${name}' was not provided"),
             )
             .into_core_error()
+        })
+    }
+
+    fn graph_declaration(&self, path: impl Into<String>) -> Result<&Declaration, CoreError> {
+        let path = path.into();
+        self.graph.as_ref().ok_or_else(|| {
+            unsupported(
+                path,
+                "RETURN * requires a graph declaration so Coral can expand mapped properties",
+            )
         })
     }
 }
@@ -323,6 +337,42 @@ pub fn compile_cypher_with_parameters(
     }
 }
 
+/// Parses and compiles Cypher against a graph declaration into a shared graph plan.
+///
+/// Declaration-aware compilation enables syntax such as `RETURN *` that must
+/// expand mapped graph variables into concrete tabular projections.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the query cannot be parsed, uses
+/// unsupported Cypher/GQL features, or references graph metadata that cannot be
+/// resolved from the declaration.
+pub fn compile_cypher_for_graph(graph: &Declaration, cypher: &str) -> Result<GraphPlan, CoreError> {
+    compile_cypher_for_graph_with_parameters(graph, cypher, &BTreeMap::new())
+}
+
+/// Parses and compiles Cypher with typed parameter values against a graph declaration.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the query cannot be parsed, uses
+/// unsupported Cypher/GQL features, references a missing parameter, binds a
+/// parameter value in an unsupported position, or uses graph metadata that
+/// cannot be resolved from the declaration.
+pub fn compile_cypher_for_graph_with_parameters(
+    graph: &Declaration,
+    cypher: &str,
+    parameters: &BTreeMap<String, CypherParameterValue>,
+) -> Result<GraphPlan, CoreError> {
+    match compile_cypher_query_for_graph_with_parameters(graph, cypher, parameters)? {
+        GraphQuery::Plan(plan) => Ok(plan),
+        GraphQuery::Union(_) => Err(unsupported(
+            "query.union",
+            "compile_cypher_for_graph returns a single graph plan; use compile_cypher_query_for_graph for UNION queries",
+        )),
+    }
+}
+
 /// Parses and compiles Cypher into a read-only virtual graph query.
 ///
 /// This accepts the same single-query subset as [`compile_cypher`] plus
@@ -336,6 +386,22 @@ pub fn compile_cypher_query(cypher: &str) -> Result<GraphQuery, CoreError> {
     compile_cypher_query_with_parameters(cypher, &BTreeMap::new())
 }
 
+/// Parses and compiles Cypher into a read-only virtual graph query using graph metadata.
+///
+/// Declaration-aware compilation enables syntax such as `RETURN *` that must
+/// expand mapped graph variables into concrete tabular projections.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the query cannot be parsed or uses
+/// Cypher/GQL features outside Coral's current read-only virtual graph subset.
+pub fn compile_cypher_query_for_graph(
+    graph: &Declaration,
+    cypher: &str,
+) -> Result<GraphQuery, CoreError> {
+    compile_cypher_query_for_graph_with_parameters(graph, cypher, &BTreeMap::new())
+}
+
 /// Parses and compiles Cypher with typed parameter values into a read-only graph query.
 ///
 /// # Errors
@@ -347,10 +413,39 @@ pub fn compile_cypher_query_with_parameters(
     cypher: &str,
     parameters: &BTreeMap<String, CypherParameterValue>,
 ) -> Result<GraphQuery, CoreError> {
+    compile_cypher_query_with_optional_graph(cypher, parameters, None)
+}
+
+/// Parses and compiles Cypher with typed parameter values into a read-only graph query
+/// using graph metadata.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the query cannot be parsed, uses
+/// unsupported Cypher/GQL features, references a missing parameter, binds a
+/// parameter value in an unsupported position, or uses graph metadata that
+/// cannot be resolved from the declaration.
+pub fn compile_cypher_query_for_graph_with_parameters(
+    graph: &Declaration,
+    cypher: &str,
+    parameters: &BTreeMap<String, CypherParameterValue>,
+) -> Result<GraphQuery, CoreError> {
+    compile_cypher_query_with_optional_graph(cypher, parameters, Some(graph))
+}
+
+fn compile_cypher_query_with_optional_graph(
+    cypher: &str,
+    parameters: &BTreeMap<String, CypherParameterValue>,
+    graph: Option<&Declaration>,
+) -> Result<GraphQuery, CoreError> {
     let query = decypher::parse(cypher).map_err(|error| {
         Diagnostic::new("CYPHER_PARSE_ERROR", "query", error.to_string()).into_core_error()
     })?;
-    let context = CypherCompileContext::from_source_with_parameters(cypher, parameters.clone());
+    let context = CypherCompileContext::from_source_with_parameters_and_graph(
+        cypher,
+        parameters.clone(),
+        graph.cloned(),
+    );
     compile_query(&query, &context)
 }
 
@@ -4590,13 +4685,13 @@ fn record_path_presence_variables(
     chain_state.hidden_path_presence_variables.extend(
         relationship_variables
             .into_iter()
-            .filter(|variable| variable.starts_with("__coral_")),
+            .filter(|variable| is_internal_graph_variable(variable)),
     );
 }
 
 fn record_path_presence_variable(chain_state: &mut PathChainCompileState, variable: String) {
     chain_state.path_presence_variable = Some(variable.clone());
-    if variable.starts_with("__coral_") {
+    if is_internal_graph_variable(&variable) {
         chain_state.hidden_path_presence_variables.push(variable);
     }
 }
@@ -5035,12 +5130,18 @@ fn compile_return(
 ) -> Result<(), CoreError> {
     plan.distinct = return_clause.distinct;
     if return_clause.star {
-        return Err(unsupported("return.star", "RETURN * is not supported yet"));
+        if !return_clause.items.is_empty() {
+            return Err(unsupported(
+                "return.items",
+                "RETURN * mixed with explicit projections requires scoped graph-object planning and is not supported yet",
+            ));
+        }
+        compile_return_star(plan, state, context, "return.star")?;
     }
     if let Some(skip) = &return_clause.skip {
         plan.skip = Some(compile_skip(skip, "return.skip", context)?);
     }
-    if return_clause.items.is_empty() {
+    if return_clause.items.is_empty() && !return_clause.star {
         return Err(unsupported(
             "return.items",
             "RETURN must include at least one projection",
@@ -5078,6 +5179,254 @@ fn compile_return(
     }
 
     Ok(())
+}
+
+fn compile_return_star(
+    plan: &mut GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    if !state.path_variables.is_empty() {
+        return Err(unsupported(
+            path,
+            "RETURN * cannot carry path variables because Coral does not materialize path values yet; explicitly project graph variables or length(path)",
+        ));
+    }
+    let graph = context.graph_declaration(path.clone())?;
+    let visible = visible_graph_variables(plan, state);
+    let node_labels_by_variable = plan
+        .nodes
+        .iter()
+        .map(|node| (node.variable.as_str(), node.label.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let mut expansion = ReturnStarExpansion::default();
+
+    for node in &plan.nodes {
+        append_return_star_node_projections(node, graph, &visible, &mut expansion, &path)?;
+    }
+
+    for relationship in &plan.relationships {
+        append_return_star_relationship_projections(
+            relationship,
+            graph,
+            &node_labels_by_variable,
+            &visible,
+            &mut expansion,
+            &path,
+        )?;
+    }
+
+    if expansion.projections.is_empty() {
+        return Err(unsupported(
+            path,
+            "RETURN * did not resolve any visible graph variables",
+        ));
+    }
+    plan.projections.extend(expansion.projections);
+    Ok(())
+}
+
+#[derive(Default)]
+struct ReturnStarExpansion {
+    projections: Vec<Projection>,
+    aliases: BTreeSet<String>,
+}
+
+fn append_return_star_node_projections(
+    node: &NodePattern,
+    graph: &Declaration,
+    visible: &BTreeSet<String>,
+    expansion: &mut ReturnStarExpansion,
+    path: &str,
+) -> Result<(), CoreError> {
+    if !is_visible_star_variable(&node.variable, visible) {
+        return Ok(());
+    }
+    let mapping = graph.node(&node.label).ok_or_else(|| {
+        unsupported(
+            path.to_string(),
+            format!("RETURN * could not resolve node label '{}'", node.label),
+        )
+    })?;
+    push_unique_star_projection(
+        expansion,
+        Projection::Key {
+            variable: node.variable.clone(),
+            alias: format!("{}.__id", node.variable),
+        },
+        path,
+    )?;
+    push_unique_star_projection(
+        expansion,
+        Projection::NodeLabels {
+            variable: node.variable.clone(),
+            label: node.label.clone(),
+            alias: format!("{}.__labels", node.variable),
+        },
+        path,
+    )?;
+    for property in mapping.properties.keys() {
+        push_unique_star_projection(
+            expansion,
+            Projection::Property {
+                property: PropertyRef {
+                    variable: node.variable.clone(),
+                    property: property.clone(),
+                },
+                alias: Some(format!("{}.{}", node.variable, property)),
+            },
+            path,
+        )?;
+    }
+    Ok(())
+}
+
+fn append_return_star_relationship_projections(
+    relationship: &RelationshipPattern,
+    graph: &Declaration,
+    node_labels_by_variable: &BTreeMap<&str, &str>,
+    visible: &BTreeSet<String>,
+    expansion: &mut ReturnStarExpansion,
+    path: &str,
+) -> Result<(), CoreError> {
+    let Some(variable) = relationship.variable.as_ref() else {
+        return Ok(());
+    };
+    if !is_visible_star_variable(variable, visible) {
+        return Ok(());
+    }
+    let mapping =
+        return_star_relationship_mapping(graph, relationship, node_labels_by_variable, path)?;
+    if mapping.key.is_some() {
+        push_unique_star_projection(
+            expansion,
+            Projection::Key {
+                variable: variable.clone(),
+                alias: format!("{variable}.__id"),
+            },
+            path,
+        )?;
+    }
+    push_unique_star_projection(
+        expansion,
+        Projection::RelationshipType {
+            variable: variable.clone(),
+            relationship_type: relationship.relationship_type.clone(),
+            alias: format!("{variable}.__type"),
+        },
+        path,
+    )?;
+    for property in mapping.properties.keys() {
+        push_unique_star_projection(
+            expansion,
+            Projection::Property {
+                property: PropertyRef {
+                    variable: variable.clone(),
+                    property: property.clone(),
+                },
+                alias: Some(format!("{variable}.{property}")),
+            },
+            path,
+        )?;
+    }
+    Ok(())
+}
+
+fn is_visible_star_variable(variable: &str, visible: &BTreeSet<String>) -> bool {
+    visible.contains(variable) && !is_internal_graph_variable(variable)
+}
+
+fn push_unique_star_projection(
+    expansion: &mut ReturnStarExpansion,
+    projection: Projection,
+    path: &str,
+) -> Result<(), CoreError> {
+    let alias = projection.output_name();
+    if !expansion.aliases.insert(alias.clone()) {
+        return Err(unsupported(
+            path.to_string(),
+            format!("RETURN * expansion produced duplicate output column '{alias}'"),
+        ));
+    }
+    expansion.projections.push(projection);
+    Ok(())
+}
+
+fn return_star_relationship_mapping<'a>(
+    graph: &'a Declaration,
+    relationship: &RelationshipPattern,
+    node_labels_by_variable: &BTreeMap<&str, &str>,
+    path: &str,
+) -> Result<&'a DeclaredRelationship, CoreError> {
+    let left_label = node_labels_by_variable
+        .get(relationship.left.as_str())
+        .copied()
+        .ok_or_else(|| {
+            unsupported(
+                path.to_string(),
+                format!(
+                    "RETURN * could not resolve left endpoint '{}'",
+                    relationship.left
+                ),
+            )
+        })?;
+    let right_label = node_labels_by_variable
+        .get(relationship.right.as_str())
+        .copied()
+        .ok_or_else(|| {
+            unsupported(
+                path.to_string(),
+                format!(
+                    "RETURN * could not resolve right endpoint '{}'",
+                    relationship.right
+                ),
+            )
+        })?;
+    let matches = graph
+        .relationships_for_type(&relationship.relationship_type)
+        .filter(|mapping| {
+            relationship_mapping_matches_pattern(
+                mapping,
+                relationship.direction,
+                left_label,
+                right_label,
+            )
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [mapping] => Ok(*mapping),
+        [] => Err(unsupported(
+            path.to_string(),
+            format!(
+                "RETURN * could not resolve relationship type '{}' for {left_label} -> {right_label}",
+                relationship.relationship_type
+            ),
+        )),
+        _ => Err(unsupported(
+            path.to_string(),
+            format!(
+                "RETURN * relationship type '{}' for {left_label} -> {right_label} is ambiguous; add direction or use distinct relationship types",
+                relationship.relationship_type
+            ),
+        )),
+    }
+}
+
+fn relationship_mapping_matches_pattern(
+    mapping: &DeclaredRelationship,
+    direction: Direction,
+    left_label: &str,
+    right_label: &str,
+) -> bool {
+    let matches_forward = left_label == mapping.from.label && right_label == mapping.to.label;
+    let matches_reverse = left_label == mapping.to.label && right_label == mapping.from.label;
+    match direction {
+        Direction::Outgoing => matches_forward,
+        Direction::Incoming => matches_reverse,
+        Direction::Undirected => matches_forward || matches_reverse,
+    }
 }
 
 fn compile_order_expression(
@@ -11021,13 +11370,17 @@ fn is_string_comparison_operator(operator: ComparisonOperator) -> bool {
 
 fn validate_variable(variable: &Variable) -> Result<String, CoreError> {
     let name = variable_name(variable);
-    if name.starts_with("__coral_") {
+    if is_internal_graph_variable(&name) {
         return Err(unsupported(
             "variable",
             "variables beginning with __coral_ are reserved for virtual graph planning",
         ));
     }
     Ok(name)
+}
+
+fn is_internal_graph_variable(variable: &str) -> bool {
+    variable.starts_with("__coral_")
 }
 
 fn fresh_internal_node_variable(plan: &GraphPlan, part_index: usize, node_index: usize) -> String {
@@ -11228,6 +11581,49 @@ fn unsupported(path: impl Into<String>, message: impl Into<String>) -> CoreError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn star_test_graph() -> Declaration {
+        Declaration::from_yaml(
+            r"
+version: 1
+name: star_test
+nodes:
+  - label: Person
+    table: { schema: ops, name: people }
+    key: id
+    properties:
+      name: full_name
+      team: team
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+    properties:
+      name: service_name
+      tier: tier
+  - label: Team
+    table: { schema: ops, name: teams }
+    key: id
+    properties:
+      name: team_name
+relationships:
+  - type: OWNS
+    table: { schema: ops, name: ownerships }
+    key: ownership_id
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
+    properties:
+      since: since
+      source: source
+  - type: OWNS
+    table: { schema: ops, name: team_ownerships }
+    from: { label: Team, key: team_id }
+    to: { label: Service, key: service_id }
+    properties:
+      source: source
+",
+        )
+        .expect("star test graph should parse")
+    }
 
     #[test]
     fn compiles_match_where_return_order_limit() {
@@ -16914,6 +17310,123 @@ mod tests {
             vec![Projection::CountAll {
                 alias: "services".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_return_star_with_graph_declaration() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[ownership:OWNS]->(service:Service) \
+             RETURN * ORDER BY service.name",
+        )
+        .expect("RETURN * should expand using graph metadata");
+
+        assert_eq!(
+            plan.projection_output_names(),
+            vec![
+                "person.__id",
+                "person.__labels",
+                "person.name",
+                "person.team",
+                "service.__id",
+                "service.__labels",
+                "service.name",
+                "service.tier",
+                "ownership.__id",
+                "ownership.__type",
+                "ownership.since",
+                "ownership.source",
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_return_star_over_keyless_relationships() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (team:Team)-[ownership:OWNS]->(service:Service) RETURN *",
+        )
+        .expect("RETURN * should handle keyless relationship mappings");
+
+        assert_eq!(
+            plan.projection_output_names(),
+            vec![
+                "team.__id",
+                "team.__labels",
+                "team.name",
+                "service.__id",
+                "service.__labels",
+                "service.name",
+                "service.tier",
+                "ownership.__type",
+                "ownership.source",
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_return_star_without_graph_declaration() {
+        let error = compile_cypher("MATCH (service:Service) RETURN *")
+            .expect_err("declaration-free compiler cannot expand RETURN *");
+
+        assert!(
+            error
+                .to_string()
+                .contains("RETURN * requires a graph declaration"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_return_star_over_path_variables() {
+        let graph = star_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH path = (person:Person)-[ownership:OWNS]->(service:Service) RETURN *",
+        )
+        .expect_err("RETURN * should reject unmaterialized path values");
+
+        assert!(
+            error
+                .to_string()
+                .contains("RETURN * cannot carry path variables"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn return_star_respects_transparent_with_scope() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[ownership:OWNS]->(service:Service) \
+             WITH service \
+             RETURN *",
+        )
+        .expect("RETURN * should only expand visible variables after WITH");
+
+        assert_eq!(
+            plan.projection_output_names(),
+            vec![
+                "service.__id",
+                "service.__labels",
+                "service.name",
+                "service.tier",
+            ]
         );
     }
 

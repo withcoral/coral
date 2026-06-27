@@ -109,6 +109,55 @@ async fn cypher_translation_executes_against_synthetic_file_sources() {
 }
 
 #[tokio::test]
+async fn cypher_return_star_expands_graph_declaration_properties() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[ownership:OWNS]->(service:Service) \
+         WHERE service.name = 'billing-api' \
+         RETURN * \
+         ORDER BY person.name \
+         LIMIT 1",
+    )
+    .await
+    .expect("RETURN * Cypher query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"id\" AS \"person.__id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "person.__id": 1,
+            "person.__labels": ["Person"],
+            "person.name": "Ada Lovelace",
+            "person.team": "platform",
+            "service.__id": 10,
+            "service.__labels": ["Service"],
+            "service.active": true,
+            "service.id": 10,
+            "service.name": "billing-api",
+            "service.risk": 0.9,
+            "service.team": "platform",
+            "service.tier": "prod",
+            "ownership.__id": 100,
+            "ownership.__type": "OWNS",
+            "ownership.since": "2024-01-10"
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

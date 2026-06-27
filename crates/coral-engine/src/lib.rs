@@ -94,8 +94,10 @@ pub use virtual_graph::{
     ProjectionPredicateRhs as GraphProjectionPredicateRhs,
     PropertyPredicate as GraphPropertyPredicate, PropertyRef as GraphPropertyRef,
     RelationshipPattern, SqlTranslation as GraphSqlTranslation, compile_cypher,
-    compile_cypher_query, compile_cypher_query_with_parameters, compile_cypher_with_parameters,
-    compile_graphql, compile_graphql_for_graph, compile_graphql_for_graph_with_variables,
+    compile_cypher_for_graph, compile_cypher_for_graph_with_parameters, compile_cypher_query,
+    compile_cypher_query_for_graph, compile_cypher_query_for_graph_with_parameters,
+    compile_cypher_query_with_parameters, compile_cypher_with_parameters, compile_graphql,
+    compile_graphql_for_graph, compile_graphql_for_graph_with_variables,
     compile_graphql_with_variables, graphql_schema_sdl_for_graph,
 };
 
@@ -326,7 +328,7 @@ impl CoralQuery {
             ));
         }
 
-        let query = compile_cypher_query(cypher)?;
+        let query = compile_cypher_query_for_graph(graph, cypher)?;
         Self::execute_graph_query(sources, runtime, graph, &query).await
     }
 
@@ -355,7 +357,7 @@ impl CoralQuery {
             ));
         }
 
-        let query = compile_cypher_query_with_parameters(cypher, parameters)?;
+        let query = compile_cypher_query_for_graph_with_parameters(graph, cypher, parameters)?;
         Self::execute_graph_query(sources, runtime, graph, &query).await
     }
 
@@ -378,7 +380,7 @@ impl CoralQuery {
             ));
         }
 
-        let query = compile_cypher_query(cypher)?;
+        let query = compile_cypher_query_for_graph(graph, cypher)?;
         Self::explain_graph_query(sources, runtime, graph, &query).await
     }
 
@@ -403,7 +405,7 @@ impl CoralQuery {
             ));
         }
 
-        let query = compile_cypher_query_with_parameters(cypher, parameters)?;
+        let query = compile_cypher_query_for_graph_with_parameters(graph, cypher, parameters)?;
         Self::explain_graph_query(sources, runtime, graph, &query).await
     }
 
