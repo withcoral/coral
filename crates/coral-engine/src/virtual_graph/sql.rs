@@ -8,7 +8,7 @@ use super::ir::{
     ElementIdPredicate, GraphPlan, KeyPredicate, Literal, OrderDirection, OrderExpression,
     PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyRef, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    PropertyRef, ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -1375,52 +1375,46 @@ impl<'a> Lowerer<'a> {
                     .join(", ");
                 Ok(format!("COALESCE({rendered})"))
             }
-            ScalarExpression::ToString { expression } => Ok(format!(
-                "CAST({} AS VARCHAR)",
-                self.render_scalar_expression(expression)?
-            )),
-            ScalarExpression::ToInteger { expression } => Ok(format!(
-                "CAST({} AS BIGINT)",
-                self.render_scalar_expression(expression)?
-            )),
-            ScalarExpression::ToFloat { expression } => Ok(format!(
-                "CAST({} AS DOUBLE)",
-                self.render_scalar_expression(expression)?
-            )),
-            ScalarExpression::ToBoolean { expression } => Ok(format!(
-                "CAST({} AS BOOLEAN)",
-                self.render_scalar_expression(expression)?
-            )),
-            ScalarExpression::ToLower { expression } => Ok(format!(
-                "LOWER({})",
-                self.render_scalar_expression(expression)?
-            )),
-            ScalarExpression::ToUpper { expression } => Ok(format!(
-                "UPPER({})",
-                self.render_scalar_expression(expression)?
-            )),
-            ScalarExpression::Trim { expression } => Ok(format!(
-                "TRIM({})",
-                self.render_scalar_expression(expression)?
-            )),
-            ScalarExpression::LTrim { expression } => Ok(format!(
-                "LTRIM({})",
-                self.render_scalar_expression(expression)?
-            )),
-            ScalarExpression::RTrim { expression } => Ok(format!(
-                "RTRIM({})",
-                self.render_scalar_expression(expression)?
-            )),
+            ScalarExpression::ToString { expression } => {
+                self.render_cast_expression(expression, "VARCHAR")
+            }
+            ScalarExpression::ToInteger { expression } => {
+                self.render_cast_expression(expression, "BIGINT")
+            }
+            ScalarExpression::ToFloat { expression } => {
+                self.render_cast_expression(expression, "DOUBLE")
+            }
+            ScalarExpression::ToBoolean { expression } => {
+                self.render_cast_expression(expression, "BOOLEAN")
+            }
+            ScalarExpression::ToLower { expression } => {
+                self.render_unary_function_expression("LOWER", expression)
+            }
+            ScalarExpression::ToUpper { expression } => {
+                self.render_unary_function_expression("UPPER", expression)
+            }
+            ScalarExpression::Trim { expression } => {
+                self.render_unary_function_expression("TRIM", expression)
+            }
+            ScalarExpression::LTrim { expression } => {
+                self.render_unary_function_expression("LTRIM", expression)
+            }
+            ScalarExpression::RTrim { expression } => {
+                self.render_unary_function_expression("RTRIM", expression)
+            }
             ScalarExpression::Replace {
                 expression,
                 search,
                 replacement,
-            } => Ok(format!(
-                "REPLACE({}, {}, {})",
-                self.render_scalar_expression(expression)?,
-                self.render_scalar_expression(search)?,
-                self.render_scalar_expression(replacement)?
-            )),
+            } => self.render_replace_expression(expression, search, replacement),
+            ScalarExpression::CharacterLength { expression } => {
+                self.render_unary_function_expression("character_length", expression)
+            }
+            ScalarExpression::Substring {
+                expression,
+                start,
+                length,
+            } => self.render_substring_expression(expression, start, length.as_deref()),
             ScalarExpression::Arithmetic {
                 operator,
                 left,
@@ -1434,29 +1428,90 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
-            } => {
-                let mut sql = String::from("CASE");
-                for alternative in alternatives {
-                    write!(
-                        &mut sql,
-                        " WHEN {} THEN {}",
-                        self.render_predicate_expression(&alternative.when)?,
-                        self.render_scalar_expression(&alternative.then)?
-                    )
-                    .map_err(|error| CoreError::internal(error.to_string()))?;
-                }
-                if let Some(else_expression) = else_expression {
-                    write!(
-                        &mut sql,
-                        " ELSE {}",
-                        self.render_scalar_expression(else_expression)?
-                    )
-                    .map_err(|error| CoreError::internal(error.to_string()))?;
-                }
-                sql.push_str(" END");
-                Ok(sql)
-            }
+            } => self.render_case_expression(alternatives, else_expression.as_deref()),
         }
+    }
+
+    fn render_cast_expression(
+        &self,
+        expression: &ScalarExpression,
+        target_type: &str,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "CAST({} AS {target_type})",
+            self.render_scalar_expression(expression)?
+        ))
+    }
+
+    fn render_unary_function_expression(
+        &self,
+        function_name: &str,
+        expression: &ScalarExpression,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "{function_name}({})",
+            self.render_scalar_expression(expression)?
+        ))
+    }
+
+    fn render_replace_expression(
+        &self,
+        expression: &ScalarExpression,
+        search: &ScalarExpression,
+        replacement: &ScalarExpression,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "REPLACE({}, {}, {})",
+            self.render_scalar_expression(expression)?,
+            self.render_scalar_expression(search)?,
+            self.render_scalar_expression(replacement)?
+        ))
+    }
+
+    fn render_substring_expression(
+        &self,
+        expression: &ScalarExpression,
+        start: &ScalarExpression,
+        length: Option<&ScalarExpression>,
+    ) -> Result<String, CoreError> {
+        let mut sql = format!(
+            "SUBSTRING({} FROM ({} + 1)",
+            self.render_scalar_expression(expression)?,
+            self.render_scalar_expression(start)?
+        );
+        if let Some(length) = length {
+            write!(&mut sql, " FOR {}", self.render_scalar_expression(length)?)
+                .map_err(|error| CoreError::internal(error.to_string()))?;
+        }
+        sql.push(')');
+        Ok(sql)
+    }
+
+    fn render_case_expression(
+        &self,
+        alternatives: &[ScalarCaseAlternative],
+        else_expression: Option<&ScalarExpression>,
+    ) -> Result<String, CoreError> {
+        let mut sql = String::from("CASE");
+        for alternative in alternatives {
+            write!(
+                &mut sql,
+                " WHEN {} THEN {}",
+                self.render_predicate_expression(&alternative.when)?,
+                self.render_scalar_expression(&alternative.then)?
+            )
+            .map_err(|error| CoreError::internal(error.to_string()))?;
+        }
+        if let Some(else_expression) = else_expression {
+            write!(
+                &mut sql,
+                " ELSE {}",
+                self.render_scalar_expression(else_expression)?
+            )
+            .map_err(|error| CoreError::internal(error.to_string()))?;
+        }
+        sql.push_str(" END");
+        Ok(sql)
     }
 }
 
@@ -2694,6 +2749,83 @@ relationships: []
             translation
                 .sql()
                 .contains("WHERE COALESCE(\"n1\".\"tier\", 'unassigned') IN ('prod', 'dev')"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_character_length_and_substring_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.projections = vec![
+            Projection::Expression {
+                expression: ScalarExpression::Substring {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    })),
+                    start: Box::new(ScalarExpression::Literal(Literal::Integer(0))),
+                    length: Some(Box::new(ScalarExpression::Literal(Literal::Integer(7)))),
+                },
+                alias: "prefix".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::CharacterLength {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    })),
+                },
+                alias: "tier_length".to_string(),
+            },
+        ];
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::CharacterLength {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                })),
+            },
+            operator: ComparisonOperator::GreaterThan,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(10))),
+        }));
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::Scalar(ScalarExpression::Substring {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                })),
+                start: Box::new(ScalarExpression::Literal(Literal::Integer(0))),
+                length: None,
+            }),
+            direction: OrderDirection::Ascending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("string scalar expressions should lower");
+
+        assert!(
+            translation.sql().contains(
+                "SELECT SUBSTRING(\"n1\".\"service_name\" FROM (0 + 1) FOR 7) AS \"prefix\", \
+                 character_length(\"n1\".\"tier\") AS \"tier_length\""
+            ),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE character_length(\"n1\".\"service_name\") > 10"),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("ORDER BY SUBSTRING(\"n1\".\"service_name\" FROM (0 + 1)) ASC"),
             "{}",
             translation.sql()
         );

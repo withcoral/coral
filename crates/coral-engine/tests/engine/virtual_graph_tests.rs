@@ -1720,6 +1720,53 @@ async fn cypher_replace_scalar_expressions_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_character_length_and_substring_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE substring(service.name, 0, 7) = 'billing' \
+         RETURN service.name AS service, \
+                substring(service.name, 0, 7) AS prefix, \
+                size(service.name) AS name_length, \
+                character_length(service.tier) AS tier_length \
+         ORDER BY char_length(service.name)",
+    )
+    .await
+    .expect("string length and substring query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("SUBSTRING(\"n0\".\"service_name\" FROM (0 + 1) FOR 7) = 'billing'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("character_length(\"n0\".\"service_name\") AS \"name_length\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "service": "billing-api",
+            "prefix": "billing",
+            "name_length": 11,
+            "tier_length": 4,
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_scalar_null_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

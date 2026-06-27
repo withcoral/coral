@@ -1194,6 +1194,12 @@ fn compile_order_expression(
         Expression::FunctionCall(function) if is_replace_function(function) => {
             compile_replace_order_expression(function, path, context)
         }
+        Expression::FunctionCall(function) if is_character_length_function(function) => {
+            compile_character_length_order_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_substring_function(function) => {
+            compile_substring_order_expression(function, path, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             aggregate_order_expression_for_projection(function, projections, path, context)
         }
@@ -1499,6 +1505,12 @@ fn compile_projection(
         Expression::FunctionCall(function) if is_replace_function(function) => {
             compile_replace_projection(function, item, path, context)
         }
+        Expression::FunctionCall(function) if is_character_length_function(function) => {
+            compile_character_length_projection(function, item, path, context)
+        }
+        Expression::FunctionCall(function) if is_substring_function(function) => {
+            compile_substring_projection(function, item, path, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             compile_aggregate_projection(function, item, path, context)
         }
@@ -1796,6 +1808,46 @@ fn compile_replace_projection(
     })
 }
 
+fn compile_character_length_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_character_length_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "size".to_string(), variable_name),
+    })
+}
+
+fn compile_substring_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_substring_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "substring".to_string(), variable_name),
+    })
+}
+
 fn compile_coalesce_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -1964,6 +2016,66 @@ fn compile_replace_scalar_expression(
     })
 }
 
+fn compile_character_length_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let function_name = qualified_function_name(function);
+    Ok(ScalarExpression::CharacterLength {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function,
+            path,
+            function_name.as_str(),
+            context,
+        )?),
+    })
+}
+
+fn compile_substring_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    match function.arguments.as_slice() {
+        [expression, start] => Ok(ScalarExpression::Substring {
+            expression: Box::new(compile_scalar_expression(
+                expression,
+                format!("{path}.arguments[0]"),
+                context,
+            )?),
+            start: Box::new(compile_scalar_expression(
+                start,
+                format!("{path}.arguments[1]"),
+                context,
+            )?),
+            length: None,
+        }),
+        [expression, start, length] => Ok(ScalarExpression::Substring {
+            expression: Box::new(compile_scalar_expression(
+                expression,
+                format!("{path}.arguments[0]"),
+                context,
+            )?),
+            start: Box::new(compile_scalar_expression(
+                start,
+                format!("{path}.arguments[1]"),
+                context,
+            )?),
+            length: Some(Box::new(compile_scalar_expression(
+                length,
+                format!("{path}.arguments[2]"),
+                context,
+            )?)),
+        }),
+        _ => Err(unsupported(
+            format!("{path}.arguments"),
+            "substring() requires exactly two or three arguments",
+        )),
+    }
+}
+
 fn compile_single_scalar_function_argument(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -2041,6 +2153,12 @@ fn compile_scalar_expression(
         Expression::FunctionCall(function) if is_replace_function(function) => {
             compile_replace_scalar_expression(function, path, context)
         }
+        Expression::FunctionCall(function) if is_character_length_function(function) => {
+            compile_character_length_scalar_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_substring_function(function) => {
+            compile_substring_scalar_expression(function, path, context)
+        }
         Expression::FunctionCall(function) => Err(unsupported(
             path,
             format!(
@@ -2050,7 +2168,7 @@ fn compile_scalar_expression(
         )),
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), or replace() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), or substring() expressions",
         )),
     }
 }
@@ -2323,6 +2441,22 @@ fn compile_replace_order_expression(
     compile_replace_scalar_expression(function, path, context).map(OrderExpression::Scalar)
 }
 
+fn compile_character_length_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_character_length_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
+fn compile_substring_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_substring_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
 fn compile_optional_predicate_scalar_expression(
     expression: &Expression,
     path: impl Into<String>,
@@ -2369,6 +2503,12 @@ fn compile_optional_predicate_scalar_expression(
         )),
         Expression::FunctionCall(function) if is_replace_function(function) => Ok(Some(
             compile_replace_scalar_expression(function, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_character_length_function(function) => Ok(Some(
+            compile_character_length_scalar_expression(function, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_substring_function(function) => Ok(Some(
+            compile_substring_scalar_expression(function, path, context)?,
         )),
         _ => Ok(None),
     }
@@ -2443,6 +2583,16 @@ fn compile_scalar_predicate_rhs(
                 compile_replace_scalar_expression(function, path, context)?,
             ))
         }
+        Expression::FunctionCall(function) if is_character_length_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_character_length_scalar_expression(function, path, context)?,
+            ))
+        }
+        Expression::FunctionCall(function) if is_substring_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_substring_scalar_expression(function, path, context)?,
+            ))
+        }
         Expression::PropertyLookup { .. } => Ok(ScalarPredicateRhs::Expression(
             ScalarExpression::Property(compile_property_ref(expression, path)?),
         )),
@@ -2451,7 +2601,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), or replace() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), or substring() expressions",
         )),
     }
 }
@@ -2857,6 +3007,22 @@ fn is_replace_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("replace")
+    )
+}
+
+fn is_character_length_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("size")
+            || name.name.eq_ignore_ascii_case("char_length")
+            || name.name.eq_ignore_ascii_case("character_length")
+    )
+}
+
+fn is_substring_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("substring")
     )
 }
 
@@ -5963,6 +6129,82 @@ mod tests {
                 direction: OrderDirection::Ascending,
             }]
         ));
+    }
+
+    #[test]
+    fn compiles_character_length_and_substring_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE size(service.name) > 10 \
+             RETURN substring(service.name, 0, 7) AS prefix, \
+                    char_length(service.tier) AS tier_length \
+             ORDER BY character_length(service.name)",
+        )
+        .expect("string length and substring scalar expressions should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::CharacterLength {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    })),
+                },
+                operator: ComparisonOperator::GreaterThan,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(
+                    10
+                ))),
+            }))
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::Substring {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "name".to_string(),
+                        })),
+                        start: Box::new(ScalarExpression::Literal(Literal::Integer(0))),
+                        length: Some(Box::new(ScalarExpression::Literal(Literal::Integer(7)))),
+                    },
+                    alias: "prefix".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::CharacterLength {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "tier".to_string(),
+                        })),
+                    },
+                    alias: "tier_length".to_string(),
+                },
+            ]
+        );
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::CharacterLength { .. }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
+    }
+
+    #[test]
+    fn rejects_substring_with_unsupported_arity() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN substring(service.name) AS prefix",
+        )
+        .expect_err("substring() requires a start argument");
+
+        assert!(
+            error
+                .to_string()
+                .contains("substring() requires exactly two or three arguments"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -7,8 +7,8 @@ use super::ir::{
     GraphPlan, KeyPredicate, Literal, OptionalMatchScope, OrderExpression, PredicateExpression,
     PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarExpression, ScalarPredicate,
-    ScalarPredicateRhs,
+    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
+    ScalarPredicate, ScalarPredicateRhs,
 };
 use crate::CoreError;
 
@@ -802,7 +802,8 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::ToUpper { expression }
             | ScalarExpression::Trim { expression }
             | ScalarExpression::LTrim { expression }
-            | ScalarExpression::RTrim { expression } => {
+            | ScalarExpression::RTrim { expression }
+            | ScalarExpression::CharacterLength { expression } => {
                 Self::collect_scalar_expression_variables(expression, variables);
             }
             ScalarExpression::Replace {
@@ -813,6 +814,17 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::collect_scalar_expression_variables(expression, variables);
                 Self::collect_scalar_expression_variables(search, variables);
                 Self::collect_scalar_expression_variables(replacement, variables);
+            }
+            ScalarExpression::Substring {
+                expression,
+                start,
+                length,
+            } => {
+                Self::collect_scalar_expression_variables(expression, variables);
+                Self::collect_scalar_expression_variables(start, variables);
+                if let Some(length) = length {
+                    Self::collect_scalar_expression_variables(length, variables);
+                }
             }
             ScalarExpression::Arithmetic { left, right, .. } => {
                 Self::collect_scalar_expression_variables(left, variables);
@@ -1042,7 +1054,8 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::ToUpper { expression }
             | ScalarExpression::Trim { expression }
             | ScalarExpression::LTrim { expression }
-            | ScalarExpression::RTrim { expression } => {
+            | ScalarExpression::RTrim { expression }
+            | ScalarExpression::CharacterLength { expression } => {
                 Self::validate_scalar_expression_not_optional(
                     expression,
                     optional_variables,
@@ -1053,23 +1066,24 @@ impl<'a> GraphPlanValidator<'a> {
                 expression,
                 search,
                 replacement,
-            } => {
-                Self::validate_scalar_expression_not_optional(
-                    expression,
-                    optional_variables,
-                    format!("{path}.expression"),
-                )?;
-                Self::validate_scalar_expression_not_optional(
-                    search,
-                    optional_variables,
-                    format!("{path}.search"),
-                )?;
-                Self::validate_scalar_expression_not_optional(
-                    replacement,
-                    optional_variables,
-                    format!("{path}.replacement"),
-                )
-            }
+            } => Self::validate_replace_expression_not_optional(
+                expression,
+                search,
+                replacement,
+                optional_variables,
+                &path,
+            ),
+            ScalarExpression::Substring {
+                expression,
+                start,
+                length,
+            } => Self::validate_substring_expression_not_optional(
+                expression,
+                start,
+                length.as_deref(),
+                optional_variables,
+                &path,
+            ),
             ScalarExpression::Arithmetic { left, right, .. } => {
                 Self::validate_scalar_expression_not_optional(
                     left,
@@ -1085,29 +1099,92 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
-            } => {
-                for (index, alternative) in alternatives.iter().enumerate() {
-                    Self::validate_predicate_expression_not_optional(
-                        &alternative.when,
-                        optional_variables,
-                        format!("{path}.alternatives[{index}].when"),
-                    )?;
-                    Self::validate_scalar_expression_not_optional(
-                        &alternative.then,
-                        optional_variables,
-                        format!("{path}.alternatives[{index}].then"),
-                    )?;
-                }
-                if let Some(else_expression) = else_expression {
-                    Self::validate_scalar_expression_not_optional(
-                        else_expression,
-                        optional_variables,
-                        format!("{path}.else"),
-                    )?;
-                }
-                Ok(())
-            }
+            } => Self::validate_case_expression_not_optional(
+                alternatives,
+                else_expression.as_deref(),
+                optional_variables,
+                &path,
+            ),
         }
+    }
+
+    fn validate_replace_expression_not_optional(
+        expression: &ScalarExpression,
+        search: &ScalarExpression,
+        replacement: &ScalarExpression,
+        optional_variables: &BTreeSet<&str>,
+        path: &str,
+    ) -> Result<(), CoreError> {
+        Self::validate_scalar_expression_not_optional(
+            expression,
+            optional_variables,
+            format!("{path}.expression"),
+        )?;
+        Self::validate_scalar_expression_not_optional(
+            search,
+            optional_variables,
+            format!("{path}.search"),
+        )?;
+        Self::validate_scalar_expression_not_optional(
+            replacement,
+            optional_variables,
+            format!("{path}.replacement"),
+        )
+    }
+
+    fn validate_substring_expression_not_optional(
+        expression: &ScalarExpression,
+        start: &ScalarExpression,
+        length: Option<&ScalarExpression>,
+        optional_variables: &BTreeSet<&str>,
+        path: &str,
+    ) -> Result<(), CoreError> {
+        Self::validate_scalar_expression_not_optional(
+            expression,
+            optional_variables,
+            format!("{path}.expression"),
+        )?;
+        Self::validate_scalar_expression_not_optional(
+            start,
+            optional_variables,
+            format!("{path}.start"),
+        )?;
+        if let Some(length) = length {
+            Self::validate_scalar_expression_not_optional(
+                length,
+                optional_variables,
+                format!("{path}.length"),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_case_expression_not_optional(
+        alternatives: &[ScalarCaseAlternative],
+        else_expression: Option<&ScalarExpression>,
+        optional_variables: &BTreeSet<&str>,
+        path: &str,
+    ) -> Result<(), CoreError> {
+        for (index, alternative) in alternatives.iter().enumerate() {
+            Self::validate_predicate_expression_not_optional(
+                &alternative.when,
+                optional_variables,
+                format!("{path}.alternatives[{index}].when"),
+            )?;
+            Self::validate_scalar_expression_not_optional(
+                &alternative.then,
+                optional_variables,
+                format!("{path}.alternatives[{index}].then"),
+            )?;
+        }
+        if let Some(else_expression) = else_expression {
+            Self::validate_scalar_expression_not_optional(
+                else_expression,
+                optional_variables,
+                format!("{path}.else"),
+            )?;
+        }
+        Ok(())
     }
 
     fn validate_variable_not_optional(
@@ -2192,7 +2269,8 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::ToUpper { expression }
             | ScalarExpression::Trim { expression }
             | ScalarExpression::LTrim { expression }
-            | ScalarExpression::RTrim { expression } => {
+            | ScalarExpression::RTrim { expression }
+            | ScalarExpression::CharacterLength { expression } => {
                 self.validate_scalar_expression(expression, format!("{path}.expression"))
             }
             ScalarExpression::Replace {
@@ -2203,6 +2281,18 @@ impl<'a> GraphPlanValidator<'a> {
                 self.validate_scalar_expression(expression, format!("{path}.expression"))?;
                 self.validate_scalar_expression(search, format!("{path}.search"))?;
                 self.validate_scalar_expression(replacement, format!("{path}.replacement"))
+            }
+            ScalarExpression::Substring {
+                expression,
+                start,
+                length,
+            } => {
+                self.validate_scalar_expression(expression, format!("{path}.expression"))?;
+                self.validate_scalar_expression(start, format!("{path}.start"))?;
+                if let Some(length) = length {
+                    self.validate_scalar_expression(length, format!("{path}.length"))?;
+                }
+                Ok(())
             }
             ScalarExpression::Arithmetic { left, right, .. } => {
                 self.validate_scalar_expression(left, format!("{path}.left"))?;

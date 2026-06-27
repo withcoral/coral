@@ -100,6 +100,11 @@ The supported foundation subset is intentionally narrow:
   mapped labels and relationship types;
 - string prefix, suffix, and substring predicates lowered to escaped SQL
   `LIKE`;
+- scalar string and conversion expressions in projections, predicates, and
+  ordering, including `coalesce`, scalar casts, string case conversion,
+  whitespace trimming, `replace`, character length via `size`, `char_length`,
+  and `character_length`, and zero-based `substring` lowered to DataFusion
+  `SUBSTRING`;
 - inline node property maps normalized to equality predicates;
 - inline relationship property maps normalized to equality predicates, with
   internal relationship variables for anonymous edges;
@@ -119,7 +124,7 @@ Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.
 This includes writes, multi-hop or undirected optional-local predicates, path
 variables, variable-length paths, parameterized property maps, keyless
 relationship identity operations, non-terminal projection boundaries, subqueries,
-procedure calls, and broad expression semantics.
+procedure calls, path/list length via `size`, and broad expression semantics.
 
 ## GraphQL Frontend Boundary
 

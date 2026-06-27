@@ -200,6 +200,21 @@ pub enum ScalarExpression {
         /// Replacement expression.
         replacement: Box<ScalarExpression>,
     },
+    /// Count characters in a scalar string expression.
+    CharacterLength {
+        /// Inner expression to measure.
+        expression: Box<ScalarExpression>,
+    },
+    /// Extract a substring from a scalar string expression using Cypher's
+    /// zero-based start index.
+    Substring {
+        /// Source expression.
+        expression: Box<ScalarExpression>,
+        /// Zero-based start index expression.
+        start: Box<ScalarExpression>,
+        /// Optional length expression.
+        length: Option<Box<ScalarExpression>>,
+    },
     /// Numeric binary arithmetic over scalar expressions.
     Arithmetic {
         /// Arithmetic operator.
