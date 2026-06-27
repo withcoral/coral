@@ -97,7 +97,8 @@ unsupported behavior should be rejected clearly instead of guessed.
 | General list-expression predicates | Rejected | Only literal-list `IN` and static `'<Label>' IN labels(node)` are supported; arbitrary list expressions need a richer list IR |
 | Multi-hop or undirected optional-local predicates | Rejected | Needs broader optional-scope grouping and orientation-aware predicate placement |
 | Variable-length paths | Rejected | Exact-one relationship ranges/quantifiers are accepted as single-hop syntax; all other variable-length ranges still need recursive/path expansion semantics |
-| Path variables and path values | Rejected | Needs graph value representation |
+| Path variables in `MATCH p = (...)` | Supported foundation | Accepted as non-materialized compatibility bindings when `p` is not carried by `WITH *` and is not used as a graph value; explicit `WITH var, ...` drops ignored path bindings |
+| Path values | Rejected | Returning, filtering, or otherwise materializing path values needs graph value representation |
 | User variables beginning with `__coral_` | Rejected | Prefix reserved for internal planner bindings |
 | General `WITH`, `UNION`, subqueries, procedure calls | Rejected | Non-terminal projection boundaries and set/pipeline semantics need staged planning |
 | Parameterized property maps | Rejected | The current parser dependency does not lower parameter-map pattern syntax into the typed AST; use inline property maps with scalar parameter values instead |

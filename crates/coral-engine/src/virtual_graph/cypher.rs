@@ -9,7 +9,7 @@ use decypher::ast::expr::{
 };
 use decypher::ast::names::Variable;
 use decypher::ast::pattern::{
-    LabelExpression, NodePattern as CypherNodePattern, PatternElement, Properties,
+    LabelExpression, NodePattern as CypherNodePattern, PatternElement, PatternPart, Properties,
     Quantifier as CypherQuantifier, RangeLiteral as CypherRangeLiteral,
     RelationshipDirection as CypherRelationshipDirection,
     RelationshipPattern as CypherRelationshipPattern,
@@ -46,6 +46,11 @@ struct CompiledNode {
 struct CompiledRelationship {
     pattern: RelationshipPattern,
     predicates: Vec<PropertyPredicate>,
+}
+
+#[derive(Debug, Default)]
+struct CypherCompileState {
+    ignored_path_variables: BTreeSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -234,7 +239,14 @@ fn compile_single_part(
     let return_clause = return_clause_from_single_part(query, "query")?;
 
     let mut plan = GraphPlan::default();
-    compile_reading_clauses_into(&query.reading_clauses, "match", &mut plan, context)?;
+    let mut state = CypherCompileState::default();
+    compile_reading_clauses_into(
+        &query.reading_clauses,
+        "match",
+        &mut plan,
+        &mut state,
+        context,
+    )?;
     compile_return(return_clause, &mut plan, context)?;
     Ok(plan)
 }
@@ -284,7 +296,14 @@ fn compile_terminal_with_projection(
 
     let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
     let mut plan = GraphPlan::default();
-    compile_reading_clauses_into(&part.reading_clauses, "parts[0].match", &mut plan, context)?;
+    let mut state = CypherCompileState::default();
+    compile_reading_clauses_into(
+        &part.reading_clauses,
+        "parts[0].match",
+        &mut plan,
+        &mut state,
+        context,
+    )?;
 
     compile_terminal_with_clause(&part.with, &mut plan, context)?;
     apply_terminal_return_projection_aliases(return_clause, &mut plan.projections)?;
@@ -350,9 +369,16 @@ fn compile_terminal_with_graph_modifiers(
     }
 
     let mut plan = GraphPlan::default();
-    compile_reading_clauses_into(&part.reading_clauses, "parts[0].match", &mut plan, context)?;
+    let mut state = CypherCompileState::default();
+    compile_reading_clauses_into(
+        &part.reading_clauses,
+        "parts[0].match",
+        &mut plan,
+        &mut state,
+        context,
+    )?;
     if let Some(predicate) =
-        apply_transparent_with_scope(&part.with, &mut plan, "parts[0].with", context)?
+        apply_transparent_with_scope(&part.with, &mut plan, &mut state, "parts[0].with", context)?
     {
         append_predicate_expression(predicate, &mut plan);
     }
@@ -640,13 +666,22 @@ fn compile_transparent_multi_part(
     context: &CypherCompileContext,
 ) -> Result<GraphPlan, CoreError> {
     let mut plan = GraphPlan::default();
+    let mut state = CypherCompileState::default();
     for (index, part) in query.parts.iter().enumerate() {
-        compile_transparent_multi_part_part(part, index, &mut plan, context)?;
+        compile_transparent_multi_part_part(part, index, &mut plan, &mut state, context)?;
     }
 
     match query.final_part.reading_clauses.as_slice() {
         [] => {}
-        clauses => compile_reading_clauses_into(clauses, "final_part.match", &mut plan, context)?,
+        clauses => {
+            compile_reading_clauses_into(
+                clauses,
+                "final_part.match",
+                &mut plan,
+                &mut state,
+                context,
+            )?;
+        }
     }
     let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
     compile_return(return_clause, &mut plan, context)?;
@@ -657,6 +692,7 @@ fn compile_transparent_multi_part_part(
     part: &MultiPartQueryPart,
     index: usize,
     plan: &mut GraphPlan,
+    state: &mut CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     if !part.updating_clauses.is_empty() {
@@ -669,11 +705,16 @@ fn compile_transparent_multi_part_part(
         &part.reading_clauses,
         format!("parts[{index}].match"),
         plan,
+        state,
         context,
     )?;
-    if let Some(predicate) =
-        validate_transparent_with(&part.with, plan, format!("parts[{index}].with"), context)?
-    {
+    if let Some(predicate) = validate_transparent_with(
+        &part.with,
+        plan,
+        state,
+        format!("parts[{index}].with"),
+        context,
+    )? {
         append_predicate_expression(predicate, plan);
     }
     Ok(())
@@ -682,6 +723,7 @@ fn compile_transparent_multi_part_part(
 fn validate_transparent_with(
     with: &With,
     plan: &mut GraphPlan,
+    state: &mut CypherCompileState,
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<Option<PredicateExpression>, CoreError> {
@@ -698,12 +740,13 @@ fn validate_transparent_with(
             "WITH ORDER BY, SKIP, and LIMIT require staged query planning and are not supported yet",
         ));
     }
-    apply_transparent_with_scope(with, plan, path, context)
+    apply_transparent_with_scope(with, plan, state, path, context)
 }
 
 fn apply_transparent_with_scope(
     with: &With,
     plan: &mut GraphPlan,
+    state: &mut CypherCompileState,
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<Option<PredicateExpression>, CoreError> {
@@ -713,6 +756,12 @@ fn apply_transparent_with_scope(
             return Err(unsupported(
                 format!("{path}.items"),
                 "WITH * mixed with explicit projections requires scoped query planning and is not supported yet",
+            ));
+        }
+        if !state.ignored_path_variables.is_empty() {
+            return Err(unsupported(
+                format!("{path}.star"),
+                "WITH * cannot carry path variables because Coral does not materialize path values yet; explicitly carry graph variables to drop path values",
             ));
         }
         return compile_transparent_with_where(with, plan, path, context);
@@ -767,7 +816,9 @@ fn apply_transparent_with_scope(
         rename_graph_plan_variables(plan, &renames);
     }
 
-    compile_transparent_with_where(with, plan, path, context)
+    let predicate = compile_transparent_with_where(with, plan, path, context)?;
+    state.ignored_path_variables.clear();
+    Ok(predicate)
 }
 
 fn compile_transparent_with_where(
@@ -1125,6 +1176,7 @@ fn compile_reading_clauses_into(
     reading_clauses: &[ReadingClause],
     path: impl Into<String>,
     plan: &mut GraphPlan,
+    state: &mut CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     let path = path.into();
@@ -1150,7 +1202,7 @@ fn compile_reading_clauses_into(
                 }
                 let predicate_start = plan.predicates.len();
                 let relationship_start = plan.relationships.len();
-                compile_match_into(match_clause, plan, context)?;
+                compile_match_into(match_clause, plan, state, context)?;
                 if match_clause.optional {
                     let predicate = match_clause
                         .where_clause
@@ -1275,6 +1327,7 @@ fn return_clause_from_single_part(
 fn compile_match_into(
     match_clause: &Match,
     plan: &mut GraphPlan,
+    state: &mut CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     if match_clause.pattern.parts.is_empty() {
@@ -1309,12 +1362,12 @@ fn compile_match_into(
     }
 
     for (part_index, pattern_part) in match_clause.pattern.parts.iter().enumerate() {
-        if pattern_part.variable.is_some() {
-            return Err(unsupported(
-                format!("match.pattern.parts[{part_index}]"),
-                "path variables are not supported yet",
-            ));
-        }
+        validate_ignored_path_variable(
+            pattern_part,
+            plan,
+            state,
+            format!("match.pattern.parts[{part_index}]"),
+        )?;
 
         let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
             return Err(unsupported(
@@ -1376,10 +1429,66 @@ fn compile_match_into(
     Ok(())
 }
 
-fn pattern_part_uses_bound_node(
-    pattern_part: &decypher::ast::pattern::PatternPart,
-    bound_nodes: &BTreeSet<&str>,
-) -> bool {
+fn validate_ignored_path_variable(
+    pattern_part: &PatternPart,
+    plan: &GraphPlan,
+    state: &mut CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    let anonymous_variables = anonymous_pattern_variables(pattern_part);
+    if let Some(conflict) = anonymous_variables
+        .iter()
+        .find(|variable| state.ignored_path_variables.contains(*variable))
+    {
+        return Err(unsupported(
+            format!("{path}.anonymous"),
+            format!("graph variable '{conflict}' conflicts with an in-scope path variable"),
+        ));
+    }
+
+    let Some(variable) = pattern_part.variable.as_ref() else {
+        return Ok(());
+    };
+    let name = validate_variable(variable)?;
+    if plan_uses_variable(plan, &name)
+        || state.ignored_path_variables.contains(&name)
+        || anonymous_variables.contains(&name)
+    {
+        return Err(unsupported(
+            format!("{path}.variable"),
+            format!("path variable '{name}' conflicts with an in-scope graph or path variable"),
+        ));
+    }
+    state.ignored_path_variables.insert(name);
+    Ok(())
+}
+
+fn anonymous_pattern_variables(pattern_part: &PatternPart) -> BTreeSet<String> {
+    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+        return BTreeSet::new();
+    };
+    let mut variables = BTreeSet::new();
+    if let Some(variable) = start.variable.as_ref() {
+        variables.insert(variable_name(variable));
+    }
+    for chain in chains {
+        if let Some(variable) = chain.node.variable.as_ref() {
+            variables.insert(variable_name(variable));
+        }
+        if let Some(variable) = chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.variable.as_ref())
+        {
+            variables.insert(variable_name(variable));
+        }
+    }
+    variables
+}
+
+fn pattern_part_uses_bound_node(pattern_part: &PatternPart, bound_nodes: &BTreeSet<&str>) -> bool {
     let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
         return false;
     };
@@ -5902,6 +6011,101 @@ mod tests {
         );
         assert_eq!(plan.limit, Some(10));
         assert_eq!(plan.predicate, None);
+    }
+
+    #[test]
+    fn compiles_ignored_path_variable_patterns() {
+        let plan = compile_cypher(
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             RETURN person.name AS owner, service.name AS service",
+        )
+        .expect("non-materialized path binding should compile");
+
+        assert_eq!(
+            plan.nodes,
+            vec![
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "service".to_string(),
+            }]
+        );
+        assert_eq!(plan.projections.len(), 2);
+    }
+
+    #[test]
+    fn rejects_path_variable_collisions() {
+        let error = compile_cypher(
+            "MATCH path = (path:Person)-[:OWNS]->(service:Service) \
+             RETURN service.name AS service",
+        )
+        .expect_err("path bindings must not collide with graph variables");
+
+        assert!(
+            error.to_string().contains("path variable 'path' conflicts"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_graph_variables_that_shadow_in_scope_path_variables() {
+        let error = compile_cypher(
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             MATCH (path:Person) \
+             RETURN path.name AS person",
+        )
+        .expect_err("graph variables must not shadow in-scope path variables");
+
+        assert!(
+            error
+                .to_string()
+                .contains("graph variable 'path' conflicts with an in-scope path variable"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn explicit_with_drops_ignored_path_variables() {
+        let plan = compile_cypher(
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             WITH person, service \
+             MATCH (path:Person) \
+             RETURN path.name AS person",
+        )
+        .expect("explicit WITH should drop unsupported path values");
+
+        assert!(plan.nodes.iter().any(|node| node.variable == "path"));
+    }
+
+    #[test]
+    fn rejects_with_star_over_ignored_path_variables() {
+        let error = compile_cypher(
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             WITH * \
+             RETURN person.name AS owner",
+        )
+        .expect_err("WITH * must not implicitly carry unsupported path values");
+
+        assert!(
+            error
+                .to_string()
+                .contains("WITH * cannot carry path variables"),
+            "{error}"
+        );
     }
 
     #[test]

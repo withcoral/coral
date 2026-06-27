@@ -140,13 +140,16 @@ The supported foundation subset is intentionally narrow:
   aliases;
 - transparent `WITH` pass-through, graph-variable aliasing, terminal
   graph-variable `WITH` row modifiers, and terminal `WITH` projection subsets;
+- non-materialized path variable bindings in `MATCH p = (...)` when `p` is not
+  carried by `WITH *` or used as a graph value;
 - integer `SKIP` and `LIMIT`.
 
 Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.
 This includes writes, multi-hop or undirected optional-local predicates, path
-variables, variable-length paths, parameterized property maps, keyless
-relationship identity operations, non-terminal projection boundaries, subqueries,
-procedure calls, path/list length via `size`, and broad expression semantics.
+value projection or filtering, variable-length paths, parameterized property
+maps, keyless relationship identity operations, non-terminal projection
+boundaries, subqueries, procedure calls, path/list length via `size`, and broad
+expression semantics.
 
 ## GraphQL Frontend Boundary
 
