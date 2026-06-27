@@ -1399,6 +1399,16 @@ impl<'a> Lowerer<'a> {
                 "RTRIM({})",
                 self.render_scalar_expression(expression)?
             )),
+            ScalarExpression::Replace {
+                expression,
+                search,
+                replacement,
+            } => Ok(format!(
+                "REPLACE({}, {}, {})",
+                self.render_scalar_expression(expression)?,
+                self.render_scalar_expression(search)?,
+                self.render_scalar_expression(replacement)?
+            )),
         }
     }
 }

@@ -176,6 +176,15 @@ pub enum ScalarExpression {
         /// Inner expression to normalize.
         expression: Box<ScalarExpression>,
     },
+    /// Replace occurrences of one scalar expression inside another.
+    Replace {
+        /// Source expression.
+        expression: Box<ScalarExpression>,
+        /// Search expression.
+        search: Box<ScalarExpression>,
+        /// Replacement expression.
+        replacement: Box<ScalarExpression>,
+    },
 }
 
 /// Projection in the shared graph IR.

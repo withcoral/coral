@@ -1464,6 +1464,49 @@ async fn cypher_trim_scalar_expressions_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_replace_scalar_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE replace(service.name, '-', '') = 'billingapi' \
+         RETURN replace(service.name, '-', ' ') AS display_name, \
+                replace('prod service', 'service', 'tier') AS literal_replace \
+         ORDER BY replace(service.name, '-', '')",
+    )
+    .await
+    .expect("replace scalar expression query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("REPLACE(\"n0\".\"service_name\", '-', '') = 'billingapi'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("REPLACE('prod service', 'service', 'tier') AS \"literal_replace\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "display_name": "billing api",
+            "literal_replace": "prod tier",
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_scalar_null_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

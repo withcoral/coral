@@ -1111,6 +1111,9 @@ fn compile_order_expression(
         Expression::FunctionCall(function) if is_rtrim_function(function) => {
             compile_rtrim_order_expression(function, path, context)
         }
+        Expression::FunctionCall(function) if is_replace_function(function) => {
+            compile_replace_order_expression(function, path, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             aggregate_order_expression_for_projection(function, projections, path, context)
         }
@@ -1399,6 +1402,9 @@ fn compile_projection(
         Expression::FunctionCall(function) if is_rtrim_function(function) => {
             compile_rtrim_projection(function, item, path, context)
         }
+        Expression::FunctionCall(function) if is_replace_function(function) => {
+            compile_replace_projection(function, item, path, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             compile_aggregate_projection(function, item, path, context)
         }
@@ -1581,6 +1587,26 @@ fn compile_rtrim_projection(
     })
 }
 
+fn compile_replace_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_replace_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "replace".to_string(), variable_name),
+    })
+}
+
 fn compile_coalesce_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -1676,6 +1702,37 @@ fn compile_rtrim_scalar_expression(
     })
 }
 
+fn compile_replace_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let [expression, search, replacement] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "replace() requires exactly three arguments",
+        ));
+    };
+    Ok(ScalarExpression::Replace {
+        expression: Box::new(compile_scalar_expression(
+            expression,
+            format!("{path}.arguments[0]"),
+            context,
+        )?),
+        search: Box::new(compile_scalar_expression(
+            search,
+            format!("{path}.arguments[1]"),
+            context,
+        )?),
+        replacement: Box::new(compile_scalar_expression(
+            replacement,
+            format!("{path}.arguments[2]"),
+            context,
+        )?),
+    })
+}
+
 fn compile_single_scalar_function_argument(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -1727,6 +1784,9 @@ fn compile_scalar_expression(
         Expression::FunctionCall(function) if is_rtrim_function(function) => {
             compile_rtrim_scalar_expression(function, path, context)
         }
+        Expression::FunctionCall(function) if is_replace_function(function) => {
+            compile_replace_scalar_expression(function, path, context)
+        }
         Expression::FunctionCall(function) => Err(unsupported(
             path,
             format!(
@@ -1736,7 +1796,7 @@ fn compile_scalar_expression(
         )),
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toLower(), toUpper(), trim(), lTrim(), or rTrim() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toLower(), toUpper(), trim(), lTrim(), rTrim(), or replace() expressions",
         )),
     }
 }
@@ -1961,6 +2021,14 @@ fn compile_rtrim_order_expression(
     compile_rtrim_scalar_expression(function, path, context).map(OrderExpression::Scalar)
 }
 
+fn compile_replace_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_replace_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
 fn compile_optional_predicate_scalar_expression(
     expression: &Expression,
     path: impl Into<String>,
@@ -1991,6 +2059,9 @@ fn compile_optional_predicate_scalar_expression(
         )),
         Expression::FunctionCall(function) if is_rtrim_function(function) => Ok(Some(
             compile_rtrim_scalar_expression(function, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_replace_function(function) => Ok(Some(
+            compile_replace_scalar_expression(function, path, context)?,
         )),
         _ => Ok(None),
     }
@@ -2039,6 +2110,11 @@ fn compile_scalar_predicate_rhs(
                 compile_rtrim_scalar_expression(function, path, context)?,
             ))
         }
+        Expression::FunctionCall(function) if is_replace_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_replace_scalar_expression(function, path, context)?,
+            ))
+        }
         Expression::PropertyLookup { .. } => Ok(ScalarPredicateRhs::Expression(
             ScalarExpression::Property(compile_property_ref(expression, path)?),
         )),
@@ -2047,7 +2123,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toLower(), toUpper(), trim(), lTrim(), or rTrim() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toLower(), toUpper(), trim(), lTrim(), rTrim(), or replace() expressions",
         )),
     }
 }
@@ -2343,6 +2419,13 @@ fn is_rtrim_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("rTrim")
+    )
+}
+
+fn is_replace_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("replace")
     )
 }
 
@@ -5295,6 +5378,62 @@ mod tests {
             plan.order_by.as_slice(),
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::RTrim { .. }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
+    }
+
+    #[test]
+    fn compiles_replace_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE replace(service.name, '-', '') = 'billingapi' \
+             RETURN replace(service.team, 'platform', 'core') AS normalized_team \
+             ORDER BY replace(service.name, '-', '')",
+        )
+        .expect("replace scalar expressions should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Replace {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    })),
+                    search: Box::new(ScalarExpression::Literal(Literal::String("-".to_string()))),
+                    replacement: Box::new(ScalarExpression::Literal(
+                        Literal::String(String::new())
+                    )),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                    "billingapi".to_string()
+                ))),
+            }))
+        );
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: ScalarExpression::Replace {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "team".to_string(),
+                    })),
+                    search: Box::new(ScalarExpression::Literal(Literal::String(
+                        "platform".to_string()
+                    ))),
+                    replacement: Box::new(ScalarExpression::Literal(Literal::String(
+                        "core".to_string()
+                    ))),
+                },
+                alias: "normalized_team".to_string(),
+            }]
+        );
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Replace { .. }),
                 direction: OrderDirection::Ascending,
             }]
         ));

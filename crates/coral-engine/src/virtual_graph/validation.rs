@@ -802,6 +802,15 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::RTrim { expression } => {
                 Self::collect_scalar_expression_variables(expression, variables);
             }
+            ScalarExpression::Replace {
+                expression,
+                search,
+                replacement,
+            } => {
+                Self::collect_scalar_expression_variables(expression, variables);
+                Self::collect_scalar_expression_variables(search, variables);
+                Self::collect_scalar_expression_variables(replacement, variables);
+            }
         }
     }
 
@@ -1016,6 +1025,27 @@ impl<'a> GraphPlanValidator<'a> {
                     expression,
                     optional_variables,
                     format!("{path}.expression"),
+                )
+            }
+            ScalarExpression::Replace {
+                expression,
+                search,
+                replacement,
+            } => {
+                Self::validate_scalar_expression_not_optional(
+                    expression,
+                    optional_variables,
+                    format!("{path}.expression"),
+                )?;
+                Self::validate_scalar_expression_not_optional(
+                    search,
+                    optional_variables,
+                    format!("{path}.search"),
+                )?;
+                Self::validate_scalar_expression_not_optional(
+                    replacement,
+                    optional_variables,
+                    format!("{path}.replacement"),
                 )
             }
         }
@@ -2102,6 +2132,15 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::LTrim { expression }
             | ScalarExpression::RTrim { expression } => {
                 self.validate_scalar_expression(expression, format!("{path}.expression"))
+            }
+            ScalarExpression::Replace {
+                expression,
+                search,
+                replacement,
+            } => {
+                self.validate_scalar_expression(expression, format!("{path}.expression"))?;
+                self.validate_scalar_expression(search, format!("{path}.search"))?;
+                self.validate_scalar_expression(replacement, format!("{path}.replacement"))
             }
         }
     }
