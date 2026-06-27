@@ -259,36 +259,126 @@ fn compile_variable_definitions(
     Ok(declarations)
 }
 
-fn compile_root_selection_set(
-    selection_set: &SelectionSet<'_, String>,
+fn compile_root_selection_set<'query>(
+    selection_set: &SelectionSet<'query, String>,
     graph: Option<&Declaration>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_, '_>,
+    context: &GraphqlCompileContext<'_, 'query>,
 ) -> Result<GraphPlan, CoreError> {
     let path = path.into();
     let mut root_fields = Vec::new();
-    for (index, selection) in selection_set.items.iter().enumerate() {
-        let Selection::Field(field) = selection else {
-            return Err(unsupported(
-                format!("{path}.items[{index}]"),
-                "GraphQL fragments are not supported at the root selection yet",
-            ));
-        };
-        if selection_is_included(
-            &field.directives,
-            format!("{path}.items[{index}].directives"),
-            context,
-        )? {
-            root_fields.push((index, field));
-        }
-    }
-    let [(index, root)] = root_fields.as_slice() else {
+    collect_root_fields(
+        selection_set,
+        &path,
+        context,
+        &mut Vec::new(),
+        &mut root_fields,
+    )?;
+    let [(root_path, root)] = root_fields.as_slice() else {
         return Err(unsupported(
             path,
             "GraphQL virtual graph queries must select exactly one included root node field",
         ));
     };
-    compile_root_field(root, graph, format!("{path}.items[{index}]"), context)
+    compile_root_field(root, graph, root_path, context)
+}
+
+fn collect_root_fields<'query>(
+    selection_set: &SelectionSet<'query, String>,
+    path: &str,
+    context: &GraphqlCompileContext<'_, 'query>,
+    fragment_stack: &mut Vec<String>,
+    root_fields: &mut Vec<(String, Field<'query, String>)>,
+) -> Result<(), CoreError> {
+    for (index, selection) in selection_set.items.iter().enumerate() {
+        let item_path = format!("{path}.items[{index}]");
+        match selection {
+            Selection::Field(field) => {
+                if selection_is_included(
+                    &field.directives,
+                    format!("{item_path}.directives"),
+                    context,
+                )? {
+                    root_fields.push((item_path, field.clone()));
+                }
+            }
+            Selection::FragmentSpread(spread) => {
+                if !selection_is_included(
+                    &spread.directives,
+                    format!("{item_path}.directives"),
+                    context,
+                )? {
+                    continue;
+                }
+                let fragment = context
+                    .fragments
+                    .get(&spread.fragment_name)
+                    .ok_or_else(|| {
+                        unsupported(
+                            format!("{item_path}.name"),
+                            format!("unknown GraphQL fragment '{}'", spread.fragment_name),
+                        )
+                    })?;
+                ensure_root_fragment_type_condition(
+                    Some(&fragment.type_condition),
+                    format!("{item_path}.typeCondition"),
+                )?;
+                if fragment_stack.contains(&spread.fragment_name) {
+                    return Err(unsupported(
+                        format!("{item_path}.name"),
+                        format!("GraphQL fragment '{}' forms a cycle", spread.fragment_name),
+                    ));
+                }
+                fragment_stack.push(spread.fragment_name.clone());
+                let result = collect_root_fields(
+                    &fragment.selection_set,
+                    &format!("fragment.{}.selectionSet", fragment.name),
+                    context,
+                    fragment_stack,
+                    root_fields,
+                );
+                fragment_stack.pop();
+                result?;
+            }
+            Selection::InlineFragment(fragment) => {
+                if !selection_is_included(
+                    &fragment.directives,
+                    format!("{item_path}.directives"),
+                    context,
+                )? {
+                    continue;
+                }
+                ensure_root_fragment_type_condition(
+                    fragment.type_condition.as_ref(),
+                    format!("{item_path}.typeCondition"),
+                )?;
+                collect_root_fields(
+                    &fragment.selection_set,
+                    &item_path,
+                    context,
+                    fragment_stack,
+                    root_fields,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_root_fragment_type_condition(
+    type_condition: Option<&TypeCondition<'_, String>>,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let Some(TypeCondition::On(label)) = type_condition else {
+        return Ok(());
+    };
+    if label == "Query" {
+        return Ok(());
+    }
+    Err(unsupported(
+        path,
+        format!("GraphQL root fragment type condition '{label}' must be Query"),
+    ))
 }
 
 fn compile_root_field(
@@ -2382,6 +2472,66 @@ mod tests {
     }
 
     #[test]
+    fn compiles_graphql_root_fragments() {
+        let variables = BTreeMap::from([(
+            "includeService".to_string(),
+            GraphqlVariableValue::Literal(Literal::Boolean(true)),
+        )]);
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services($includeService: Boolean!) {
+              ...RootServices
+              ... on Query {
+                skipped: Team @skip(if: true) {
+                  name
+                }
+              }
+            }
+
+            fragment RootServices on Query {
+              services: Service(
+                orderBy: [{ field: name, direction: ASC }]
+                limit: 2
+              ) @include(if: $includeService) {
+                service: name
+                tier
+              }
+            }
+            ",
+            &variables,
+        )
+        .expect("GraphQL root fragments should compile");
+
+        assert_eq!(
+            plan.nodes,
+            vec![NodePattern {
+                variable: "service".to_string(),
+                label: "Service".to_string(),
+            }]
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("tier".to_string()),
+                },
+            ]
+        );
+        assert_eq!(plan.limit, Some(2));
+    }
+
+    #[test]
     fn compiles_graphql_edge_fields_inside_fragments() {
         let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
         let plan = compile_graphql_for_graph(
@@ -2557,6 +2707,24 @@ mod tests {
                 .contains("must match graph label 'Service'"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn rejects_graphql_root_fragment_type_mismatches() {
+        let error = compile_graphql(
+            r"
+            query {
+              ...NotQuery
+            }
+
+            fragment NotQuery on Service {
+              Service { name }
+            }
+            ",
+        )
+        .expect_err("root fragment type mismatches should fail");
+
+        assert!(error.to_string().contains("must be Query"), "{error}");
     }
 
     #[test]

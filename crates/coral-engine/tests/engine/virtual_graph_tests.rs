@@ -520,6 +520,58 @@ async fn graphql_generated_client_shape_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_root_fragments_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query Services {
+          ...RootServices
+          ... on Query {
+            skipped: Team @skip(if: true) {
+              name
+            }
+          }
+        }
+
+        fragment RootServices on Query {
+          services: Service(
+            where: { tier: { eq: "prod" } }
+            orderBy: [{ field: name, direction: ASC }]
+            limit: 2
+          ) {
+            service: name
+            tier
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("GraphQL root fragment query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"tier\" = 'prod'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "tier": "prod"}),
+            json!({"service": "deployments", "tier": "prod"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_nested_relationship_query_executes_against_synthetic_file_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
