@@ -622,6 +622,54 @@ async fn cypher_union_all_preserves_duplicate_rows() {
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_flatten_inside_union_all() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN owner.name AS item \
+         UNION ALL \
+         MATCH (service:Service) \
+         WHERE service.name = 'billing-api' \
+         RETURN service.name AS item",
+    )
+    .await
+    .expect("static alternatives inside UNION ALL should execute");
+
+    assert!(
+        execution.translated_sql().contains(" UNION ALL "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        !execution.translated_sql().contains("__coral_union_outer"),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by_key(|row| row["item"].as_str().unwrap_or_default().to_string());
+    assert_eq!(
+        rows,
+        vec![
+            json!({"item": "Ada Lovelace"}),
+            json!({"item": "Grace Hopper"}),
+            json!({"item": "Katherine Johnson"}),
+            json!({"item": "analytics"}),
+            json!({"item": "billing-api"}),
+            json!({"item": "infra"}),
+            json!({"item": "platform"}),
+            json!({"item": "platform"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_union_branches_preserve_local_ordering_and_limits() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

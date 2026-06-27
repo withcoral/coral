@@ -1152,27 +1152,56 @@ fn compile_regular_query(
     query: &RegularQuery,
     context: &CypherCompileContext,
 ) -> Result<GraphQuery, CoreError> {
-    reject_static_label_type_alternatives_with_explicit_union(
-        &query.single_query,
-        "query.single_query",
-    )?;
-    let first = compile_single_query(&query.single_query, context)?;
+    let first_query =
+        compile_single_query_as_graph_query(&query.single_query, context, "query.single_query")?;
     if query.unions.is_empty() {
-        return Ok(GraphQuery::Plan(first));
+        return Ok(first_query);
     }
 
-    let expected_projection_names = projection_names(&first);
-    let mut branches = Vec::with_capacity(query.unions.len());
+    let all_explicit_unions_are_all = query.unions.iter().all(|union| union.all);
+    let mut flattened = Vec::with_capacity(query.unions.len() + 1);
+    append_explicit_union_component(
+        first_query,
+        None,
+        all_explicit_unions_are_all,
+        "query.single_query",
+        &mut flattened,
+    )?;
+
     for (index, union) in query.unions.iter().enumerate() {
-        reject_static_label_type_alternatives_with_explicit_union(
+        let component = compile_single_query_as_graph_query(
             &union.single_query,
+            context,
             format!("query.unions[{index}].single_query"),
         )?;
-        let plan = compile_single_query(&union.single_query, context)?;
+        append_explicit_union_component(
+            component,
+            Some(union.all),
+            all_explicit_unions_are_all,
+            format!("query.unions[{index}].single_query"),
+            &mut flattened,
+        )?;
+    }
+
+    let mut flattened = flattened.into_iter();
+    let (first_all, first) = flattened
+        .next()
+        .ok_or_else(|| CoreError::internal("explicit union produced no graph plans"))?;
+    if first_all.is_some() {
+        return Err(CoreError::internal(
+            "explicit union first graph plan unexpectedly had a union operator",
+        ));
+    }
+    let expected_projection_names = projection_names(&first);
+    let mut branches = Vec::new();
+    for (index, (all, plan)) in flattened.enumerate() {
+        let all = all.ok_or_else(|| {
+            CoreError::internal("explicit union branch graph plan had no union operator")
+        })?;
         let projection_names = projection_names(&plan);
         if projection_names != expected_projection_names {
             return Err(unsupported(
-                format!("query.unions[{index}].return"),
+                format!("query.union_branches[{index}].return"),
                 format!(
                     "UNION branch projections must match the first branch; expected [{}], got [{}]",
                     expected_projection_names.join(", "),
@@ -1180,10 +1209,7 @@ fn compile_regular_query(
                 ),
             ));
         }
-        branches.push(GraphUnionBranch {
-            all: union.all,
-            plan,
-        });
+        branches.push(GraphUnionBranch { all, plan });
     }
 
     Ok(GraphQuery::Union(GraphUnion {
@@ -1201,18 +1227,49 @@ fn projection_names(plan: &GraphPlan) -> Vec<String> {
     plan.projection_output_names()
 }
 
-fn reject_static_label_type_alternatives_with_explicit_union(
-    single_query: &SingleQuery,
+fn append_explicit_union_component(
+    component: GraphQuery,
+    leading_all: Option<bool>,
+    all_explicit_unions_are_all: bool,
     path: impl Into<String>,
+    output: &mut Vec<(Option<bool>, GraphPlan)>,
 ) -> Result<(), CoreError> {
-    let variants = expand_single_query_static_label_type_alternatives(single_query)?;
-    if variants.len() <= 1 {
-        return Ok(());
+    let path = path.into();
+    match component {
+        GraphQuery::Plan(plan) => {
+            output.push((leading_all, plan));
+            Ok(())
+        }
+        GraphQuery::Union(union) => {
+            if !all_explicit_unions_are_all {
+                return Err(unsupported(
+                    path,
+                    "static pattern label/type alternatives can be combined with top-level UNION ALL; UNION distinct requires nested union grouping",
+                ));
+            }
+            if union.outer_projection.is_some()
+                || union.distinct
+                || !union.order_by.is_empty()
+                || union.skip.is_some()
+                || union.limit.is_some()
+            {
+                return Err(unsupported(
+                    path,
+                    "static pattern label/type alternatives with branch-level DISTINCT, ORDER BY, SKIP, LIMIT, or aggregate outer projections cannot be flattened into top-level UNION ALL yet",
+                ));
+            }
+            output.push((leading_all, union.first));
+            for branch in union.branches {
+                if !branch.all {
+                    return Err(CoreError::internal(
+                        "static label/type alternative expansion produced a non-UNION ALL branch",
+                    ));
+                }
+                output.push((Some(true), branch.plan));
+            }
+            Ok(())
+        }
     }
-    Err(unsupported(
-        path,
-        "static pattern label/type alternatives cannot be combined with top-level UNION yet; nested union grouping requires a richer query IR",
-    ))
 }
 
 fn expand_single_query_static_label_type_alternatives(
@@ -9408,15 +9465,54 @@ mod tests {
     }
 
     #[test]
-    fn rejects_static_label_alternatives_inside_explicit_union() {
-        let error = compile_cypher_query(
+    fn compiles_static_label_alternatives_inside_explicit_union_all() {
+        let query = compile_cypher_query(
             "MATCH (entity:Person|Team) RETURN entity.name AS item \
              UNION ALL \
              MATCH (service:Service) RETURN service.name AS item",
         )
-        .expect_err("explicit UNION grouping should stay rejected");
+        .expect("static alternatives should flatten into top-level UNION ALL");
 
-        assert!(error.to_string().contains("top-level UNION"));
+        let GraphQuery::Union(union) = query else {
+            panic!("expected union query");
+        };
+        assert_eq!(projection_names(&union.first), vec!["item".to_string()]);
+        assert_eq!(union.branches.len(), 2);
+        assert!(union.branches.iter().all(|branch| branch.all));
+        assert_eq!(
+            union
+                .branches
+                .iter()
+                .map(|branch| projection_names(&branch.plan))
+                .collect::<Vec<_>>(),
+            vec![vec!["item".to_string()], vec!["item".to_string()]]
+        );
+    }
+
+    #[test]
+    fn rejects_static_label_alternatives_inside_explicit_union_distinct() {
+        let error = compile_cypher_query(
+            "MATCH (entity:Person|Team) RETURN entity.name AS item \
+             UNION \
+             MATCH (service:Service) RETURN service.name AS item",
+        )
+        .expect_err("UNION distinct needs nested grouping for static alternatives");
+
+        assert!(error.to_string().contains("UNION ALL"));
+    }
+
+    #[test]
+    fn rejects_static_label_alternatives_with_modifiers_inside_explicit_union_all() {
+        let error = compile_cypher_query(
+            "MATCH (entity:Person|Team) \
+             RETURN entity.name AS item \
+             ORDER BY item \
+             UNION ALL \
+             MATCH (service:Service) RETURN service.name AS item",
+        )
+        .expect_err("branch-level modifiers need nested grouping");
+
+        assert!(error.to_string().contains("cannot be flattened"));
     }
 
     #[test]
