@@ -372,6 +372,7 @@ impl<'a> GraphPlanValidator<'a> {
         if aggregate_count == 0 {
             return Ok(());
         }
+        self.validate_distinct_keyless_relationship_counts()?;
         let projected_properties = self.projected_properties();
         for (index, order_key) in self.plan.order_by.iter().enumerate() {
             if !self.order_expression_is_projected_property_or_alias(
@@ -382,6 +383,39 @@ impl<'a> GraphPlanValidator<'a> {
                     "UNSUPPORTED_AGGREGATION",
                     format!("order_by[{index}]"),
                     "ORDER BY with aggregate projections must use a projected property or projection alias",
+                )
+                .into_core_error());
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_distinct_keyless_relationship_counts(&self) -> Result<(), CoreError> {
+        for (index, projection) in self.plan.projections.iter().enumerate() {
+            let Projection::Aggregate {
+                function: AggregateFunction::Count,
+                target: AggregateTarget::VariableKey { variable },
+                distinct: true,
+                ..
+            } = projection
+            else {
+                continue;
+            };
+            let Some(ValidatedBindingKind::Relationship(relationship)) = self
+                .bindings
+                .get(variable.as_str())
+                .map(ValidatedBinding::kind)
+            else {
+                continue;
+            };
+            if relationship.key.is_none() {
+                return Err(Diagnostic::new(
+                    "INVALID_AGGREGATE_TARGET",
+                    format!("projections[{index}].target"),
+                    format!(
+                        "count(DISTINCT {variable}) requires relationship mapping '{}' to declare a key",
+                        relationship.relationship_type
+                    ),
                 )
                 .into_core_error());
             }
@@ -1252,22 +1286,7 @@ impl<'a> GraphPlanValidator<'a> {
                     .into_core_error()
                 })?;
                 match binding.kind() {
-                    ValidatedBindingKind::Node(_) => Ok(()),
-                    ValidatedBindingKind::Relationship(relationship) => {
-                        if relationship.key.is_some() {
-                            Ok(())
-                        } else {
-                            Err(Diagnostic::new(
-                                "INVALID_AGGREGATE_TARGET",
-                                path,
-                                format!(
-                                    "count({variable}) requires relationship mapping '{}' to declare a key",
-                                    relationship.relationship_type
-                                ),
-                            )
-                            .into_core_error())
-                        }
-                    }
+                    ValidatedBindingKind::Node(_) | ValidatedBindingKind::Relationship(_) => Ok(()),
                 }
             }
         }
@@ -1880,7 +1899,25 @@ relationships:
     }
 
     #[test]
-    fn validate_graph_plan_rejects_keyless_relationship_aggregate_targets() {
+    fn validate_graph_plan_accepts_keyless_relationship_count_targets() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Aggregate {
+            function: AggregateFunction::Count,
+            target: AggregateTarget::VariableKey {
+                variable: "owns".to_string(),
+            },
+            distinct: false,
+            alias: "ownership_count".to_string(),
+        }];
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("keyless relationship count target should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_distinct_keyless_relationship_count_targets() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan();
         plan.projections = vec![Projection::Aggregate {
@@ -1894,7 +1931,7 @@ relationships:
 
         let error = graph
             .validate_graph_plan(&plan)
-            .expect_err("relationship aggregate target should fail validation");
+            .expect_err("distinct keyless relationship aggregate target should fail validation");
 
         assert!(
             error.to_string().contains("INVALID_AGGREGATE_TARGET"),

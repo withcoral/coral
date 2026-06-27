@@ -1895,13 +1895,13 @@ async fn cypher_id_and_type_predicates_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
-async fn cypher_count_keyless_relationship_variables_are_rejected() {
+async fn cypher_count_keyless_relationship_variables_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
     let source = build_source(ops_manifest(temp.path()));
     let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
 
-    let error = CoralQuery::execute_cypher(
+    let execution = CoralQuery::execute_cypher(
         &[source],
         test_runtime(),
         &graph,
@@ -1909,11 +1909,18 @@ async fn cypher_count_keyless_relationship_variables_are_rejected() {
          RETURN count(dependency) AS dependencies",
     )
     .await
-    .expect_err("counting a keyless relationship variable should fail");
+    .expect("counting a keyless relationship variable should execute");
 
     assert!(
-        error.to_string().contains("INVALID_AGGREGATE_TARGET"),
-        "{error:?}"
+        execution
+            .translated_sql()
+            .contains("COUNT(\"r0\".\"from_service_id\") AS \"dependencies\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"dependencies": 3})]
     );
 }
 

@@ -567,7 +567,7 @@ impl<'a> Lowerer<'a> {
                         "{}({}{}) AS {}",
                         render_aggregate_function(*function),
                         if *distinct { "DISTINCT " } else { "" },
-                        self.render_aggregate_target(target)?,
+                        self.render_aggregate_target(*function, target)?,
                         quote_ident(alias)
                     ));
                 }
@@ -985,11 +985,37 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn render_aggregate_target(&self, target: &AggregateTarget) -> Result<String, CoreError> {
+    fn render_aggregate_target(
+        &self,
+        function: AggregateFunction,
+        target: &AggregateTarget,
+    ) -> Result<String, CoreError> {
         match target {
             AggregateTarget::Property(property) => self.render_property_ref(property),
-            AggregateTarget::VariableKey { variable } => self.render_binding_key_ref(variable),
+            AggregateTarget::VariableKey { variable } => {
+                if function == AggregateFunction::Count {
+                    self.render_binding_presence_ref(variable)
+                } else {
+                    self.render_binding_key_ref(variable)
+                }
+            }
         }
+    }
+
+    fn render_binding_presence_ref(&self, variable: &str) -> Result<String, CoreError> {
+        let binding = self.validated.binding(variable)?;
+        let column = match binding.kind() {
+            ValidatedBindingKind::Node(node) => node.key.as_str(),
+            ValidatedBindingKind::Relationship(relationship) => relationship
+                .key
+                .as_deref()
+                .unwrap_or(&relationship.from.key),
+        };
+        Ok(format!(
+            "{}.{}",
+            quote_ident(binding.alias()),
+            quote_ident(column)
+        ))
     }
 
     fn render_relationship_type_ref(
@@ -1053,7 +1079,7 @@ impl<'a> Lowerer<'a> {
                 "{}({}{})",
                 render_aggregate_function(*function),
                 if *distinct { "DISTINCT " } else { "" },
-                self.render_aggregate_target(target)?
+                self.render_aggregate_target(*function, target)?
             )),
         }
     }
@@ -2582,6 +2608,59 @@ relationships: []
             translation
                 .sql()
                 .contains("COUNT(DISTINCT \"r0\".\"ownership_id\") AS \"ownership_count\""),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_count_keyless_relationship_projection() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "source".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "target".to_string(),
+                    label: "Service".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: Some("dependency".to_string()),
+                relationship_type: "DEPENDS_ON".to_string(),
+                left: "source".to_string(),
+                direction: Direction::Outgoing,
+                right: "target".to_string(),
+            }],
+            optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
+            distinct: false,
+            projections: vec![Projection::Aggregate {
+                function: AggregateFunction::Count,
+                target: AggregateTarget::VariableKey {
+                    variable: "dependency".to_string(),
+                },
+                distinct: false,
+                alias: "dependency_count".to_string(),
+            }],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("count keyless relationship projection should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("COUNT(\"r0\".\"from_service_id\") AS \"dependency_count\""),
             "{}",
             translation.sql()
         );
