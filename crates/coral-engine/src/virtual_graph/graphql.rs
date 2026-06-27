@@ -3445,6 +3445,8 @@ mod tests {
                 distinctAverageRisk: _avgDistinct(field: risk)
                 medianRisk: _median(field: risk)
                 distinctMedianRisk: _medianDistinct(field: risk)
+                distinctMinRisk: _minDistinct(field: risk)
+                distinctMaxRisk: _maxDistinct(field: risk)
               }
             }
             ",
@@ -3507,6 +3509,24 @@ mod tests {
                     }),
                     distinct: true,
                     alias: "distinctMedianRisk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Min,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: true,
+                    alias: "distinctMinRisk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Max,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: true,
+                    alias: "distinctMaxRisk".to_string(),
                 },
             ]
         );
@@ -5739,6 +5759,8 @@ nodes:
         assert!(sdl.contains("  _medianDistinct(field: PersonAggregateField!): CoralGraphValue"));
         assert!(sdl.contains("  _stDev(field: PersonAggregateField!): CoralGraphValue"));
         assert!(sdl.contains("  _stDevP(field: PersonAggregateField!): CoralGraphValue"));
+        assert!(sdl.contains("  _minDistinct(field: PersonAggregateField!): CoralGraphValue"));
+        assert!(sdl.contains("  _maxDistinct(field: PersonAggregateField!): CoralGraphValue"));
         assert!(sdl.contains(
             "out_OWNS(to: PersonOutOWNSToLabel!, where: ServiceWhere, relationshipWhere: OWNSRelationshipWhere): [Service!]!"
         ));

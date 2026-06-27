@@ -805,6 +805,8 @@ async fn graphql_statistical_aggregate_fields_match_equivalent_sql() {
             distinctAverageRisk: _avgDistinct(field: risk)
             medianRisk: _median(field: risk)
             distinctMedianRisk: _medianDistinct(field: risk)
+            distinctMinRisk: _minDistinct(field: risk)
+            distinctMaxRisk: _maxDistinct(field: risk)
           }
         }
         "#,
@@ -842,7 +844,9 @@ async fn graphql_statistical_aggregate_fields_match_equivalent_sql() {
                 SUM(DISTINCT risk_score) AS \"distinctTotalRisk\", \
                 AVG(DISTINCT risk_score) AS \"distinctAverageRisk\", \
                 MEDIAN(risk_score) AS \"medianRisk\", \
-                MEDIAN(DISTINCT risk_score) AS \"distinctMedianRisk\" \
+                MEDIAN(DISTINCT risk_score) AS \"distinctMedianRisk\", \
+                MIN(DISTINCT risk_score) AS \"distinctMinRisk\", \
+                MAX(DISTINCT risk_score) AS \"distinctMaxRisk\" \
          FROM ops.services \
          WHERE tier = 'prod'",
     )
@@ -862,6 +866,8 @@ async fn graphql_statistical_aggregate_fields_match_equivalent_sql() {
     assert_close(row["distinctAverageRisk"].as_f64().unwrap(), 0.7);
     assert_close(row["medianRisk"].as_f64().unwrap(), 0.7);
     assert_close(row["distinctMedianRisk"].as_f64().unwrap(), 0.7);
+    assert_close(row["distinctMinRisk"].as_f64().unwrap(), 0.5);
+    assert_close(row["distinctMaxRisk"].as_f64().unwrap(), 0.9);
 }
 
 #[tokio::test]
@@ -5278,6 +5284,29 @@ async fn cypher_statistical_aggregate_projections_execute_against_synthetic_sour
     assert_close(row["population_risk"].as_f64().unwrap(), 0.2);
     assert_close(row["distinct_total_risk"].as_f64().unwrap(), 1.4);
     assert_close(row["distinct_average_risk"].as_f64().unwrap(), 0.7);
+}
+
+#[tokio::test]
+async fn cypher_distinct_standard_deviation_rejects_before_execution() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN stDevP(DISTINCT service.risk) AS population_risk",
+    )
+    .await
+    .expect_err("distinct standard deviation should fail validation before execution");
+
+    assert!(
+        error.to_string().contains("UNSUPPORTED_AGGREGATION"),
+        "{error:?}"
+    );
 }
 
 #[tokio::test]

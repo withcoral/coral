@@ -4588,7 +4588,7 @@ relationships: []
                 variable: "service".to_string(),
                 property: "risk".to_string(),
             }),
-            distinct: true,
+            distinct: false,
             alias: "population_risk".to_string(),
         });
         plan.projections.push(Projection::Aggregate {
@@ -4609,7 +4609,7 @@ relationships: []
             translation.sql().contains(
                 "MEDIAN(\"n1\".\"risk_score\") AS \"median_risk\", \
                  STDDEV_SAMP(\"n1\".\"risk_score\") AS \"sample_risk\", \
-                 STDDEV_POP(DISTINCT \"n1\".\"risk_score\") AS \"population_risk\", \
+                 STDDEV_POP(\"n1\".\"risk_score\") AS \"population_risk\", \
                  MEDIAN(DISTINCT \"n1\".\"risk_score\") AS \"distinct_median_risk\""
             ),
             "{}",

@@ -105,9 +105,21 @@ pub(crate) const GRAPHQL_PROPERTY_AGGREGATE_FIELDS: &[GraphqlAggregateFieldSpec]
         return_type: GraphqlAggregateReturnType::GraphValue,
     },
     GraphqlAggregateFieldSpec {
+        field_name: "_minDistinct",
+        function: AggregateFunction::Min,
+        distinct: true,
+        return_type: GraphqlAggregateReturnType::GraphValue,
+    },
+    GraphqlAggregateFieldSpec {
         field_name: "_max",
         function: AggregateFunction::Max,
         distinct: false,
+        return_type: GraphqlAggregateReturnType::GraphValue,
+    },
+    GraphqlAggregateFieldSpec {
+        field_name: "_maxDistinct",
+        function: AggregateFunction::Max,
+        distinct: true,
         return_type: GraphqlAggregateReturnType::GraphValue,
     },
 ];
