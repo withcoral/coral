@@ -5130,12 +5130,6 @@ fn compile_return(
 ) -> Result<(), CoreError> {
     plan.distinct = return_clause.distinct;
     if return_clause.star {
-        if !return_clause.items.is_empty() {
-            return Err(unsupported(
-                "return.items",
-                "RETURN * mixed with explicit projections requires scoped graph-object planning and is not supported yet",
-            ));
-        }
         compile_return_star(plan, state, context, "return.star")?;
     }
     if let Some(skip) = &return_clause.skip {
@@ -17346,6 +17340,48 @@ relationships:
                 expression: OrderExpression::Property(PropertyRef {
                     variable: "service".to_string(),
                     property: "name".to_string(),
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_return_star_with_explicit_projections() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[ownership:OWNS]->(service:Service) \
+             RETURN *, service.tier AS tier \
+             ORDER BY tier",
+        )
+        .expect("RETURN *, explicit projections should compile");
+
+        assert_eq!(
+            plan.projection_output_names(),
+            vec![
+                "person.__id",
+                "person.__labels",
+                "person.name",
+                "person.team",
+                "service.__id",
+                "service.__labels",
+                "service.name",
+                "service.tier",
+                "ownership.__id",
+                "ownership.__type",
+                "ownership.since",
+                "ownership.source",
+                "tier",
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
                 }),
                 direction: OrderDirection::Ascending,
                 nulls: None,

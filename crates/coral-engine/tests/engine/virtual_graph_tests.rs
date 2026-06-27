@@ -121,8 +121,8 @@ async fn cypher_return_star_expands_graph_declaration_properties() {
         &graph,
         "MATCH (person:Person)-[ownership:OWNS]->(service:Service) \
          WHERE service.name = 'billing-api' \
-         RETURN * \
-         ORDER BY person.name \
+         RETURN *, service.tier AS tier_copy \
+         ORDER BY tier_copy, person.name \
          LIMIT 1",
     )
     .await
@@ -152,7 +152,8 @@ async fn cypher_return_star_expands_graph_declaration_properties() {
             "service.tier": "prod",
             "ownership.__id": 100,
             "ownership.__type": "OWNS",
-            "ownership.since": "2024-01-10"
+            "ownership.since": "2024-01-10",
+            "tier_copy": "prod"
         })]
     );
 }
