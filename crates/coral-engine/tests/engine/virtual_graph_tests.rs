@@ -5561,6 +5561,89 @@ async fn cypher_relationship_type_scalar_expressions_preserve_optional_nulls() {
 }
 
 #[tokio::test]
+async fn cypher_identity_scalar_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                id(service) + 1 AS next_service_id, \
+                toString(id(service)) AS service_id_text, \
+                CASE WHEN service.active THEN id(service) ELSE 0 END AS active_service_id \
+         ORDER BY id(service)",
+    )
+    .await
+    .expect("identity scalar expression query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("(\"n0\".\"id\" + 1) AS \"next_service_id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("CAST(\"n0\".\"id\" AS VARCHAR) AS \"service_id_text\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "next_service_id": 11, "service_id_text": "10", "active_service_id": 10}),
+            json!({"service": "deployments", "next_service_id": 21, "service_id_text": "20", "active_service_id": 20}),
+            json!({"service": "experiments", "next_service_id": 31, "service_id_text": "30", "active_service_id": 0}),
+            json!({"service": "legacy-sync", "next_service_id": 41, "service_id_text": "40", "active_service_id": 0}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_element_id_scalar_expressions_preserve_optional_nulls() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[owns:OWNS]->(service) \
+         RETURN service.name AS service, coalesce(elementId(owns), 'missing') AS ownership_element_id \
+         ORDER BY service",
+    )
+    .await
+    .expect("optional elementId scalar expression query should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "COALESCE(CAST(\"r0\".\"ownership_id\" AS VARCHAR), 'missing') AS \"ownership_element_id\""
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "ownership_element_id": "100"}),
+            json!({"service": "deployments", "ownership_element_id": "200"}),
+            json!({"service": "experiments", "ownership_element_id": "300"}),
+            json!({"service": "legacy-sync", "ownership_element_id": "missing"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_labels_projection_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

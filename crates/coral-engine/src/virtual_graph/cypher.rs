@@ -1068,13 +1068,13 @@ fn rename_non_unary_scalar_expression_variables(
         ScalarExpression::Predicate(predicate) => {
             rename_predicate_expression_variables(predicate, renames);
         }
-        ScalarExpression::RelationshipType { variable, .. } => {
+        ScalarExpression::Key { variable }
+        | ScalarExpression::ElementId { variable }
+        | ScalarExpression::RelationshipType { variable, .. } => {
             rename_string(variable, renames);
         }
         ScalarExpression::Coalesce { expressions } => {
-            for expression in expressions {
-                rename_scalar_expression_variables(expression, renames);
-            }
+            rename_scalar_expression_list_variables(expressions, renames);
         }
         ScalarExpression::NullIf { expression, value } => {
             rename_scalar_expression_variables(expression, renames);
@@ -1160,6 +1160,15 @@ fn rename_non_unary_scalar_expression_variables(
         | ScalarExpression::Negate { .. } => {
             unreachable!("unary scalar expressions handled before structural rename")
         }
+    }
+}
+
+fn rename_scalar_expression_list_variables(
+    expressions: &mut [ScalarExpression],
+    renames: &BTreeMap<String, String>,
+) {
+    for expression in expressions {
+        rename_scalar_expression_variables(expression, renames);
     }
 }
 
@@ -1484,7 +1493,9 @@ fn reject_ignored_path_variable_references_in_scalar_expression(
         ScalarExpression::Predicate(predicate) => {
             reject_ignored_path_variable_references_in_predicate(predicate, state, path)
         }
-        ScalarExpression::RelationshipType { variable, .. } => {
+        ScalarExpression::Key { variable }
+        | ScalarExpression::ElementId { variable }
+        | ScalarExpression::RelationshipType { variable, .. } => {
             reject_ignored_path_variable(variable, state, path)
         }
         _ => reject_ignored_path_variable_references_in_structural_scalar_expression(
@@ -1584,6 +1595,8 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
         ScalarExpression::Property(_)
         | ScalarExpression::Literal(_)
         | ScalarExpression::Predicate(_)
+        | ScalarExpression::Key { .. }
+        | ScalarExpression::ElementId { .. }
         | ScalarExpression::RelationshipType { .. } => {
             unreachable!("simple scalar expressions handled before structural path checks")
         }
@@ -2610,6 +2623,26 @@ fn compile_element_id_order_expression(
 ) -> Result<OrderExpression, CoreError> {
     let variable = compile_element_id_variable(function, path, plan, context)?;
     Ok(OrderExpression::ElementId { variable })
+}
+
+fn compile_key_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let variable = compile_id_variable(function, path, plan, context)?;
+    Ok(ScalarExpression::Key { variable })
+}
+
+fn compile_element_id_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let variable = compile_element_id_variable(function, path, plan, context)?;
+    Ok(ScalarExpression::ElementId { variable })
 }
 
 fn compile_type_order_expression(
@@ -3729,7 +3762,28 @@ fn compile_scalar_function_expression_in_mode(
     context: &CypherCompileContext,
 ) -> Result<Option<ScalarExpression>, CoreError> {
     let path = path.into();
-    if is_type_function(function) {
+    if is_id_function(function) {
+        match plan {
+            Some(plan) => {
+                compile_key_scalar_expression(function, path.clone(), plan, context).map(Some)
+            }
+            None => Err(unsupported(
+                path,
+                "id() scalar expressions require graph context",
+            )),
+        }
+    } else if is_element_id_function(function) {
+        match plan {
+            Some(plan) => {
+                compile_element_id_scalar_expression(function, path.clone(), plan, context)
+                    .map(Some)
+            }
+            None => Err(unsupported(
+                path,
+                "elementId() scalar expressions require graph context",
+            )),
+        }
+    } else if is_type_function(function) {
         match plan {
             Some(plan) => {
                 compile_relationship_type_scalar_expression(function, path.clone(), plan, context)
@@ -4214,7 +4268,13 @@ fn compile_optional_predicate_scalar_expression(
             PredicateCompileMode::CaseWhen { plan },
             context,
         )?)),
-        Expression::FunctionCall(function) if is_type_function(function) => Ok(None),
+        Expression::FunctionCall(function)
+            if is_id_function(function)
+                || is_element_id_function(function)
+                || is_type_function(function) =>
+        {
+            Ok(None)
+        }
         Expression::FunctionCall(function) => {
             compile_scalar_function_expression_in_mode(function, path, plan, context)
         }
@@ -10454,6 +10514,116 @@ mod tests {
     }
 
     #[test]
+    fn compiles_identity_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             RETURN id(service) + 1 AS next_service_id, \
+                    coalesce(elementId(owns), 'missing') AS ownership_element_id, \
+                    CASE WHEN service.tier = 'prod' THEN id(person) ELSE 0 END AS owner_id \
+             ORDER BY toString(id(service)), coalesce(elementId(owns), 'missing')",
+        )
+        .expect("identity scalar expressions should compile");
+
+        let [
+            Projection::Expression {
+                expression:
+                    ScalarExpression::Arithmetic {
+                        operator: ArithmeticOperator::Add,
+                        left,
+                        right,
+                    },
+                alias: next_alias,
+            },
+            Projection::Expression {
+                expression:
+                    ScalarExpression::Coalesce {
+                        expressions: coalesce_expressions,
+                    },
+                alias: element_alias,
+            },
+            Projection::Expression {
+                expression:
+                    ScalarExpression::Case {
+                        alternatives,
+                        else_expression,
+                    },
+                alias: case_alias,
+            },
+        ] = plan.projections.as_slice()
+        else {
+            panic!("expected identity scalar projections");
+        };
+        assert_eq!(next_alias, "next_service_id");
+        assert_eq!(
+            left.as_ref(),
+            &ScalarExpression::Key {
+                variable: "service".to_string(),
+            }
+        );
+        assert_eq!(
+            right.as_ref(),
+            &ScalarExpression::Literal(Literal::Integer(1))
+        );
+        assert_eq!(element_alias, "ownership_element_id");
+        assert_eq!(
+            coalesce_expressions,
+            &vec![
+                ScalarExpression::ElementId {
+                    variable: "owns".to_string(),
+                },
+                ScalarExpression::Literal(Literal::String("missing".to_string())),
+            ]
+        );
+        assert_eq!(case_alias, "owner_id");
+        let [alternative] = alternatives.as_slice() else {
+            panic!("expected one CASE alternative");
+        };
+        assert_eq!(
+            alternative.then,
+            ScalarExpression::Key {
+                variable: "person".to_string(),
+            }
+        );
+        assert_eq!(
+            else_expression.as_deref(),
+            Some(&ScalarExpression::Literal(Literal::Integer(0)))
+        );
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [
+                OrderKey {
+                    expression: OrderExpression::Scalar(ScalarExpression::ToString { expression }),
+                    direction: OrderDirection::Ascending,
+                },
+                OrderKey {
+                    expression: OrderExpression::Scalar(ScalarExpression::Coalesce { expressions }),
+                    direction: OrderDirection::Ascending,
+                },
+            ] if matches!(expression.as_ref(), ScalarExpression::Key { variable } if variable == "service")
+                && matches!(expressions.as_slice(), [
+                    ScalarExpression::ElementId { variable },
+                    ScalarExpression::Literal(Literal::String(fallback)),
+                ] if variable == "owns" && fallback == "missing")
+        ));
+    }
+
+    #[test]
+    fn rejects_identity_scalar_expressions_on_unbound_variables() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN coalesce(id(owner), 0) AS owner_id",
+        )
+        .expect_err("id() over an unbound variable should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("id() argument 'owner' is not a bound graph variable"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn rejects_relationship_type_scalar_expressions_on_nodes() {
         let error = compile_cypher(
             "MATCH (service:Service) \
@@ -10477,8 +10647,8 @@ mod tests {
                 "at least two arguments",
             ),
             (
-                "MATCH (service:Service) RETURN coalesce(id(service), 'unknown') AS owner_team",
-                "scalar function 'id'",
+                "MATCH (service:Service) RETURN coalesce(labels(service), 'unknown') AS owner_team",
+                "scalar function 'labels'",
             ),
         ] {
             let error = compile_cypher(cypher).expect_err("query should be rejected");

@@ -1519,6 +1519,10 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Property(property) => self.render_property_ref(property),
             ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
             ScalarExpression::Predicate(predicate) => self.render_predicate_expression(predicate),
+            ScalarExpression::Key { variable } => self.render_binding_key_ref(variable),
+            ScalarExpression::ElementId { variable } => {
+                self.render_binding_element_id_ref(variable)
+            }
             ScalarExpression::RelationshipType {
                 variable,
                 relationship_type,
@@ -3477,6 +3481,83 @@ relationships: []
             translation.sql().contains(
                 "ORDER BY CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL ELSE 'OWNS' END ASC"
             ),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_identity_scalar_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.relationships
+            .first_mut()
+            .expect("ownership plan should have a relationship")
+            .variable = Some("owns".to_string());
+        plan.predicates.clear();
+        plan.projections = vec![
+            Projection::Expression {
+                expression: ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Add,
+                    left: Box::new(ScalarExpression::Key {
+                        variable: "service".to_string(),
+                    }),
+                    right: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+                },
+                alias: "next_service_id".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Coalesce {
+                    expressions: vec![
+                        ScalarExpression::ElementId {
+                            variable: "owns".to_string(),
+                        },
+                        ScalarExpression::Literal(Literal::String("missing".to_string())),
+                    ],
+                },
+                alias: "ownership_element_id".to_string(),
+            },
+        ];
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::ElementId {
+                variable: "owns".to_string(),
+            },
+            operator: ComparisonOperator::StartsWith,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                "1".to_string(),
+            ))),
+        }));
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::Scalar(ScalarExpression::ToString {
+                expression: Box::new(ScalarExpression::Key {
+                    variable: "service".to_string(),
+                }),
+            }),
+            direction: OrderDirection::Ascending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("identity scalar expressions should lower");
+
+        assert!(
+            translation.sql().contains(
+                "SELECT (\"n1\".\"id\" + 1) AS \"next_service_id\", COALESCE(CAST(\"r0\".\"ownership_id\" AS VARCHAR), 'missing') AS \"ownership_element_id\""
+            ),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE CAST(\"r0\".\"ownership_id\" AS VARCHAR) LIKE '1%' ESCAPE '\\'"),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("ORDER BY CAST(\"n1\".\"id\" AS VARCHAR) ASC"),
             "{}",
             translation.sql()
         );

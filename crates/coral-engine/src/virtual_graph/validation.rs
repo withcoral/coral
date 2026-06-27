@@ -845,7 +845,9 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Predicate(predicate) => {
                 Self::collect_predicate_expression_variables(predicate, variables);
             }
-            ScalarExpression::RelationshipType { variable, .. } => {
+            ScalarExpression::Key { variable }
+            | ScalarExpression::ElementId { variable }
+            | ScalarExpression::RelationshipType { variable, .. } => {
                 variables.insert(variable.as_str());
             }
             ScalarExpression::Coalesce { expressions } => {
@@ -1173,7 +1175,9 @@ impl<'a> GraphPlanValidator<'a> {
                     path,
                 )
             }
-            ScalarExpression::RelationshipType { variable, .. } => {
+            ScalarExpression::Key { variable }
+            | ScalarExpression::ElementId { variable }
+            | ScalarExpression::RelationshipType { variable, .. } => {
                 Self::validate_variable_not_optional(variable, optional_variables, path)
             }
             ScalarExpression::Coalesce { expressions } => {
@@ -2527,6 +2531,10 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Predicate(predicate) => {
                 self.validate_predicate_expression(predicate, path)
             }
+            ScalarExpression::Key { variable } => self.validate_key_projection(variable, path),
+            ScalarExpression::ElementId { variable } => {
+                self.validate_element_id_projection(variable, path)
+            }
             ScalarExpression::RelationshipType {
                 variable,
                 relationship_type,
@@ -3346,6 +3354,58 @@ relationships:
         graph
             .validate_graph_plan(&plan)
             .expect("relationship type scalar expression projection should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_accepts_identity_scalar_expression_projections() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![
+            Projection::Expression {
+                expression: ScalarExpression::Coalesce {
+                    expressions: vec![
+                        ScalarExpression::Key {
+                            variable: "person".to_string(),
+                        },
+                        ScalarExpression::Literal(Literal::Integer(0)),
+                    ],
+                },
+                alias: "person_id".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::ToString {
+                    expression: Box::new(ScalarExpression::ElementId {
+                        variable: "person".to_string(),
+                    }),
+                },
+                alias: "person_element_id".to_string(),
+            },
+        ];
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("identity scalar expression projections should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_keyless_relationship_element_id_scalar_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Expression {
+            expression: ScalarExpression::ElementId {
+                variable: "owns".to_string(),
+            },
+            alias: "ownership_element_id".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("keyless relationship elementId scalar should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_ELEMENT_ID_PROJECTION"),
+            "{error:?}"
+        );
     }
 
     #[test]
