@@ -387,29 +387,19 @@ fn compile_static_alternative_outer_order_by(
     projection_names: &[String],
     path: &str,
 ) -> Result<Vec<OrderKey>, CoreError> {
-    let Some(order) = &final_return_clause(single_query, path)?.order else {
+    let return_clause = final_return_clause(single_query, path)?;
+    let Some(order) = &return_clause.order else {
         return Ok(Vec::new());
     };
 
-    let projection_names = projection_names
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
     let mut order_by = Vec::with_capacity(order.items.len());
     for (index, item) in order.items.iter().enumerate() {
-        let Expression::Variable(variable) = &item.expression else {
-            return Err(unsupported(
-                format!("{path}.return.order.items[{index}].expression"),
-                "static label/type alternatives with global ORDER BY currently require projected aliases",
-            ));
-        };
-        let alias = variable_name(variable);
-        if !projection_names.contains(alias.as_str()) {
-            return Err(unsupported(
-                format!("{path}.return.order.items[{index}].expression"),
-                format!("ORDER BY alias '{alias}' does not match a RETURN projection"),
-            ));
-        }
+        let alias = resolve_static_alternative_outer_order_alias(
+            &item.expression,
+            return_clause,
+            projection_names,
+            format!("{path}.return.order.items[{index}].expression"),
+        )?;
         order_by.push(OrderKey {
             expression: OrderExpression::ProjectionAlias(alias),
             direction: match item.direction {
@@ -419,6 +409,148 @@ fn compile_static_alternative_outer_order_by(
         });
     }
     Ok(order_by)
+}
+
+fn resolve_static_alternative_outer_order_alias(
+    expression: &Expression,
+    return_clause: &Return,
+    projection_names: &[String],
+    path: impl Into<String>,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    if let Expression::Variable(variable) = expression {
+        let alias = variable_name(variable);
+        if projection_names.iter().any(|name| name == &alias) {
+            return Ok(alias);
+        }
+        return Err(unsupported(
+            path,
+            format!("ORDER BY alias '{alias}' does not match a RETURN projection"),
+        ));
+    }
+
+    for (index, item) in return_clause.items.iter().enumerate() {
+        if expressions_equivalent_ignoring_span(&item.expression, expression) {
+            return projection_names.get(index).cloned().ok_or_else(|| {
+                CoreError::internal("RETURN projection names were not aligned with RETURN items")
+            });
+        }
+    }
+
+    Err(unsupported(
+        path,
+        "static label/type alternatives with global ORDER BY currently require projected aliases or projected expressions",
+    ))
+}
+
+fn expressions_equivalent_ignoring_span(left: &Expression, right: &Expression) -> bool {
+    match (left, right) {
+        (Expression::Parenthesized(left), right) => {
+            expressions_equivalent_ignoring_span(left, right)
+        }
+        (left, Expression::Parenthesized(right)) => {
+            expressions_equivalent_ignoring_span(left, right)
+        }
+        (Expression::Variable(left), Expression::Variable(right)) => {
+            variable_name(left) == variable_name(right)
+        }
+        (Expression::Parameter(left), Expression::Parameter(right)) => {
+            left.name.name == right.name.name
+        }
+        (
+            Expression::PropertyLookup {
+                base: left_base,
+                property: left_property,
+                ..
+            },
+            Expression::PropertyLookup {
+                base: right_base,
+                property: right_property,
+                ..
+            },
+        ) => {
+            left_property.name.name == right_property.name.name
+                && expressions_equivalent_ignoring_span(left_base, right_base)
+        }
+        (Expression::FunctionCall(left), Expression::FunctionCall(right)) => {
+            left.name.len() == right.name.len()
+                && left
+                    .name
+                    .iter()
+                    .zip(&right.name)
+                    .all(|(left, right)| left.name == right.name)
+                && left.distinct == right.distinct
+                && left.arguments.len() == right.arguments.len()
+                && left
+                    .arguments
+                    .iter()
+                    .zip(&right.arguments)
+                    .all(|(left, right)| expressions_equivalent_ignoring_span(left, right))
+        }
+        (
+            Expression::UnaryOp {
+                op: left_op,
+                operand: left_operand,
+                ..
+            },
+            Expression::UnaryOp {
+                op: right_op,
+                operand: right_operand,
+                ..
+            },
+        ) => {
+            left_op == right_op && expressions_equivalent_ignoring_span(left_operand, right_operand)
+        }
+        (
+            Expression::BinaryOp {
+                op: left_op,
+                lhs: left_lhs,
+                rhs: left_rhs,
+                ..
+            },
+            Expression::BinaryOp {
+                op: right_op,
+                lhs: right_lhs,
+                rhs: right_rhs,
+                ..
+            },
+        ) => {
+            left_op == right_op
+                && expressions_equivalent_ignoring_span(left_lhs, right_lhs)
+                && expressions_equivalent_ignoring_span(left_rhs, right_rhs)
+        }
+        (Expression::Literal(left), Expression::Literal(right)) => {
+            literals_equivalent_ignoring_span(left, right)
+        }
+        _ => false,
+    }
+}
+
+fn literals_equivalent_ignoring_span(left: &CypherLiteral, right: &CypherLiteral) -> bool {
+    match (left, right) {
+        (CypherLiteral::Number(left), CypherLiteral::Number(right)) => left == right,
+        (CypherLiteral::String(left), CypherLiteral::String(right)) => left.value == right.value,
+        (CypherLiteral::Boolean(left), CypherLiteral::Boolean(right)) => left == right,
+        (CypherLiteral::Null, CypherLiteral::Null) => true,
+        (CypherLiteral::List(left), CypherLiteral::List(right)) => {
+            left.elements.len() == right.elements.len()
+                && left
+                    .elements
+                    .iter()
+                    .zip(&right.elements)
+                    .all(|(left, right)| expressions_equivalent_ignoring_span(left, right))
+        }
+        (CypherLiteral::Map(left), CypherLiteral::Map(right)) => {
+            left.entries.len() == right.entries.len()
+                && left.entries.iter().zip(&right.entries).all(
+                    |((left_key, left_value), (right_key, right_value))| {
+                        left_key.name.name == right_key.name.name
+                            && expressions_equivalent_ignoring_span(left_value, right_value)
+                    },
+                )
+        }
+        _ => false,
+    }
 }
 
 fn compile_static_alternative_outer_skip_limit(
@@ -8250,15 +8382,36 @@ mod tests {
     }
 
     #[test]
-    fn rejects_static_label_alternatives_with_non_alias_global_ordering() {
-        let error = compile_cypher_query(
+    fn compiles_static_label_alternatives_with_projected_global_ordering() {
+        let query = compile_cypher_query(
             "MATCH (entity:Person|Team) \
              RETURN entity.name AS name \
              ORDER BY entity.name",
         )
-        .expect_err("non-alias global ordering should require staged planning");
+        .expect("projected global ordering should compile");
 
-        assert!(error.to_string().contains("projected aliases"));
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert_eq!(
+            union.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("name".to_string()),
+                direction: OrderDirection::Ascending,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_static_label_alternatives_with_unprojected_global_ordering() {
+        let error = compile_cypher_query(
+            "MATCH (entity:Person|Team) \
+             RETURN entity.name AS name \
+             ORDER BY entity.team",
+        )
+        .expect_err("unprojected global ordering should require staged planning");
+
+        assert!(error.to_string().contains("projected expressions"));
     }
 
     #[test]

@@ -156,7 +156,7 @@ async fn cypher_static_node_label_alternatives_apply_global_row_modifiers_after_
         &graph,
         "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
          RETURN lower(owner.name) AS owner, service.name AS service \
-         ORDER BY owner, service \
+         ORDER BY lower(owner.name), service.name \
          SKIP 1 \
          LIMIT 3",
     )
