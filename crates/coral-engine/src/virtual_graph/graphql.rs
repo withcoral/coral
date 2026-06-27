@@ -5,6 +5,7 @@ use graphql_parser::query::{
     parse_query,
 };
 use ordered_float::OrderedFloat;
+use regex::Regex;
 
 use super::declaration::Declaration;
 use super::diagnostic::Diagnostic;
@@ -828,6 +829,7 @@ fn compile_where_argument(
 enum GraphqlBooleanOperator {
     And,
     Or,
+    Xor,
     Not,
 }
 
@@ -835,6 +837,7 @@ fn graphql_boolean_operator(name: &str) -> Option<GraphqlBooleanOperator> {
     match name {
         "and" | "AND" | "_and" => Some(GraphqlBooleanOperator::And),
         "or" | "OR" | "_or" => Some(GraphqlBooleanOperator::Or),
+        "xor" | "XOR" | "_xor" => Some(GraphqlBooleanOperator::Xor),
         "not" | "NOT" | "_not" => Some(GraphqlBooleanOperator::Not),
         _ => None,
     }
@@ -853,7 +856,7 @@ fn compile_where_boolean_operator(
             let Value::List(items) = value else {
                 return Err(unsupported(
                     path,
-                    "GraphQL where and/or operators must contain a list of objects",
+                    "GraphQL where and/or/xor operators must contain a list of objects",
                 ));
             };
             if items.is_empty() {
@@ -869,12 +872,46 @@ fn compile_where_boolean_operator(
                 expression = match operator {
                     GraphqlBooleanOperator::And => append_optional_and(expression, next),
                     GraphqlBooleanOperator::Or => append_optional_or(expression, next),
+                    GraphqlBooleanOperator::Xor => unreachable!("XOR is handled separately"),
                     GraphqlBooleanOperator::Not => unreachable!("NOT is handled separately"),
                 };
             }
             expression
                 .map(Some)
                 .ok_or_else(|| unsupported(path, "GraphQL where boolean list was empty"))
+        }
+        GraphqlBooleanOperator::Xor => {
+            let Value::List(items) = value else {
+                return Err(unsupported(
+                    path,
+                    "GraphQL where and/or/xor operators must contain a list of objects",
+                ));
+            };
+            let [left_item, right_item] = items.as_slice() else {
+                return Err(unsupported(
+                    path,
+                    "GraphQL where xor operator requires exactly two objects",
+                ));
+            };
+            let left = compile_where_argument(variable, left_item, format!("{path}[0]"), context)?
+                .ok_or_else(|| {
+                    unsupported(
+                        format!("{path}[0]"),
+                        "GraphQL where xor operands must not be empty",
+                    )
+                })?;
+            let right =
+                compile_where_argument(variable, right_item, format!("{path}[1]"), context)?
+                    .ok_or_else(|| {
+                        unsupported(
+                            format!("{path}[1]"),
+                            "GraphQL where xor operands must not be empty",
+                        )
+                    })?;
+            Ok(Some(PredicateExpression::Xor {
+                left: Box::new(left),
+                right: Box::new(right),
+            }))
         }
         GraphqlBooleanOperator::Not => {
             let expression = compile_where_argument(variable, value, path.clone(), context)?
@@ -1068,6 +1105,11 @@ fn compile_where_operator(
             operator: ComparisonOperator::Contains,
             rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
         }),
+        "matches" | "regex" => Ok(PropertyPredicate {
+            property,
+            operator: ComparisonOperator::RegexMatch,
+            rhs: PredicateRhs::Literal(compile_regex_literal(value, path, context)?),
+        }),
         "in" => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::In,
@@ -1200,6 +1242,24 @@ fn compile_literal(
             Err(unsupported(path, "GraphQL value must be a scalar literal"))
         }
     }
+}
+
+fn compile_regex_literal(
+    value: &Value<'_, String>,
+    path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let literal = compile_literal(value, path.clone(), context)?;
+    let Literal::String(pattern) = &literal else {
+        return Err(unsupported(
+            path,
+            "GraphQL regex filters require a string literal",
+        ));
+    };
+    Regex::new(pattern)
+        .map_err(|error| unsupported(path, format!("invalid GraphQL regex literal: {error}")))?;
+    Ok(literal)
 }
 
 fn compile_literal_list(
@@ -1435,6 +1495,46 @@ mod tests {
     }
 
     #[test]
+    fn compiles_graphql_regex_and_xor_filters() {
+        let plan = compile_graphql(
+            r#"
+            query {
+              Service(
+                where: {
+                  xor: [
+                    { name: { matches: "^billing.*" } }
+                    { tier: { regex: "^dev$" } }
+                  ]
+                }
+              ) {
+                name
+              }
+            }
+            "#,
+        )
+        .expect("GraphQL regex and xor filters should compile");
+
+        assert!(plan.predicates.is_empty());
+        let Some(PredicateExpression::Xor { left, right }) = plan.predicate.as_ref() else {
+            panic!("expected GraphQL xor to compile as a non-conjunctive predicate");
+        };
+        assert!(matches!(
+            left.as_ref(),
+            PredicateExpression::Comparison(PropertyPredicate {
+                operator: ComparisonOperator::RegexMatch,
+                ..
+            })
+        ));
+        assert!(matches!(
+            right.as_ref(),
+            PredicateExpression::Comparison(PropertyPredicate {
+                operator: ComparisonOperator::RegexMatch,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn compiles_root_query_with_variables() {
         let variables = BTreeMap::from([
             (
@@ -1609,6 +1709,81 @@ mod tests {
     }
 
     #[test]
+    fn rejects_graphql_xor_with_wrong_arity() {
+        for query in [
+            r#"
+            {
+              Service(where: { xor: [{ name: { matches: "^billing" } }] }) {
+                name
+              }
+            }
+            "#,
+            r#"
+            {
+              Service(
+                where: {
+                  xor: [
+                    { name: { matches: "^billing" } }
+                    { tier: { eq: "prod" } }
+                    { risk: { gt: 0.5 } }
+                  ]
+                }
+              ) {
+                name
+              }
+            }
+            "#,
+        ] {
+            let error = compile_graphql(query).expect_err("bad GraphQL xor arity should fail");
+
+            assert!(
+                error.to_string().contains("requires exactly two objects"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_graphql_regex_filters() {
+        let error = compile_graphql(
+            r#"
+            {
+              Service(where: { name: { matches: "[" } }) {
+                name
+              }
+            }
+            "#,
+        )
+        .expect_err("invalid GraphQL regex should fail");
+
+        assert!(
+            error.to_string().contains("invalid GraphQL regex literal"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_non_string_graphql_regex_filters() {
+        let error = compile_graphql(
+            r"
+            {
+              Service(where: { name: { regex: 1 } }) {
+                name
+              }
+            }
+            ",
+        )
+        .expect_err("non-string GraphQL regex should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("GraphQL regex filters require a string literal"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn compiles_nested_outgoing_relationship_query_with_declaration() {
         let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
         let plan = compile_graphql_for_graph(
@@ -1730,6 +1905,48 @@ mod tests {
         assert!(matches!(
             plan.predicate,
             Some(PredicateExpression::And { .. })
+        ));
+        assert!(matches!(
+            plan.relationships.as_slice(),
+            [RelationshipPattern {
+                variable: Some(variable),
+                ..
+            }] if variable == "relationship0"
+        ));
+    }
+
+    #[test]
+    fn compiles_nested_graphql_regex_and_xor_filters_with_declaration() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph(
+            &graph,
+            r#"
+            {
+              Person(where: { name: { matches: "^Grace" } }) {
+                owner: name
+                out_OWNS(
+                  to: Service
+                  where: { name: { regex: "^(billing|deploy)" } }
+                  relationshipWhere: {
+                    xor: [
+                      { source: { regex: "^pager" } }
+                      { source: { isNull: true } }
+                    ]
+                  }
+                ) {
+                  service: name
+                  _edge { source }
+                }
+              }
+            }
+            "#,
+        )
+        .expect("nested GraphQL regex and xor filters should compile");
+
+        assert_eq!(plan.predicates.len(), 2);
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::Xor { .. })
         ));
         assert!(matches!(
             plan.relationships.as_slice(),

@@ -319,6 +319,52 @@ async fn graphql_boolean_root_filters_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_regex_and_xor_filters_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          Service(
+            where: {
+              xor: [
+                { name: { matches: "^billing.*" } }
+                { tier: { regex: "^dev$" } }
+              ]
+            }
+            orderBy: [{ field: name, direction: ASC }]
+          ) {
+            service: name
+            tier
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("GraphQL regex and xor filter query should execute");
+
+    assert!(
+        execution.translated_sql().contains("regexp_like(")
+            && execution.translated_sql().contains("NOT ("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "tier": "prod"}),
+            json!({"service": "experiments", "tier": "dev"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_nested_relationship_query_executes_against_synthetic_file_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

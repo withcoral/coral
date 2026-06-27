@@ -151,9 +151,9 @@ remain separate. The supported slice is intentionally graph-query oriented:
 - exactly one root field whose name is the graph node label;
 - scalar property selections with optional GraphQL aliases;
 - root `where` object predicates over selected node properties, including
-  `and`, `or`, and `not` boolean filter composition;
+  regex filters plus `and`, `or`, `xor`, and `not` boolean filter composition;
 - `orderBy` object or list of objects using property fields and `ASC` / `DESC`;
-- integer `limit`, `offset` / `skip`, and boolean `distinct` root arguments.
+- integer `limit`, `offset` / `skip`, and boolean `distinct` root arguments;
 - typed GraphQL variables bound through the explicit variable API in supported
   scalar literal, scalar-list `in`, enum/string name, boolean, and
   non-negative integer positions;
