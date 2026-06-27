@@ -637,6 +637,46 @@ async fn cypher_union_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_flatten_inside_union_distinct() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN service.name AS item \
+         UNION \
+         MATCH (service:Service) \
+         RETURN service.name AS item",
+    )
+    .await
+    .expect("static alternatives should flatten into uniform UNION distinct");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("SELECT DISTINCT * FROM"),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by_key(|row| row["item"].as_str().unwrap_or_default().to_string());
+    assert_eq!(
+        rows,
+        vec![
+            json!({"item": "billing-api"}),
+            json!({"item": "deployments"}),
+            json!({"item": "experiments"}),
+            json!({"item": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_union_all_preserves_duplicate_rows() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
