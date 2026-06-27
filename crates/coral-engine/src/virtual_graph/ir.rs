@@ -151,6 +151,16 @@ pub enum ScalarExpression {
         /// Inner expression to cast.
         expression: Box<ScalarExpression>,
     },
+    /// Convert a scalar expression to lowercase.
+    ToLower {
+        /// Inner expression to normalize.
+        expression: Box<ScalarExpression>,
+    },
+    /// Convert a scalar expression to uppercase.
+    ToUpper {
+        /// Inner expression to normalize.
+        expression: Box<ScalarExpression>,
+    },
 }
 
 /// Projection in the shared graph IR.

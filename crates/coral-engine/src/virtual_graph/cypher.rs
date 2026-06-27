@@ -1096,6 +1096,12 @@ fn compile_order_expression(
         Expression::FunctionCall(function) if is_to_string_function(function) => {
             compile_to_string_order_expression(function, path, context)
         }
+        Expression::FunctionCall(function) if is_to_lower_function(function) => {
+            compile_to_lower_order_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_to_upper_function(function) => {
+            compile_to_upper_order_expression(function, path, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             aggregate_order_expression_for_projection(function, projections, path, context)
         }
@@ -1369,6 +1375,12 @@ fn compile_projection(
         Expression::FunctionCall(function) if is_to_string_function(function) => {
             compile_to_string_projection(function, item, path, context)
         }
+        Expression::FunctionCall(function) if is_to_lower_function(function) => {
+            compile_to_lower_projection(function, item, path, context)
+        }
+        Expression::FunctionCall(function) if is_to_upper_function(function) => {
+            compile_to_upper_projection(function, item, path, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             compile_aggregate_projection(function, item, path, context)
         }
@@ -1451,6 +1463,46 @@ fn compile_to_string_projection(
     })
 }
 
+fn compile_to_lower_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_to_lower_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "toLower".to_string(), variable_name),
+    })
+}
+
+fn compile_to_upper_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_to_upper_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "toUpper".to_string(), variable_name),
+    })
+}
+
 fn compile_coalesce_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -1479,20 +1531,51 @@ fn compile_to_string_scalar_expression(
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::ToString {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "toString", context,
+        )?),
+    })
+}
+
+fn compile_to_lower_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::ToLower {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "toLower", context,
+        )?),
+    })
+}
+
+fn compile_to_upper_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::ToUpper {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "toUpper", context,
+        )?),
+    })
+}
+
+fn compile_single_scalar_function_argument(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    function_name: &str,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
     let [argument] = function.arguments.as_slice() else {
         return Err(unsupported(
             format!("{path}.arguments"),
-            "toString() requires exactly one argument",
+            format!("{function_name}() requires exactly one argument"),
         ));
     };
-    Ok(ScalarExpression::ToString {
-        expression: Box::new(compile_scalar_expression(
-            argument,
-            format!("{path}.arguments[0]"),
-            context,
-        )?),
-    })
+    compile_scalar_expression(argument, format!("{path}.arguments[0]"), context)
 }
 
 fn compile_scalar_expression(
@@ -1515,6 +1598,12 @@ fn compile_scalar_expression(
         Expression::FunctionCall(function) if is_to_string_function(function) => {
             compile_to_string_scalar_expression(function, path, context)
         }
+        Expression::FunctionCall(function) if is_to_lower_function(function) => {
+            compile_to_lower_scalar_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_to_upper_function(function) => {
+            compile_to_upper_scalar_expression(function, path, context)
+        }
         Expression::FunctionCall(function) => Err(unsupported(
             path,
             format!(
@@ -1524,7 +1613,7 @@ fn compile_scalar_expression(
         )),
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, nested coalesce() expressions, or nested toString() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toLower(), or toUpper() expressions",
         )),
     }
 }
@@ -1709,6 +1798,22 @@ fn compile_to_string_order_expression(
     compile_to_string_scalar_expression(function, path, context).map(OrderExpression::Scalar)
 }
 
+fn compile_to_lower_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_to_lower_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
+fn compile_to_upper_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_to_upper_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
 fn compile_optional_predicate_scalar_expression(
     expression: &Expression,
     path: impl Into<String>,
@@ -1724,6 +1829,12 @@ fn compile_optional_predicate_scalar_expression(
         )),
         Expression::FunctionCall(function) if is_to_string_function(function) => Ok(Some(
             compile_to_string_scalar_expression(function, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_to_lower_function(function) => Ok(Some(
+            compile_to_lower_scalar_expression(function, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_to_upper_function(function) => Ok(Some(
+            compile_to_upper_scalar_expression(function, path, context)?,
         )),
         _ => Ok(None),
     }
@@ -1747,6 +1858,16 @@ fn compile_scalar_predicate_rhs(
                 compile_to_string_scalar_expression(function, path, context)?,
             ))
         }
+        Expression::FunctionCall(function) if is_to_lower_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_to_lower_scalar_expression(function, path, context)?,
+            ))
+        }
+        Expression::FunctionCall(function) if is_to_upper_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_to_upper_scalar_expression(function, path, context)?,
+            ))
+        }
         Expression::PropertyLookup { .. } => Ok(ScalarPredicateRhs::Expression(
             ScalarExpression::Property(compile_property_ref(expression, path)?),
         )),
@@ -1755,7 +1876,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, nested coalesce() expressions, or nested toString() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toLower(), or toUpper() expressions",
         )),
     }
 }
@@ -2016,6 +2137,20 @@ fn is_to_string_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("toString")
+    )
+}
+
+fn is_to_lower_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("toLower")
+    )
+}
+
+fn is_to_upper_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("toUpper")
     )
 }
 
@@ -4870,6 +5005,52 @@ mod tests {
                 direction: OrderDirection::Ascending,
             }]
         );
+    }
+
+    #[test]
+    fn compiles_string_case_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE toLower(service.name) CONTAINS 'api' \
+             RETURN toUpper(service.tier) AS tier_upper \
+             ORDER BY toLower(service.name)",
+        )
+        .expect("string case scalar expressions should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::ToLower {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    })),
+                },
+                operator: ComparisonOperator::Contains,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                    "api".to_string()
+                ))),
+            }))
+        );
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: ScalarExpression::ToUpper {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    })),
+                },
+                alias: "tier_upper".to_string(),
+            }]
+        );
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::ToLower { .. }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
     }
 
     #[test]

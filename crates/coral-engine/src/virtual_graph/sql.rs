@@ -1379,6 +1379,14 @@ impl<'a> Lowerer<'a> {
                 "CAST({} AS VARCHAR)",
                 self.render_scalar_expression(expression)?
             )),
+            ScalarExpression::ToLower { expression } => Ok(format!(
+                "LOWER({})",
+                self.render_scalar_expression(expression)?
+            )),
+            ScalarExpression::ToUpper { expression } => Ok(format!(
+                "UPPER({})",
+                self.render_scalar_expression(expression)?
+            )),
         }
     }
 }

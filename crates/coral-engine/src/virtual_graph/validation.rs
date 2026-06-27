@@ -794,7 +794,9 @@ impl<'a> GraphPlanValidator<'a> {
                     Self::collect_scalar_expression_variables(expression, variables);
                 }
             }
-            ScalarExpression::ToString { expression } => {
+            ScalarExpression::ToString { expression }
+            | ScalarExpression::ToLower { expression }
+            | ScalarExpression::ToUpper { expression } => {
                 Self::collect_scalar_expression_variables(expression, variables);
             }
         }
@@ -1001,7 +1003,9 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 Ok(())
             }
-            ScalarExpression::ToString { expression } => {
+            ScalarExpression::ToString { expression }
+            | ScalarExpression::ToLower { expression }
+            | ScalarExpression::ToUpper { expression } => {
                 Self::validate_scalar_expression_not_optional(
                     expression,
                     optional_variables,
@@ -2085,7 +2089,9 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 Ok(())
             }
-            ScalarExpression::ToString { expression } => {
+            ScalarExpression::ToString { expression }
+            | ScalarExpression::ToLower { expression }
+            | ScalarExpression::ToUpper { expression } => {
                 self.validate_scalar_expression(expression, format!("{path}.expression"))
             }
         }
