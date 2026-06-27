@@ -246,6 +246,9 @@ fn compile_multi_part(
     if let Some(plan) = compile_terminal_with_projection(query, context)? {
         return Ok(plan);
     }
+    if let Some(plan) = compile_terminal_with_graph_modifiers(query, context)? {
+        return Ok(plan);
+    }
     compile_transparent_multi_part(query, context)
 }
 
@@ -293,6 +296,104 @@ fn with_requires_terminal_projection(with: &With) -> bool {
     with.items
         .iter()
         .any(|item| !matches!(&item.expression, Expression::Variable(_)))
+}
+
+fn compile_terminal_with_graph_modifiers(
+    query: &MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<GraphPlan>, CoreError> {
+    let terminal_modifier_candidate = query
+        .parts
+        .iter()
+        .any(|part| with_has_row_modifiers(&part.with));
+    if !terminal_modifier_candidate {
+        return Ok(None);
+    }
+    let [part] = query.parts.as_slice() else {
+        return Err(unsupported(
+            "query.parts",
+            "WITH ORDER BY, SKIP, and LIMIT over graph variables currently support exactly one MATCH ... WITH ... RETURN query part",
+        ));
+    };
+    if with_requires_terminal_projection(&part.with) {
+        return Ok(None);
+    }
+    if part.with.distinct {
+        return Err(unsupported(
+            "parts[0].with.distinct",
+            "WITH DISTINCT over graph variables requires staged query planning and is not supported yet",
+        ));
+    }
+    if !part.updating_clauses.is_empty() {
+        return Err(unsupported(
+            "parts[0].updating_clauses",
+            "write clauses are not supported by Coral virtual graphs",
+        ));
+    }
+    if !query.final_part.reading_clauses.is_empty() {
+        return Err(unsupported(
+            "final_part.reading_clauses",
+            "WITH ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning and are not supported yet",
+        ));
+    }
+
+    let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
+    if with_has_row_modifiers(&part.with)
+        && (return_clause.order.is_some()
+            || return_clause.skip.is_some()
+            || return_clause.limit.is_some())
+    {
+        return Err(unsupported(
+            "final_part.return",
+            "terminal WITH and RETURN cannot both define ORDER BY, SKIP, or LIMIT without staged query planning",
+        ));
+    }
+
+    let mut plan = GraphPlan::default();
+    compile_reading_clauses_into(&part.reading_clauses, "parts[0].match", &mut plan, context)?;
+    if let Some(predicate) =
+        apply_transparent_with_scope(&part.with, &mut plan, "parts[0].with", context)?
+    {
+        append_predicate_expression(predicate, &mut plan);
+    }
+    apply_terminal_graph_with_modifiers(&part.with, &mut plan, context)?;
+    compile_return(return_clause, &mut plan, context)?;
+    Ok(Some(plan))
+}
+
+fn with_has_row_modifiers(with: &With) -> bool {
+    with.order.is_some() || with.skip.is_some() || with.limit.is_some()
+}
+
+fn apply_terminal_graph_with_modifiers(
+    with: &With,
+    plan: &mut GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<(), CoreError> {
+    if let Some(order) = &with.order {
+        for (index, item) in order.items.iter().enumerate() {
+            plan.order_by.push(OrderKey {
+                expression: compile_order_expression(
+                    &item.expression,
+                    &[],
+                    plan,
+                    context,
+                    format!("with.order.items[{index}].expression"),
+                )?,
+                direction: match item.direction {
+                    Some(SortDirection::Descending) => OrderDirection::Descending,
+                    Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
+                },
+            });
+        }
+    }
+    if let Some(skip) = &with.skip {
+        plan.skip = Some(compile_skip(skip, "with.skip", context)?);
+    }
+    if let Some(limit) = &with.limit {
+        plan.limit = Some(compile_limit(limit, "with.limit", context)?);
+    }
+    Ok(())
 }
 
 fn compile_terminal_with_clause(
@@ -597,6 +698,16 @@ fn validate_transparent_with(
             "WITH ORDER BY, SKIP, and LIMIT require staged query planning and are not supported yet",
         ));
     }
+    apply_transparent_with_scope(with, plan, path, context)
+}
+
+fn apply_transparent_with_scope(
+    with: &With,
+    plan: &mut GraphPlan,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    let path = path.into();
     if with.star {
         if !with.items.is_empty() {
             return Err(unsupported(
@@ -6302,6 +6413,93 @@ mod tests {
     }
 
     #[test]
+    fn compiles_terminal_with_graph_variable_modifiers() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH service AS s \
+             ORDER BY s.risk DESC \
+             SKIP 1 \
+             LIMIT 2 \
+             RETURN s.name AS service, s.risk AS risk",
+        )
+        .expect("terminal WITH graph variable modifiers should compile");
+
+        assert_eq!(
+            plan.nodes,
+            vec![NodePattern {
+                variable: "s".to_string(),
+                label: "Service".to_string(),
+            }]
+        );
+        assert_eq!(plan.predicates, Vec::new());
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "s".to_string(),
+                    property: "risk".to_string(),
+                }),
+                direction: OrderDirection::Descending,
+            }]
+        );
+        assert_eq!(plan.skip, Some(1));
+        assert_eq!(plan.limit, Some(2));
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "s".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "s".to_string(),
+                        property: "risk".to_string(),
+                    },
+                    alias: Some("risk".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_terminal_with_star_modifiers() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH * \
+             ORDER BY service.risk DESC \
+             LIMIT 1 \
+             RETURN service.name AS service",
+        )
+        .expect("terminal WITH * modifiers should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "risk".to_string(),
+                }),
+                direction: OrderDirection::Descending,
+            }]
+        );
+        assert_eq!(plan.limit, Some(1));
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("service".to_string()),
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_id_and_type_projections() {
         let plan = compile_cypher(
             "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
@@ -9542,7 +9740,9 @@ mod tests {
     fn rejects_non_transparent_with_boundaries() {
         assert_unsupported("MATCH (service:Service) WITH DISTINCT service RETURN service.name");
         assert_unsupported("MATCH (service:Service) WITH *, service.name AS name RETURN name");
-        assert_unsupported("MATCH (service:Service) WITH service LIMIT 1 RETURN service.name");
+        assert_unsupported(
+            "MATCH (service:Service) WITH service LIMIT 1 MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN target.name",
+        );
         assert_unsupported(
             "MATCH (person:Person)-[:OWNS]->(service:Service) WITH service RETURN service.name",
         );

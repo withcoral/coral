@@ -138,8 +138,8 @@ The supported foundation subset is intentionally narrow:
   identity `ORDER BY`, direct aggregate `ORDER BY` expressions that match
   projected aggregates, and projection alias `ORDER BY` including aggregate
   aliases;
-- transparent `WITH` pass-through, graph-variable aliasing, and terminal
-  `WITH` projection subsets;
+- transparent `WITH` pass-through, graph-variable aliasing, terminal
+  graph-variable `WITH` row modifiers, and terminal `WITH` projection subsets;
 - integer `SKIP` and `LIMIT`.
 
 Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.

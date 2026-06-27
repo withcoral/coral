@@ -4461,6 +4461,69 @@ async fn cypher_terminal_with_modifiers_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_terminal_with_graph_variable_modifiers_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WITH service AS s \
+         ORDER BY s.risk DESC \
+         SKIP 1 \
+         LIMIT 2 \
+         RETURN s.name AS service, s.risk AS risk",
+    )
+    .await
+    .expect("terminal WITH graph variable modifiers should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ORDER BY \"n0\".\"risk_score\" DESC"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "risk": 0.9}),
+            json!({"service": "deployments", "risk": 0.5}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_terminal_with_star_modifiers_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WITH * \
+         ORDER BY service.risk DESC \
+         LIMIT 1 \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect("terminal WITH * modifiers should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "legacy-sync"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_count_property_projection_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
