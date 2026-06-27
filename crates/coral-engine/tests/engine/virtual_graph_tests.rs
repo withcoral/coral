@@ -605,6 +605,76 @@ async fn cypher_optional_match_inline_property_maps_execute_as_join_predicates()
 }
 
 #[tokio::test]
+async fn cypher_chained_optional_matches_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+         OPTIONAL MATCH (owner:Person)-[:OWNS]->(dependency) \
+         RETURN service.name AS service, dependency.name AS dependency, owner.name AS dependency_owner \
+         ORDER BY service, dependency, dependency_owner",
+    )
+    .await
+    .expect("chained OPTIONAL MATCH query should execute");
+
+    assert_eq!(execution.translated_sql().matches(" LEFT JOIN ").count(), 4);
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dependency": "deployments", "dependency_owner": "Grace Hopper"}),
+            json!({"service": "billing-api", "dependency": "experiments", "dependency_owner": "Katherine Johnson"}),
+            json!({"service": "deployments", "dependency": "experiments", "dependency_owner": "Katherine Johnson"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_chained_optional_match_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+         OPTIONAL MATCH (owner:Person {team: 'analytics'})-[:OWNS]->(dependency) \
+         RETURN service.name AS service, dependency.name AS dependency, owner.name AS dependency_owner \
+         ORDER BY service, dependency, dependency_owner",
+    )
+    .await
+    .expect("chained OPTIONAL MATCH predicate query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LEFT JOIN ("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dependency": "deployments"}),
+            json!({"service": "billing-api", "dependency": "experiments", "dependency_owner": "Katherine Johnson"}),
+            json!({"service": "deployments", "dependency": "experiments", "dependency_owner": "Katherine Johnson"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_optional_match_false_where_preserves_left_rows() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
