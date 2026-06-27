@@ -4271,6 +4271,11 @@ fn compile_aggregate_projection(
             ),
         )
     })?;
+    reject_unsupported_distinct_aggregate(
+        function_kind,
+        function.distinct,
+        format!("{path}.expression.distinct"),
+    )?;
     let target = compile_function_aggregate_target(function, function_kind, &path, context)?;
     Ok(Projection::Aggregate {
         function: function_kind,
@@ -4385,6 +4390,28 @@ fn compile_aggregate_function(function: &FunctionInvocation) -> Option<Aggregate
     } else {
         None
     }
+}
+
+fn reject_unsupported_distinct_aggregate(
+    function: AggregateFunction,
+    distinct: bool,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    if distinct
+        && matches!(
+            function,
+            AggregateFunction::StdDev | AggregateFunction::StdDevP
+        )
+    {
+        return Err(unsupported(
+            path,
+            format!(
+                "{}(DISTINCT property) is not supported because DataFusion does not execute distinct standard-deviation aggregates",
+                aggregate_function_name(function)
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn aggregate_function_name(function: AggregateFunction) -> &'static str {
@@ -11458,7 +11485,7 @@ mod tests {
         let plan = compile_cypher(
             "MATCH (service:Service) \
              RETURN stDev(service.risk) AS sample_risk, \
-                    stDevP(DISTINCT service.risk) AS population_risk",
+                    stDevP(service.risk) AS population_risk",
         )
         .expect("statistical aggregate query should compile");
 
@@ -11480,10 +11507,28 @@ mod tests {
                         variable: "service".to_string(),
                         property: "risk".to_string(),
                     }),
-                    distinct: true,
+                    distinct: false,
                     alias: "population_risk".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn rejects_distinct_standard_deviation_aggregate_projections() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN stDevP(DISTINCT service.risk) AS population_risk",
+        )
+        .expect_err("distinct standard-deviation aggregate should be rejected");
+
+        assert!(
+            error.to_string().contains("UNSUPPORTED_CYPHER"),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("stDevP(DISTINCT property)"),
+            "{error:?}"
         );
     }
 

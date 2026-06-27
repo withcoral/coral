@@ -5321,10 +5321,14 @@ async fn cypher_distinct_standard_deviation_rejects_before_execution() {
          RETURN stDevP(DISTINCT service.risk) AS population_risk",
     )
     .await
-    .expect_err("distinct standard deviation should fail validation before execution");
+    .expect_err("distinct standard deviation should fail before execution");
 
     assert!(
-        error.to_string().contains("UNSUPPORTED_AGGREGATION"),
+        error.to_string().contains("UNSUPPORTED_CYPHER"),
+        "{error:?}"
+    );
+    assert!(
+        error.to_string().contains("stDevP(DISTINCT property)"),
         "{error:?}"
     );
 }
