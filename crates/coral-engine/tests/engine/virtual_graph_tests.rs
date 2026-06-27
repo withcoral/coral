@@ -5607,6 +5607,30 @@ async fn cypher_identity_scalar_expressions_execute_against_synthetic_sources() 
 }
 
 #[tokio::test]
+async fn cypher_catalog_typed_scalar_type_errors_reject_before_sql_execution() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN coalesce(id(service), 'unknown') AS service_id",
+    )
+    .await
+    .expect_err("catalog-typed scalar type mismatch should fail before SQL execution");
+
+    assert!(
+        error.to_string().contains("INVALID_SCALAR_TYPE"),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("coalesce"), "{error:?}");
+}
+
+#[tokio::test]
 async fn cypher_element_id_scalar_expressions_preserve_optional_nulls() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

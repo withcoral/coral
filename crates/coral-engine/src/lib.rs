@@ -226,7 +226,8 @@ impl CoralQuery {
         plan: &GraphPlan,
     ) -> Result<GraphExecution, CoreError> {
         let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
-        graph.validate_against_catalog(&query_runtime.catalog_info(None))?;
+        let catalog = query_runtime.catalog_info(None);
+        graph.validate_graph_plan_against_catalog(plan, &catalog)?;
         let translation = graph.lower_graph_plan(plan)?;
         let execution = query_runtime.execute_sql(translation.sql()).await?;
         Ok(GraphExecution::new(translation, execution))
@@ -248,7 +249,8 @@ impl CoralQuery {
         plan: &GraphPlan,
     ) -> Result<GraphQueryPlan, CoreError> {
         let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
-        graph.validate_against_catalog(&query_runtime.catalog_info(None))?;
+        let catalog = query_runtime.catalog_info(None);
+        graph.validate_graph_plan_against_catalog(plan, &catalog)?;
         let translation = graph.lower_graph_plan(plan)?;
         let query_plan = query_runtime.explain_sql(translation.sql()).await?;
         Ok(GraphQueryPlan::new(translation, query_plan))

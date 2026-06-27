@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::declaration::{Declaration, Node, Relationship};
+use super::declaration::{Declaration, Node, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
@@ -10,7 +10,7 @@ use super::ir::{
     PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
     ScalarPredicate, ScalarPredicateRhs,
 };
-use crate::CoreError;
+use crate::{CatalogInfo, CoreError};
 
 macro_rules! unary_scalar_expression_pattern {
     () => {
@@ -84,7 +84,18 @@ impl Declaration {
         &'a self,
         plan: &'a GraphPlan,
     ) -> Result<ValidatedGraphPlan<'a>, CoreError> {
-        GraphPlanValidator::new(self, plan).validate()
+        GraphPlanValidator::new(self, plan, None).validate()
+    }
+
+    pub(crate) fn validate_graph_plan_against_catalog(
+        &self,
+        plan: &GraphPlan,
+        catalog: &CatalogInfo,
+    ) -> Result<(), CoreError> {
+        self.validate_against_catalog(catalog)?;
+        GraphPlanValidator::new(self, plan, Some(catalog))
+            .validate()
+            .map(|_| ())
     }
 }
 
@@ -165,15 +176,17 @@ impl<'a> ValidatedBinding<'a> {
 struct GraphPlanValidator<'a> {
     graph: &'a Declaration,
     plan: &'a GraphPlan,
+    catalog: Option<&'a CatalogInfo>,
     bindings: BTreeMap<&'a str, ValidatedBinding<'a>>,
     relationship_mappings: Vec<&'a Relationship>,
 }
 
 impl<'a> GraphPlanValidator<'a> {
-    fn new(graph: &'a Declaration, plan: &'a GraphPlan) -> Self {
+    fn new(graph: &'a Declaration, plan: &'a GraphPlan, catalog: Option<&'a CatalogInfo>) -> Self {
         Self {
             graph,
             plan,
+            catalog,
             bindings: BTreeMap::new(),
             relationship_mappings: Vec::with_capacity(plan.relationships.len()),
         }
@@ -1747,19 +1760,19 @@ impl<'a> GraphPlanValidator<'a> {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
                     .into_core_error());
                 }
                 Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
-                Self::validate_literal_predicate(path, predicate.operator, literal)
+                Self::validate_literal_predicate(path.clone(), predicate.operator, literal)
             }
             PredicateRhs::Property(property) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
                     .into_core_error());
@@ -1774,7 +1787,7 @@ impl<'a> GraphPlanValidator<'a> {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
                     .into_core_error());
@@ -1789,7 +1802,7 @@ impl<'a> GraphPlanValidator<'a> {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
                     .into_core_error());
@@ -1804,14 +1817,21 @@ impl<'a> GraphPlanValidator<'a> {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "literal lists are only supported with IN predicates",
                     )
                     .into_core_error());
                 }
                 Ok(())
             }
-        }
+        }?;
+        let lhs_type = self.property_ref_scalar_type(&predicate.property)?;
+        self.validate_predicate_rhs_operand_types(
+            predicate.operator,
+            lhs_type,
+            &predicate.rhs,
+            &path,
+        )
     }
 
     fn validate_scalar_predicate(
@@ -1820,35 +1840,36 @@ impl<'a> GraphPlanValidator<'a> {
         path: impl Into<String>,
     ) -> Result<(), CoreError> {
         let path = path.into();
-        self.validate_scalar_expression(&predicate.lhs, format!("{path}.lhs"))?;
+        let lhs_type = self.infer_scalar_expression_type(&predicate.lhs, format!("{path}.lhs"))?;
         match &predicate.rhs {
             ScalarPredicateRhs::Expression(expression) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
                     .into_core_error());
                 }
-                self.validate_scalar_expression(expression, format!("{path}.rhs"))?;
-                if let ScalarExpression::Literal(literal) = expression {
-                    Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
-                    Self::validate_literal_predicate(path, predicate.operator, literal)
-                } else {
-                    Ok(())
-                }
+                let rhs_type =
+                    self.infer_scalar_expression_type(expression, format!("{path}.rhs"))?;
+                Self::validate_scalar_predicate_operand_types(
+                    predicate.operator,
+                    lhs_type,
+                    rhs_type,
+                    &path,
+                )
             }
-            ScalarPredicateRhs::List(_) => {
+            ScalarPredicateRhs::List(literals) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "literal lists are only supported with IN predicates",
                     )
                     .into_core_error());
                 }
-                Ok(())
+                Self::validate_scalar_in_list_operand_types(lhs_type, literals, &path)
             }
         }
     }
@@ -1865,19 +1886,19 @@ impl<'a> GraphPlanValidator<'a> {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
                     .into_core_error());
                 }
                 Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
-                Self::validate_literal_predicate(path, predicate.operator, literal)
+                Self::validate_literal_predicate(path.clone(), predicate.operator, literal)
             }
             PredicateRhs::Property(property) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
                     .into_core_error());
@@ -1891,7 +1912,7 @@ impl<'a> GraphPlanValidator<'a> {
                 ) {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "string predicates require a string literal right-hand side",
                     )
                     .into_core_error());
@@ -1902,7 +1923,7 @@ impl<'a> GraphPlanValidator<'a> {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
                     .into_core_error());
@@ -1916,7 +1937,7 @@ impl<'a> GraphPlanValidator<'a> {
                 ) {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "string predicates require a string literal right-hand side",
                     )
                     .into_core_error());
@@ -1925,7 +1946,7 @@ impl<'a> GraphPlanValidator<'a> {
             }
             PredicateRhs::ElementId { .. } => Err(Diagnostic::new(
                 "INVALID_PREDICATE_OPERAND",
-                path,
+                path.clone(),
                 "id() predicates cannot compare against elementId(); compare id() to mapped keys or elementId() to string values",
             )
             .into_core_error()),
@@ -1933,14 +1954,21 @@ impl<'a> GraphPlanValidator<'a> {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "literal lists are only supported with IN predicates",
                     )
                     .into_core_error());
                 }
                 Ok(())
             }
-        }
+        }?;
+        let lhs_type = self.key_scalar_type(&predicate.variable)?;
+        self.validate_predicate_rhs_operand_types(
+            predicate.operator,
+            lhs_type,
+            &predicate.rhs,
+            &path,
+        )
     }
 
     fn validate_element_id_predicate(
@@ -1955,20 +1983,20 @@ impl<'a> GraphPlanValidator<'a> {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
                     .into_core_error());
                 }
                 Self::validate_element_id_literal(path.clone(), literal)?;
                 Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
-                Self::validate_literal_predicate(path, predicate.operator, literal)
+                Self::validate_literal_predicate(path.clone(), predicate.operator, literal)
             }
             PredicateRhs::ElementId { variable } => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
                     .into_core_error());
@@ -1982,7 +2010,7 @@ impl<'a> GraphPlanValidator<'a> {
                 ) {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "string predicates require a string literal right-hand side",
                     )
                     .into_core_error());
@@ -1993,7 +2021,7 @@ impl<'a> GraphPlanValidator<'a> {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "literal lists are only supported with IN predicates",
                     )
                     .into_core_error());
@@ -2007,7 +2035,7 @@ impl<'a> GraphPlanValidator<'a> {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
                     .into_core_error());
@@ -2021,7 +2049,7 @@ impl<'a> GraphPlanValidator<'a> {
                 ) {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
-                        path,
+                        path.clone(),
                         "string predicates require a string literal right-hand side",
                     )
                     .into_core_error());
@@ -2030,11 +2058,17 @@ impl<'a> GraphPlanValidator<'a> {
             }
             PredicateRhs::Key { .. } => Err(Diagnostic::new(
                 "INVALID_PREDICATE_OPERAND",
-                path,
+                path.clone(),
                 "elementId() predicates cannot compare against id(); compare elementId() to string values or id() to mapped keys",
             )
             .into_core_error()),
-        }
+        }?;
+        self.validate_predicate_rhs_operand_types(
+            predicate.operator,
+            ScalarType::String,
+            &predicate.rhs,
+            &path,
+        )
     }
 
     fn validate_element_id_literal(
@@ -2520,103 +2554,186 @@ impl<'a> GraphPlanValidator<'a> {
         expression: &ScalarExpression,
         path: impl Into<String>,
     ) -> Result<(), CoreError> {
-        let path = path.into();
-        if let Some(expression) = Self::unary_scalar_expression_operand(expression) {
-            return self.validate_scalar_expression(expression, format!("{path}.expression"));
-        }
+        self.infer_scalar_expression_type(expression, path)
+            .map(|_| ())
+    }
 
+    fn infer_scalar_expression_type(
+        &self,
+        expression: &ScalarExpression,
+        path: impl Into<String>,
+    ) -> Result<ScalarType, CoreError> {
+        let path = path.into();
         match expression {
-            ScalarExpression::Property(property) => self.validate_property_ref(property, path),
-            ScalarExpression::Literal(_) => Ok(()),
-            ScalarExpression::Predicate(predicate) => {
-                self.validate_predicate_expression(predicate, path)
+            ScalarExpression::Property(_)
+            | ScalarExpression::Literal(_)
+            | ScalarExpression::Predicate(_)
+            | ScalarExpression::Key { .. }
+            | ScalarExpression::ElementId { .. }
+            | ScalarExpression::RelationshipType { .. } => {
+                self.infer_atomic_scalar_type(expression, &path)
             }
-            ScalarExpression::Key { variable } => self.validate_key_projection(variable, path),
+            ScalarExpression::Coalesce { expressions } => {
+                self.infer_coalesce_scalar_type(expressions, &path)
+            }
+            ScalarExpression::NullIf { expression, value } => {
+                self.infer_null_if_scalar_type(expression, value, &path)
+            }
+            ScalarExpression::Case {
+                alternatives,
+                else_expression,
+            } => self.infer_case_scalar_type(alternatives, else_expression.as_deref(), &path),
+            _ => self.infer_scalar_function_type(expression, &path),
+        }
+    }
+
+    fn infer_atomic_scalar_type(
+        &self,
+        expression: &ScalarExpression,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        match expression {
+            ScalarExpression::Property(property) => {
+                self.validate_property_ref(property, path)?;
+                self.property_ref_scalar_type(property)
+            }
+            ScalarExpression::Literal(literal) => Ok(literal_scalar_type(literal)),
+            ScalarExpression::Predicate(predicate) => {
+                self.validate_predicate_expression(predicate, path)?;
+                Ok(ScalarType::Boolean)
+            }
+            ScalarExpression::Key { variable } => {
+                self.validate_key_projection(variable, path)?;
+                self.key_scalar_type(variable)
+            }
             ScalarExpression::ElementId { variable } => {
-                self.validate_element_id_projection(variable, path)
+                self.validate_element_id_projection(variable, path)?;
+                Ok(ScalarType::String)
             }
             ScalarExpression::RelationshipType {
                 variable,
                 relationship_type,
-            } => self.validate_relationship_type_projection(variable, relationship_type, path),
-            ScalarExpression::Coalesce { expressions } => {
-                if expressions.len() < 2 {
-                    return Err(Diagnostic::new(
-                        "INVALID_SCALAR_EXPRESSION",
-                        path,
-                        "coalesce expressions require at least two arguments",
-                    )
-                    .into_core_error());
-                }
-                for (index, expression) in expressions.iter().enumerate() {
-                    self.validate_scalar_expression(expression, format!("{path}[{index}]"))?;
-                }
-                Ok(())
+            } => {
+                self.validate_relationship_type_projection(variable, relationship_type, path)?;
+                Ok(ScalarType::String)
             }
-            ScalarExpression::NullIf { expression, value } => {
-                self.validate_scalar_expression(expression, format!("{path}.expression"))?;
-                self.validate_scalar_expression(value, format!("{path}.value"))
+            _ => unreachable!("non-atomic scalar expression reached atomic type inference"),
+        }
+    }
+
+    fn infer_null_if_scalar_type(
+        &self,
+        expression: &ScalarExpression,
+        value: &ScalarExpression,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type =
+            self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+        let value_type = self.infer_scalar_expression_type(value, format!("{path}.value"))?;
+        Self::validate_compatible_scalar_types(
+            expression_type,
+            value_type,
+            path,
+            "nullIf arguments",
+        )?;
+        Ok(expression_type)
+    }
+
+    fn infer_scalar_function_type(
+        &self,
+        expression: &ScalarExpression,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        match expression {
+            ScalarExpression::ToString { expression }
+            | ScalarExpression::ToStringOrNull { expression } => {
+                self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+                Ok(ScalarType::String)
             }
-            unary_scalar_expression_pattern!() => {
-                unreachable!("unary scalar expressions handled above")
+            ScalarExpression::ToInteger { expression }
+            | ScalarExpression::ToIntegerOrNull { expression } => {
+                self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+                Ok(ScalarType::Integer)
+            }
+            ScalarExpression::ToFloat { expression }
+            | ScalarExpression::ToFloatOrNull { expression } => {
+                self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+                Ok(ScalarType::Float)
+            }
+            ScalarExpression::ToBoolean { expression }
+            | ScalarExpression::ToBooleanOrNull { expression } => {
+                self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+                Ok(ScalarType::Boolean)
+            }
+            ScalarExpression::ToLower { expression }
+            | ScalarExpression::ToUpper { expression }
+            | ScalarExpression::Trim { expression }
+            | ScalarExpression::LTrim { expression }
+            | ScalarExpression::RTrim { expression }
+            | ScalarExpression::Reverse { expression } => {
+                self.infer_string_unary_scalar_type(expression, path)
+            }
+            ScalarExpression::CharacterLength { expression } => {
+                let expression_type =
+                    self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+                Self::require_string_compatible_type(
+                    expression_type,
+                    format!("{path}.expression"),
+                    "character length",
+                )?;
+                Ok(ScalarType::Integer)
+            }
+            ScalarExpression::Abs { expression }
+            | ScalarExpression::Ceil { expression }
+            | ScalarExpression::Floor { expression }
+            | ScalarExpression::Sqrt { expression }
+            | ScalarExpression::Sign { expression }
+            | ScalarExpression::Exp { expression }
+            | ScalarExpression::Log { expression }
+            | ScalarExpression::Log10 { expression }
+            | ScalarExpression::Sin { expression }
+            | ScalarExpression::Cos { expression }
+            | ScalarExpression::Tan { expression }
+            | ScalarExpression::Cot { expression }
+            | ScalarExpression::Asin { expression }
+            | ScalarExpression::Acos { expression }
+            | ScalarExpression::Atan { expression }
+            | ScalarExpression::Degrees { expression }
+            | ScalarExpression::Radians { expression }
+            | ScalarExpression::Negate { expression } => {
+                self.infer_numeric_unary_scalar_type(expression, path)
             }
             ScalarExpression::Round { expression, places } => {
-                self.validate_scalar_expression(expression, format!("{path}.expression"))?;
-                if let Some(places) = places {
-                    self.validate_scalar_expression(places, format!("{path}.places"))?;
-                }
-                Ok(())
+                self.infer_round_scalar_type(expression, places.as_deref(), path)
             }
             ScalarExpression::Left { expression, count }
             | ScalarExpression::Right { expression, count } => {
-                self.validate_scalar_expression(expression, format!("{path}.expression"))?;
-                self.validate_scalar_expression(count, format!("{path}.count"))
+                self.infer_sized_string_scalar_type(expression, count, path)
             }
             ScalarExpression::Replace {
                 expression,
                 search,
                 replacement,
-            } => {
-                self.validate_scalar_expression(expression, format!("{path}.expression"))?;
-                self.validate_scalar_expression(search, format!("{path}.search"))?;
-                self.validate_scalar_expression(replacement, format!("{path}.replacement"))
-            }
+            } => self.infer_replace_scalar_type(expression, search, replacement, path),
             ScalarExpression::Substring {
                 expression,
                 start,
                 length,
-            } => {
-                self.validate_scalar_expression(expression, format!("{path}.expression"))?;
-                self.validate_scalar_expression(start, format!("{path}.start"))?;
-                if let Some(length) = length {
-                    self.validate_scalar_expression(length, format!("{path}.length"))?;
-                }
-                Ok(())
-            }
+            } => self.infer_substring_scalar_type(expression, start, length.as_deref(), path),
             ScalarExpression::Arithmetic { left, right, .. } => {
-                self.validate_scalar_expression(left, format!("{path}.left"))?;
-                self.validate_scalar_expression(right, format!("{path}.right"))
+                self.infer_arithmetic_scalar_type(left, right, path)
             }
-            ScalarExpression::Atan2 { y, x } => {
-                self.validate_scalar_expression(y, format!("{path}.y"))?;
-                self.validate_scalar_expression(x, format!("{path}.x"))
-            }
-            ScalarExpression::Case {
-                alternatives,
-                else_expression,
-            } => {
-                self.validate_case_scalar_expression(alternatives, else_expression.as_deref(), path)
-            }
+            ScalarExpression::Atan2 { y, x } => self.infer_atan2_scalar_type(y, x, path),
+            _ => unreachable!("non-function scalar expression reached function type inference"),
         }
     }
 
-    fn validate_case_scalar_expression(
+    fn infer_case_scalar_type(
         &self,
         alternatives: &[ScalarCaseAlternative],
         else_expression: Option<&ScalarExpression>,
-        path: impl Into<String>,
-    ) -> Result<(), CoreError> {
-        let path = path.into();
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
         if alternatives.is_empty() {
             return Err(Diagnostic::new(
                 "INVALID_SCALAR_EXPRESSION",
@@ -2625,20 +2742,519 @@ impl<'a> GraphPlanValidator<'a> {
             )
             .into_core_error());
         }
+        let mut result_type = ScalarType::Null;
         for (index, alternative) in alternatives.iter().enumerate() {
             self.validate_predicate_expression(
                 &alternative.when,
                 format!("{path}.alternatives[{index}].when"),
             )?;
-            self.validate_scalar_expression(
+            let then_type = self.infer_scalar_expression_type(
                 &alternative.then,
                 format!("{path}.alternatives[{index}].then"),
             )?;
+            result_type = Self::merge_scalar_types(
+                result_type,
+                then_type,
+                format!("{path}.alternatives[{index}].then"),
+                "CASE result branches",
+            )?;
         }
         if let Some(else_expression) = else_expression {
-            self.validate_scalar_expression(else_expression, format!("{path}.else"))?;
+            let else_type =
+                self.infer_scalar_expression_type(else_expression, format!("{path}.else"))?;
+            result_type = Self::merge_scalar_types(
+                result_type,
+                else_type,
+                format!("{path}.else"),
+                "CASE result branches",
+            )?;
+        }
+        Ok(result_type)
+    }
+
+    fn infer_coalesce_scalar_type(
+        &self,
+        expressions: &[ScalarExpression],
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        if expressions.len() < 2 {
+            return Err(Diagnostic::new(
+                "INVALID_SCALAR_EXPRESSION",
+                path,
+                "coalesce expressions require at least two arguments",
+            )
+            .into_core_error());
+        }
+
+        let mut result_type = ScalarType::Null;
+        for (index, expression) in expressions.iter().enumerate() {
+            let expression_type =
+                self.infer_scalar_expression_type(expression, format!("{path}[{index}]"))?;
+            result_type = Self::merge_scalar_types(
+                result_type,
+                expression_type,
+                format!("{path}[{index}]"),
+                "coalesce arguments",
+            )?;
+        }
+        Ok(result_type)
+    }
+
+    fn infer_string_unary_scalar_type(
+        &self,
+        expression: &ScalarExpression,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type =
+            self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+        Self::require_string_compatible_type(
+            expression_type,
+            format!("{path}.expression"),
+            "string function",
+        )?;
+        Ok(ScalarType::String)
+    }
+
+    fn infer_numeric_unary_scalar_type(
+        &self,
+        expression: &ScalarExpression,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type =
+            self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+        Self::require_numeric_compatible_type(
+            expression_type,
+            format!("{path}.expression"),
+            "numeric function",
+        )?;
+        Ok(numeric_result_type(expression_type))
+    }
+
+    fn infer_round_scalar_type(
+        &self,
+        expression: &ScalarExpression,
+        places: Option<&ScalarExpression>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type =
+            self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+        Self::require_numeric_compatible_type(
+            expression_type,
+            format!("{path}.expression"),
+            "round",
+        )?;
+        if let Some(places) = places {
+            let places_type =
+                self.infer_scalar_expression_type(places, format!("{path}.places"))?;
+            Self::require_integer_compatible_type(
+                places_type,
+                format!("{path}.places"),
+                "round precision",
+            )?;
+        }
+        Ok(numeric_result_type(expression_type))
+    }
+
+    fn infer_sized_string_scalar_type(
+        &self,
+        expression: &ScalarExpression,
+        count: &ScalarExpression,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type =
+            self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+        Self::require_string_compatible_type(
+            expression_type,
+            format!("{path}.expression"),
+            "sized string function",
+        )?;
+        let count_type = self.infer_scalar_expression_type(count, format!("{path}.count"))?;
+        Self::require_integer_compatible_type(
+            count_type,
+            format!("{path}.count"),
+            "sized string count",
+        )?;
+        Ok(ScalarType::String)
+    }
+
+    fn infer_replace_scalar_type(
+        &self,
+        expression: &ScalarExpression,
+        search: &ScalarExpression,
+        replacement: &ScalarExpression,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        for (name, expression) in [
+            ("expression", expression),
+            ("search", search),
+            ("replacement", replacement),
+        ] {
+            let expression_type =
+                self.infer_scalar_expression_type(expression, format!("{path}.{name}"))?;
+            Self::require_string_compatible_type(
+                expression_type,
+                format!("{path}.{name}"),
+                "replace",
+            )?;
+        }
+        Ok(ScalarType::String)
+    }
+
+    fn infer_substring_scalar_type(
+        &self,
+        expression: &ScalarExpression,
+        start: &ScalarExpression,
+        length: Option<&ScalarExpression>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type =
+            self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+        Self::require_string_compatible_type(
+            expression_type,
+            format!("{path}.expression"),
+            "substring",
+        )?;
+        let start_type = self.infer_scalar_expression_type(start, format!("{path}.start"))?;
+        Self::require_integer_compatible_type(
+            start_type,
+            format!("{path}.start"),
+            "substring start",
+        )?;
+        if let Some(length) = length {
+            let length_type =
+                self.infer_scalar_expression_type(length, format!("{path}.length"))?;
+            Self::require_integer_compatible_type(
+                length_type,
+                format!("{path}.length"),
+                "substring length",
+            )?;
+        }
+        Ok(ScalarType::String)
+    }
+
+    fn infer_atan2_scalar_type(
+        &self,
+        y: &ScalarExpression,
+        x: &ScalarExpression,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let y_type = self.infer_scalar_expression_type(y, format!("{path}.y"))?;
+        let x_type = self.infer_scalar_expression_type(x, format!("{path}.x"))?;
+        Self::require_numeric_compatible_type(y_type, format!("{path}.y"), "atan2")?;
+        Self::require_numeric_compatible_type(x_type, format!("{path}.x"), "atan2")?;
+        Ok(ScalarType::Float)
+    }
+
+    fn infer_arithmetic_scalar_type(
+        &self,
+        left: &ScalarExpression,
+        right: &ScalarExpression,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let left_type = self.infer_scalar_expression_type(left, format!("{path}.left"))?;
+        let right_type = self.infer_scalar_expression_type(right, format!("{path}.right"))?;
+        Self::require_numeric_compatible_type(left_type, format!("{path}.left"), "arithmetic")?;
+        Self::require_numeric_compatible_type(right_type, format!("{path}.right"), "arithmetic")?;
+        Ok(numeric_binary_result_type(left_type, right_type))
+    }
+
+    fn property_ref_scalar_type(&self, property: &PropertyRef) -> Result<ScalarType, CoreError> {
+        let binding = self
+            .bindings
+            .get(property.variable.as_str())
+            .ok_or_else(|| {
+                Diagnostic::new(
+                    "UNKNOWN_VARIABLE",
+                    "property.variable",
+                    format!("unknown graph variable '{}'", property.variable),
+                )
+                .into_core_error()
+            })?;
+        let Some(column) = binding.column_for_property(&property.property) else {
+            return Ok(ScalarType::Unknown);
+        };
+        let table = match binding.kind() {
+            ValidatedBindingKind::Node(node) => &node.table,
+            ValidatedBindingKind::Relationship(relationship) => &relationship.table,
+        };
+        Ok(self.column_scalar_type(table, column))
+    }
+
+    fn key_scalar_type(&self, variable: &str) -> Result<ScalarType, CoreError> {
+        let binding = self.bindings.get(variable).ok_or_else(|| {
+            Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                "variable",
+                format!("unknown graph variable '{variable}'"),
+            )
+            .into_core_error()
+        })?;
+        let (table, column) = match binding.kind() {
+            ValidatedBindingKind::Node(node) => (&node.table, node.key.as_str()),
+            ValidatedBindingKind::Relationship(relationship) => {
+                let Some(key) = relationship.key.as_deref() else {
+                    return Ok(ScalarType::Unknown);
+                };
+                (&relationship.table, key)
+            }
+        };
+        Ok(self.column_scalar_type(table, column))
+    }
+
+    fn column_scalar_type(&self, table: &TableRef, column: &str) -> ScalarType {
+        self.catalog
+            .and_then(|catalog| {
+                catalog.tables.iter().find(|candidate| {
+                    candidate.schema_name == table.schema && candidate.table_name == table.name
+                })
+            })
+            .and_then(|table| {
+                table
+                    .columns
+                    .iter()
+                    .find(|candidate| candidate.name == column)
+            })
+            .map_or(ScalarType::Unknown, |column| {
+                scalar_type_for_data_type(&column.data_type)
+            })
+    }
+
+    fn validate_scalar_predicate_operand_types(
+        operator: ComparisonOperator,
+        lhs_type: ScalarType,
+        rhs_type: ScalarType,
+        path: &str,
+    ) -> Result<(), CoreError> {
+        if matches!(
+            operator,
+            ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains
+                | ComparisonOperator::RegexMatch
+        ) {
+            Self::require_string_compatible_type(
+                lhs_type,
+                format!("{path}.lhs"),
+                "string predicate",
+            )?;
+            Self::require_string_compatible_type(
+                rhs_type,
+                format!("{path}.rhs"),
+                "string predicate",
+            )?;
+            return Ok(());
+        }
+
+        if matches!(
+            operator,
+            ComparisonOperator::GreaterThan
+                | ComparisonOperator::GreaterThanOrEqual
+                | ComparisonOperator::LessThan
+                | ComparisonOperator::LessThanOrEqual
+        ) {
+            if matches!(rhs_type, ScalarType::Null) {
+                return Err(Diagnostic::new(
+                    "INVALID_NULL_COMPARISON",
+                    path,
+                    "null can only be compared with equality or inequality",
+                )
+                .into_core_error());
+            }
+            Self::validate_orderable_scalar_type(lhs_type, format!("{path}.lhs"))?;
+            Self::validate_orderable_scalar_type(rhs_type, format!("{path}.rhs"))?;
+        }
+
+        Self::validate_compatible_scalar_types(
+            lhs_type,
+            rhs_type,
+            path,
+            "scalar predicate operands",
+        )
+    }
+
+    fn validate_predicate_rhs_operand_types(
+        &self,
+        operator: ComparisonOperator,
+        lhs_type: ScalarType,
+        rhs: &PredicateRhs,
+        path: &str,
+    ) -> Result<(), CoreError> {
+        match rhs {
+            PredicateRhs::Literal(literal) => Self::validate_scalar_predicate_operand_types(
+                operator,
+                lhs_type,
+                literal_scalar_type(literal),
+                path,
+            ),
+            PredicateRhs::Property(property) => {
+                let rhs_type = self.property_ref_scalar_type(property)?;
+                Self::validate_scalar_predicate_operand_types(operator, lhs_type, rhs_type, path)
+            }
+            PredicateRhs::Key { variable } => {
+                let rhs_type = self.key_scalar_type(variable)?;
+                Self::validate_scalar_predicate_operand_types(operator, lhs_type, rhs_type, path)
+            }
+            PredicateRhs::ElementId { .. } => Self::validate_scalar_predicate_operand_types(
+                operator,
+                lhs_type,
+                ScalarType::String,
+                path,
+            ),
+            PredicateRhs::List(literals) => {
+                Self::validate_scalar_in_list_operand_types(lhs_type, literals, path)
+            }
+        }
+    }
+
+    fn validate_scalar_in_list_operand_types(
+        lhs_type: ScalarType,
+        literals: &[Literal],
+        path: &str,
+    ) -> Result<(), CoreError> {
+        let list_type = literal_list_scalar_type(literals)?;
+        Self::validate_compatible_scalar_types(lhs_type, list_type, path, "IN predicate operands")
+    }
+
+    fn merge_scalar_types(
+        left: ScalarType,
+        right: ScalarType,
+        path: impl Into<String>,
+        context: &str,
+    ) -> Result<ScalarType, CoreError> {
+        if matches!(left, ScalarType::Null) {
+            return Ok(right);
+        }
+        if matches!(right, ScalarType::Null) {
+            return Ok(left);
+        }
+        if matches!(left, ScalarType::Unknown) || matches!(right, ScalarType::Unknown) {
+            return Ok(if matches!(left, ScalarType::Unknown) {
+                right
+            } else {
+                left
+            });
+        }
+        if left == right {
+            return Ok(left);
+        }
+        if left.is_numeric() && right.is_numeric() {
+            return Ok(ScalarType::Float);
+        }
+        Err(Self::scalar_type_error(path, context, left, right))
+    }
+
+    fn validate_compatible_scalar_types(
+        left: ScalarType,
+        right: ScalarType,
+        path: impl Into<String>,
+        context: &str,
+    ) -> Result<(), CoreError> {
+        Self::merge_scalar_types(left, right, path, context).map(|_| ())
+    }
+
+    fn require_string_compatible_type(
+        scalar_type: ScalarType,
+        path: impl Into<String>,
+        context: &str,
+    ) -> Result<(), CoreError> {
+        if matches!(
+            scalar_type,
+            ScalarType::Unknown | ScalarType::Null | ScalarType::String
+        ) {
+            return Ok(());
+        }
+        Err(Self::expected_type_error(
+            path,
+            context,
+            "string",
+            scalar_type,
+        ))
+    }
+
+    fn require_integer_compatible_type(
+        scalar_type: ScalarType,
+        path: impl Into<String>,
+        context: &str,
+    ) -> Result<(), CoreError> {
+        if matches!(
+            scalar_type,
+            ScalarType::Unknown | ScalarType::Null | ScalarType::Integer
+        ) {
+            return Ok(());
+        }
+        Err(Self::expected_type_error(
+            path,
+            context,
+            "integer",
+            scalar_type,
+        ))
+    }
+
+    fn require_numeric_compatible_type(
+        scalar_type: ScalarType,
+        path: impl Into<String>,
+        context: &str,
+    ) -> Result<(), CoreError> {
+        if scalar_type.is_numeric() || matches!(scalar_type, ScalarType::Unknown | ScalarType::Null)
+        {
+            return Ok(());
+        }
+        Err(Self::expected_type_error(
+            path,
+            context,
+            "numeric",
+            scalar_type,
+        ))
+    }
+
+    fn validate_orderable_scalar_type(
+        scalar_type: ScalarType,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        if matches!(scalar_type, ScalarType::Boolean) {
+            return Err(Self::expected_type_error(
+                path,
+                "range predicate",
+                "orderable",
+                scalar_type,
+            ));
         }
         Ok(())
+    }
+
+    fn scalar_type_error(
+        path: impl Into<String>,
+        context: &str,
+        left: ScalarType,
+        right: ScalarType,
+    ) -> CoreError {
+        Diagnostic::new(
+            "INVALID_SCALAR_TYPE",
+            path,
+            format!(
+                "{context} require compatible scalar types, got {} and {}",
+                left.name(),
+                right.name()
+            ),
+        )
+        .into_core_error()
+    }
+
+    fn expected_type_error(
+        path: impl Into<String>,
+        context: &str,
+        expected: &str,
+        actual: ScalarType,
+    ) -> CoreError {
+        Diagnostic::new(
+            "INVALID_SCALAR_TYPE",
+            path,
+            format!(
+                "{context} requires a {expected} scalar expression, got {}",
+                actual.name()
+            ),
+        )
+        .into_core_error()
     }
 
     fn validate_property_ref(
@@ -2857,6 +3473,117 @@ fn validate_variable(path: impl Into<String>, variable: &str) -> Result<(), Core
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScalarType {
+    Unknown,
+    Null,
+    String,
+    Integer,
+    Float,
+    Boolean,
+    Other,
+}
+
+impl ScalarType {
+    fn is_numeric(self) -> bool {
+        matches!(self, Self::Integer | Self::Float)
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Null => "null",
+            Self::String => "string",
+            Self::Integer => "integer",
+            Self::Float => "float",
+            Self::Boolean => "boolean",
+            Self::Other => "non-scalar",
+        }
+    }
+}
+
+fn literal_scalar_type(literal: &Literal) -> ScalarType {
+    match literal {
+        Literal::String(_) => ScalarType::String,
+        Literal::Integer(_) => ScalarType::Integer,
+        Literal::Float(_) => ScalarType::Float,
+        Literal::Boolean(_) => ScalarType::Boolean,
+        Literal::Null => ScalarType::Null,
+    }
+}
+
+fn literal_list_scalar_type(literals: &[Literal]) -> Result<ScalarType, CoreError> {
+    let mut result_type = ScalarType::Null;
+    for literal in literals {
+        result_type = GraphPlanValidator::merge_scalar_types(
+            result_type,
+            literal_scalar_type(literal),
+            "rhs",
+            "literal list elements",
+        )?;
+    }
+    Ok(result_type)
+}
+
+fn numeric_result_type(scalar_type: ScalarType) -> ScalarType {
+    match scalar_type {
+        ScalarType::Integer => ScalarType::Integer,
+        ScalarType::Float => ScalarType::Float,
+        ScalarType::Unknown | ScalarType::Null => ScalarType::Unknown,
+        ScalarType::String | ScalarType::Boolean | ScalarType::Other => {
+            unreachable!("numeric result requested for non-numeric type")
+        }
+    }
+}
+
+fn numeric_binary_result_type(left: ScalarType, right: ScalarType) -> ScalarType {
+    match (left, right) {
+        (ScalarType::Float, _) | (_, ScalarType::Float) => ScalarType::Float,
+        (ScalarType::Integer, ScalarType::Integer) => ScalarType::Integer,
+        _ => ScalarType::Unknown,
+    }
+}
+
+fn scalar_type_for_data_type(data_type: &str) -> ScalarType {
+    let data_type = data_type.trim();
+    if data_type.is_empty() {
+        return ScalarType::Unknown;
+    }
+    if data_type.contains("Utf8") {
+        return ScalarType::String;
+    }
+    if data_type.starts_with("Int") || data_type.starts_with("UInt") {
+        return ScalarType::Integer;
+    }
+    if data_type.starts_with("Float") || data_type.starts_with("Decimal") {
+        return ScalarType::Float;
+    }
+    if data_type == "Boolean" {
+        return ScalarType::Boolean;
+    }
+    if data_type.starts_with("Dictionary") {
+        return scalar_type_for_dictionary_data_type(data_type);
+    }
+    if matches!(data_type, "Null" | "NullType") {
+        return ScalarType::Null;
+    }
+    ScalarType::Other
+}
+
+fn scalar_type_for_dictionary_data_type(data_type: &str) -> ScalarType {
+    if data_type.contains("Utf8") {
+        ScalarType::String
+    } else if data_type.contains("Float") || data_type.contains("Decimal") {
+        ScalarType::Float
+    } else if data_type.contains("Int") || data_type.contains("UInt") {
+        ScalarType::Integer
+    } else if data_type.contains("Boolean") {
+        ScalarType::Boolean
+    } else {
+        ScalarType::Other
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LiteralListElementKind {
     String,
@@ -2898,6 +3625,7 @@ mod tests {
         PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
         ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
     };
+    use crate::{ColumnInfo, TableInfo};
 
     const GRAPH: &str = r"
 version: 1
@@ -3385,6 +4113,160 @@ relationships:
         graph
             .validate_graph_plan(&plan)
             .expect("identity scalar expression projections should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_catalog_typed_coalesce_mismatches() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Expression {
+            expression: ScalarExpression::Coalesce {
+                expressions: vec![
+                    ScalarExpression::Key {
+                        variable: "service".to_string(),
+                    },
+                    ScalarExpression::Literal(Literal::String("unknown".to_string())),
+                ],
+            },
+            alias: "service_id".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan_against_catalog(&plan, &typed_ownership_catalog())
+            .expect_err("catalog-typed coalesce mismatch should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_SCALAR_TYPE"),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("coalesce"), "{error:?}");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_catalog_typed_case_branch_mismatches() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Expression {
+            expression: ScalarExpression::Case {
+                alternatives: vec![ScalarCaseAlternative {
+                    when: PredicateExpression::Boolean(true),
+                    then: ScalarExpression::RelationshipType {
+                        variable: "owns".to_string(),
+                        relationship_type: "OWNS".to_string(),
+                    },
+                }],
+                else_expression: Some(Box::new(ScalarExpression::Literal(Literal::Integer(1)))),
+            },
+            alias: "kind".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan_against_catalog(&plan, &typed_ownership_catalog())
+            .expect_err("catalog-typed CASE mismatch should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_SCALAR_TYPE"),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("CASE"), "{error:?}");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_catalog_typed_string_functions_over_numeric_values() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Expression {
+            expression: ScalarExpression::ToLower {
+                expression: Box::new(ScalarExpression::Key {
+                    variable: "service".to_string(),
+                }),
+            },
+            alias: "lower_id".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan_against_catalog(&plan, &typed_ownership_catalog())
+            .expect_err("catalog-typed string function mismatch should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_SCALAR_TYPE"),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("string"), "{error:?}");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_catalog_typed_numeric_functions_over_string_values() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Expression {
+            expression: ScalarExpression::Abs {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "person".to_string(),
+                    property: "name".to_string(),
+                })),
+            },
+            alias: "abs_name".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan_against_catalog(&plan, &typed_ownership_catalog())
+            .expect_err("catalog-typed numeric function mismatch should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_SCALAR_TYPE"),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("numeric"), "{error:?}");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_catalog_typed_scalar_predicate_mismatches() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::Key {
+                variable: "service".to_string(),
+            },
+            operator: ComparisonOperator::Equal,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                "10".to_string(),
+            ))),
+        }));
+
+        let error = graph
+            .validate_graph_plan_against_catalog(&plan, &typed_ownership_catalog())
+            .expect_err("catalog-typed scalar predicate mismatch should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_SCALAR_TYPE"),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("predicate"), "{error:?}");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_catalog_typed_property_predicate_mismatches() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicate = Some(PredicateExpression::Comparison(PropertyPredicate {
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "name".to_string(),
+            },
+            operator: ComparisonOperator::Equal,
+            rhs: PredicateRhs::Literal(Literal::Integer(10)),
+        }));
+
+        let error = graph
+            .validate_graph_plan_against_catalog(&plan, &typed_ownership_catalog())
+            .expect_err("catalog-typed property predicate mismatch should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_SCALAR_TYPE"),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("predicate"), "{error:?}");
     }
 
     #[test]
@@ -4147,6 +5029,52 @@ relationships:
         graph
             .validate_graph_plan(&plan)
             .expect("disconnected mandatory nodes should validate for CROSS JOIN lowering");
+    }
+
+    fn typed_ownership_catalog() -> CatalogInfo {
+        CatalogInfo {
+            tables: vec![
+                typed_table("ops", "people", &[("id", "Int64"), ("full_name", "Utf8")]),
+                typed_table(
+                    "ops",
+                    "services",
+                    &[("id", "Int64"), ("service_name", "Utf8"), ("tier", "Utf8")],
+                ),
+                typed_table(
+                    "ops",
+                    "ownerships",
+                    &[
+                        ("person_id", "Int64"),
+                        ("service_id", "Int64"),
+                        ("since", "Utf8"),
+                    ],
+                ),
+            ],
+            table_functions: Vec::new(),
+        }
+    }
+
+    fn typed_table(schema: &str, name: &str, columns: &[(&str, &str)]) -> TableInfo {
+        TableInfo {
+            schema_name: schema.to_string(),
+            table_name: name.to_string(),
+            description: String::new(),
+            guide: String::new(),
+            columns: columns
+                .iter()
+                .enumerate()
+                .map(|(position, (column, data_type))| ColumnInfo {
+                    name: (*column).to_string(),
+                    data_type: (*data_type).to_string(),
+                    nullable: true,
+                    is_virtual: false,
+                    is_required_filter: false,
+                    description: String::new(),
+                    ordinal_position: u32::try_from(position).unwrap_or(u32::MAX),
+                })
+                .collect(),
+            required_filters: Vec::new(),
+        }
     }
 
     fn ownership_plan() -> GraphPlan {

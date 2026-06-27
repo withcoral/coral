@@ -22,7 +22,10 @@ string rendering.
 - **Plan validation**: resolves IR variables to declaration mappings, selects
   overloaded relationship mappings by type, endpoint labels, and direction,
   checks property references, aggregate restrictions, and connected join shape
-  before any SQL is rendered.
+  before any SQL is rendered. Runtime execute/explain paths also pass the
+  built Coral catalog into the validator so scalar expressions and predicates
+  can reject catalog-known type mistakes, such as numeric keys mixed with
+  string fallbacks, before DataFusion planning.
 - **SQL lowering**: the only layer that renders DataFusion SQL. It owns
   identifier quoting, deterministic join planning for connected patterns,
   predicate placement, and translated SQL.
@@ -51,6 +54,9 @@ The foundation slice establishes:
 - a typed shared graph query plan.
 - a declaration-aware graph plan validator that frontloads user-facing semantic
   diagnostics before SQL lowering.
+- catalog-aware scalar type validation for runtime graph execution, including
+  `coalesce`, `nullIf`, CASE result branches, string and numeric functions,
+  arithmetic, and scalar/direct predicate operands.
 - SQL lowering for node scans, directed and undirected relationship traversals,
   property and identity projections, connected multi-hop paths, disconnected
   mandatory components as explicit `CROSS JOIN`s, property and identity
