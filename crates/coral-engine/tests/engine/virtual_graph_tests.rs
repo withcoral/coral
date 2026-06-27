@@ -179,6 +179,42 @@ async fn cypher_static_node_label_alternatives_apply_global_row_modifiers_after_
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_apply_distinct_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN DISTINCT service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("static label alternatives with global distinct should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("SELECT DISTINCT * FROM"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_union_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

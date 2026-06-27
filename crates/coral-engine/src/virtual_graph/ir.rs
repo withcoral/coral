@@ -857,6 +857,8 @@ pub struct GraphUnion {
     pub first: GraphPlan,
     /// Subsequent branches and their leading union operator.
     pub branches: Vec<GraphUnionBranch>,
+    /// Whether the union result should be deduplicated after all branches are combined.
+    pub distinct: bool,
     /// Outer ordering applied after all union branches have been combined.
     pub order_by: Vec<OrderKey>,
     /// Outer row offset applied after all union branches have been combined.

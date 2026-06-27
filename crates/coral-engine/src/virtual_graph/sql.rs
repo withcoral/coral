@@ -1935,12 +1935,14 @@ fn render_union_branch_sql(sql: &str, index: usize) -> String {
 }
 
 fn render_union_outer_sql(sql: String, union: &GraphUnion) -> Result<String, CoreError> {
-    if union.order_by.is_empty() && union.skip.is_none() && union.limit.is_none() {
+    if !union.distinct && union.order_by.is_empty() && union.skip.is_none() && union.limit.is_none()
+    {
         return Ok(sql);
     }
 
+    let distinct = if union.distinct { "DISTINCT " } else { "" };
     let mut outer_sql = format!(
-        "SELECT * FROM ({sql}) AS {}",
+        "SELECT {distinct}* FROM ({sql}) AS {}",
         quote_ident("__coral_union_outer")
     );
     if !union.order_by.is_empty() {

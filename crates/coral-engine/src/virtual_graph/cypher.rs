@@ -324,7 +324,7 @@ fn compile_single_query_as_graph_query(
 
     validate_static_label_type_alternative_expansion_supported(single_query, &path)?;
     for variant in &mut variants {
-        clear_final_return_row_modifiers(variant, &path)?;
+        clear_final_return_outer_modifiers(variant, &path)?;
     }
     let plans = variants
         .iter()
@@ -337,11 +337,13 @@ fn compile_single_query_as_graph_query(
     let order_by =
         compile_static_alternative_outer_order_by(single_query, &projection_names, &path)?;
     let (skip, limit) = compile_static_alternative_outer_skip_limit(single_query, context, &path)?;
-    graph_query_from_alternative_plans(plans, order_by, skip, limit)
+    let distinct = final_return_clause(single_query, &path)?.distinct;
+    graph_query_from_alternative_plans(plans, distinct, order_by, skip, limit)
 }
 
 fn graph_query_from_alternative_plans(
     mut plans: Vec<GraphPlan>,
+    distinct: bool,
     order_by: Vec<OrderKey>,
     skip: Option<u64>,
     limit: Option<u64>,
@@ -361,17 +363,19 @@ fn graph_query_from_alternative_plans(
             .into_iter()
             .map(|plan| GraphUnionBranch { all: true, plan })
             .collect(),
+        distinct,
         order_by,
         skip,
         limit,
     }))
 }
 
-fn clear_final_return_row_modifiers(
+fn clear_final_return_outer_modifiers(
     single_query: &mut SingleQuery,
     path: &str,
 ) -> Result<(), CoreError> {
     let return_clause = final_return_clause_mut(single_query, path)?;
+    return_clause.distinct = false;
     return_clause.order = None;
     return_clause.skip = None;
     return_clause.limit = None;
@@ -534,6 +538,7 @@ fn compile_regular_query(
     Ok(GraphQuery::Union(GraphUnion {
         first,
         branches,
+        distinct: false,
         order_by: Vec::new(),
         skip: None,
         limit: None,
@@ -1016,12 +1021,6 @@ fn validate_return_allows_static_label_type_alternative_expansion(
     return_clause: &Return,
     path: &str,
 ) -> Result<(), CoreError> {
-    if return_clause.distinct {
-        return Err(unsupported(
-            format!("{path}.return.distinct"),
-            "static label/type alternatives with RETURN DISTINCT require staged query planning and are not supported yet",
-        ));
-    }
     for (index, item) in return_clause.items.iter().enumerate() {
         if expression_contains_aggregate(&item.expression) {
             return Err(unsupported(
@@ -8225,6 +8224,29 @@ mod tests {
         );
         assert_eq!(union.skip, Some(1));
         assert_eq!(union.limit, Some(5));
+    }
+
+    #[test]
+    fn compiles_static_label_alternatives_with_outer_distinct() {
+        let query = compile_cypher_query(
+            "MATCH (entity:Person|Team) \
+             RETURN DISTINCT entity.name AS name \
+             ORDER BY name",
+        )
+        .expect("RETURN DISTINCT should compile as an outer union modifier");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert!(!union.first.distinct);
+        assert!(union.distinct);
+        assert_eq!(
+            union.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("name".to_string()),
+                direction: OrderDirection::Ascending,
+            }]
+        );
     }
 
     #[test]
