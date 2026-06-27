@@ -1433,6 +1433,7 @@ impl<'a> Lowerer<'a> {
         match expression {
             ScalarExpression::Property(property) => self.render_property_ref(property),
             ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
+            ScalarExpression::Predicate(predicate) => self.render_predicate_expression(predicate),
             ScalarExpression::Coalesce { expressions } => {
                 let rendered = expressions
                     .iter()

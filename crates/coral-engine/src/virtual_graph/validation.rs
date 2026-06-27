@@ -834,6 +834,9 @@ impl<'a> GraphPlanValidator<'a> {
                 variables.insert(property.variable.as_str());
             }
             ScalarExpression::Literal(_) => {}
+            ScalarExpression::Predicate(predicate) => {
+                Self::collect_predicate_expression_variables(predicate, variables);
+            }
             ScalarExpression::Coalesce { expressions } => {
                 for expression in expressions {
                     Self::collect_scalar_expression_variables(expression, variables);
@@ -1152,6 +1155,13 @@ impl<'a> GraphPlanValidator<'a> {
                 format!("{path}.variable"),
             ),
             ScalarExpression::Literal(_) => Ok(()),
+            ScalarExpression::Predicate(predicate) => {
+                Self::validate_predicate_expression_not_optional(
+                    predicate,
+                    optional_variables,
+                    path,
+                )
+            }
             ScalarExpression::Coalesce { expressions } => {
                 Self::validate_coalesce_expression_not_optional(
                     expressions,
@@ -1181,6 +1191,28 @@ impl<'a> GraphPlanValidator<'a> {
                     "places",
                 )
             }
+            ScalarExpression::Left { .. }
+            | ScalarExpression::Right { .. }
+            | ScalarExpression::Replace { .. }
+            | ScalarExpression::Substring { .. }
+            | ScalarExpression::Arithmetic { .. }
+            | ScalarExpression::Atan2 { .. }
+            | ScalarExpression::Case { .. } => {
+                Self::validate_structural_scalar_expression_not_optional(
+                    expression,
+                    optional_variables,
+                    path,
+                )
+            }
+        }
+    }
+
+    fn validate_structural_scalar_expression_not_optional(
+        expression: &ScalarExpression,
+        optional_variables: &BTreeSet<&str>,
+        path: &str,
+    ) -> Result<(), CoreError> {
+        match expression {
             ScalarExpression::Left { expression, count }
             | ScalarExpression::Right { expression, count } => {
                 Self::validate_binary_scalar_expression_not_optional(
@@ -1243,6 +1275,9 @@ impl<'a> GraphPlanValidator<'a> {
                 optional_variables,
                 path,
             ),
+            _ => {
+                unreachable!("non-structural scalar expression reached structural validator")
+            }
         }
     }
 
@@ -2451,6 +2486,9 @@ impl<'a> GraphPlanValidator<'a> {
         match expression {
             ScalarExpression::Property(property) => self.validate_property_ref(property, path),
             ScalarExpression::Literal(_) => Ok(()),
+            ScalarExpression::Predicate(predicate) => {
+                self.validate_predicate_expression(predicate, path)
+            }
             ScalarExpression::Coalesce { expressions } => {
                 if expressions.len() < 2 {
                     return Err(Diagnostic::new(

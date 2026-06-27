@@ -143,6 +143,8 @@ pub enum ScalarExpression {
     Property(PropertyRef),
     /// A scalar literal.
     Literal(Literal),
+    /// A boolean predicate used as a scalar value.
+    Predicate(Box<PredicateExpression>),
     /// Return the first non-null scalar expression.
     Coalesce {
         /// Candidate expressions in priority order.

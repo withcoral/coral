@@ -1162,8 +1162,17 @@ fn compile_order_expression(
             ..
         } => compile_arithmetic_order_expression(expression, path, context),
         Expression::BinaryOp { .. } => {
-            compile_arithmetic_order_expression(expression, path, context)
+            if let Some(expression) =
+                compile_optional_boolean_scalar_expression(expression, path.clone(), plan, context)?
+            {
+                Ok(OrderExpression::Scalar(expression))
+            } else {
+                compile_arithmetic_order_expression(expression, path, context)
+            }
         }
+        expression if is_boolean_scalar_expression(expression) => Ok(OrderExpression::Scalar(
+            compile_boolean_scalar_expression(expression, path, plan, context)?,
+        )),
         Expression::Case(case) => compile_case_order_expression(case, path, context),
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_order_expression(function, path, plan, context)
@@ -1447,6 +1456,9 @@ fn compile_projection(
         expression if is_literal_projection_expression(expression) => {
             compile_literal_projection(expression, item, path, context)
         }
+        expression if is_boolean_scalar_expression(expression) => {
+            compile_boolean_scalar_projection(expression, item, path, plan, context)
+        }
         Expression::Parenthesized(inner) if is_arithmetic_expression(inner) => {
             compile_arithmetic_projection(item, path, context)
         }
@@ -1530,6 +1542,28 @@ fn compile_arithmetic_projection(
         expression: compile_scalar_expression(
             &item.expression,
             format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "expression".to_string(), variable_name),
+    })
+}
+
+fn compile_boolean_scalar_projection(
+    expression: &Expression,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_boolean_scalar_expression(
+            expression,
+            format!("{path}.expression"),
+            plan,
             context,
         )?,
         alias: item
@@ -2621,6 +2655,51 @@ fn compile_case_order_expression(
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     compile_case_scalar_expression(case, path, context).map(OrderExpression::Scalar)
+}
+
+fn compile_optional_boolean_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    if is_boolean_scalar_expression(expression) {
+        return compile_boolean_scalar_expression(expression, path, plan, context).map(Some);
+    }
+    Ok(None)
+}
+
+fn compile_boolean_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    compile_predicate_expression(expression, path, plan, context)
+        .map(|predicate| ScalarExpression::Predicate(Box::new(predicate)))
+}
+
+fn is_boolean_scalar_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_boolean_scalar_expression(inner),
+        Expression::BinaryOp {
+            op: CypherBinaryOperator::And | CypherBinaryOperator::Or | CypherBinaryOperator::Xor,
+            ..
+        }
+        | Expression::UnaryOp {
+            op: UnaryOperator::Not,
+            ..
+        }
+        | Expression::Comparison { .. }
+        | Expression::In { .. }
+        | Expression::IsNull { .. }
+        | Expression::NodeLabels { .. } => true,
+        Expression::FunctionCall(function) => {
+            is_exists_function(function) || is_empty_function(function)
+        }
+        _ => false,
+    }
 }
 
 fn compile_optional_predicate_scalar_expression(
@@ -6065,6 +6144,39 @@ mod tests {
                 }),
             })
         );
+    }
+
+    #[test]
+    fn compiles_boolean_scalar_projections() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             RETURN service.risk > 0.8 AS high_risk, \
+                    service.tier IS NULL AS missing_tier, \
+                    service.name =~ '^billing.*' AS billing_service, \
+                    service:Service AS is_service, \
+                    owns:OWNS AS is_ownership, \
+                    'tier' IN keys(service) AS has_tier \
+             ORDER BY service.risk > 0.8 DESC",
+        )
+        .expect("boolean scalar projections should compile");
+
+        assert_eq!(plan.projections.len(), 6);
+        assert!(plan.projections.iter().all(|projection| {
+            matches!(
+                projection,
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(_),
+                    ..
+                }
+            )
+        }));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Predicate(_)),
+                direction: OrderDirection::Descending,
+            }]
+        ));
     }
 
     #[test]

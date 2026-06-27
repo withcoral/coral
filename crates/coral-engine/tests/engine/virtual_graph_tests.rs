@@ -2766,6 +2766,50 @@ async fn cypher_float_predicates_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_boolean_scalar_projections_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                service.risk >= 0.8 AS high_risk, \
+                service.tier IS NULL AS missing_tier, \
+                service.name =~ '^billing.*' AS billing_service \
+         ORDER BY high_risk DESC, service",
+    )
+    .await
+    .expect("Cypher boolean scalar projection query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"risk_score\" >= 0.8 AS \"high_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("regexp_like("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "high_risk": true, "missing_tier": false, "billing_service": true}),
+            json!({"service": "legacy-sync", "high_risk": true, "missing_tier": true, "billing_service": false}),
+            json!({"service": "deployments", "high_risk": false, "missing_tier": false, "billing_service": false}),
+            json!({"service": "experiments", "high_risk": false, "missing_tier": false, "billing_service": false}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_string_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
