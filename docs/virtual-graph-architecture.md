@@ -107,10 +107,11 @@ The supported foundation subset is intentionally narrow:
 - property projections, identity projections, standalone and grouped `count(*)`,
   `count(property)`, `count(DISTINCT property)`, `count(node)`,
   `count(DISTINCT node)`, `count(relationship)` with keyed or keyless mappings,
-  `count(DISTINCT relationship)` for keyed mappings, numeric property
-  aggregates, property and identity `ORDER BY`, direct aggregate `ORDER BY`
-  expressions that match projected aggregates, and projection alias `ORDER BY`
-  including aggregate aliases;
+  `count(DISTINCT relationship)` for keyed mappings, `collect(property)`,
+  `collect(DISTINCT property)`, numeric property aggregates, property and
+  identity `ORDER BY`, direct aggregate `ORDER BY` expressions that match
+  projected aggregates, and projection alias `ORDER BY` including aggregate
+  aliases;
 - transparent `WITH` pass-through and terminal `WITH` projection subsets;
 - integer `SKIP` and `LIMIT`.
 

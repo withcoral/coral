@@ -195,6 +195,8 @@ impl Projection {
 pub enum AggregateFunction {
     /// `COUNT(property)`.
     Count,
+    /// `COLLECT(property)`.
+    Collect,
     /// `SUM(property)`.
     Sum,
     /// `AVG(property)`.

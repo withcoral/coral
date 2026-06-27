@@ -1206,6 +1206,7 @@ fn render_operator(operator: ComparisonOperator) -> &'static str {
 fn render_aggregate_function(function: AggregateFunction) -> &'static str {
     match function {
         AggregateFunction::Count => "COUNT",
+        AggregateFunction::Collect => "ARRAY_AGG",
         AggregateFunction::Sum => "SUM",
         AggregateFunction::Avg => "AVG",
         AggregateFunction::Min => "MIN",
@@ -2536,6 +2537,38 @@ relationships: []
             translation
                 .sql()
                 .contains("COUNT(DISTINCT \"n1\".\"tier\") AS \"tier_count\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation.sql().contains(" GROUP BY "),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_collect_property_projection() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.projections.push(Projection::Aggregate {
+            function: AggregateFunction::Collect,
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "name".to_string(),
+            }),
+            distinct: true,
+            alias: "services".to_string(),
+        });
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("collect property projection should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("ARRAY_AGG(DISTINCT \"n1\".\"service_name\") AS \"services\""),
             "{}",
             translation.sql()
         );

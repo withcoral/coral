@@ -1567,6 +1567,8 @@ fn compile_aggregate_function(function: &FunctionInvocation) -> Option<Aggregate
     };
     if name.name.eq_ignore_ascii_case("count") {
         Some(AggregateFunction::Count)
+    } else if name.name.eq_ignore_ascii_case("collect") {
+        Some(AggregateFunction::Collect)
     } else if name.name.eq_ignore_ascii_case("sum") {
         Some(AggregateFunction::Sum)
     } else if name.name.eq_ignore_ascii_case("avg") {
@@ -1583,6 +1585,7 @@ fn compile_aggregate_function(function: &FunctionInvocation) -> Option<Aggregate
 fn aggregate_function_name(function: AggregateFunction) -> &'static str {
     match function {
         AggregateFunction::Count => "count",
+        AggregateFunction::Collect => "collect",
         AggregateFunction::Sum => "sum",
         AggregateFunction::Avg => "avg",
         AggregateFunction::Min => "min",
@@ -4528,6 +4531,45 @@ mod tests {
                 }),
                 distinct: true,
                 alias: "tier_count".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_collect_property_projection() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[:OWNS]->(service:Service) \
+             RETURN person.team AS team, collect(DISTINCT service.name) AS services \
+             ORDER BY services",
+        )
+        .expect("collect property query should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "person".to_string(),
+                        property: "team".to_string(),
+                    },
+                    alias: Some("team".to_string()),
+                },
+                Projection::Aggregate {
+                    function: super::AggregateFunction::Collect,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    }),
+                    distinct: true,
+                    alias: "services".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("services".to_string()),
+                direction: OrderDirection::Ascending,
             }]
         );
     }

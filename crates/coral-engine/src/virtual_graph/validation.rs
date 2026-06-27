@@ -1691,6 +1691,7 @@ fn validate_variable(path: impl Into<String>, variable: &str) -> Result<(), Core
 fn aggregate_function_name(function: AggregateFunction) -> &'static str {
     match function {
         AggregateFunction::Count => "count",
+        AggregateFunction::Collect => "collect",
         AggregateFunction::Sum => "sum",
         AggregateFunction::Avg => "avg",
         AggregateFunction::Min => "min",
@@ -2194,6 +2195,29 @@ relationships:
         let error = graph
             .validate_graph_plan(&plan)
             .expect_err("non-count node aggregate target should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_collect_node_aggregate_targets() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Aggregate {
+            function: AggregateFunction::Collect,
+            target: AggregateTarget::VariableKey {
+                variable: "service".to_string(),
+            },
+            distinct: false,
+            alias: "services".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("collect node aggregate target should fail validation");
 
         assert!(
             error.to_string().contains("INVALID_AGGREGATE_TARGET"),

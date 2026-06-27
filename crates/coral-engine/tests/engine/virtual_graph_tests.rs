@@ -1676,6 +1676,41 @@ async fn cypher_count_property_projection_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_collect_property_projection_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[:OWNS]->(service:Service) \
+         RETURN person.team AS team, collect(service.name) AS services \
+         ORDER BY team",
+    )
+    .await
+    .expect("collect property Cypher query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ARRAY_AGG(\"n1\".\"service_name\") AS \"services\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"team": "analytics", "services": ["experiments"]}),
+            json!({"team": "infra", "services": ["deployments"]}),
+            json!({"team": "platform", "services": ["billing-api"]}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_numeric_aggregate_projections_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

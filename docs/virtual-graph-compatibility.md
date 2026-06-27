@@ -29,6 +29,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `COUNT(property)` | Supported foundation | Counts non-null mapped property values; optional `DISTINCT` is supported |
 | `COUNT(node)` | Supported foundation | Counts node key occurrences; `COUNT(DISTINCT node)` counts distinct declared node keys |
 | `COUNT(relationship)` | Supported foundation | Counts declared relationship key values; keyless relationship mappings are rejected |
+| Collection aggregate functions | Supported foundation | `COLLECT(property)` and `COLLECT(DISTINCT property)` lower to DataFusion `ARRAY_AGG`; graph-value collection is deferred |
 | Numeric aggregate functions | Supported foundation | `SUM`, `AVG`, `MIN`, and `MAX` over mapped graph properties |
 | Grouped aggregate projections | Supported foundation | Property projections become SQL `GROUP BY` keys |
 | Distinct projections | Supported foundation | `SELECT DISTINCT` over projected rows |
@@ -74,6 +75,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `RETURN count(property)` | Supported foundation | Supports `count(property)` and `count(DISTINCT property)` |
 | `RETURN count(node)` | Supported foundation | Supports `count(node)` and `count(DISTINCT node)` over declared node keys |
 | `RETURN count(relationship)` | Supported foundation | Counts keyed or keyless relationship rows; `count(DISTINCT relationship)` requires a declared relationship key |
+| `RETURN collect(property)` | Supported foundation | Supports property collection with optional `DISTINCT`; collecting nodes, relationships, or paths is rejected until graph values are modeled |
 | `RETURN id(...)` / `type(r)` | Supported foundation | Projects mapped keys and fixed relationship types; optional relationship types preserve nulls |
 | `RETURN labels(node)` | Supported foundation | Projects the statically mapped label as a one-element list via DataFusion `make_array` |
 | `RETURN sum/avg/min/max(property)` | Supported foundation | Numeric aggregate projections over mapped properties |
