@@ -8,6 +8,10 @@ use std::fmt::Write as _;
 
 use super::declaration::{Declaration, Node, Relationship};
 use super::diagnostic::Diagnostic;
+use super::graphql_aggregate::{
+    GRAPHQL_PROPERTY_AGGREGATE_FIELDS, GraphqlAggregateReturnType,
+    is_reserved_graphql_node_property_name,
+};
 use crate::CoreError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -322,68 +326,15 @@ fn push_node_type(sdl: &mut String, graph: &Declaration, node: &Node) {
         let aggregate_field_type = node_aggregate_field_type(&node.label);
         writeln!(sdl, "  _count(field: {aggregate_field_type}): Int")
             .expect("writing GraphQL SDL to string should not fail");
-        writeln!(sdl, "  _countDistinct(field: {aggregate_field_type}!): Int")
+        for field in GRAPHQL_PROPERTY_AGGREGATE_FIELDS {
+            writeln!(
+                sdl,
+                "  {}(field: {aggregate_field_type}!): {}",
+                field.field_name,
+                graphql_aggregate_return_type_name(field.return_type)
+            )
             .expect("writing GraphQL SDL to string should not fail");
-        writeln!(
-            sdl,
-            "  _collect(field: {aggregate_field_type}!): [CoralGraphValue!]"
-        )
-        .expect("writing GraphQL SDL to string should not fail");
-        writeln!(
-            sdl,
-            "  _collectDistinct(field: {aggregate_field_type}!): [CoralGraphValue!]"
-        )
-        .expect("writing GraphQL SDL to string should not fail");
-        writeln!(
-            sdl,
-            "  _sum(field: {aggregate_field_type}!): CoralGraphValue"
-        )
-        .expect("writing GraphQL SDL to string should not fail");
-        writeln!(
-            sdl,
-            "  _sumDistinct(field: {aggregate_field_type}!): CoralGraphValue"
-        )
-        .expect("writing GraphQL SDL to string should not fail");
-        writeln!(
-            sdl,
-            "  _avg(field: {aggregate_field_type}!): CoralGraphValue"
-        )
-        .expect("writing GraphQL SDL to string should not fail");
-        writeln!(
-            sdl,
-            "  _avgDistinct(field: {aggregate_field_type}!): CoralGraphValue"
-        )
-        .expect("writing GraphQL SDL to string should not fail");
-        writeln!(
-            sdl,
-            "  _median(field: {aggregate_field_type}!): CoralGraphValue"
-        )
-        .expect("writing GraphQL SDL to string should not fail");
-        writeln!(
-            sdl,
-            "  _medianDistinct(field: {aggregate_field_type}!): CoralGraphValue"
-        )
-        .expect("writing GraphQL SDL to string should not fail");
-        writeln!(
-            sdl,
-            "  _stDev(field: {aggregate_field_type}!): CoralGraphValue"
-        )
-        .expect("writing GraphQL SDL to string should not fail");
-        writeln!(
-            sdl,
-            "  _stDevP(field: {aggregate_field_type}!): CoralGraphValue"
-        )
-        .expect("writing GraphQL SDL to string should not fail");
-        writeln!(
-            sdl,
-            "  _min(field: {aggregate_field_type}!): CoralGraphValue"
-        )
-        .expect("writing GraphQL SDL to string should not fail");
-        writeln!(
-            sdl,
-            "  _max(field: {aggregate_field_type}!): CoralGraphValue"
-        )
-        .expect("writing GraphQL SDL to string should not fail");
+        }
     }
     for property in node_property_names(node) {
         writeln!(sdl, "  {property}: CoralGraphValue")
@@ -771,23 +722,7 @@ fn validate_graphql_node_property_name(
     path: impl Into<String>,
 ) -> Result<(), CoreError> {
     let path = path.into();
-    if matches!(
-        name,
-        "_count"
-            | "_countDistinct"
-            | "_collect"
-            | "_collectDistinct"
-            | "_sum"
-            | "_sumDistinct"
-            | "_avg"
-            | "_avgDistinct"
-            | "_median"
-            | "_medianDistinct"
-            | "_stDev"
-            | "_stDevP"
-            | "_min"
-            | "_max"
-    ) {
+    if is_reserved_graphql_node_property_name(name) {
         return Err(Diagnostic::new(
             "UNSUPPORTED_GRAPHQL_SCHEMA",
             path,
@@ -796,6 +731,14 @@ fn validate_graphql_node_property_name(
         .into_core_error());
     }
     validate_graphql_property_name(name, path)
+}
+
+fn graphql_aggregate_return_type_name(return_type: GraphqlAggregateReturnType) -> &'static str {
+    match return_type {
+        GraphqlAggregateReturnType::Int => "Int",
+        GraphqlAggregateReturnType::GraphValue => "CoralGraphValue",
+        GraphqlAggregateReturnType::GraphValueList => "[CoralGraphValue!]",
+    }
 }
 
 fn validate_graphql_property_name(name: &str, path: impl Into<String>) -> Result<(), CoreError> {

@@ -10,6 +10,7 @@ use regex::Regex;
 
 use super::declaration::Declaration;
 use super::diagnostic::Diagnostic;
+use super::graphql_aggregate::graphql_property_aggregate_field;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
     GraphPlan, KeyPredicate, Literal, NodePattern, OrderDirection, OrderExpression, OrderKey,
@@ -649,32 +650,6 @@ fn compile_property_field(
 
 fn is_node_aggregate_field(name: &str) -> bool {
     name == "_count" || graphql_property_aggregate_field(name).is_some()
-}
-
-#[derive(Debug, Clone, Copy)]
-struct GraphqlPropertyAggregateField {
-    function: AggregateFunction,
-    distinct: bool,
-}
-
-fn graphql_property_aggregate_field(name: &str) -> Option<GraphqlPropertyAggregateField> {
-    let (function, distinct) = match name {
-        "_countDistinct" => (AggregateFunction::Count, true),
-        "_collect" => (AggregateFunction::Collect, false),
-        "_collectDistinct" => (AggregateFunction::Collect, true),
-        "_sum" => (AggregateFunction::Sum, false),
-        "_sumDistinct" => (AggregateFunction::Sum, true),
-        "_avg" => (AggregateFunction::Avg, false),
-        "_avgDistinct" => (AggregateFunction::Avg, true),
-        "_median" => (AggregateFunction::Median, false),
-        "_medianDistinct" => (AggregateFunction::Median, true),
-        "_stDev" => (AggregateFunction::StdDev, false),
-        "_stDevP" => (AggregateFunction::StdDevP, false),
-        "_min" => (AggregateFunction::Min, false),
-        "_max" => (AggregateFunction::Max, false),
-        _ => return None,
-    };
-    Some(GraphqlPropertyAggregateField { function, distinct })
 }
 
 fn compile_node_aggregate_field(

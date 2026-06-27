@@ -9,6 +9,7 @@ mod declaration;
 mod diagnostic;
 mod execution;
 mod graphql;
+mod graphql_aggregate;
 mod graphql_schema;
 mod ir;
 mod sql;
