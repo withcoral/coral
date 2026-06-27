@@ -156,7 +156,8 @@ remain separate. The supported slice is intentionally graph-query oriented:
   node label, and edge-level `__typename`, lowered as the static relationship
   type;
 - named and inline fragments on node selections when their type condition
-  matches the current graph label;
+  matches the current graph label, and on `_edge` selections when their type
+  condition matches the relationship type;
 - `@include(if:)` and `@skip(if:)` on fields, fragment spreads, and inline
   fragments, with boolean literals or typed boolean variables;
 - root `where` object predicates over selected node properties, including
@@ -172,7 +173,8 @@ remain separate. The supported slice is intentionally graph-query oriented:
   filters via `relationshipWhere`, with the same boolean composition support
   as root filters;
 - relationship property and relationship type metadata projections through
-  reserved `_edge { ... }` selections inside relationship fields.
+  reserved `_edge { ... }` selections inside relationship fields, including
+  named and inline edge fragments.
 
 Nested relationship fields compile directly to `NodePattern` and
 `RelationshipPattern` IR entries. Endpoint labels are checked against the graph

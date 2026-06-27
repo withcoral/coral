@@ -486,7 +486,14 @@ fn compile_selection_set_into_plan(
                     continue;
                 }
                 if field.name == "_edge" {
-                    compile_edge_field(plan, field, context, &item_path, compile_context)?;
+                    compile_edge_field(
+                        plan,
+                        field,
+                        context,
+                        &item_path,
+                        compile_context,
+                        fragment_stack,
+                    )?;
                 } else if field.selection_set.items.is_empty() {
                     compile_property_field(plan, field, context, &item_path)?;
                 } else {
@@ -820,6 +827,7 @@ fn compile_edge_field(
     context: &NodeContext,
     path: &str,
     compile_context: &GraphqlCompileContext<'_, '_>,
+    fragment_stack: &mut Vec<String>,
 ) -> Result<(), CoreError> {
     if field.selection_set.items.is_empty() {
         return Err(unsupported(
@@ -842,56 +850,211 @@ fn compile_edge_field(
     let edge_relationship_type = context.edge_relationship_type.as_deref().ok_or_else(|| {
         CoreError::internal("GraphQL edge relationship type missing for _edge selection")
     })?;
-    for (index, selection) in field.selection_set.items.iter().enumerate() {
-        let Selection::Field(property) = selection else {
-            return Err(unsupported(
-                format!("{path}.selectionSet.items[{index}]"),
-                "GraphQL fragments are not supported inside _edge selections",
-            ));
-        };
-        if !selection_is_included(
-            &property.directives,
-            format!("{path}.selectionSet.items[{index}].directives"),
-            compile_context,
-        )? {
-            continue;
-        }
-        if !property.arguments.is_empty() {
-            return Err(unsupported(
-                format!("{path}.selectionSet.items[{index}].arguments"),
-                "GraphQL _edge property arguments are not supported",
-            ));
-        }
-        if !property.selection_set.items.is_empty() {
-            return Err(unsupported(
-                format!("{path}.selectionSet.items[{index}].selectionSet"),
-                "GraphQL _edge properties must be scalar fields",
-            ));
-        }
-        if property.name == "__typename" {
-            push_graphql_projection(
+    compile_edge_selection_set(
+        plan,
+        &field.selection_set,
+        edge_variable,
+        edge_relationship_type,
+        format!("{path}.selectionSet"),
+        compile_context,
+        fragment_stack,
+    )
+}
+
+fn compile_edge_selection_set(
+    plan: &mut GraphPlan,
+    selection_set: &SelectionSet<'_, String>,
+    edge_variable: &str,
+    edge_relationship_type: &str,
+    path: impl Into<String>,
+    compile_context: &GraphqlCompileContext<'_, '_>,
+    fragment_stack: &mut Vec<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    for (index, selection) in selection_set.items.iter().enumerate() {
+        let item_path = format!("{path}.items[{index}]");
+        match selection {
+            Selection::Field(property) => compile_edge_projection_field(
                 plan,
-                Projection::Literal {
-                    literal: Literal::String(edge_relationship_type.to_string()),
-                    alias: edge_projection_alias(property, edge_variable),
-                },
-                &format!("{path}.selectionSet.items[{index}]"),
-            )?;
-            continue;
+                property,
+                edge_variable,
+                edge_relationship_type,
+                &item_path,
+                compile_context,
+            )?,
+            Selection::FragmentSpread(spread) => compile_edge_fragment_spread(
+                plan,
+                spread,
+                edge_variable,
+                edge_relationship_type,
+                &item_path,
+                compile_context,
+                fragment_stack,
+            )?,
+            Selection::InlineFragment(fragment) => compile_edge_inline_fragment(
+                plan,
+                fragment,
+                edge_variable,
+                edge_relationship_type,
+                &item_path,
+                compile_context,
+                fragment_stack,
+            )?,
         }
-        push_graphql_projection(
-            plan,
-            Projection::Property {
-                property: PropertyRef {
-                    variable: edge_variable.to_string(),
-                    property: property.name.clone(),
-                },
-                alias: Some(edge_projection_alias(property, edge_variable)),
-            },
-            &format!("{path}.selectionSet.items[{index}]"),
-        )?;
     }
     Ok(())
+}
+
+fn compile_edge_projection_field(
+    plan: &mut GraphPlan,
+    property: &Field<'_, String>,
+    edge_variable: &str,
+    edge_relationship_type: &str,
+    path: &str,
+    compile_context: &GraphqlCompileContext<'_, '_>,
+) -> Result<(), CoreError> {
+    if !selection_is_included(
+        &property.directives,
+        format!("{path}.directives"),
+        compile_context,
+    )? {
+        return Ok(());
+    }
+    if !property.arguments.is_empty() {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "GraphQL _edge property arguments are not supported",
+        ));
+    }
+    if !property.selection_set.items.is_empty() {
+        return Err(unsupported(
+            format!("{path}.selectionSet"),
+            "GraphQL _edge properties must be scalar fields",
+        ));
+    }
+    if property.name == "__typename" {
+        push_graphql_projection(
+            plan,
+            Projection::Literal {
+                literal: Literal::String(edge_relationship_type.to_string()),
+                alias: edge_projection_alias(property, edge_variable),
+            },
+            path,
+        )?;
+        return Ok(());
+    }
+    push_graphql_projection(
+        plan,
+        Projection::Property {
+            property: PropertyRef {
+                variable: edge_variable.to_string(),
+                property: property.name.clone(),
+            },
+            alias: Some(edge_projection_alias(property, edge_variable)),
+        },
+        path,
+    )
+}
+
+fn compile_edge_fragment_spread(
+    plan: &mut GraphPlan,
+    spread: &FragmentSpread<'_, String>,
+    edge_variable: &str,
+    edge_relationship_type: &str,
+    path: &str,
+    compile_context: &GraphqlCompileContext<'_, '_>,
+    fragment_stack: &mut Vec<String>,
+) -> Result<(), CoreError> {
+    if !selection_is_included(
+        &spread.directives,
+        format!("{path}.directives"),
+        compile_context,
+    )? {
+        return Ok(());
+    }
+    let fragment = compile_context
+        .fragments
+        .get(&spread.fragment_name)
+        .ok_or_else(|| {
+            unsupported(
+                format!("{path}.name"),
+                format!("unknown GraphQL fragment '{}'", spread.fragment_name),
+            )
+        })?;
+    ensure_edge_fragment_type_condition(
+        Some(&fragment.type_condition),
+        edge_relationship_type,
+        format!("{path}.typeCondition"),
+    )?;
+    if fragment_stack.contains(&spread.fragment_name) {
+        return Err(unsupported(
+            format!("{path}.name"),
+            format!("GraphQL fragment '{}' forms a cycle", spread.fragment_name),
+        ));
+    }
+    fragment_stack.push(spread.fragment_name.clone());
+    let result = compile_edge_selection_set(
+        plan,
+        &fragment.selection_set,
+        edge_variable,
+        edge_relationship_type,
+        format!("fragment.{}.selectionSet", fragment.name),
+        compile_context,
+        fragment_stack,
+    );
+    fragment_stack.pop();
+    result
+}
+
+fn compile_edge_inline_fragment(
+    plan: &mut GraphPlan,
+    fragment: &InlineFragment<'_, String>,
+    edge_variable: &str,
+    edge_relationship_type: &str,
+    path: &str,
+    compile_context: &GraphqlCompileContext<'_, '_>,
+    fragment_stack: &mut Vec<String>,
+) -> Result<(), CoreError> {
+    if !selection_is_included(
+        &fragment.directives,
+        format!("{path}.directives"),
+        compile_context,
+    )? {
+        return Ok(());
+    }
+    ensure_edge_fragment_type_condition(
+        fragment.type_condition.as_ref(),
+        edge_relationship_type,
+        format!("{path}.typeCondition"),
+    )?;
+    compile_edge_selection_set(
+        plan,
+        &fragment.selection_set,
+        edge_variable,
+        edge_relationship_type,
+        format!("{path}.selectionSet"),
+        compile_context,
+        fragment_stack,
+    )
+}
+
+fn ensure_edge_fragment_type_condition(
+    type_condition: Option<&TypeCondition<'_, String>>,
+    edge_relationship_type: &str,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let Some(TypeCondition::On(type_name)) = type_condition else {
+        return Ok(());
+    };
+    if type_name == edge_relationship_type {
+        return Ok(());
+    }
+    Err(unsupported(
+        path,
+        format!(
+            "GraphQL edge fragment type condition '{type_name}' must match relationship type '{edge_relationship_type}'"
+        ),
+    ))
 }
 
 fn compile_relationship_field_name(
@@ -3461,6 +3624,68 @@ mod tests {
     }
 
     #[test]
+    fn compiles_graphql_fragments_inside_edge_selections() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph(
+            &graph,
+            r"
+            {
+              Person {
+                owner: name
+                out_OWNS(to: Service) {
+                  service: name
+                  _edge {
+                    ...OwnershipEdge
+                    ... on OWNS {
+                      ownershipSince: since
+                    }
+                  }
+                }
+              }
+            }
+
+            fragment OwnershipEdge on OWNS {
+              edgeKind: __typename
+              ownershipSource: source
+            }
+            ",
+        )
+        .expect("GraphQL fragments inside _edge should compile");
+
+        assert!(matches!(
+            plan.relationships.as_slice(),
+            [RelationshipPattern {
+                variable: Some(variable),
+                ..
+            }] if variable == "relationship0"
+        ));
+        assert!(plan.projections.iter().any(|projection| {
+            matches!(
+                projection,
+                Projection::Literal {
+                    literal: Literal::String(kind),
+                    alias,
+                } if kind == "OWNS" && alias == "edgeKind"
+            )
+        }));
+        for alias in ["ownershipSource", "ownershipSince"] {
+            assert!(
+                plan.projections.iter().any(|projection| {
+                    matches!(
+                        projection,
+                        Projection::Property {
+                            property: PropertyRef { variable, .. },
+                            alias: Some(projected_alias),
+                        } if variable == "relationship0" && projected_alias == alias
+                    )
+                }),
+                "missing edge projection alias {alias}: {:?}",
+                plan.projections
+            );
+        }
+    }
+
+    #[test]
     fn rejects_graphql_xor_with_wrong_arity() {
         for query in [
             r#"
@@ -4065,6 +4290,34 @@ mod tests {
 
         assert!(
             error.to_string().contains("has no mapping"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_graphql_edge_fragment_type_mismatches() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let error = compile_graphql_for_graph(
+            &graph,
+            r"
+            {
+              Person {
+                out_OWNS(to: Service) {
+                  service: name
+                  _edge { ...DependencyEdge }
+                }
+              }
+            }
+
+            fragment DependencyEdge on DEPENDS_ON {
+              source
+            }
+            ",
+        )
+        .expect_err("edge fragment type mismatch should be rejected");
+
+        assert!(
+            error.to_string().contains("edge fragment type condition"),
             "unexpected error: {error}"
         );
     }

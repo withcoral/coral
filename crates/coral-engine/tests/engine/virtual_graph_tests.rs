@@ -854,6 +854,64 @@ async fn graphql_nested_relationship_query_executes_against_synthetic_file_sourc
 }
 
 #[tokio::test]
+async fn graphql_edge_fragments_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          Person(where: { team: { eq: "infra" } }) {
+            owner: name
+            out_OWNS(
+              to: Service
+              relationshipWhere: { source: { eq: "pagerduty" } }
+            ) {
+              service: name
+              _edge {
+                ...OwnershipEdge
+                ... on OWNS {
+                  ownershipSince: since
+                }
+              }
+            }
+          }
+        }
+
+        fragment OwnershipEdge on OWNS {
+          edgeKind: __typename
+          ownershipSource: source
+        }
+        "#,
+    )
+    .await
+    .expect("GraphQL edge fragments should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("'OWNS' AS \"edgeKind\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "owner": "Grace Hopper",
+            "service": "deployments",
+            "edgeKind": "OWNS",
+            "ownershipSource": "pagerduty",
+            "ownershipSince": "2024-02-20",
+        })]
+    );
+}
+
+#[tokio::test]
 async fn graphql_boolean_nested_filters_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
