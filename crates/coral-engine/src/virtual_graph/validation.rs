@@ -1112,6 +1112,9 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Predicate(predicate) => {
                 Self::collect_predicate_expression_variables(predicate, variables);
             }
+            ScalarExpression::CountSubquery { pattern } => {
+                Self::collect_exists_pattern_outer_variables(pattern, variables);
+            }
             ScalarExpression::Key { variable }
             | ScalarExpression::ElementId { variable }
             | ScalarExpression::GraphIdentity { variable }
@@ -1507,6 +1510,13 @@ impl<'a> GraphPlanValidator<'a> {
                     predicate,
                     optional_variables,
                     path,
+                )
+            }
+            ScalarExpression::CountSubquery { pattern } => {
+                Self::validate_exists_pattern_predicate_not_optional(
+                    pattern,
+                    optional_variables,
+                    format!("{path}.pattern"),
                 )
             }
             ScalarExpression::Key { variable }
@@ -3544,6 +3554,7 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Property(_)
             | ScalarExpression::Literal(_)
             | ScalarExpression::Predicate(_)
+            | ScalarExpression::CountSubquery { .. }
             | ScalarExpression::Key { .. }
             | ScalarExpression::ElementId { .. }
             | ScalarExpression::GraphIdentity { .. }
@@ -3579,6 +3590,10 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Predicate(predicate) => {
                 self.validate_predicate_expression(predicate, path)?;
                 Ok(ScalarType::Boolean)
+            }
+            ScalarExpression::CountSubquery { pattern } => {
+                self.validate_exists_pattern_predicate(pattern, format!("{path}.pattern"))?;
+                Ok(ScalarType::Integer)
             }
             ScalarExpression::Key { variable } => {
                 self.validate_key_projection(variable, path)?;

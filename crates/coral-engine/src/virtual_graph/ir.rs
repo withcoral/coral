@@ -154,6 +154,11 @@ pub enum ScalarExpression {
     Literal(Literal),
     /// A boolean predicate used as a scalar value.
     Predicate(Box<PredicateExpression>),
+    /// Count rows produced by a correlated read-only graph subquery.
+    CountSubquery {
+        /// Scoped graph pattern counted by the subquery.
+        pattern: Box<ExistsPatternPredicate>,
+    },
     /// Stable mapped key for a graph variable.
     Key {
         /// Graph variable.

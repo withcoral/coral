@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection, With};
 use decypher::ast::expr::{
     BinaryOperator as CypherBinaryOperator, CaseExpression,
-    ComparisonOperator as CypherComparisonOperator, ExistsExpression, ExistsInner, Expression,
-    FunctionInvocation, Literal as CypherLiteral, NumberLiteral, Parameter as CypherParameter,
-    UnaryOperator,
+    ComparisonOperator as CypherComparisonOperator, CountSubqueryExpression, ExistsExpression,
+    ExistsInner, Expression, FunctionInvocation, Literal as CypherLiteral, NumberLiteral,
+    Parameter as CypherParameter, UnaryOperator,
 };
 use decypher::ast::names::{SymbolicName, Variable};
 use decypher::ast::pattern::{
@@ -3637,6 +3637,9 @@ fn reject_ignored_path_variable_references_in_scalar_expression(
         ScalarExpression::Predicate(predicate) => {
             reject_ignored_path_variable_references_in_predicate(predicate, state, path)
         }
+        ScalarExpression::CountSubquery { pattern } => {
+            reject_ignored_path_variable_references_in_count_subquery(pattern, state, path)
+        }
         ScalarExpression::Key { variable }
         | ScalarExpression::ElementId { variable }
         | ScalarExpression::GraphIdentity { variable }
@@ -3730,6 +3733,7 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
         ScalarExpression::Property(_)
         | ScalarExpression::Literal(_)
         | ScalarExpression::Predicate(_)
+        | ScalarExpression::CountSubquery { .. }
         | ScalarExpression::Key { .. }
         | ScalarExpression::ElementId { .. }
         | ScalarExpression::GraphIdentity { .. }
@@ -3785,6 +3789,48 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
             unreachable!("structural scalar expressions handled before this path check")
         }
     }
+}
+
+fn reject_ignored_path_variable_references_in_count_subquery(
+    pattern: &ExistsPatternPredicate,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    for (index, node) in pattern.nodes.iter().enumerate() {
+        reject_ignored_path_variable(
+            &node.variable,
+            state,
+            format!("{path}.nodes[{index}].variable"),
+        )?;
+    }
+    for (index, relationship) in pattern.relationships.iter().enumerate() {
+        if let Some(variable) = &relationship.variable {
+            reject_ignored_path_variable(
+                variable,
+                state,
+                format!("{path}.relationships[{index}].variable"),
+            )?;
+        }
+        reject_ignored_path_variable(
+            &relationship.left,
+            state,
+            format!("{path}.relationships[{index}].left"),
+        )?;
+        reject_ignored_path_variable(
+            &relationship.right,
+            state,
+            format!("{path}.relationships[{index}].right"),
+        )?;
+    }
+    for (index, predicate) in pattern.predicates.iter().enumerate() {
+        reject_ignored_path_variable_references_in_property_predicate(
+            predicate,
+            state,
+            format!("{path}.predicates[{index}]"),
+        )?;
+    }
+    Ok(())
 }
 
 fn reject_path_variables_in_scalar_list(
@@ -4777,6 +4823,9 @@ fn compile_order_expression(
         Expression::CountStar { .. } => {
             count_star_order_expression_for_projection(projections, path)
         }
+        Expression::CountSubquery(count) => Ok(OrderExpression::Scalar(
+            compile_count_subquery_scalar_expression(count, path, Some(plan), context)?,
+        )),
         expression if is_literal_expression(expression) => Ok(OrderExpression::Literal(
             compile_literal(expression, path, context)?,
         )),
@@ -5111,6 +5160,18 @@ fn compile_projection(
     let path = path.into();
     match &item.expression {
         Expression::CountStar { .. } => Ok(Projection::CountAll {
+            alias: item
+                .alias
+                .as_ref()
+                .map_or_else(|| "count".to_string(), variable_name),
+        }),
+        Expression::CountSubquery(count) => Ok(Projection::Expression {
+            expression: compile_count_subquery_scalar_expression(
+                count,
+                format!("{path}.expression"),
+                Some(plan),
+                context,
+            )?,
             alias: item
                 .alias
                 .as_ref()
@@ -6368,6 +6429,9 @@ fn compile_scalar_expression_in_mode(
             PredicateCompileMode::CaseWhen { plan },
             context,
         ),
+        Expression::CountSubquery(count) => {
+            compile_count_subquery_scalar_expression(count, path, plan, context)
+        }
         Expression::FunctionCall(function) => {
             compile_scalar_function_expression_in_mode(function, path.clone(), plan, context)?
                 .ok_or_else(|| {
@@ -6712,6 +6776,9 @@ fn compile_optional_predicate_scalar_expression(
             PredicateCompileMode::CaseWhen { plan },
             context,
         )?)),
+        Expression::CountSubquery(count) => Ok(Some(compile_count_subquery_scalar_expression(
+            count, path, plan, context,
+        )?)),
         Expression::FunctionCall(function)
             if is_id_function(function)
                 || is_element_id_function(function)
@@ -6757,6 +6824,9 @@ fn compile_scalar_predicate_rhs(
                 PredicateCompileMode::CaseWhen { plan },
                 context,
             )?,
+        )),
+        Expression::CountSubquery(count) => Ok(ScalarPredicateRhs::Expression(
+            compile_count_subquery_scalar_expression(count, path, plan, context)?,
         )),
         Expression::FunctionCall(function) => {
             match compile_scalar_function_expression_in_mode(function, path.clone(), plan, context)?
@@ -7840,17 +7910,60 @@ fn compile_exists_regular_query_predicate(
     plan: Option<&GraphPlan>,
     context: &CypherCompileContext,
 ) -> Result<PredicateExpression, CoreError> {
+    compile_regular_query_scoped_pattern(
+        query,
+        path,
+        plan,
+        context,
+        "EXISTS subqueries",
+        "EXISTS subqueries with scoped WHERE predicates currently require an explicit MATCH clause",
+    )
+    .map(PredicateExpression::ExistsPattern)
+}
+
+fn compile_count_subquery_scalar_expression(
+    count: &CountSubqueryExpression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let pattern = compile_regular_query_scoped_pattern(
+        &count.query,
+        format!("{path}.query"),
+        plan,
+        context,
+        "COUNT subqueries",
+        "COUNT subqueries require an explicit MATCH clause",
+    )?;
+    Ok(ScalarExpression::CountSubquery {
+        pattern: Box::new(pattern),
+    })
+}
+
+fn compile_regular_query_scoped_pattern(
+    query: &RegularQuery,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+    feature_name: &'static str,
+    missing_match_message: &'static str,
+) -> Result<ExistsPatternPredicate, CoreError> {
     let path = path.into();
     if !query.unions.is_empty() {
         return Err(unsupported(
             format!("{path}.unions"),
-            "EXISTS subqueries with UNION require staged subquery planning and are not supported yet",
+            format!(
+                "{feature_name} with UNION require staged subquery planning and are not supported yet"
+            ),
         ));
     }
     let SingleQueryKind::SinglePart(single_part) = &query.single_query.kind else {
         return Err(unsupported(
             format!("{path}.single_query"),
-            "EXISTS subqueries with WITH require staged subquery planning and are not supported yet",
+            format!(
+                "{feature_name} with WITH require staged subquery planning and are not supported yet"
+            ),
         ));
     };
     match &single_part.body {
@@ -7858,7 +7971,7 @@ fn compile_exists_regular_query_predicate(
         SinglePartBody::Return(_) => {
             return Err(unsupported(
                 format!("{path}.return"),
-                "RETURN inside EXISTS subqueries is not supported yet",
+                format!("RETURN inside {feature_name} is not supported yet"),
             ));
         }
         SinglePartBody::Updating {
@@ -7871,7 +7984,7 @@ fn compile_exists_regular_query_predicate(
         } if updating.is_empty() && return_clause.is_some() => {
             return Err(unsupported(
                 format!("{path}.return"),
-                "RETURN inside EXISTS subqueries is not supported yet",
+                format!("RETURN inside {feature_name} is not supported yet"),
             ));
         }
         SinglePartBody::Updating { .. } => {
@@ -7882,13 +7995,13 @@ fn compile_exists_regular_query_predicate(
         }
     }
     let Some(plan) = plan else {
-        return Err(unsupported(path, "EXISTS subqueries require graph context"));
+        return Err(unsupported(
+            path,
+            format!("{feature_name} require graph context"),
+        ));
     };
     if single_part.reading_clauses.is_empty() {
-        return Err(unsupported(
-            format!("{path}.match"),
-            "EXISTS subqueries with scoped WHERE predicates currently require an explicit MATCH clause",
-        ));
+        return Err(unsupported(format!("{path}.match"), missing_match_message));
     }
     let mut exists_plan = plan.clone();
     let mut exists_state = CypherCompileState::default();
@@ -7908,7 +8021,7 @@ fn compile_exists_regular_query_predicate(
             "OPTIONAL MATCH inside EXISTS subqueries requires nullable scoped predicate planning and is not supported yet",
         ));
     }
-    compile_scoped_plan_delta_predicate(
+    compile_scoped_plan_delta_pattern(
         exists_plan,
         plan,
         ScopedPlanDelta {
@@ -7917,7 +8030,7 @@ fn compile_exists_regular_query_predicate(
             predicate_offset: predicate_start,
         },
         path,
-        "EXISTS subqueries",
+        feature_name,
     )
 }
 
@@ -7960,12 +8073,23 @@ fn compile_scoped_pattern_predicate(
 }
 
 fn compile_scoped_plan_delta_predicate(
-    mut exists_plan: GraphPlan,
+    exists_plan: GraphPlan,
     plan: &GraphPlan,
     delta: ScopedPlanDelta,
     path: impl Into<String>,
     feature_name: &'static str,
 ) -> Result<PredicateExpression, CoreError> {
+    compile_scoped_plan_delta_pattern(exists_plan, plan, delta, path, feature_name)
+        .map(PredicateExpression::ExistsPattern)
+}
+
+fn compile_scoped_plan_delta_pattern(
+    mut exists_plan: GraphPlan,
+    plan: &GraphPlan,
+    delta: ScopedPlanDelta,
+    path: impl Into<String>,
+    feature_name: &'static str,
+) -> Result<ExistsPatternPredicate, CoreError> {
     let path = path.into();
     let relationships = exists_plan
         .relationships
@@ -8006,7 +8130,7 @@ fn compile_scoped_plan_delta_predicate(
         append_conjunctive_expression(predicate, &mut predicates);
     }
 
-    Ok(PredicateExpression::ExistsPattern(ExistsPatternPredicate {
+    Ok(ExistsPatternPredicate {
         nodes: exists_plan
             .nodes
             .get(delta.nodes_before..)
@@ -8014,7 +8138,7 @@ fn compile_scoped_plan_delta_predicate(
             .to_vec(),
         relationships,
         predicates,
-    }))
+    })
 }
 
 fn compile_is_empty_predicate(

@@ -1585,6 +1585,107 @@ async fn cypher_exists_match_subqueries_reject_non_conjunctive_inner_where() {
 }
 
 #[tokio::test]
+async fn cypher_count_subqueries_execute_as_correlated_scalar_counts() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } AS dependency_count \
+         ORDER BY dependency_count DESC, service",
+    )
+    .await
+    .expect("Cypher COUNT subquery projection should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("SELECT COUNT(*) FROM \"ops\".\"service_dependencies\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dependency_count": 2}),
+            json!({"service": "deployments", "dependency_count": 1}),
+            json!({"service": "experiments", "dependency_count": 0}),
+            json!({"service": "legacy-sync", "dependency_count": 0}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_count_subqueries_work_in_scalar_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } > 1 \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect("Cypher COUNT subquery predicate should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api"})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_count_subqueries_preserve_inner_where_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                COUNT { \
+                  MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+                  WHERE dependency.tier = 'dev' \
+                } AS dev_dependency_count \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher COUNT subquery with inner WHERE should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"__coral_exists_n0\".\"tier\" = 'dev'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dev_dependency_count": 1}),
+            json!({"service": "deployments", "dev_dependency_count": 1}),
+            json!({"service": "experiments", "dev_dependency_count": 0}),
+            json!({"service": "legacy-sync", "dev_dependency_count": 0}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_root_query_executes_against_synthetic_file_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -1809,6 +1809,24 @@ impl<'a> Lowerer<'a> {
         &self,
         predicate: &ExistsPatternPredicate,
     ) -> Result<String, CoreError> {
+        Ok(format!(
+            "EXISTS {}",
+            self.render_scoped_pattern_select(predicate, "1")?
+        ))
+    }
+
+    fn render_count_subquery_expression(
+        &self,
+        predicate: &ExistsPatternPredicate,
+    ) -> Result<String, CoreError> {
+        self.render_scoped_pattern_select(predicate, "COUNT(*)")
+    }
+
+    fn render_scoped_pattern_select(
+        &self,
+        predicate: &ExistsPatternPredicate,
+        select_expression: &str,
+    ) -> Result<String, CoreError> {
         let local_nodes = self.exists_local_node_map(predicate)?;
         let relationship_bindings = self.exists_relationship_bindings(predicate, &local_nodes)?;
         if relationship_bindings.is_empty() {
@@ -1873,7 +1891,7 @@ impl<'a> Lowerer<'a> {
             )?);
         }
         Ok(format!(
-            "EXISTS (SELECT 1 FROM {from_clause} WHERE {})",
+            "(SELECT {select_expression} FROM {from_clause} WHERE {})",
             conditions.join(" AND ")
         ))
     }
@@ -2508,6 +2526,9 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Property(property) => self.render_property_ref(property),
             ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
             ScalarExpression::Predicate(predicate) => self.render_predicate_expression(predicate),
+            ScalarExpression::CountSubquery { pattern } => {
+                self.render_count_subquery_expression(pattern)
+            }
             ScalarExpression::Key { variable } => self.render_binding_key_ref(variable),
             ScalarExpression::ElementId { variable } => {
                 self.render_binding_element_id_ref(variable)
