@@ -253,7 +253,7 @@ async fn graphql_first_argument_executes_as_limit_against_synthetic_sources() {
         &graph,
         r"
         query {
-          Service(orderBy: [{ field: name, direction: ASC }], first: 2, skip: 1) {
+          Service(orderBy: [{ field: name, direction: ASCENDING }], first: 2, skip: 1) {
             service: name
           }
         }

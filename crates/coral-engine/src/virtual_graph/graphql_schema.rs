@@ -35,7 +35,9 @@ scalar CoralGraphValue
 
 enum CoralGraphOrderDirection {
   ASC
+  ASCENDING
   DESC
+  DESCENDING
 }
 
 ";

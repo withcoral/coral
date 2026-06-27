@@ -2388,14 +2388,7 @@ fn compile_order_direction(
 ) -> Result<OrderDirection, CoreError> {
     let path = path.into();
     let direction = compile_name_value(value, path.clone(), context)?;
-    match direction.as_str() {
-        "ASC" | "asc" => Ok(OrderDirection::Ascending),
-        "DESC" | "desc" => Ok(OrderDirection::Descending),
-        _ => Err(unsupported(
-            path,
-            "GraphQL orderBy direction must be ASC or DESC",
-        )),
-    }
+    compile_order_direction_name(&direction, path)
 }
 
 fn compile_variable_literal(
@@ -2485,14 +2478,24 @@ fn compile_variable_order_direction(
 ) -> Result<OrderDirection, CoreError> {
     let path = path.into();
     let direction = compile_variable_name_value(value, path.clone())?;
-    match direction.as_str() {
-        "ASC" | "asc" => Ok(OrderDirection::Ascending),
-        "DESC" | "desc" => Ok(OrderDirection::Descending),
-        _ => Err(unsupported(
-            path,
-            "GraphQL orderBy direction must be ASC or DESC",
-        )),
+    compile_order_direction_name(&direction, path)
+}
+
+fn compile_order_direction_name(
+    direction: &str,
+    path: impl Into<String>,
+) -> Result<OrderDirection, CoreError> {
+    let path = path.into();
+    if direction.eq_ignore_ascii_case("ASC") || direction.eq_ignore_ascii_case("ASCENDING") {
+        return Ok(OrderDirection::Ascending);
     }
+    if direction.eq_ignore_ascii_case("DESC") || direction.eq_ignore_ascii_case("DESCENDING") {
+        return Ok(OrderDirection::Descending);
+    }
+    Err(unsupported(
+        path,
+        "GraphQL orderBy direction must be ASC, ASCENDING, DESC, or DESCENDING",
+    ))
 }
 
 fn compile_literal(
@@ -2831,7 +2834,7 @@ mod tests {
             query {
               Service(
                 where: { tier: { eq: "prod" }, risk: { gte: 0.5 } }
-                orderBy: [{ field: name, direction: ASC }]
+                orderBy: [{ field: name, direction: ASCENDING }]
                 limit: 10
                 offset: 2
               ) {
@@ -3232,7 +3235,7 @@ mod tests {
             ),
             (
                 "sortDirection".to_string(),
-                GraphqlVariableValue::Literal(Literal::String("DESC".to_string())),
+                GraphqlVariableValue::Literal(Literal::String("DESCENDING".to_string())),
             ),
             (
                 "rowLimit".to_string(),
@@ -4933,6 +4936,8 @@ mod tests {
         graphql_parser::schema::parse_schema::<String>(&sdl)
             .expect("generated SDL should parse as GraphQL schema");
         assert!(sdl.contains("scalar CoralGraphValue"));
+        assert!(sdl.contains("  ASCENDING"));
+        assert!(sdl.contains("  DESCENDING"));
         assert!(sdl.contains(
             "Person(where: PersonWhere, orderBy: [PersonOrderBy!], limit: Int, first: Int, offset: Int, skip: Int, distinct: Boolean): [Person!]!"
         ));

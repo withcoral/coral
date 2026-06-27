@@ -170,7 +170,7 @@ remain separate. The supported slice is intentionally graph-query oriented:
 - reserved `_id` and `_elementId` identity filters and `orderBy` fields, where
   `_id` targets the mapped key and `_elementId` targets the string element id;
 - `orderBy` object or list of objects using property or identity fields and
-  `ASC` / `DESC`;
+  `ASC` / `ASCENDING` / `DESC` / `DESCENDING`;
 - integer `limit` / `first`, `offset` / `skip`, and boolean `distinct` root
   arguments;
 - typed GraphQL variables bound through the explicit variable API in supported
