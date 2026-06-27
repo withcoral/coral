@@ -28,6 +28,7 @@ pub enum GraphqlVariableValue {
 
 struct GraphqlCompileContext<'variables, 'query> {
     variables: &'variables BTreeMap<String, GraphqlVariableValue>,
+    variable_defaults: BTreeMap<String, GraphqlVariableValue>,
     declared_variables: BTreeSet<String>,
     fragments: BTreeMap<String, FragmentDefinition<'query, String>>,
 }
@@ -35,12 +36,13 @@ struct GraphqlCompileContext<'variables, 'query> {
 impl<'variables, 'query> GraphqlCompileContext<'variables, 'query> {
     fn new(
         variables: &'variables BTreeMap<String, GraphqlVariableValue>,
-        declared_variables: BTreeSet<String>,
+        declarations: GraphqlVariableDeclarations,
         fragments: BTreeMap<String, FragmentDefinition<'query, String>>,
     ) -> Self {
         Self {
             variables,
-            declared_variables,
+            variable_defaults: declarations.defaults,
+            declared_variables: declarations.names,
             fragments,
         }
     }
@@ -57,15 +59,24 @@ impl<'variables, 'query> GraphqlCompileContext<'variables, 'query> {
                 format!("GraphQL variable '${variable}' is not declared by the operation"),
             ));
         }
-        self.variables.get(variable).ok_or_else(|| {
-            Diagnostic::new(
-                "MISSING_GRAPHQL_VARIABLE",
-                path,
-                format!("GraphQL variable '${variable}' was not provided"),
-            )
-            .into_core_error()
-        })
+        self.variables
+            .get(variable)
+            .or_else(|| self.variable_defaults.get(variable))
+            .ok_or_else(|| {
+                Diagnostic::new(
+                    "MISSING_GRAPHQL_VARIABLE",
+                    path,
+                    format!("GraphQL variable '${variable}' was not provided"),
+                )
+                .into_core_error()
+            })
     }
+}
+
+#[derive(Debug, Default)]
+struct GraphqlVariableDeclarations {
+    names: BTreeSet<String>,
+    defaults: BTreeMap<String, GraphqlVariableValue>,
 }
 
 /// Parses and compiles the Coral-supported read-only GraphQL virtual graph subset.
@@ -193,7 +204,11 @@ fn compile_operation<'query>(
 ) -> Result<GraphPlan, CoreError> {
     match operation {
         OperationDefinition::SelectionSet(selection_set) => {
-            let context = GraphqlCompileContext::new(variables, BTreeSet::new(), fragments);
+            let context = GraphqlCompileContext::new(
+                variables,
+                GraphqlVariableDeclarations::default(),
+                fragments,
+            );
             compile_root_selection_set(selection_set, graph, "query.selectionSet", &context)
         }
         OperationDefinition::Query(query) => {
@@ -221,11 +236,11 @@ fn compile_operation<'query>(
 
 fn compile_variable_definitions(
     definitions: &[VariableDefinition<'_, String>],
-) -> Result<BTreeSet<String>, CoreError> {
-    let mut variables = BTreeSet::new();
+) -> Result<GraphqlVariableDeclarations, CoreError> {
+    let mut declarations = GraphqlVariableDeclarations::default();
     for (index, definition) in definitions.iter().enumerate() {
         let path = format!("query.variables[{index}]");
-        if !variables.insert(definition.name.clone()) {
+        if !declarations.names.insert(definition.name.clone()) {
             return Err(unsupported(
                 format!("{path}.name"),
                 format!(
@@ -234,14 +249,14 @@ fn compile_variable_definitions(
                 ),
             ));
         }
-        if definition.default_value.is_some() {
-            return Err(unsupported(
-                format!("{path}.default"),
-                "GraphQL variable default values are not supported yet",
-            ));
+        if let Some(default_value) = &definition.default_value {
+            declarations.defaults.insert(
+                definition.name.clone(),
+                compile_variable_default_value(default_value, format!("{path}.default"))?,
+            );
         }
     }
-    Ok(variables)
+    Ok(declarations)
 }
 
 fn compile_root_selection_set(
@@ -1653,6 +1668,59 @@ fn compile_literal(
     }
 }
 
+fn compile_variable_default_value(
+    value: &Value<'_, String>,
+    path: impl Into<String>,
+) -> Result<GraphqlVariableValue, CoreError> {
+    let path = path.into();
+    if let Value::List(items) = value {
+        let mut literals = Vec::with_capacity(items.len());
+        for (index, item) in items.iter().enumerate() {
+            literals.push(compile_variable_default_literal(
+                item,
+                format!("{path}[{index}]"),
+            )?);
+        }
+        return Ok(GraphqlVariableValue::List(literals));
+    }
+    Ok(GraphqlVariableValue::Literal(
+        compile_variable_default_literal(value, path)?,
+    ))
+}
+
+fn compile_variable_default_literal(
+    value: &Value<'_, String>,
+    path: impl Into<String>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    match value {
+        Value::Int(number) => number
+            .as_i64()
+            .map(Literal::Integer)
+            .ok_or_else(|| unsupported(path, "GraphQL default integer is out of range")),
+        Value::Float(value) if value.is_finite() => Ok(Literal::Float(OrderedFloat(*value))),
+        Value::Float(_) => Err(unsupported(
+            path,
+            "GraphQL default float values must be finite numbers",
+        )),
+        Value::String(value) | Value::Enum(value) => Ok(Literal::String(value.clone())),
+        Value::Boolean(value) => Ok(Literal::Boolean(*value)),
+        Value::Null => Ok(Literal::Null),
+        Value::Variable(_) => Err(unsupported(
+            path,
+            "GraphQL variable defaults cannot reference other variables",
+        )),
+        Value::List(_) => Err(unsupported(
+            path,
+            "nested GraphQL variable default lists are not supported yet",
+        )),
+        Value::Object(_) => Err(unsupported(
+            path,
+            "GraphQL object variable default values are not supported yet",
+        )),
+    }
+}
+
 fn compile_regex_literal(
     value: &Value<'_, String>,
     path: impl Into<String>,
@@ -2089,6 +2157,95 @@ mod tests {
     }
 
     #[test]
+    fn compiles_root_query_with_variable_defaults() {
+        let plan = compile_graphql_with_variables(
+            r#"
+            query Services(
+              $tier: String = "prod"
+              $names: [String!] = ["billing-api", "deployments"]
+              $sortField: ServiceOrderField = name
+              $sortDirection: SortDirection = DESC
+              $rowLimit: Int = 10
+              $dedupe: Boolean = true
+            ) {
+              Service(
+                where: {
+                  tier: { eq: $tier }
+                  name: { in: $names }
+                }
+                orderBy: [{ field: $sortField, direction: $sortDirection }]
+                limit: $rowLimit
+                distinct: $dedupe
+              ) {
+                name
+              }
+            }
+            "#,
+            &BTreeMap::new(),
+        )
+        .expect("GraphQL variable defaults should compile");
+
+        assert_eq!(plan.predicates.len(), 2);
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "tier"
+                && predicate.rhs == PredicateRhs::Literal(Literal::String("prod".to_string()))
+        }));
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "name"
+                && matches!(
+                    &predicate.rhs,
+                    PredicateRhs::List(values)
+                        if values
+                            == &vec![
+                                Literal::String("billing-api".to_string()),
+                                Literal::String("deployments".to_string()),
+                            ]
+                )
+        }));
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Descending,
+            }]
+        );
+        assert_eq!(plan.limit, Some(10));
+        assert!(plan.distinct);
+    }
+
+    #[test]
+    fn runtime_graphql_variables_override_defaults() {
+        let variables = BTreeMap::from([(
+            "tier".to_string(),
+            GraphqlVariableValue::Literal(Literal::String("dev".to_string())),
+        )]);
+        let plan = compile_graphql_with_variables(
+            r#"
+            query Services($tier: String = "prod") {
+              Service(where: { tier: { eq: $tier } }) { name }
+            }
+            "#,
+            &variables,
+        )
+        .expect("runtime variables should override defaults");
+
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("dev".to_string())),
+            }]
+        );
+    }
+
+    #[test]
     fn rejects_missing_graphql_variables() {
         let error = compile_graphql_with_variables(
             r"
@@ -2157,21 +2314,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_graphql_variable_defaults() {
+    fn rejects_graphql_object_variable_defaults() {
         let error = compile_graphql_with_variables(
             r#"
-            query Services($tier: String = "prod") {
-              Service(where: { tier: { eq: $tier } }) { name }
+            query Services($where: ServiceWhere = { tier: { eq: "prod" } }) {
+              Service(where: $where) { name }
             }
             "#,
             &BTreeMap::new(),
         )
-        .expect_err("GraphQL variable defaults should fail");
+        .expect_err("GraphQL object variable defaults should fail");
 
         assert!(
             error
                 .to_string()
-                .contains("GraphQL variable default values are not supported yet"),
+                .contains("GraphQL object variable default values are not supported yet"),
             "{error}"
         );
     }
