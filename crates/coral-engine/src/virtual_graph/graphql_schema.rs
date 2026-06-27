@@ -172,9 +172,9 @@ const GRAPHQL_ELEMENT_ID_FILTER_SDL: &str = r"input CoralGraphElementIdFilter {
 /// The generated schema describes the executable subset accepted by
 /// `compile_graphql_for_graph`: root node fields, scalar property selections,
 /// reserved identity fields, relationship traversal fields, relationship object
-/// types, filters, ordering, and row modifiers. Source column types are
-/// intentionally exposed as the custom `CoralGraphValue` scalar because v1 graph
-/// declarations do not carry property type metadata.
+/// types, flat aggregate fields, filters, ordering, and row modifiers. Source
+/// column types are intentionally exposed as the custom `CoralGraphValue`
+/// scalar because v1 graph declarations do not carry property type metadata.
 ///
 /// # Errors
 ///
@@ -195,6 +195,9 @@ pub fn graphql_schema_sdl_for_graph(graph: &Declaration) -> Result<String, CoreE
 
     for node in &graph.nodes {
         push_node_order_field_enum(&mut sdl, node);
+        if !node_property_names(node).is_empty() {
+            push_node_aggregate_field_enum(&mut sdl, node);
+        }
         push_node_order_input(&mut sdl, node);
         push_where_input(
             &mut sdl,
@@ -258,6 +261,15 @@ fn push_node_order_field_enum(sdl: &mut String, node: &Node) {
     sdl.push_str("}\n\n");
 }
 
+fn push_node_aggregate_field_enum(sdl: &mut String, node: &Node) {
+    writeln!(sdl, "enum {} {{", node_aggregate_field_type(&node.label))
+        .expect("writing GraphQL SDL to string should not fail");
+    for property in node_property_names(node) {
+        writeln!(sdl, "  {property}").expect("writing GraphQL SDL to string should not fail");
+    }
+    sdl.push_str("}\n\n");
+}
+
 fn push_node_order_input(sdl: &mut String, node: &Node) {
     write!(
         sdl,
@@ -304,6 +316,35 @@ fn push_node_type(sdl: &mut String, graph: &Declaration, node: &Node) {
     writeln!(sdl, "type {} {{", node.label).expect("writing GraphQL SDL to string should not fail");
     sdl.push_str("  _id: CoralGraphValue\n");
     sdl.push_str("  _elementId: String\n");
+    if node_property_names(node).is_empty() {
+        sdl.push_str("  _count: Int\n");
+    } else {
+        let aggregate_field_type = node_aggregate_field_type(&node.label);
+        writeln!(sdl, "  _count(field: {aggregate_field_type}): Int")
+            .expect("writing GraphQL SDL to string should not fail");
+        writeln!(sdl, "  _countDistinct(field: {aggregate_field_type}!): Int")
+            .expect("writing GraphQL SDL to string should not fail");
+        writeln!(
+            sdl,
+            "  _sum(field: {aggregate_field_type}!): CoralGraphValue"
+        )
+        .expect("writing GraphQL SDL to string should not fail");
+        writeln!(
+            sdl,
+            "  _avg(field: {aggregate_field_type}!): CoralGraphValue"
+        )
+        .expect("writing GraphQL SDL to string should not fail");
+        writeln!(
+            sdl,
+            "  _min(field: {aggregate_field_type}!): CoralGraphValue"
+        )
+        .expect("writing GraphQL SDL to string should not fail");
+        writeln!(
+            sdl,
+            "  _max(field: {aggregate_field_type}!): CoralGraphValue"
+        )
+        .expect("writing GraphQL SDL to string should not fail");
+    }
     for property in node_property_names(node) {
         writeln!(sdl, "  {property}: CoralGraphValue")
             .expect("writing GraphQL SDL to string should not fail");
@@ -354,8 +395,17 @@ fn validate_graphql_schema_names(graph: &Declaration) -> Result<(), CoreError> {
         validate_graphql_name(&node_where_type(&node.label), format!("{path}.label"))?;
         validate_graphql_name(&node_order_by_type(&node.label), format!("{path}.label"))?;
         validate_graphql_name(&node_order_field_type(&node.label), format!("{path}.label"))?;
+        if !node_property_names(node).is_empty() {
+            validate_graphql_name(
+                &node_aggregate_field_type(&node.label),
+                format!("{path}.label"),
+            )?;
+        }
         for property in node_property_names(node) {
-            validate_graphql_property_name(&property, format!("{path}.properties.{property}"))?;
+            validate_graphql_node_property_name(
+                &property,
+                format!("{path}.properties.{property}"),
+            )?;
         }
     }
 
@@ -404,6 +454,13 @@ fn validate_generated_type_names_are_unique(graph: &Declaration) -> Result<(), C
             &node_order_field_type(&node.label),
             format!("node '{}'", node.label),
         )?;
+        if !node_property_names(node).is_empty() {
+            insert_generated_type_name(
+                &mut names,
+                &node_aggregate_field_type(&node.label),
+                format!("node '{}'", node.label),
+            )?;
+        }
     }
     let mut relationship_types = BTreeSet::new();
     for relationship in &graph.relationships {
@@ -640,6 +697,10 @@ fn node_order_field_type(label: &str) -> String {
     format!("{label}OrderField")
 }
 
+fn node_aggregate_field_type(label: &str) -> String {
+    format!("{label}AggregateField")
+}
+
 fn relationship_where_type(relationship_type: &str) -> String {
     format!("{relationship_type}RelationshipWhere")
 }
@@ -663,6 +724,25 @@ fn capitalize_graphql_suffix(value: &str) -> String {
         Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
         None => String::new(),
     }
+}
+
+fn validate_graphql_node_property_name(
+    name: &str,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    if matches!(
+        name,
+        "_count" | "_countDistinct" | "_sum" | "_avg" | "_min" | "_max"
+    ) {
+        return Err(Diagnostic::new(
+            "UNSUPPORTED_GRAPHQL_SCHEMA",
+            path,
+            format!("graph property '{name}' collides with a reserved GraphQL virtual field"),
+        )
+        .into_core_error());
+    }
+    validate_graphql_property_name(name, path)
 }
 
 fn validate_graphql_property_name(name: &str, path: impl Into<String>) -> Result<(), CoreError> {

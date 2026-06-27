@@ -11,9 +11,10 @@ use regex::Regex;
 use super::declaration::Declaration;
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    ComparisonOperator, Direction, ElementIdPredicate, GraphPlan, KeyPredicate, Literal,
-    NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
-    Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
+    GraphPlan, KeyPredicate, Literal, NodePattern, OrderDirection, OrderExpression, OrderKey,
+    PredicateExpression, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
+    RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -538,8 +539,10 @@ fn compile_selection_set_into_plan(
                         compile_context,
                         fragment_stack,
                     )?;
-                } else if field.selection_set.items.is_empty() {
-                    compile_property_field(plan, field, context, &item_path)?;
+                } else if is_node_aggregate_field(&field.name)
+                    || field.selection_set.items.is_empty()
+                {
+                    compile_property_field(plan, field, context, &item_path, compile_context)?;
                 } else {
                     let graph = graph.ok_or_else(|| {
                         unsupported(
@@ -586,7 +589,12 @@ fn compile_property_field(
     field: &Field<'_, String>,
     context: &NodeContext,
     path: &str,
+    compile_context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<(), CoreError> {
+    if let Some(projection) = compile_node_aggregate_field(field, context, path, compile_context)? {
+        push_graphql_projection(plan, projection, path)?;
+        return Ok(());
+    }
     if !field.arguments.is_empty() {
         return Err(unsupported(
             format!("{path}.arguments"),
@@ -637,6 +645,147 @@ fn compile_property_field(
         },
         path,
     )
+}
+
+fn is_node_aggregate_field(name: &str) -> bool {
+    matches!(
+        name,
+        "_count" | "_countDistinct" | "_sum" | "_avg" | "_min" | "_max"
+    )
+}
+
+fn compile_node_aggregate_field(
+    field: &Field<'_, String>,
+    context: &NodeContext,
+    path: &str,
+    compile_context: &GraphqlCompileContext<'_, '_>,
+) -> Result<Option<Projection>, CoreError> {
+    if !is_node_aggregate_field(&field.name) {
+        return Ok(None);
+    }
+    if !field.selection_set.items.is_empty() {
+        return Err(unsupported(
+            format!("{path}.selectionSet"),
+            "GraphQL aggregate fields must not select nested fields",
+        ));
+    }
+
+    let alias = projection_alias(field, context);
+    let projection = match field.name.as_str() {
+        "_count" => compile_count_aggregate_field(field, context, path, compile_context, alias)?,
+        "_countDistinct" => compile_property_aggregate_field(
+            field,
+            context,
+            path,
+            compile_context,
+            AggregateFunction::Count,
+            true,
+            alias,
+        )?,
+        "_sum" => compile_property_aggregate_field(
+            field,
+            context,
+            path,
+            compile_context,
+            AggregateFunction::Sum,
+            false,
+            alias,
+        )?,
+        "_avg" => compile_property_aggregate_field(
+            field,
+            context,
+            path,
+            compile_context,
+            AggregateFunction::Avg,
+            false,
+            alias,
+        )?,
+        "_min" => compile_property_aggregate_field(
+            field,
+            context,
+            path,
+            compile_context,
+            AggregateFunction::Min,
+            false,
+            alias,
+        )?,
+        "_max" => compile_property_aggregate_field(
+            field,
+            context,
+            path,
+            compile_context,
+            AggregateFunction::Max,
+            false,
+            alias,
+        )?,
+        _ => unreachable!("aggregate field name was checked"),
+    };
+    Ok(Some(projection))
+}
+
+fn compile_count_aggregate_field(
+    field: &Field<'_, String>,
+    context: &NodeContext,
+    path: &str,
+    compile_context: &GraphqlCompileContext<'_, '_>,
+    alias: String,
+) -> Result<Projection, CoreError> {
+    if field.arguments.is_empty() {
+        return Ok(Projection::CountAll { alias });
+    }
+    compile_property_aggregate_field(
+        field,
+        context,
+        path,
+        compile_context,
+        AggregateFunction::Count,
+        false,
+        alias,
+    )
+}
+
+fn compile_property_aggregate_field(
+    field: &Field<'_, String>,
+    context: &NodeContext,
+    path: &str,
+    compile_context: &GraphqlCompileContext<'_, '_>,
+    function: AggregateFunction,
+    distinct: bool,
+    alias: String,
+) -> Result<Projection, CoreError> {
+    let property = compile_single_aggregate_field_argument(field, path, compile_context)?;
+    Ok(Projection::Aggregate {
+        function,
+        target: AggregateTarget::Property(PropertyRef {
+            variable: context.variable.clone(),
+            property,
+        }),
+        distinct,
+        alias,
+    })
+}
+
+fn compile_single_aggregate_field_argument(
+    field: &Field<'_, String>,
+    path: &str,
+    compile_context: &GraphqlCompileContext<'_, '_>,
+) -> Result<String, CoreError> {
+    let [(name, value)] = field.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            format!(
+                "GraphQL aggregate field '{}' requires exactly one 'field' argument",
+                field.name
+            ),
+        ));
+    };
+    if name != "field" {
+        return Err(unsupported(
+            format!("{path}.arguments[0].{name}"),
+            format!("unsupported GraphQL aggregate argument '{name}'"),
+        ));
+    }
+    compile_name_value(value, format!("{path}.arguments[0].field"), compile_context)
 }
 
 fn compile_fragment_spread(
@@ -3226,6 +3375,97 @@ mod tests {
     }
 
     #[test]
+    fn compiles_graphql_flat_aggregate_fields() {
+        let plan = compile_graphql(
+            r"
+            query {
+              Service {
+                tier
+                services: _count
+                namedServices: _count(field: name)
+                tiers: _countDistinct(field: tier)
+                totalRisk: _sum(field: risk)
+                averageRisk: _avg(field: risk)
+                minRisk: _min(field: risk)
+                maxRisk: _max(field: risk)
+              }
+            }
+            ",
+        )
+        .expect("GraphQL flat aggregate fields should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("tier".to_string()),
+                },
+                Projection::CountAll {
+                    alias: "services".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Count,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "namedServices".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Count,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    distinct: true,
+                    alias: "tiers".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Sum,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "totalRisk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Avg,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "averageRisk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Min,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "minRisk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Max,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "maxRisk".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn rejects_graphql_string_filters_on_raw_identity_fields() {
         let error = compile_graphql(
             r#"
@@ -3419,6 +3659,44 @@ mod tests {
             .as_ref()
             .expect("negated GraphQL filters should compile into the predicate tree");
         assert!(predicate_expression_contains_not(expression));
+    }
+
+    #[test]
+    fn rejects_invalid_graphql_flat_aggregate_arguments() {
+        for query in [
+            r"
+            query {
+              Service {
+                _sum
+              }
+            }
+            ",
+            r"
+            query {
+              Service {
+                _avg(property: risk)
+              }
+            }
+            ",
+            r"
+            query {
+              Service {
+                _countDistinct {
+                  value
+                }
+              }
+            }
+            ",
+        ] {
+            let error = compile_graphql(query)
+                .expect_err("invalid GraphQL flat aggregate field should fail");
+
+            assert!(
+                error.to_string().contains("GraphQL aggregate")
+                    || error.to_string().contains("unsupported GraphQL aggregate"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
@@ -5361,6 +5639,10 @@ nodes:
         assert!(sdl.contains("  NOT: PersonWhere"));
         assert!(sdl.contains("enum PersonOrderField {"));
         assert!(sdl.contains("  team"));
+        assert!(sdl.contains("enum PersonAggregateField {"));
+        assert!(sdl.contains("  _count(field: PersonAggregateField): Int"));
+        assert!(sdl.contains("  _countDistinct(field: PersonAggregateField!): Int"));
+        assert!(sdl.contains("  _avg(field: PersonAggregateField!): CoralGraphValue"));
         assert!(sdl.contains(
             "out_OWNS(to: PersonOutOWNSToLabel!, where: ServiceWhere, relationshipWhere: OWNSRelationshipWhere): [Service!]!"
         ));

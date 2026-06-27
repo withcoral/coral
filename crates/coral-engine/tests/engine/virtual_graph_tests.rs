@@ -646,6 +646,102 @@ async fn graphql_shorthand_order_by_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_flat_aggregate_fields_match_equivalent_sql() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let graph_execution = CoralQuery::execute_graphql(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        r"
+        query {
+          Service(
+            where: { tier: { isNotNull: true } }
+            orderBy: [{ field: tier, direction: ASC }]
+          ) {
+            tier
+            services: _count
+            namedServices: _count(field: name)
+            tierKinds: _countDistinct(field: tier)
+            totalRisk: _sum(field: risk)
+            averageRisk: _avg(field: risk)
+            minRisk: _min(field: risk)
+            maxRisk: _max(field: risk)
+          }
+        }
+        ",
+    )
+    .await
+    .expect("GraphQL flat aggregate fields should execute");
+
+    assert!(
+        graph_execution
+            .translated_sql()
+            .contains("COUNT(*) AS \"services\""),
+        "{}",
+        graph_execution.translated_sql()
+    );
+    assert!(
+        graph_execution
+            .translated_sql()
+            .contains("SUM(\"n0\".\"risk_score\") AS \"totalRisk\""),
+        "{}",
+        graph_execution.translated_sql()
+    );
+
+    let sql_execution = CoralQuery::execute_sql(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        "SELECT tier, \
+                COUNT(*) AS \"services\", \
+                COUNT(service_name) AS \"namedServices\", \
+                COUNT(DISTINCT tier) AS \"tierKinds\", \
+                SUM(risk_score) AS \"totalRisk\", \
+                AVG(risk_score) AS \"averageRisk\", \
+                MIN(risk_score) AS \"minRisk\", \
+                MAX(risk_score) AS \"maxRisk\" \
+         FROM ops.services \
+         WHERE tier IS NOT NULL \
+         GROUP BY tier \
+         ORDER BY tier ASC",
+    )
+    .await
+    .expect("equivalent SQL should execute");
+
+    let graph_rows = execution_to_rows(graph_execution.execution());
+    let sql_rows = execution_to_rows(&sql_execution);
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![
+            json!({
+                "tier": "dev",
+                "services": 1,
+                "namedServices": 1,
+                "tierKinds": 1,
+                "totalRisk": 0.25,
+                "averageRisk": 0.25,
+                "minRisk": 0.25,
+                "maxRisk": 0.25
+            }),
+            json!({
+                "tier": "prod",
+                "services": 2,
+                "namedServices": 2,
+                "tierKinds": 1,
+                "totalRisk": 1.4,
+                "averageRisk": 0.7,
+                "minRisk": 0.5,
+                "maxRisk": 0.9
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_variable_defaults_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
