@@ -619,15 +619,9 @@ fn compile_static_alternative_outer_aggregate_item(
     let function_kind = compile_aggregate_function(function).ok_or_else(|| {
         unsupported(
             format!("{path}.return.items[{index}].expression"),
-            "static label/type alternatives only support count(*) and count(property) aggregates after expansion",
+            "static label/type alternatives only support property aggregates after expansion",
         )
     })?;
-    if function_kind == AggregateFunction::Collect {
-        return Err(unsupported(
-            format!("{path}.return.items[{index}].expression"),
-            "static label/type alternatives do not support collect(property) after expansion yet",
-        ));
-    }
     reject_unsupported_distinct_aggregate(
         function_kind,
         function.distinct,
@@ -9072,14 +9066,34 @@ mod tests {
     }
 
     #[test]
-    fn rejects_static_label_alternatives_with_collect_property_projection() {
-        let error = compile_cypher_query(
+    fn compiles_static_label_alternatives_with_collect_property_projection() {
+        let query = compile_cypher_query(
             "MATCH (entity:Person|Team)-[:OWNS]->(service:Service) \
-             RETURN entity.name AS name, collect(service.name) AS services",
+             RETURN entity.name AS name, collect(DISTINCT service.name) AS services \
+             ORDER BY name",
         )
-        .expect_err("collect should remain a staged planning feature");
+        .expect("collect(property) should compile as an outer union aggregate");
 
-        assert!(error.to_string().contains("collect(property)"));
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert_eq!(
+            union.outer_projection,
+            Some(GraphUnionOuterProjection {
+                items: vec![
+                    GraphUnionOuterProjectionItem::Column {
+                        name: "name".to_string(),
+                    },
+                    GraphUnionOuterProjectionItem::Aggregate {
+                        function: AggregateFunction::Collect,
+                        source: "__coral_agg_1".to_string(),
+                        distinct: true,
+                        alias: "services".to_string(),
+                    },
+                ],
+                group_by: vec!["name".to_string()],
+            })
+        );
     }
 
     #[test]

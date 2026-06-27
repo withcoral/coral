@@ -349,6 +349,52 @@ async fn cypher_static_node_label_alternatives_grouped_count_property_after_unio
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_collect_property_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN owner.name AS owner, collect(DISTINCT service.name) AS services \
+         ORDER BY owner",
+    )
+    .await
+    .expect("static label alternatives with outer collect(property) should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ARRAY_AGG(DISTINCT \"__coral_agg_1\") AS \"services\""),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    for row in &mut rows {
+        let services = row
+            .get_mut("services")
+            .and_then(Value::as_array_mut)
+            .expect("services should be a JSON array");
+        services.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+    }
+    assert_eq!(
+        rows,
+        vec![
+            json!({"owner": "Ada Lovelace", "services": ["billing-api"]}),
+            json!({"owner": "Grace Hopper", "services": ["deployments"]}),
+            json!({"owner": "Katherine Johnson", "services": ["experiments"]}),
+            json!({"owner": "analytics", "services": ["experiments"]}),
+            json!({"owner": "infra", "services": ["deployments"]}),
+            json!({"owner": "platform", "services": ["billing-api", "legacy-sync"]}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_numeric_aggregates_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
