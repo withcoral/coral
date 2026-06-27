@@ -56,7 +56,8 @@ The foundation slice establishes:
   diagnostics before SQL lowering.
 - catalog-aware scalar type validation for runtime graph execution, including
   `coalesce`, `nullIf`, CASE result branches, string and numeric functions,
-  arithmetic, and scalar/direct predicate operands.
+  GQL scalar aliases such as `ceiling` and `ln`, arithmetic, and scalar/direct
+  predicate operands.
 - catalog-aware numeric aggregate target validation for runtime graph
   execution, so non-numeric mapped properties are rejected before DataFusion
   planning for `sum`, `avg`, `median`, `stDev`, and `stDevP`.

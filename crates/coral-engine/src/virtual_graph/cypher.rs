@@ -8031,6 +8031,7 @@ fn is_ceil_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("ceil")
+            || name.name.eq_ignore_ascii_case("ceiling")
     )
 }
 
@@ -8073,6 +8074,7 @@ fn is_log_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("log")
+            || name.name.eq_ignore_ascii_case("ln")
     )
 }
 
@@ -14987,6 +14989,39 @@ mod tests {
                     ..
                 },
             ] if alias == "risk_root"
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Log { .. }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        ));
+    }
+
+    #[test]
+    fn compiles_gql_numeric_scalar_aliases() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN ceiling(service.risk) AS risk_ceiling, \
+                    ln(service.risk) AS risk_ln \
+             ORDER BY ln(service.risk)",
+        )
+        .expect("GQL numeric scalar aliases should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Ceil { .. },
+                    alias: risk_ceiling,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Log { .. },
+                    alias: risk_ln,
+                },
+            ] if risk_ceiling == "risk_ceiling" && risk_ln == "risk_ln"
         ));
         assert!(matches!(
             plan.order_by.as_slice(),

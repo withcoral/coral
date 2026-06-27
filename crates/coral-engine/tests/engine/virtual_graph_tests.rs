@@ -6314,8 +6314,9 @@ async fn cypher_more_numeric_scalar_expressions_execute_against_synthetic_source
          RETURN service.name AS service, \
                 sqrt(service.risk) AS risk_root, \
                 sign(service.risk - 0.5) AS risk_sign, \
+                ceiling(service.risk) AS risk_ceiling_alias, \
                 exp(0.0) AS exp_zero, \
-                log(1.0) AS ln_one, \
+                ln(1.0) AS ln_one, \
                 log10(100.0) AS log10_hundred",
     )
     .await
@@ -6336,6 +6337,13 @@ async fn cypher_more_numeric_scalar_expressions_execute_against_synthetic_source
         execution.translated_sql()
     );
     assert!(
+        execution
+            .translated_sql()
+            .contains("ceil(\"n0\".\"risk_score\") AS \"risk_ceiling_alias\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
         execution.translated_sql().contains("ln(1) AS \"ln_one\""),
         "{}",
         execution.translated_sql()
@@ -6346,6 +6354,7 @@ async fn cypher_more_numeric_scalar_expressions_execute_against_synthetic_source
             "service": "experiments",
             "risk_root": 0.5,
             "risk_sign": -1.0,
+            "risk_ceiling_alias": 1.0,
             "exp_zero": 1.0,
             "ln_one": 0.0,
             "log10_hundred": 2.0,
