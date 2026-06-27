@@ -563,14 +563,20 @@ fn compile_transparent_multi_part_part(
         plan,
         context,
     )?;
-    validate_transparent_with(&part.with, plan, format!("parts[{index}].with"))
+    if let Some(predicate) =
+        validate_transparent_with(&part.with, plan, format!("parts[{index}].with"), context)?
+    {
+        append_predicate_expression(predicate, plan);
+    }
+    Ok(())
 }
 
 fn validate_transparent_with(
     with: &With,
     plan: &GraphPlan,
     path: impl Into<String>,
-) -> Result<(), CoreError> {
+    context: &CypherCompileContext,
+) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
     if with.distinct {
         return Err(unsupported(
@@ -584,12 +590,6 @@ fn validate_transparent_with(
             "WITH ORDER BY, SKIP, and LIMIT require staged query planning and are not supported yet",
         ));
     }
-    if with.where_clause.is_some() {
-        return Err(unsupported(
-            format!("{path}.where"),
-            "WITH WHERE requires staged query planning and is not supported yet",
-        ));
-    }
     if with.star {
         if !with.items.is_empty() {
             return Err(unsupported(
@@ -597,7 +597,7 @@ fn validate_transparent_with(
                 "WITH * mixed with explicit projections requires scoped query planning and is not supported yet",
             ));
         }
-        return Ok(());
+        return compile_transparent_with_where(with, plan, path, context);
     }
     if with.items.is_empty() {
         return Err(unsupported(
@@ -631,7 +631,22 @@ fn validate_transparent_with(
         ));
     }
 
-    Ok(())
+    compile_transparent_with_where(with, plan, path, context)
+}
+
+fn compile_transparent_with_where(
+    with: &With,
+    plan: &GraphPlan,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    let path = path.into();
+    with.where_clause
+        .as_ref()
+        .map(|where_clause| {
+            compile_predicate_expression(where_clause, format!("{path}.where"), plan, context)
+        })
+        .transpose()
 }
 
 fn bound_graph_variables(plan: &GraphPlan) -> BTreeSet<String> {
@@ -5479,6 +5494,32 @@ mod tests {
     }
 
     #[test]
+    fn compiles_transparent_with_where_pass_through() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH service \
+             WHERE service.tier = 'prod' \
+             MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+             RETURN service.name AS source, target.name AS target",
+        )
+        .expect("transparent WITH WHERE query should compile");
+
+        assert_eq!(plan.nodes.len(), 2);
+        assert_eq!(plan.relationships.len(), 1);
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_transparent_with_star_pass_through() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -5491,6 +5532,32 @@ mod tests {
         assert_eq!(plan.nodes.len(), 2);
         assert_eq!(plan.relationships.len(), 1);
         assert_eq!(plan.projections.len(), 2);
+    }
+
+    #[test]
+    fn compiles_transparent_with_star_where_pass_through() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH * \
+             WHERE service.active = true \
+             MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+             RETURN service.name AS source, target.name AS target",
+        )
+        .expect("transparent WITH * WHERE query should compile");
+
+        assert_eq!(plan.nodes.len(), 2);
+        assert_eq!(plan.relationships.len(), 1);
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "active".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::Boolean(true)),
+            }]
+        );
     }
 
     #[test]
@@ -8954,9 +9021,6 @@ mod tests {
         assert_unsupported("MATCH (service:Service) WITH DISTINCT service RETURN service.name");
         assert_unsupported("MATCH (service:Service) WITH *, service.name AS name RETURN name");
         assert_unsupported("MATCH (service:Service) WITH service LIMIT 1 RETURN service.name");
-        assert_unsupported(
-            "MATCH (service:Service) WITH service WHERE service.tier = 'prod' RETURN service.name",
-        );
         assert_unsupported(
             "MATCH (person:Person)-[:OWNS]->(service:Service) WITH service RETURN service.name",
         );
