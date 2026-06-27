@@ -1519,6 +1519,10 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Property(property) => self.render_property_ref(property),
             ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
             ScalarExpression::Predicate(predicate) => self.render_predicate_expression(predicate),
+            ScalarExpression::RelationshipType {
+                variable,
+                relationship_type,
+            } => self.render_relationship_type_ref(variable, relationship_type),
             ScalarExpression::Coalesce { expressions } => {
                 let rendered = expressions
                     .iter()
@@ -3407,6 +3411,72 @@ relationships: []
             translation
                 .sql()
                 .contains("WHERE COALESCE(\"n1\".\"tier\", 'unassigned') IN ('prod', 'dev')"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_relationship_type_scalar_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.relationships
+            .first_mut()
+            .expect("ownership plan should have a relationship")
+            .variable = Some("owns".to_string());
+        plan.predicates.clear();
+        plan.projections = vec![Projection::Expression {
+            expression: ScalarExpression::Coalesce {
+                expressions: vec![
+                    ScalarExpression::RelationshipType {
+                        variable: "owns".to_string(),
+                        relationship_type: "OWNS".to_string(),
+                    },
+                    ScalarExpression::Literal(Literal::String("missing".to_string())),
+                ],
+            },
+            alias: "relationship_type".to_string(),
+        }];
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::RelationshipType {
+                variable: "owns".to_string(),
+                relationship_type: "OWNS".to_string(),
+            },
+            operator: ComparisonOperator::Equal,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                "OWNS".to_string(),
+            ))),
+        }));
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::Scalar(ScalarExpression::RelationshipType {
+                variable: "owns".to_string(),
+                relationship_type: "OWNS".to_string(),
+            }),
+            direction: OrderDirection::Ascending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("relationship type scalar expression should lower");
+
+        assert!(
+            translation.sql().contains(
+                "COALESCE(CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL ELSE 'OWNS' END, 'missing') AS \"relationship_type\""
+            ),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation.sql().contains(
+                "WHERE CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL ELSE 'OWNS' END = 'OWNS'"
+            ),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation.sql().contains(
+                "ORDER BY CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL ELSE 'OWNS' END ASC"
+            ),
             "{}",
             translation.sql()
         );

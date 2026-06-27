@@ -120,9 +120,11 @@ The supported foundation subset is intentionally narrow:
   `abs`, `ceil`, `floor`, `round`, `sqrt`, `sign`, `exp`, `log`, `log10`,
   constants `pi` and `e`, and trigonometric `sin`, `cos`, `tan`, `cot`,
   `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians`, and `haversin`;
-  Cypher `log` lowers to DataFusion `ln` to preserve natural-log semantics,
-  while `pi()` and `e()` compile to deterministic float literals and
-  `haversin(x)` lowers as `(1 - cos(x)) / 2`;
+  `type(relationship)` can also be nested in scalar expressions and lowers to
+  static relationship type metadata while preserving null for unmatched
+  optional relationships. Cypher `log` lowers to DataFusion `ln` to preserve
+  natural-log semantics, while `pi()` and `e()` compile to deterministic float
+  literals and `haversin(x)` lowers as `(1 - cos(x)) / 2`;
 - projected and ordered searched `CASE` expressions can reference optional
   bindings and preserve SQL null/unknown semantics without moving those
   predicates into row-filtering scope;

@@ -145,6 +145,14 @@ pub enum ScalarExpression {
     Literal(Literal),
     /// A boolean predicate used as a scalar value.
     Predicate(Box<PredicateExpression>),
+    /// Static type of a relationship variable, preserving null for unmatched
+    /// optional relationships.
+    RelationshipType {
+        /// Graph relationship variable.
+        variable: String,
+        /// Static graph relationship type.
+        relationship_type: String,
+    },
     /// Return the first non-null scalar expression.
     Coalesce {
         /// Candidate expressions in priority order.

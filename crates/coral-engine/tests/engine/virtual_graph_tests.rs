@@ -5480,6 +5480,87 @@ async fn cypher_id_and_type_projections_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_relationship_type_scalar_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         RETURN service.name AS service, \
+                coalesce(type(owns), 'missing') AS ownership_type, \
+                CASE WHEN type(owns) = 'OWNS' THEN type(owns) ELSE 'other' END AS type_bucket \
+         ORDER BY coalesce(type(owns), 'missing'), service",
+    )
+    .await
+    .expect("relationship type scalar expression query should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "COALESCE(CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL ELSE 'OWNS' END, 'missing') AS \"ownership_type\""
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains(
+            "CASE WHEN TRUE THEN CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL ELSE 'OWNS' END ELSE 'other' END AS \"type_bucket\""
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "ownership_type": "OWNS", "type_bucket": "OWNS"}),
+            json!({"service": "deployments", "ownership_type": "OWNS", "type_bucket": "OWNS"}),
+            json!({"service": "experiments", "ownership_type": "OWNS", "type_bucket": "OWNS"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_relationship_type_scalar_expressions_preserve_optional_nulls() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[owns:OWNS]->(service) \
+         RETURN service.name AS service, coalesce(type(owns), 'unowned') AS ownership_type \
+         ORDER BY service",
+    )
+    .await
+    .expect("optional relationship type scalar expression query should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "COALESCE(CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL ELSE 'OWNS' END, 'unowned') AS \"ownership_type\""
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "ownership_type": "OWNS"}),
+            json!({"service": "deployments", "ownership_type": "OWNS"}),
+            json!({"service": "experiments", "ownership_type": "OWNS"}),
+            json!({"service": "legacy-sync", "ownership_type": "unowned"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_labels_projection_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -845,6 +845,9 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Predicate(predicate) => {
                 Self::collect_predicate_expression_variables(predicate, variables);
             }
+            ScalarExpression::RelationshipType { variable, .. } => {
+                variables.insert(variable.as_str());
+            }
             ScalarExpression::Coalesce { expressions } => {
                 for expression in expressions {
                     Self::collect_scalar_expression_variables(expression, variables);
@@ -1169,6 +1172,9 @@ impl<'a> GraphPlanValidator<'a> {
                     optional_variables,
                     path,
                 )
+            }
+            ScalarExpression::RelationshipType { variable, .. } => {
+                Self::validate_variable_not_optional(variable, optional_variables, path)
             }
             ScalarExpression::Coalesce { expressions } => {
                 Self::validate_coalesce_expression_not_optional(
@@ -2521,6 +2527,10 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Predicate(predicate) => {
                 self.validate_predicate_expression(predicate, path)
             }
+            ScalarExpression::RelationshipType {
+                variable,
+                relationship_type,
+            } => self.validate_relationship_type_projection(variable, relationship_type, path),
             ScalarExpression::Coalesce { expressions } => {
                 if expressions.len() < 2 {
                     return Err(Diagnostic::new(
@@ -2587,30 +2597,40 @@ impl<'a> GraphPlanValidator<'a> {
                 alternatives,
                 else_expression,
             } => {
-                if alternatives.is_empty() {
-                    return Err(Diagnostic::new(
-                        "INVALID_SCALAR_EXPRESSION",
-                        path,
-                        "CASE expressions require at least one WHEN/THEN alternative",
-                    )
-                    .into_core_error());
-                }
-                for (index, alternative) in alternatives.iter().enumerate() {
-                    self.validate_predicate_expression(
-                        &alternative.when,
-                        format!("{path}.alternatives[{index}].when"),
-                    )?;
-                    self.validate_scalar_expression(
-                        &alternative.then,
-                        format!("{path}.alternatives[{index}].then"),
-                    )?;
-                }
-                if let Some(else_expression) = else_expression {
-                    self.validate_scalar_expression(else_expression, format!("{path}.else"))?;
-                }
-                Ok(())
+                self.validate_case_scalar_expression(alternatives, else_expression.as_deref(), path)
             }
         }
+    }
+
+    fn validate_case_scalar_expression(
+        &self,
+        alternatives: &[ScalarCaseAlternative],
+        else_expression: Option<&ScalarExpression>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        if alternatives.is_empty() {
+            return Err(Diagnostic::new(
+                "INVALID_SCALAR_EXPRESSION",
+                path,
+                "CASE expressions require at least one WHEN/THEN alternative",
+            )
+            .into_core_error());
+        }
+        for (index, alternative) in alternatives.iter().enumerate() {
+            self.validate_predicate_expression(
+                &alternative.when,
+                format!("{path}.alternatives[{index}].when"),
+            )?;
+            self.validate_scalar_expression(
+                &alternative.then,
+                format!("{path}.alternatives[{index}].then"),
+            )?;
+        }
+        if let Some(else_expression) = else_expression {
+            self.validate_scalar_expression(else_expression, format!("{path}.else"))?;
+        }
+        Ok(())
     }
 
     fn validate_property_ref(
@@ -3304,6 +3324,50 @@ relationships:
         graph
             .validate_graph_plan(&plan)
             .expect("scalar expression projection should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_accepts_relationship_type_scalar_expression_projections() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Expression {
+            expression: ScalarExpression::Coalesce {
+                expressions: vec![
+                    ScalarExpression::RelationshipType {
+                        variable: "owns".to_string(),
+                        relationship_type: "OWNS".to_string(),
+                    },
+                    ScalarExpression::Literal(Literal::String("missing".to_string())),
+                ],
+            },
+            alias: "relationship_type".to_string(),
+        }];
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("relationship type scalar expression projection should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_invalid_relationship_type_scalar_expression_projections() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Expression {
+            expression: ScalarExpression::RelationshipType {
+                variable: "person".to_string(),
+                relationship_type: "OWNS".to_string(),
+            },
+            alias: "relationship_type".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("relationship type scalar over a node should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_TYPE_PROJECTION"),
+            "{error:?}"
+        );
     }
 
     #[test]
