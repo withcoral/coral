@@ -634,6 +634,13 @@ pub enum PredicateExpression {
         /// Right-hand expression.
         right: Box<PredicateExpression>,
     },
+    /// Boolean exclusive disjunction.
+    Xor {
+        /// Left-hand expression.
+        left: Box<PredicateExpression>,
+        /// Right-hand expression.
+        right: Box<PredicateExpression>,
+    },
     /// Boolean negation.
     Not {
         /// Negated expression.
@@ -668,6 +675,13 @@ pub enum ProjectionPredicateExpression {
     },
     /// Boolean disjunction.
     Or {
+        /// Left-hand expression.
+        left: Box<ProjectionPredicateExpression>,
+        /// Right-hand expression.
+        right: Box<ProjectionPredicateExpression>,
+    },
+    /// Boolean exclusive disjunction.
+    Xor {
         /// Left-hand expression.
         left: Box<ProjectionPredicateExpression>,
         /// Right-hand expression.

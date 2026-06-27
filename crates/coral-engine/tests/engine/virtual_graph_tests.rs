@@ -966,6 +966,36 @@ async fn cypher_or_predicates_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_xor_predicates_execute_with_sql_null_semantics() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier = 'prod' XOR service.name CONTAINS 'billing' \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher XOR predicate query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" AND NOT ("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "deployments"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_not_predicates_execute_with_sql_null_semantics() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -1640,6 +1670,44 @@ async fn cypher_searched_case_scalar_expressions_execute_against_synthetic_sourc
             json!({"service": "legacy-sync", "risk_band": "high"}),
             json!({"service": "deployments", "risk_band": "active"}),
             json!({"service": "experiments", "risk_band": "low"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_xor_case_predicates_execute_with_sql_null_semantics() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                CASE \
+                  WHEN service.tier = 'prod' XOR service.name CONTAINS 'billing' THEN 'xor' \
+                  ELSE 'other' \
+                END AS marker \
+         ORDER BY service",
+    )
+    .await
+    .expect("searched CASE XOR predicate query should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN (("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "marker": "other"}),
+            json!({"service": "deployments", "marker": "xor"}),
+            json!({"service": "experiments", "marker": "other"}),
+            json!({"service": "legacy-sync", "marker": "other"}),
         ]
     );
 }

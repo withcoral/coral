@@ -102,20 +102,13 @@ impl<'a> PredicateCompileMode<'a> {
         }
     }
 
-    fn label(self) -> &'static str {
-        match self {
-            Self::Graph { .. } => "WHERE",
-            Self::CaseWhen => "CASE WHEN",
-        }
-    }
-
     fn unsupported_predicate_message(self) -> &'static str {
         match self {
             Self::Graph { .. } => {
-                "WHERE only supports graph property, id(), elementId(), labels(), keys(), and supported scalar predicates combined with AND, OR, and NOT"
+                "WHERE only supports graph property, id(), elementId(), labels(), keys(), and supported scalar predicates combined with AND, OR, XOR, and NOT"
             }
             Self::CaseWhen => {
-                "CASE WHEN predicates support property/scalar comparisons, IN literal lists, null checks, exists(property), boolean literals, and AND/OR/NOT"
+                "CASE WHEN predicates support property/scalar comparisons, IN literal lists, null checks, exists(property), boolean literals, and AND/OR/XOR/NOT"
             }
         }
     }
@@ -3338,50 +3331,17 @@ fn compile_predicate_expression_in_mode(
             compile_predicate_expression_in_mode(inner, path, mode, context)
         }
         Expression::BinaryOp {
-            op: CypherBinaryOperator::And,
-            lhs,
-            rhs,
-            ..
-        } => Ok(PredicateExpression::And {
-            left: Box::new(compile_predicate_expression_in_mode(
-                lhs,
-                format!("{path}.lhs"),
-                mode,
-                context,
-            )?),
-            right: Box::new(compile_predicate_expression_in_mode(
-                rhs,
-                format!("{path}.rhs"),
-                mode,
-                context,
-            )?),
-        }),
-        Expression::BinaryOp {
-            op: CypherBinaryOperator::Or,
-            lhs,
-            rhs,
-            ..
-        } => Ok(PredicateExpression::Or {
-            left: Box::new(compile_predicate_expression_in_mode(
-                lhs,
-                format!("{path}.lhs"),
-                mode,
-                context,
-            )?),
-            right: Box::new(compile_predicate_expression_in_mode(
-                rhs,
-                format!("{path}.rhs"),
-                mode,
-                context,
-            )?),
-        }),
-        Expression::BinaryOp {
             op: CypherBinaryOperator::Xor,
+            lhs,
+            rhs,
             ..
-        } => Err(unsupported(
-            path,
-            format!("{} XOR is not supported yet", mode.label()),
-        )),
+        }
+        | Expression::BinaryOp {
+            op: CypherBinaryOperator::And | CypherBinaryOperator::Or,
+            lhs,
+            rhs,
+            ..
+        } => compile_binary_predicate_expression(expression, lhs, rhs, &path, mode, context),
         Expression::UnaryOp {
             op: UnaryOperator::Not,
             operand,
@@ -3425,6 +3385,37 @@ fn compile_predicate_expression_in_mode(
     }
 }
 
+fn compile_binary_predicate_expression(
+    expression: &Expression,
+    lhs: &Expression,
+    rhs: &Expression,
+    path: &str,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    let Expression::BinaryOp { op, .. } = expression else {
+        unreachable!("binary predicate helper called with non-binary expression");
+    };
+    let left = Box::new(compile_predicate_expression_in_mode(
+        lhs,
+        format!("{path}.lhs"),
+        mode,
+        context,
+    )?);
+    let right = Box::new(compile_predicate_expression_in_mode(
+        rhs,
+        format!("{path}.rhs"),
+        mode,
+        context,
+    )?);
+    match op {
+        CypherBinaryOperator::And => Ok(PredicateExpression::And { left, right }),
+        CypherBinaryOperator::Or => Ok(PredicateExpression::Or { left, right }),
+        CypherBinaryOperator::Xor => Ok(PredicateExpression::Xor { left, right }),
+        _ => unreachable!("non-boolean operator reached binary predicate helper"),
+    }
+}
+
 fn compile_exists_predicate(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -3454,43 +3445,17 @@ fn compile_projection_predicate_expression(
             compile_projection_predicate_expression(inner, path, context)
         }
         Expression::BinaryOp {
-            op: CypherBinaryOperator::And,
-            lhs,
-            rhs,
-            ..
-        } => Ok(ProjectionPredicateExpression::And {
-            left: Box::new(compile_projection_predicate_expression(
-                lhs,
-                format!("{path}.lhs"),
-                context,
-            )?),
-            right: Box::new(compile_projection_predicate_expression(
-                rhs,
-                format!("{path}.rhs"),
-                context,
-            )?),
-        }),
-        Expression::BinaryOp {
-            op: CypherBinaryOperator::Or,
-            lhs,
-            rhs,
-            ..
-        } => Ok(ProjectionPredicateExpression::Or {
-            left: Box::new(compile_projection_predicate_expression(
-                lhs,
-                format!("{path}.lhs"),
-                context,
-            )?),
-            right: Box::new(compile_projection_predicate_expression(
-                rhs,
-                format!("{path}.rhs"),
-                context,
-            )?),
-        }),
-        Expression::BinaryOp {
             op: CypherBinaryOperator::Xor,
+            lhs,
+            rhs,
             ..
-        } => Err(unsupported(path, "WITH WHERE XOR is not supported yet")),
+        }
+        | Expression::BinaryOp {
+            op: CypherBinaryOperator::And | CypherBinaryOperator::Or,
+            lhs,
+            rhs,
+            ..
+        } => compile_binary_projection_predicate_expression(expression, lhs, rhs, &path, context),
         Expression::UnaryOp {
             op: UnaryOperator::Not,
             operand,
@@ -3533,8 +3498,36 @@ fn compile_projection_predicate_expression(
         )),
         _ => Err(unsupported(
             path,
-            "WITH WHERE only supports projected alias comparisons combined with AND, OR, and NOT",
+            "WITH WHERE only supports projected alias comparisons combined with AND, OR, XOR, and NOT",
         )),
+    }
+}
+
+fn compile_binary_projection_predicate_expression(
+    expression: &Expression,
+    lhs: &Expression,
+    rhs: &Expression,
+    path: &str,
+    context: &CypherCompileContext,
+) -> Result<ProjectionPredicateExpression, CoreError> {
+    let Expression::BinaryOp { op, .. } = expression else {
+        unreachable!("binary projection predicate helper called with non-binary expression");
+    };
+    let left = Box::new(compile_projection_predicate_expression(
+        lhs,
+        format!("{path}.lhs"),
+        context,
+    )?);
+    let right = Box::new(compile_projection_predicate_expression(
+        rhs,
+        format!("{path}.rhs"),
+        context,
+    )?);
+    match op {
+        CypherBinaryOperator::And => Ok(ProjectionPredicateExpression::And { left, right }),
+        CypherBinaryOperator::Or => Ok(ProjectionPredicateExpression::Or { left, right }),
+        CypherBinaryOperator::Xor => Ok(ProjectionPredicateExpression::Xor { left, right }),
+        _ => unreachable!("non-boolean operator reached binary projection predicate helper"),
     }
 }
 
@@ -3723,6 +3716,7 @@ fn is_conjunctive_expression(expression: &PredicateExpression) -> bool {
         | PredicateExpression::PropertyKeyMembership(_)
         | PredicateExpression::ScalarComparison(_)
         | PredicateExpression::Or { .. }
+        | PredicateExpression::Xor { .. }
         | PredicateExpression::Not { .. } => false,
     }
 }
@@ -3744,6 +3738,7 @@ fn append_conjunctive_expression(
         | PredicateExpression::PropertyKeyMembership(_)
         | PredicateExpression::ScalarComparison(_)
         | PredicateExpression::Or { .. }
+        | PredicateExpression::Xor { .. }
         | PredicateExpression::Not { .. } => {
             unreachable!("non-conjunctive predicate expression reached conjunctive appender")
         }
@@ -7429,6 +7424,35 @@ mod tests {
     }
 
     #[test]
+    fn compiles_xor_inside_searched_case_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN CASE \
+                      WHEN service.tier = 'prod' XOR service.name CONTAINS 'billing' THEN 'xor' \
+                      ELSE 'other' \
+                    END AS marker",
+        )
+        .expect("searched CASE XOR predicates should compile");
+
+        let [
+            Projection::Expression {
+                expression: ScalarExpression::Case { alternatives, .. },
+                ..
+            },
+        ] = plan.projections.as_slice()
+        else {
+            panic!("expected CASE expression projection");
+        };
+        assert!(matches!(
+            alternatives.as_slice(),
+            [ScalarCaseAlternative {
+                when: PredicateExpression::Xor { .. },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
     fn compiles_generic_case_scalar_expressions() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -8414,12 +8438,34 @@ mod tests {
     }
 
     #[test]
-    fn rejects_xor_predicates() {
-        assert_unsupported(
+    fn compiles_xor_predicates() {
+        let plan = compile_cypher(
             "MATCH (service:Service) \
              WHERE service.tier = 'prod' XOR service.tier IS NULL \
              RETURN service.name",
-        );
+        )
+        .expect("XOR predicate should compile");
+
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::Xor { .. })
+        ));
+    }
+
+    #[test]
+    fn compiles_terminal_with_xor_where_alias_predicates() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[:OWNS]->(service:Service) \
+             WITH person.name AS owner, service.tier AS tier \
+             WHERE owner STARTS WITH 'Ada' XOR tier = 'prod' \
+             RETURN owner, tier",
+        )
+        .expect("terminal WITH XOR WHERE should compile");
+
+        assert!(matches!(
+            plan.post_projection_predicate,
+            Some(ProjectionPredicateExpression::Xor { .. })
+        ));
     }
 
     #[test]

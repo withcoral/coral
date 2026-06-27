@@ -773,7 +773,9 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::collect_scalar_expression_variables(&predicate.lhs, variables);
                 Self::collect_scalar_predicate_rhs_variables(&predicate.rhs, variables);
             }
-            PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
+            PredicateExpression::And { left, right }
+            | PredicateExpression::Or { left, right }
+            | PredicateExpression::Xor { left, right } => {
                 Self::collect_predicate_expression_variables(left, variables);
                 Self::collect_predicate_expression_variables(right, variables);
             }
@@ -966,7 +968,9 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateExpression::ScalarComparison(predicate) => {
                 Self::validate_scalar_predicate_not_optional(predicate, optional_variables, path)
             }
-            PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
+            PredicateExpression::And { left, right }
+            | PredicateExpression::Or { left, right }
+            | PredicateExpression::Xor { left, right } => {
                 Self::validate_predicate_expression_not_optional(
                     left,
                     optional_variables,
@@ -1448,7 +1452,9 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateExpression::ScalarComparison(predicate) => {
                 self.validate_scalar_predicate(predicate, path)
             }
-            PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
+            PredicateExpression::And { left, right }
+            | PredicateExpression::Or { left, right }
+            | PredicateExpression::Xor { left, right } => {
                 self.validate_predicate_expression(left, format!("{path}.left"))?;
                 self.validate_predicate_expression(right, format!("{path}.right"))
             }
@@ -1470,7 +1476,8 @@ impl<'a> GraphPlanValidator<'a> {
                 self.validate_projection_predicate(predicate, path)
             }
             ProjectionPredicateExpression::And { left, right }
-            | ProjectionPredicateExpression::Or { left, right } => {
+            | ProjectionPredicateExpression::Or { left, right }
+            | ProjectionPredicateExpression::Xor { left, right } => {
                 self.validate_projection_predicate_expression(left, format!("{path}.left"))?;
                 self.validate_projection_predicate_expression(right, format!("{path}.right"))
             }

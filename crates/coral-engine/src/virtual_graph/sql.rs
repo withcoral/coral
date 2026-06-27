@@ -739,6 +739,11 @@ impl<'a> Lowerer<'a> {
                 self.render_predicate_expression(left)?,
                 self.render_predicate_expression(right)?
             )),
+            PredicateExpression::Xor { left, right } => {
+                let left = self.render_predicate_expression(left)?;
+                let right = self.render_predicate_expression(right)?;
+                Ok(render_xor_predicate(&left, &right))
+            }
             PredicateExpression::Not { expression } => Ok(format!(
                 "NOT ({})",
                 self.render_predicate_expression(expression)?
@@ -765,6 +770,11 @@ impl<'a> Lowerer<'a> {
                 self.render_projection_predicate_expression(left)?,
                 self.render_projection_predicate_expression(right)?
             )),
+            ProjectionPredicateExpression::Xor { left, right } => {
+                let left = self.render_projection_predicate_expression(left)?;
+                let right = self.render_projection_predicate_expression(right)?;
+                Ok(render_xor_predicate(&left, &right))
+            }
             ProjectionPredicateExpression::Not { expression } => Ok(format!(
                 "NOT ({})",
                 self.render_projection_predicate_expression(expression)?
@@ -1872,6 +1882,10 @@ fn render_regex_predicate(lhs: &str, rhs: &str) -> String {
     format!("regexp_like({lhs}, {rhs})")
 }
 
+fn render_xor_predicate(left: &str, right: &str) -> String {
+    format!("(({left} AND NOT ({right})) OR (NOT ({left}) AND {right}))")
+}
+
 fn escape_like_literal(value: &str) -> String {
     value
         .replace('\\', "\\\\")
@@ -2339,6 +2353,40 @@ relationships:
              JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"service_id\" = \"n1\".\"id\" \
              WHERE \"n1\".\"tier\" = 'prod' AND \"n0\".\"full_name\" LIKE 'Ada%' ESCAPE '\\' \
              ORDER BY \"n0\".\"full_name\" ASC LIMIT 25"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_xor_post_projection_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.post_projection_predicate = Some(ProjectionPredicateExpression::Xor {
+            left: Box::new(ProjectionPredicateExpression::Comparison(
+                ProjectionPredicate {
+                    alias: "owner".to_string(),
+                    operator: ComparisonOperator::StartsWith,
+                    rhs: ProjectionPredicateRhs::Literal(Literal::String("Ada".to_string())),
+                },
+            )),
+            right: Box::new(ProjectionPredicateExpression::Comparison(
+                ProjectionPredicate {
+                    alias: "service".to_string(),
+                    operator: ComparisonOperator::Contains,
+                    rhs: ProjectionPredicateRhs::Literal(Literal::String("api".to_string())),
+                },
+            )),
+        });
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("post-projection XOR predicate should lower");
+
+        assert!(
+            translation.sql().contains(
+                "WHERE \"n1\".\"tier\" = 'prod' AND ((\"n0\".\"full_name\" LIKE 'Ada%' ESCAPE '\\' AND NOT (\"n1\".\"service_name\" LIKE '%api%' ESCAPE '\\')) OR (NOT (\"n0\".\"full_name\" LIKE 'Ada%' ESCAPE '\\') AND \"n1\".\"service_name\" LIKE '%api%' ESCAPE '\\'))"
+            ),
+            "{}",
+            translation.sql()
         );
     }
 
@@ -3843,6 +3891,43 @@ relationships: []
             translation
                 .sql()
                 .contains("WHERE (\"n1\".\"tier\" = 'prod' OR \"n1\".\"tier\" IS NULL)"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_xor_predicate_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.predicate = Some(PredicateExpression::Xor {
+            left: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            })),
+            right: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::Null),
+            })),
+        });
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("XOR predicate expression should lower");
+
+        assert!(
+            translation.sql().contains(
+                "WHERE ((\"n1\".\"tier\" = 'prod' AND NOT (\"n1\".\"tier\" IS NULL)) OR (NOT (\"n1\".\"tier\" = 'prod') AND \"n1\".\"tier\" IS NULL))"
+            ),
             "{}",
             translation.sql()
         );

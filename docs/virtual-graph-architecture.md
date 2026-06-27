@@ -83,7 +83,8 @@ The supported foundation subset is intentionally narrow:
   repeated bindings may omit the label;
 - directed, reverse, and undirected typed relationships;
 - connected multi-hop relationship chains;
-- `WHERE` comparisons combined with `AND`, `OR`, `NOT`, and parentheses;
+- `WHERE` comparisons combined with `AND`, `OR`, `XOR`, `NOT`, and
+  parentheses, with `XOR` lowered as a null-preserving boolean rewrite;
 - literal-left and chained comparisons normalized into property predicates;
 - integer and finite floating-point predicate literals;
 - `IN` predicates over scalar literal lists, including numeric and null members;
