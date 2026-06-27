@@ -159,6 +159,39 @@ async fn cypher_return_star_expands_graph_declaration_properties() {
 }
 
 #[tokio::test]
+async fn cypher_return_graph_variable_expands_declaration_properties() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.name = 'billing-api' \
+         RETURN service AS svc",
+    )
+    .await
+    .expect("graph variable return should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "svc.__id": 10,
+            "svc.__labels": ["Service"],
+            "svc.active": true,
+            "svc.id": 10,
+            "svc.name": "billing-api",
+            "svc.risk": 0.9,
+            "svc.team": "platform",
+            "svc.tier": "prod"
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

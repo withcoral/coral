@@ -203,7 +203,7 @@ impl CypherCompileContext {
         self.graph.as_ref().ok_or_else(|| {
             unsupported(
                 path,
-                "RETURN * requires a graph declaration so Coral can expand mapped properties",
+                "graph-variable expansion requires a graph declaration so Coral can expand mapped properties",
             )
         })
     }
@@ -5143,6 +5143,16 @@ fn compile_return(
     }
 
     for (index, item) in return_clause.items.iter().enumerate() {
+        if let Some(projections) = compile_graph_variable_return_item(
+            item,
+            plan,
+            state,
+            context,
+            format!("return.items[{index}]"),
+        )? {
+            plan.projections.extend(projections);
+            continue;
+        }
         let projection =
             compile_projection(item, format!("return.items[{index}]"), context, plan, state)?;
         plan.projections.push(projection);
@@ -5238,17 +5248,27 @@ fn append_return_star_node_projections(
     if !is_visible_star_variable(&node.variable, visible) {
         return Ok(());
     }
+    append_node_variable_expansion(node, graph, &node.variable, expansion, path)
+}
+
+fn append_node_variable_expansion(
+    node: &NodePattern,
+    graph: &Declaration,
+    output_prefix: &str,
+    expansion: &mut ReturnStarExpansion,
+    path: &str,
+) -> Result<(), CoreError> {
     let mapping = graph.node(&node.label).ok_or_else(|| {
         unsupported(
             path.to_string(),
-            format!("RETURN * could not resolve node label '{}'", node.label),
+            format!("could not resolve node label '{}'", node.label),
         )
     })?;
     push_unique_star_projection(
         expansion,
         Projection::Key {
             variable: node.variable.clone(),
-            alias: format!("{}.__id", node.variable),
+            alias: format!("{output_prefix}.__id"),
         },
         path,
     )?;
@@ -5257,7 +5277,7 @@ fn append_return_star_node_projections(
         Projection::NodeLabels {
             variable: node.variable.clone(),
             label: node.label.clone(),
-            alias: format!("{}.__labels", node.variable),
+            alias: format!("{output_prefix}.__labels"),
         },
         path,
     )?;
@@ -5269,7 +5289,7 @@ fn append_return_star_node_projections(
                     variable: node.variable.clone(),
                     property: property.clone(),
                 },
-                alias: Some(format!("{}.{}", node.variable, property)),
+                alias: Some(format!("{output_prefix}.{property}")),
             },
             path,
         )?;
@@ -5293,12 +5313,26 @@ fn append_return_star_relationship_projections(
     }
     let mapping =
         return_star_relationship_mapping(graph, relationship, node_labels_by_variable, path)?;
+    append_relationship_variable_expansion(relationship, mapping, variable, expansion, path)
+}
+
+fn append_relationship_variable_expansion(
+    relationship: &RelationshipPattern,
+    mapping: &DeclaredRelationship,
+    output_prefix: &str,
+    expansion: &mut ReturnStarExpansion,
+    path: &str,
+) -> Result<(), CoreError> {
+    let variable = relationship
+        .variable
+        .as_ref()
+        .ok_or_else(|| CoreError::internal("relationship expansion requires a variable"))?;
     if mapping.key.is_some() {
         push_unique_star_projection(
             expansion,
             Projection::Key {
                 variable: variable.clone(),
-                alias: format!("{variable}.__id"),
+                alias: format!("{output_prefix}.__id"),
             },
             path,
         )?;
@@ -5308,7 +5342,7 @@ fn append_return_star_relationship_projections(
         Projection::RelationshipType {
             variable: variable.clone(),
             relationship_type: relationship.relationship_type.clone(),
-            alias: format!("{variable}.__type"),
+            alias: format!("{output_prefix}.__type"),
         },
         path,
     )?;
@@ -5320,12 +5354,65 @@ fn append_return_star_relationship_projections(
                     variable: variable.clone(),
                     property: property.clone(),
                 },
-                alias: Some(format!("{variable}.{property}")),
+                alias: Some(format!("{output_prefix}.{property}")),
             },
             path,
         )?;
     }
     Ok(())
+}
+
+fn compile_graph_variable_return_item(
+    item: &ProjectionItem,
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+    path: impl Into<String>,
+) -> Result<Option<Vec<Projection>>, CoreError> {
+    let path = path.into();
+    let Expression::Variable(variable) = &item.expression else {
+        return Ok(None);
+    };
+    let name = variable_name(variable);
+    reject_ignored_path_variable(&name, state, format!("{path}.expression"))?;
+    let visible = visible_graph_variables(plan, state);
+    if !is_visible_star_variable(&name, &visible) {
+        return Ok(None);
+    }
+    let graph = context.graph_declaration(format!("{path}.expression"))?;
+    let output_prefix = item
+        .alias
+        .as_ref()
+        .map(validate_variable)
+        .transpose()?
+        .unwrap_or_else(|| name.clone());
+    let mut expansion = ReturnStarExpansion::default();
+    if let Some(node) = plan.nodes.iter().find(|node| node.variable == name) {
+        append_node_variable_expansion(node, graph, &output_prefix, &mut expansion, &path)?;
+        return Ok(Some(expansion.projections));
+    }
+    if let Some(relationship) = plan
+        .relationships
+        .iter()
+        .find(|relationship| relationship.variable.as_deref() == Some(name.as_str()))
+    {
+        let node_labels_by_variable = plan
+            .nodes
+            .iter()
+            .map(|node| (node.variable.as_str(), node.label.as_str()))
+            .collect::<BTreeMap<_, _>>();
+        let mapping =
+            return_star_relationship_mapping(graph, relationship, &node_labels_by_variable, &path)?;
+        append_relationship_variable_expansion(
+            relationship,
+            mapping,
+            &output_prefix,
+            &mut expansion,
+            &path,
+        )?;
+        return Ok(Some(expansion.projections));
+    }
+    Ok(None)
 }
 
 fn is_visible_star_variable(variable: &str, visible: &BTreeSet<String>) -> bool {
@@ -17390,6 +17477,100 @@ relationships:
     }
 
     #[test]
+    fn compiles_return_node_variable_with_graph_declaration() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) RETURN service ORDER BY service.name",
+        )
+        .expect("node graph variable return should expand using graph metadata");
+
+        assert_eq!(
+            plan.projection_output_names(),
+            vec![
+                "service.__id",
+                "service.__labels",
+                "service.name",
+                "service.tier",
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_return_graph_variable_alias_prefix() {
+        let graph = star_test_graph();
+        let plan =
+            compile_cypher_for_graph(&graph, "MATCH (service:Service) RETURN service AS svc")
+                .expect("graph variable aliases should prefix expanded columns");
+
+        assert_eq!(
+            plan.projection_output_names(),
+            vec!["svc.__id", "svc.__labels", "svc.name", "svc.tier"]
+        );
+    }
+
+    #[test]
+    fn compiles_return_relationship_variable_with_graph_declaration() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (:Person)-[ownership:OWNS]->(:Service) RETURN ownership",
+        )
+        .expect("relationship graph variable return should expand using graph metadata");
+
+        assert_eq!(
+            plan.projection_output_names(),
+            vec![
+                "ownership.__id",
+                "ownership.__type",
+                "ownership.since",
+                "ownership.source",
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_return_graph_variable_without_graph_declaration() {
+        let error = compile_cypher("MATCH (service:Service) RETURN service")
+            .expect_err("declaration-free compiler cannot expand graph variables");
+
+        assert!(
+            error
+                .to_string()
+                .contains("graph-variable expansion requires a graph declaration"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_return_path_variable_as_graph_variable() {
+        let graph = star_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH path = (person:Person)-[ownership:OWNS]->(service:Service) RETURN path",
+        )
+        .expect_err("path graph variable returns should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("path variable 'path' cannot be used as a graph value"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn compiles_return_star_over_keyless_relationships() {
         let graph = star_test_graph();
         let plan = compile_cypher_for_graph(
@@ -17422,7 +17603,7 @@ relationships:
         assert!(
             error
                 .to_string()
-                .contains("RETURN * requires a graph declaration"),
+                .contains("graph-variable expansion requires a graph declaration"),
             "{error}"
         );
     }

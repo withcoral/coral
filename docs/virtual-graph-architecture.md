@@ -102,6 +102,9 @@ The supported foundation subset is intentionally narrow:
   tabular metadata and property columns such as `service.__id`,
   `service.__labels`, `dependency.__type`, and `service.name`; declaration-free
   compile helpers keep rejecting `RETURN *`;
+- explicit graph-variable `RETURN service` / `RETURN service AS svc` expansion
+  through the same declaration-aware tabular contract, with aliases used as
+  output column prefixes;
 - named node variables where the first binding has one static label and
   repeated bindings may omit the label;
 - directed, reverse, and undirected typed relationships;
