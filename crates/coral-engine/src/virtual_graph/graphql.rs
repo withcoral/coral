@@ -2184,19 +2184,63 @@ fn compile_variable_default_value(
     path: impl Into<String>,
 ) -> Result<GraphqlVariableValue, CoreError> {
     let path = path.into();
-    if let Value::List(items) = value {
-        let mut literals = Vec::with_capacity(items.len());
+    match value {
+        Value::List(items) => compile_variable_default_list(items, path),
+        Value::Object(object) => Ok(GraphqlVariableValue::Object(
+            compile_variable_default_object(object, path)?,
+        )),
+        _ => Ok(GraphqlVariableValue::Literal(
+            compile_variable_default_literal(value, path)?,
+        )),
+    }
+}
+
+fn compile_variable_default_object(
+    object: &BTreeMap<String, Value<'_, String>>,
+    path: impl Into<String>,
+) -> Result<BTreeMap<String, GraphqlVariableValue>, CoreError> {
+    let path = path.into();
+    object
+        .iter()
+        .map(|(key, value)| {
+            Ok((
+                key.clone(),
+                compile_variable_default_value(value, format!("{path}.{key}"))?,
+            ))
+        })
+        .collect()
+}
+
+fn compile_variable_default_list(
+    items: &[Value<'_, String>],
+    path: impl Into<String>,
+) -> Result<GraphqlVariableValue, CoreError> {
+    let path = path.into();
+    if items.iter().any(|item| matches!(item, Value::Object(_))) {
+        let mut objects = Vec::with_capacity(items.len());
         for (index, item) in items.iter().enumerate() {
-            literals.push(compile_variable_default_literal(
-                item,
+            let Value::Object(object) = item else {
+                return Err(unsupported(
+                    format!("{path}[{index}]"),
+                    "GraphQL default lists cannot mix object and scalar values",
+                ));
+            };
+            objects.push(compile_variable_default_object(
+                object,
                 format!("{path}[{index}]"),
             )?);
         }
-        return Ok(GraphqlVariableValue::List(literals));
+        return Ok(GraphqlVariableValue::ObjectList(objects));
     }
-    Ok(GraphqlVariableValue::Literal(
-        compile_variable_default_literal(value, path)?,
-    ))
+
+    let mut literals = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        literals.push(compile_variable_default_literal(
+            item,
+            format!("{path}[{index}]"),
+        )?);
+    }
+    Ok(GraphqlVariableValue::List(literals))
 }
 
 fn compile_variable_default_literal(
@@ -2225,10 +2269,7 @@ fn compile_variable_default_literal(
             path,
             "nested GraphQL variable default lists are not supported yet",
         )),
-        Value::Object(_) => Err(unsupported(
-            path,
-            "GraphQL object variable default values are not supported yet",
-        )),
+        Value::Object(_) => Err(unsupported(path, "GraphQL default value must be scalar")),
     }
 }
 
@@ -3168,21 +3209,88 @@ mod tests {
     }
 
     #[test]
-    fn rejects_graphql_object_variable_defaults() {
-        let error = compile_graphql_with_variables(
+    fn compiles_root_query_with_object_variable_defaults() {
+        let plan = compile_graphql_with_variables(
             r#"
-            query Services($where: ServiceWhere = { tier: { eq: "prod" } }) {
-              Service(where: $where) { name }
+            query Services(
+              $where: ServiceWhere = { tier: { eq: "prod" } }
+              $order: ServiceOrder = { field: name, direction: DESC }
+            ) {
+              Service(where: $where, orderBy: $order) { name }
             }
             "#,
             &BTreeMap::new(),
         )
-        .expect_err("GraphQL object variable defaults should fail");
+        .expect("GraphQL object variable defaults should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            }]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Descending,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_root_query_with_object_list_variable_defaults() {
+        let plan = compile_graphql_with_variables(
+            r#"
+            query Services(
+              $filters: [ServiceWhere!] = [
+                { tier: { eq: "prod" } }
+                { name: { contains: "experiments" } }
+              ]
+            ) {
+              Service(where: { or: $filters }) { name }
+            }
+            "#,
+            &BTreeMap::new(),
+        )
+        .expect("GraphQL object-list variable defaults should compile");
+
+        assert!(plan.predicates.is_empty());
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::Or { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_graphql_mixed_object_scalar_default_lists() {
+        let error = compile_graphql_with_variables(
+            r#"
+            query Services(
+              $filters: [ServiceWhere!] = [
+                { tier: { eq: "prod" } }
+                "bad"
+              ]
+            ) {
+              Service(where: { or: $filters }) { name }
+            }
+            "#,
+            &BTreeMap::new(),
+        )
+        .expect_err("mixed object/scalar defaults should fail");
 
         assert!(
             error
                 .to_string()
-                .contains("GraphQL object variable default values are not supported yet"),
+                .contains("cannot mix object and scalar values"),
             "{error}"
         );
     }

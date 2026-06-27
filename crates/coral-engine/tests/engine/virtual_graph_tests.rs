@@ -528,6 +528,60 @@ async fn graphql_variable_defaults_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_object_variable_defaults_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query Services(
+          $filter: ServiceWhere = {
+            tier: { eq: "prod" }
+            name: { in: ["billing-api", "deployments"] }
+          }
+          $order: ServiceOrder = { field: name, direction: DESC }
+        ) {
+          Service(
+            where: $filter
+            orderBy: $order
+          ) {
+            service: name
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("GraphQL object variable default query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"service_name\" IN ('billing-api', 'deployments')"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ORDER BY \"n0\".\"service_name\" DESC"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "deployments"}),
+            json!({"service": "billing-api"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_boolean_root_filters_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
