@@ -292,7 +292,7 @@ fn compile_terminal_with_projection(
 fn with_requires_terminal_projection(with: &With) -> bool {
     with.items
         .iter()
-        .any(|item| item.alias.is_some() || !matches!(&item.expression, Expression::Variable(_)))
+        .any(|item| !matches!(&item.expression, Expression::Variable(_)))
 }
 
 fn compile_terminal_with_clause(
@@ -580,7 +580,7 @@ fn compile_transparent_multi_part_part(
 
 fn validate_transparent_with(
     with: &With,
-    plan: &GraphPlan,
+    plan: &mut GraphPlan,
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<Option<PredicateExpression>, CoreError> {
@@ -613,29 +613,47 @@ fn validate_transparent_with(
         ));
     }
 
-    let mut carried = BTreeSet::new();
+    let mut carried_inputs = BTreeSet::new();
+    let mut carried_outputs = BTreeSet::new();
+    let mut renames = BTreeMap::new();
     for (index, item) in with.items.iter().enumerate() {
-        if item.alias.is_some() {
-            return Err(unsupported(
-                format!("{path}.items[{index}].alias"),
-                "WITH aliases require scoped query planning and are not supported yet",
-            ));
-        }
         let Expression::Variable(variable) = &item.expression else {
             return Err(unsupported(
                 format!("{path}.items[{index}].expression"),
                 "transparent WITH only supports pass-through graph variables",
             ));
         };
-        carried.insert(variable_name(variable));
+        let input = variable_name(variable);
+        let output = item
+            .alias
+            .as_ref()
+            .map(validate_variable)
+            .transpose()?
+            .unwrap_or_else(|| input.clone());
+        if !carried_inputs.insert(input.clone()) {
+            return Err(unsupported(
+                format!("{path}.items[{index}].expression"),
+                format!("WITH carries graph variable '{input}' more than once"),
+            ));
+        }
+        if !carried_outputs.insert(output.clone()) {
+            return Err(unsupported(
+                format!("{path}.items[{index}].alias"),
+                format!("WITH output variable '{output}' is defined more than once"),
+            ));
+        }
+        renames.insert(input, output);
     }
 
     let bound = bound_graph_variables(plan);
-    if carried != bound {
+    if carried_inputs != bound {
         return Err(unsupported(
             format!("{path}.items"),
             "transparent WITH must carry every currently bound graph variable without dropping or adding variables",
         ));
+    }
+    if renames.iter().any(|(from, to)| from != to) {
+        rename_graph_plan_variables(plan, &renames);
     }
 
     compile_transparent_with_where(with, plan, path, context)
@@ -666,6 +684,330 @@ fn bound_graph_variables(plan: &GraphPlan) -> BTreeSet<String> {
                 .filter_map(|relationship| relationship.variable.clone()),
         )
         .collect()
+}
+
+fn rename_graph_plan_variables(plan: &mut GraphPlan, renames: &BTreeMap<String, String>) {
+    for node in &mut plan.nodes {
+        rename_string(&mut node.variable, renames);
+    }
+    for relationship in &mut plan.relationships {
+        if let Some(variable) = &mut relationship.variable {
+            rename_string(variable, renames);
+        }
+        rename_string(&mut relationship.left, renames);
+        rename_string(&mut relationship.right, renames);
+    }
+    for projection in &mut plan.projections {
+        rename_projection_variables(projection, renames);
+    }
+    for predicate in &mut plan.predicates {
+        rename_property_predicate_variables(predicate, renames);
+    }
+    if let Some(predicate) = &mut plan.predicate {
+        rename_predicate_expression_variables(predicate, renames);
+    }
+    for optional_match in &mut plan.optional_matches {
+        if let Some(predicate) = &mut optional_match.predicate {
+            rename_predicate_expression_variables(predicate, renames);
+        }
+    }
+    for order_key in &mut plan.order_by {
+        rename_order_expression_variables(&mut order_key.expression, renames);
+    }
+}
+
+fn rename_projection_variables(projection: &mut Projection, renames: &BTreeMap<String, String>) {
+    match projection {
+        Projection::Property { property, .. } => rename_property_ref_variables(property, renames),
+        Projection::Key { variable, .. }
+        | Projection::ElementId { variable, .. }
+        | Projection::RelationshipType { variable, .. }
+        | Projection::NodeLabels { variable, .. }
+        | Projection::PropertyKeys { variable, .. } => rename_string(variable, renames),
+        Projection::Expression { expression, .. } => {
+            rename_scalar_expression_variables(expression, renames);
+        }
+        Projection::Aggregate { target, .. } => rename_aggregate_target_variables(target, renames),
+        Projection::Literal { .. }
+        | Projection::LiteralList { .. }
+        | Projection::CountAll { .. } => {}
+    }
+}
+
+fn rename_aggregate_target_variables(
+    target: &mut AggregateTarget,
+    renames: &BTreeMap<String, String>,
+) {
+    match target {
+        AggregateTarget::Property(property) => rename_property_ref_variables(property, renames),
+        AggregateTarget::VariableKey { variable } => rename_string(variable, renames),
+    }
+}
+
+fn rename_order_expression_variables(
+    expression: &mut OrderExpression,
+    renames: &BTreeMap<String, String>,
+) {
+    match expression {
+        OrderExpression::Property(property) => rename_property_ref_variables(property, renames),
+        OrderExpression::Key { variable }
+        | OrderExpression::ElementId { variable }
+        | OrderExpression::RelationshipType { variable, .. }
+        | OrderExpression::NodeLabels { variable, .. }
+        | OrderExpression::PropertyKeys { variable } => rename_string(variable, renames),
+        OrderExpression::Scalar(expression) => {
+            rename_scalar_expression_variables(expression, renames);
+        }
+        OrderExpression::Literal(_) | OrderExpression::ProjectionAlias(_) => {}
+    }
+}
+
+fn rename_predicate_expression_variables(
+    expression: &mut PredicateExpression,
+    renames: &BTreeMap<String, String>,
+) {
+    match expression {
+        PredicateExpression::Boolean(_) => {}
+        PredicateExpression::Comparison(predicate) => {
+            rename_property_predicate_variables(predicate, renames);
+        }
+        PredicateExpression::KeyComparison(predicate) => {
+            rename_string(&mut predicate.variable, renames);
+            rename_predicate_rhs_variables(&mut predicate.rhs, renames);
+        }
+        PredicateExpression::ElementIdComparison(predicate) => {
+            rename_string(&mut predicate.variable, renames);
+            rename_predicate_rhs_variables(&mut predicate.rhs, renames);
+        }
+        PredicateExpression::Presence(predicate) => {
+            rename_string(&mut predicate.variable, renames);
+        }
+        PredicateExpression::PropertyKeyMembership(predicate) => {
+            rename_string(&mut predicate.variable, renames);
+        }
+        PredicateExpression::ScalarComparison(predicate) => {
+            rename_scalar_expression_variables(&mut predicate.lhs, renames);
+            rename_scalar_predicate_rhs_variables(&mut predicate.rhs, renames);
+        }
+        PredicateExpression::And { left, right }
+        | PredicateExpression::Or { left, right }
+        | PredicateExpression::Xor { left, right } => {
+            rename_predicate_expression_variables(left, renames);
+            rename_predicate_expression_variables(right, renames);
+        }
+        PredicateExpression::Not { expression } => {
+            rename_predicate_expression_variables(expression, renames);
+        }
+    }
+}
+
+fn rename_property_predicate_variables(
+    predicate: &mut PropertyPredicate,
+    renames: &BTreeMap<String, String>,
+) {
+    rename_property_ref_variables(&mut predicate.property, renames);
+    rename_predicate_rhs_variables(&mut predicate.rhs, renames);
+}
+
+fn rename_predicate_rhs_variables(rhs: &mut PredicateRhs, renames: &BTreeMap<String, String>) {
+    match rhs {
+        PredicateRhs::Property(property) => rename_property_ref_variables(property, renames),
+        PredicateRhs::Key { variable } | PredicateRhs::ElementId { variable } => {
+            rename_string(variable, renames);
+        }
+        PredicateRhs::Literal(_) | PredicateRhs::List(_) => {}
+    }
+}
+
+fn rename_scalar_predicate_rhs_variables(
+    rhs: &mut ScalarPredicateRhs,
+    renames: &BTreeMap<String, String>,
+) {
+    match rhs {
+        ScalarPredicateRhs::Expression(expression) => {
+            rename_scalar_expression_variables(expression, renames);
+        }
+        ScalarPredicateRhs::List(_) => {}
+    }
+}
+
+fn rename_scalar_expression_variables(
+    expression: &mut ScalarExpression,
+    renames: &BTreeMap<String, String>,
+) {
+    if let Some(expression) = unary_scalar_expression_operand_mut(expression) {
+        rename_scalar_expression_variables(expression, renames);
+        return;
+    }
+
+    rename_non_unary_scalar_expression_variables(expression, renames);
+}
+
+fn rename_non_unary_scalar_expression_variables(
+    expression: &mut ScalarExpression,
+    renames: &BTreeMap<String, String>,
+) {
+    match expression {
+        ScalarExpression::Property(property) => rename_property_ref_variables(property, renames),
+        ScalarExpression::Literal(_) => {}
+        ScalarExpression::Predicate(predicate) => {
+            rename_predicate_expression_variables(predicate, renames);
+        }
+        ScalarExpression::Coalesce { expressions } => {
+            for expression in expressions {
+                rename_scalar_expression_variables(expression, renames);
+            }
+        }
+        ScalarExpression::NullIf { expression, value } => {
+            rename_scalar_expression_variables(expression, renames);
+            rename_scalar_expression_variables(value, renames);
+        }
+        ScalarExpression::Round { expression, places } => {
+            rename_scalar_expression_variables(expression, renames);
+            if let Some(places) = places {
+                rename_scalar_expression_variables(places, renames);
+            }
+        }
+        ScalarExpression::Left { expression, count }
+        | ScalarExpression::Right { expression, count } => {
+            rename_scalar_expression_variables(expression, renames);
+            rename_scalar_expression_variables(count, renames);
+        }
+        ScalarExpression::Replace {
+            expression,
+            search,
+            replacement,
+        } => {
+            rename_scalar_expression_variables(expression, renames);
+            rename_scalar_expression_variables(search, renames);
+            rename_scalar_expression_variables(replacement, renames);
+        }
+        ScalarExpression::Substring {
+            expression,
+            start,
+            length,
+        } => {
+            rename_scalar_expression_variables(expression, renames);
+            rename_scalar_expression_variables(start, renames);
+            if let Some(length) = length {
+                rename_scalar_expression_variables(length, renames);
+            }
+        }
+        ScalarExpression::Arithmetic { left, right, .. } => {
+            rename_scalar_expression_variables(left, renames);
+            rename_scalar_expression_variables(right, renames);
+        }
+        ScalarExpression::Atan2 { y, x } => {
+            rename_scalar_expression_variables(y, renames);
+            rename_scalar_expression_variables(x, renames);
+        }
+        ScalarExpression::Case {
+            alternatives,
+            else_expression,
+        } => {
+            rename_case_expression_variables(alternatives, else_expression.as_deref_mut(), renames);
+        }
+        ScalarExpression::ToString { .. }
+        | ScalarExpression::ToInteger { .. }
+        | ScalarExpression::ToFloat { .. }
+        | ScalarExpression::ToBoolean { .. }
+        | ScalarExpression::ToStringOrNull { .. }
+        | ScalarExpression::ToIntegerOrNull { .. }
+        | ScalarExpression::ToFloatOrNull { .. }
+        | ScalarExpression::ToBooleanOrNull { .. }
+        | ScalarExpression::ToLower { .. }
+        | ScalarExpression::ToUpper { .. }
+        | ScalarExpression::Trim { .. }
+        | ScalarExpression::LTrim { .. }
+        | ScalarExpression::RTrim { .. }
+        | ScalarExpression::CharacterLength { .. }
+        | ScalarExpression::Reverse { .. }
+        | ScalarExpression::Abs { .. }
+        | ScalarExpression::Ceil { .. }
+        | ScalarExpression::Floor { .. }
+        | ScalarExpression::Sqrt { .. }
+        | ScalarExpression::Sign { .. }
+        | ScalarExpression::Exp { .. }
+        | ScalarExpression::Log { .. }
+        | ScalarExpression::Log10 { .. }
+        | ScalarExpression::Sin { .. }
+        | ScalarExpression::Cos { .. }
+        | ScalarExpression::Tan { .. }
+        | ScalarExpression::Cot { .. }
+        | ScalarExpression::Asin { .. }
+        | ScalarExpression::Acos { .. }
+        | ScalarExpression::Atan { .. }
+        | ScalarExpression::Degrees { .. }
+        | ScalarExpression::Radians { .. }
+        | ScalarExpression::Negate { .. } => {
+            unreachable!("unary scalar expressions handled before structural rename")
+        }
+    }
+}
+
+fn rename_case_expression_variables(
+    alternatives: &mut [ScalarCaseAlternative],
+    else_expression: Option<&mut ScalarExpression>,
+    renames: &BTreeMap<String, String>,
+) {
+    for alternative in alternatives {
+        rename_predicate_expression_variables(&mut alternative.when, renames);
+        rename_scalar_expression_variables(&mut alternative.then, renames);
+    }
+    if let Some(else_expression) = else_expression {
+        rename_scalar_expression_variables(else_expression, renames);
+    }
+}
+
+fn unary_scalar_expression_operand_mut(
+    expression: &mut ScalarExpression,
+) -> Option<&mut ScalarExpression> {
+    match expression {
+        ScalarExpression::ToString { expression }
+        | ScalarExpression::ToInteger { expression }
+        | ScalarExpression::ToFloat { expression }
+        | ScalarExpression::ToBoolean { expression }
+        | ScalarExpression::ToStringOrNull { expression }
+        | ScalarExpression::ToIntegerOrNull { expression }
+        | ScalarExpression::ToFloatOrNull { expression }
+        | ScalarExpression::ToBooleanOrNull { expression }
+        | ScalarExpression::ToLower { expression }
+        | ScalarExpression::ToUpper { expression }
+        | ScalarExpression::Trim { expression }
+        | ScalarExpression::LTrim { expression }
+        | ScalarExpression::RTrim { expression }
+        | ScalarExpression::CharacterLength { expression }
+        | ScalarExpression::Reverse { expression }
+        | ScalarExpression::Abs { expression }
+        | ScalarExpression::Ceil { expression }
+        | ScalarExpression::Floor { expression }
+        | ScalarExpression::Sqrt { expression }
+        | ScalarExpression::Sign { expression }
+        | ScalarExpression::Exp { expression }
+        | ScalarExpression::Log { expression }
+        | ScalarExpression::Log10 { expression }
+        | ScalarExpression::Sin { expression }
+        | ScalarExpression::Cos { expression }
+        | ScalarExpression::Tan { expression }
+        | ScalarExpression::Cot { expression }
+        | ScalarExpression::Asin { expression }
+        | ScalarExpression::Acos { expression }
+        | ScalarExpression::Atan { expression }
+        | ScalarExpression::Degrees { expression }
+        | ScalarExpression::Radians { expression }
+        | ScalarExpression::Negate { expression } => Some(expression),
+        _ => None,
+    }
+}
+
+fn rename_property_ref_variables(property: &mut PropertyRef, renames: &BTreeMap<String, String>) {
+    rename_string(&mut property.variable, renames);
+}
+
+fn rename_string(value: &mut String, renames: &BTreeMap<String, String>) {
+    if let Some(replacement) = renames.get(value.as_str()) {
+        *value = replacement.clone();
+    }
 }
 
 fn compile_reading_clauses_into(
@@ -5520,6 +5862,130 @@ mod tests {
                 operator: ComparisonOperator::Equal,
                 rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_transparent_with_variable_aliases() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH service AS s \
+             WHERE s.tier = 'prod' \
+             MATCH (s)-[:DEPENDS_ON]->(target:Service) \
+             RETURN s.name AS source, target.name AS target",
+        )
+        .expect("transparent WITH aliases should compile");
+
+        assert_eq!(
+            plan.nodes,
+            vec![
+                NodePattern {
+                    variable: "s".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "target".to_string(),
+                    label: "Service".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "DEPENDS_ON".to_string(),
+                left: "s".to_string(),
+                direction: Direction::Outgoing,
+                right: "target".to_string(),
+            }]
+        );
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "s".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            }]
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "s".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("source".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("target".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_transparent_with_relationship_variable_aliases() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WITH person AS p, owns AS rel, service AS s \
+             RETURN p.name AS owner, type(rel) AS relationship_type, s.name AS service",
+        )
+        .expect("transparent WITH relationship aliases should compile");
+
+        assert_eq!(
+            plan.nodes,
+            vec![
+                NodePattern {
+                    variable: "p".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "s".to_string(),
+                    label: "Service".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: Some("rel".to_string()),
+                relationship_type: "OWNS".to_string(),
+                left: "p".to_string(),
+                direction: Direction::Outgoing,
+                right: "s".to_string(),
+            }]
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "p".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("owner".to_string()),
+                },
+                Projection::RelationshipType {
+                    variable: "rel".to_string(),
+                    relationship_type: "OWNS".to_string(),
+                    alias: "relationship_type".to_string(),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "s".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service".to_string()),
+                },
+            ]
         );
     }
 

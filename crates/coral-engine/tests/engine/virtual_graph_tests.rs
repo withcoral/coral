@@ -1488,6 +1488,85 @@ async fn cypher_transparent_with_where_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_transparent_with_aliases_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WITH service AS s \
+         WHERE s.tier = 'prod' \
+         MATCH (s)-[:DEPENDS_ON]->(target:Service) \
+         RETURN s.name AS source, target.name AS target \
+         ORDER BY source, target",
+    )
+    .await
+    .expect("transparent WITH alias Cypher query should execute");
+
+    assert!(
+        !execution.translated_sql().contains("WITH"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"tier\" = 'prod'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"source": "billing-api", "target": "deployments"}),
+            json!({"source": "billing-api", "target": "experiments"}),
+            json!({"source": "deployments", "target": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_transparent_with_relationship_aliases_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         WITH person AS p, owns AS rel, service AS s \
+         RETURN p.name AS owner, type(rel) AS relationship_type, s.name AS service \
+         ORDER BY owner, service",
+    )
+    .await
+    .expect("transparent WITH relationship alias Cypher query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"r0\".\"ownership_id\" IS NULL"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "relationship_type": "OWNS", "service": "billing-api"}),
+            json!({"owner": "Grace Hopper", "relationship_type": "OWNS", "service": "deployments"}),
+            json!({"owner": "Katherine Johnson", "relationship_type": "OWNS", "service": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_transparent_with_star_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
