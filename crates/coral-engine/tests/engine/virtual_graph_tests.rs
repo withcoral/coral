@@ -20,6 +20,13 @@ fn assert_close(actual: f64, expected: f64) {
     );
 }
 
+fn sort_string_array_field(row: &mut Value, field: &str) {
+    let Some(values) = row.get_mut(field).and_then(Value::as_array_mut) else {
+        panic!("row should contain array field '{field}': {row}");
+    };
+    values.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+}
+
 #[tokio::test]
 async fn virtual_graph_translation_executes_against_synthetic_file_sources() {
     let temp = TempDir::new().expect("temp dir");
@@ -2825,9 +2832,9 @@ async fn graphql_collect_aggregate_fields_match_equivalent_sql() {
     .expect("GraphQL collect aggregate fields should execute");
 
     assert!(
-        graph_execution
-            .translated_sql()
-            .contains("ARRAY_AGG(\"n0\".\"service_name\") AS \"serviceNames\""),
+        graph_execution.translated_sql().contains(
+            "COALESCE(ARRAY_AGG(\"n0\".\"service_name\") FILTER (WHERE (\"n0\".\"service_name\") IS NOT NULL), make_array()) AS \"serviceNames\""
+        ),
         "{}",
         graph_execution.translated_sql()
     );
@@ -2836,8 +2843,8 @@ async fn graphql_collect_aggregate_fields_match_equivalent_sql() {
         std::slice::from_ref(&source),
         test_runtime(),
         "SELECT tier, \
-                ARRAY_AGG(service_name) AS \"serviceNames\", \
-                ARRAY_AGG(DISTINCT tier) AS \"uniqueTiers\" \
+                COALESCE(ARRAY_AGG(service_name) FILTER (WHERE service_name IS NOT NULL), make_array()) AS \"serviceNames\", \
+                COALESCE(ARRAY_AGG(DISTINCT tier) FILTER (WHERE tier IS NOT NULL), make_array()) AS \"uniqueTiers\" \
          FROM ops.services \
          WHERE tier IS NOT NULL \
          GROUP BY tier \
@@ -7558,7 +7565,7 @@ async fn cypher_collect_property_projection_executes_against_synthetic_sources()
     assert!(
         execution
             .translated_sql()
-            .contains("ARRAY_AGG(\"n1\".\"service_name\") AS \"services\""),
+            .contains("COALESCE(ARRAY_AGG(\"n1\".\"service_name\") FILTER (WHERE (\"n1\".\"service_name\") IS NOT NULL), make_array()) AS \"services\""),
         "{}",
         execution.translated_sql()
     );
@@ -7570,6 +7577,31 @@ async fn cypher_collect_property_projection_executes_against_synthetic_sources()
             json!({"team": "platform", "services": ["billing-api"]}),
         ]
     );
+}
+
+#[tokio::test]
+async fn cypher_collect_property_projection_drops_null_values() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) RETURN collect(service.tier) AS tiers",
+    )
+    .await
+    .expect("collect property Cypher query should execute");
+
+    let mut rows = execution_to_rows(execution.execution());
+    sort_string_array_field(
+        rows.get_mut(0)
+            .expect("collect query should return one row"),
+        "tiers",
+    );
+    assert_eq!(rows, vec![json!({"tiers": ["dev", "prod", "prod"]})]);
 }
 
 #[tokio::test]
@@ -8345,6 +8377,47 @@ async fn cypher_optional_relationship_endpoint_property_aggregates_ignore_unmatc
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![json!({"named_dependencies": 3, "dependency_risk": 1.0})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_optional_relationship_endpoint_collect_drops_unmatched_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(dependency_service:Service) \
+         RETURN service.name AS service, collect(endNode(dependency).name) AS dependencies \
+         ORDER BY service",
+    )
+    .await
+    .expect("optional endpoint collect should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "COALESCE(ARRAY_AGG(CASE WHEN \"r0\".\"from_service_id\" IS NULL THEN NULL ELSE \"n1\".\"service_name\" END) FILTER"
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    for row in &mut rows {
+        sort_string_array_field(row, "dependencies");
+    }
+    assert_eq!(
+        rows,
+        vec![
+            json!({"service": "billing-api", "dependencies": ["deployments", "experiments"]}),
+            json!({"service": "deployments", "dependencies": ["experiments"]}),
+            json!({"service": "experiments", "dependencies": []}),
+            json!({"service": "legacy-sync", "dependencies": []}),
+        ]
     );
 }
 

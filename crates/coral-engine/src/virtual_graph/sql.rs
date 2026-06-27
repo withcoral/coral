@@ -1235,10 +1235,8 @@ impl<'a> Lowerer<'a> {
                 distinct,
                 alias,
             } => Ok(format!(
-                "{}({}{}) AS {}",
-                render_aggregate_function(*function),
-                if *distinct { "DISTINCT " } else { "" },
-                self.render_aggregate_target(*function, target)?,
+                "{} AS {}",
+                self.render_aggregate_invocation(*function, target, *distinct)?,
                 quote_ident(alias)
             )),
         }
@@ -2579,13 +2577,27 @@ impl<'a> Lowerer<'a> {
                 target,
                 distinct,
                 ..
-            } => Ok(format!(
-                "{}({}{})",
-                render_aggregate_function(*function),
-                if *distinct { "DISTINCT " } else { "" },
-                self.render_aggregate_target(*function, target)?
-            )),
+            } => self.render_aggregate_invocation(*function, target, *distinct),
         }
+    }
+
+    fn render_aggregate_invocation(
+        &self,
+        function: AggregateFunction,
+        target: &AggregateTarget,
+        distinct: bool,
+    ) -> Result<String, CoreError> {
+        let target = self.render_aggregate_target(function, target)?;
+        let distinct = if distinct { "DISTINCT " } else { "" };
+        if function == AggregateFunction::Collect {
+            return Ok(format!(
+                "COALESCE(ARRAY_AGG({distinct}{target}) FILTER (WHERE ({target}) IS NOT NULL), make_array())"
+            ));
+        }
+        Ok(format!(
+            "{}({distinct}{target})",
+            render_aggregate_function(function)
+        ))
     }
 
     fn render_binding_key_ref(&self, variable: &str) -> Result<String, CoreError> {
@@ -6265,7 +6277,7 @@ relationships: []
         assert!(
             translation
                 .sql()
-                .contains("ARRAY_AGG(DISTINCT \"n1\".\"service_name\") AS \"services\""),
+                .contains("COALESCE(ARRAY_AGG(DISTINCT \"n1\".\"service_name\") FILTER (WHERE (\"n1\".\"service_name\") IS NOT NULL), make_array()) AS \"services\""),
             "{}",
             translation.sql()
         );

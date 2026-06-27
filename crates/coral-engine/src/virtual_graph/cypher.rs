@@ -13181,6 +13181,32 @@ mod tests {
     }
 
     #[test]
+    fn compiles_collect_over_optional_relationship_endpoint_properties() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(dependency_service:Service) \
+             RETURN collect(endNode(dependency).name) AS dependencies",
+        )
+        .expect("optional endpoint collect should compile to a presence-gated property aggregate");
+
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Aggregate {
+                function: AggregateFunction::Collect,
+                target: AggregateTarget::PresenceGatedProperty {
+                    property: PropertyRef {
+                        variable: "dependency_service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    presence_variable: "dependency".to_string(),
+                },
+                distinct: false,
+                alias: "dependencies".to_string(),
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_relationship_endpoint_identity_projections() {
         let plan = compile_cypher(
             "MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \

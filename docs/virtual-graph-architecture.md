@@ -147,7 +147,8 @@ The supported foundation subset is intentionally narrow:
   `count(property)`, `count(DISTINCT property)`, `count(node)`,
   `count(DISTINCT node)`, `count(relationship)` with keyed or keyless mappings,
   `count(DISTINCT relationship)` for keyed mappings, `collect(property)`,
-  `collect(DISTINCT property)`, numeric property aggregates, property and
+  `collect(DISTINCT property)` lowered through null-filtered `ARRAY_AGG`
+  with an empty-list fallback, numeric property aggregates, property and
   identity `ORDER BY`, direct aggregate `ORDER BY` expressions that match
   projected aggregates, and projection alias `ORDER BY` including aggregate
   aliases;
