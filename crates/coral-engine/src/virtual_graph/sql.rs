@@ -1441,6 +1441,11 @@ impl<'a> Lowerer<'a> {
                     .join(", ");
                 Ok(format!("COALESCE({rendered})"))
             }
+            ScalarExpression::NullIf { expression, value } => Ok(format!(
+                "NULLIF({}, {})",
+                self.render_scalar_expression(expression)?,
+                self.render_scalar_expression(value)?
+            )),
             ScalarExpression::ToString { .. }
             | ScalarExpression::ToInteger { .. }
             | ScalarExpression::ToFloat { .. }
@@ -3246,6 +3251,77 @@ relationships: []
             translation
                 .sql()
                 .contains("ORDER BY SUBSTRING(\"n1\".\"service_name\" FROM (0 + 1)) ASC"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_null_if_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.projections = vec![Projection::Expression {
+            expression: ScalarExpression::NullIf {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                })),
+                value: Box::new(ScalarExpression::Literal(Literal::String(
+                    "prod".to_string(),
+                ))),
+            },
+            alias: "normalized_tier".to_string(),
+        }];
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::NullIf {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                })),
+                value: Box::new(ScalarExpression::Literal(Literal::String(
+                    "dev".to_string(),
+                ))),
+            },
+            operator: ComparisonOperator::Equal,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null)),
+        }));
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::Scalar(ScalarExpression::NullIf {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                })),
+                value: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                })),
+            }),
+            direction: OrderDirection::Ascending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("nullIf scalar expressions should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("NULLIF(\"n1\".\"tier\", 'prod') AS \"normalized_tier\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE NULLIF(\"n1\".\"tier\", 'dev') IS NULL"),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("ORDER BY NULLIF(\"n1\".\"service_name\", \"n1\".\"tier\") ASC"),
             "{}",
             translation.sql()
         );

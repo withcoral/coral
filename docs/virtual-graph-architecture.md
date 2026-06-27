@@ -108,7 +108,8 @@ The supported foundation subset is intentionally narrow:
 - scalar string, numeric, and conversion expressions in projections,
   predicates, and ordering, including arithmetic `+`, `-`, `*`, `/`, `%`,
   and `^`, unary numeric negation, `coalesce`, strict scalar casts lowered to
-  DataFusion `CAST`, nullable scalar casts lowered to `TRY_CAST`, string case
+  DataFusion `CAST`, nullable scalar casts lowered to `TRY_CAST`, `nullIf`
+  lowered to DataFusion `NULLIF`, string case
   conversion, whitespace trimming, `replace`, character length via `size`,
   `char_length`, and `character_length`, and zero-based `substring` lowered
   to DataFusion `SUBSTRING`, scalar-string `isEmpty(expr)` predicates lowered

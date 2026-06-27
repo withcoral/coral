@@ -148,6 +148,13 @@ pub enum ScalarExpression {
         /// Candidate expressions in priority order.
         expressions: Vec<ScalarExpression>,
     },
+    /// Return null when two scalar expressions compare equal.
+    NullIf {
+        /// Expression to return when it does not equal `value`.
+        expression: Box<ScalarExpression>,
+        /// Expression to compare against.
+        value: Box<ScalarExpression>,
+    },
     /// Cast a scalar expression to a string value.
     ToString {
         /// Inner expression to cast.

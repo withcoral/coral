@@ -839,6 +839,10 @@ impl<'a> GraphPlanValidator<'a> {
                     Self::collect_scalar_expression_variables(expression, variables);
                 }
             }
+            ScalarExpression::NullIf { expression, value } => {
+                Self::collect_scalar_expression_variables(expression, variables);
+                Self::collect_scalar_expression_variables(value, variables);
+            }
             unary_scalar_expression_pattern!() => {
                 unreachable!("unary scalar expressions handled above")
             }
@@ -1129,6 +1133,18 @@ impl<'a> GraphPlanValidator<'a> {
             );
         }
 
+        Self::validate_non_unary_scalar_expression_not_optional(
+            expression,
+            optional_variables,
+            &path,
+        )
+    }
+
+    fn validate_non_unary_scalar_expression_not_optional(
+        expression: &ScalarExpression,
+        optional_variables: &BTreeSet<&str>,
+        path: &str,
+    ) -> Result<(), CoreError> {
         match expression {
             ScalarExpression::Property(property) => Self::validate_variable_not_optional(
                 &property.variable,
@@ -1140,7 +1156,17 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::validate_coalesce_expression_not_optional(
                     expressions,
                     optional_variables,
-                    &path,
+                    path,
+                )
+            }
+            ScalarExpression::NullIf { expression, value } => {
+                Self::validate_binary_scalar_expression_not_optional(
+                    expression,
+                    "expression",
+                    value,
+                    "value",
+                    optional_variables,
+                    path,
                 )
             }
             unary_scalar_expression_pattern!() => {
@@ -1151,7 +1177,7 @@ impl<'a> GraphPlanValidator<'a> {
                     expression,
                     places.as_deref(),
                     optional_variables,
-                    &path,
+                    path,
                     "places",
                 )
             }
@@ -1159,10 +1185,11 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::Right { expression, count } => {
                 Self::validate_binary_scalar_expression_not_optional(
                     expression,
+                    "expression",
                     count,
-                    optional_variables,
-                    &path,
                     "count",
+                    optional_variables,
+                    path,
                 )
             }
             ScalarExpression::Replace {
@@ -1174,7 +1201,7 @@ impl<'a> GraphPlanValidator<'a> {
                 search,
                 replacement,
                 optional_variables,
-                &path,
+                path,
             ),
             ScalarExpression::Substring {
                 expression,
@@ -1185,30 +1212,26 @@ impl<'a> GraphPlanValidator<'a> {
                 start,
                 length.as_deref(),
                 optional_variables,
-                &path,
+                path,
             ),
             ScalarExpression::Arithmetic { left, right, .. } => {
-                Self::validate_scalar_expression_not_optional(
+                Self::validate_binary_scalar_expression_not_optional(
                     left,
-                    optional_variables,
-                    format!("{path}.left"),
-                )?;
-                Self::validate_scalar_expression_not_optional(
+                    "left",
                     right,
+                    "right",
                     optional_variables,
-                    format!("{path}.right"),
+                    path,
                 )
             }
             ScalarExpression::Atan2 { y, x } => {
-                Self::validate_scalar_expression_not_optional(
+                Self::validate_binary_scalar_expression_not_optional(
                     y,
-                    optional_variables,
-                    format!("{path}.y"),
-                )?;
-                Self::validate_scalar_expression_not_optional(
+                    "y",
                     x,
+                    "x",
                     optional_variables,
-                    format!("{path}.x"),
+                    path,
                 )
             }
             ScalarExpression::Case {
@@ -1218,7 +1241,7 @@ impl<'a> GraphPlanValidator<'a> {
                 alternatives,
                 else_expression.as_deref(),
                 optional_variables,
-                &path,
+                path,
             ),
         }
     }
@@ -1291,15 +1314,16 @@ impl<'a> GraphPlanValidator<'a> {
 
     fn validate_binary_scalar_expression_not_optional(
         left: &ScalarExpression,
+        left_name: &str,
         right: &ScalarExpression,
+        right_name: &str,
         optional_variables: &BTreeSet<&str>,
         path: &str,
-        right_name: &str,
     ) -> Result<(), CoreError> {
         Self::validate_scalar_expression_not_optional(
             left,
             optional_variables,
-            format!("{path}.expression"),
+            format!("{path}.{left_name}"),
         )?;
         Self::validate_scalar_expression_not_optional(
             right,
@@ -2440,6 +2464,10 @@ impl<'a> GraphPlanValidator<'a> {
                     self.validate_scalar_expression(expression, format!("{path}[{index}]"))?;
                 }
                 Ok(())
+            }
+            ScalarExpression::NullIf { expression, value } => {
+                self.validate_scalar_expression(expression, format!("{path}.expression"))?;
+                self.validate_scalar_expression(value, format!("{path}.value"))
             }
             unary_scalar_expression_pattern!() => {
                 unreachable!("unary scalar expressions handled above")
