@@ -196,11 +196,15 @@ tables:
       path: /player/{{filter.username}}
       method: GET
     columns:
-      - name: username
+      - name: requested_username
         type: Utf8
         expr:
           kind: from_filter
           key: username
+      - name: username
+        type: Utf8
+      - name: player_id
+        type: Int64
       - name: name
         type: Utf8
       - name: title
