@@ -214,6 +214,42 @@ async fn cypher_static_node_label_alternatives_apply_hidden_global_ordering_afte
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_terminal_with_projection_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         WITH owner.name AS owner, service.name AS service \
+         WHERE service = 'billing-api' \
+         RETURN owner, service \
+         ORDER BY owner",
+    )
+    .await
+    .expect("static alternatives with terminal WITH projection should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("WHERE \"n1\".\"service_name\" = 'billing-api'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api"}),
+            json!({"owner": "platform", "service": "billing-api"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_apply_distinct_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

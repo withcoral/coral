@@ -814,6 +814,7 @@ fn return_item_projection_name(item: &ProjectionItem) -> String {
                 }
                 _ => "expression".to_string(),
             },
+            Expression::Variable(variable) => variable_name(variable),
             Expression::CountStar { .. } => "count".to_string(),
             Expression::FunctionCall(function) => {
                 if let Some(function_kind) = compile_aggregate_function(function) {
@@ -9516,6 +9517,39 @@ mod tests {
         .expect_err("aggregate hidden global ordering should require staged planning");
 
         assert!(error.to_string().contains("aggregate RETURN"));
+    }
+
+    #[test]
+    fn compiles_static_label_alternatives_with_terminal_with_projection() {
+        let query = compile_cypher_query(
+            "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+             WITH owner.name AS owner, service.name AS service \
+             WHERE service = 'billing-api' \
+             RETURN owner, service \
+             ORDER BY owner",
+        )
+        .expect("static alternatives with terminal WITH projection should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert_eq!(
+            union.first.projection_output_names(),
+            vec!["owner".to_string(), "service".to_string()]
+        );
+        assert!(union.first.post_projection_predicate.is_some());
+        assert!(union.branches.iter().all(|branch| {
+            branch.plan.projection_output_names()
+                == vec!["owner".to_string(), "service".to_string()]
+                && branch.plan.post_projection_predicate.is_some()
+        }));
+        assert_eq!(
+            union.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("owner".to_string()),
+                direction: OrderDirection::Ascending,
+            }]
+        );
     }
 
     #[test]
