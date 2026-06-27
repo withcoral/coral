@@ -435,6 +435,15 @@ impl<'a> GraphPlanValidator<'a> {
                         format!("projections[{index}].variable"),
                     )?;
                 }
+                Projection::NodeLabels {
+                    variable, label, ..
+                } => {
+                    self.validate_node_labels_projection(
+                        variable,
+                        label,
+                        format!("projections[{index}].variable"),
+                    )?;
+                }
                 Projection::RelationshipType {
                     variable,
                     relationship_type,
@@ -851,6 +860,7 @@ impl<'a> GraphPlanValidator<'a> {
             .filter_map(|projection| match projection {
                 Projection::Property { property, .. } => Some(property),
                 Projection::Key { .. }
+                | Projection::NodeLabels { .. }
                 | Projection::RelationshipType { .. }
                 | Projection::Literal { .. }
                 | Projection::CountAll { .. }
@@ -925,6 +935,9 @@ impl<'a> GraphPlanValidator<'a> {
             OrderExpression::Key { variable } => {
                 self.validate_key_projection(variable, format!("{path}.variable"))
             }
+            OrderExpression::NodeLabels { variable, label } => {
+                self.validate_node_labels_projection(variable, label, format!("{path}.variable"))
+            }
             OrderExpression::RelationshipType {
                 variable,
                 relationship_type,
@@ -974,6 +987,18 @@ impl<'a> GraphPlanValidator<'a> {
                     } if projected == variable && projected_type == relationship_type
                 )
             }),
+            OrderExpression::NodeLabels { variable, label } => {
+                self.plan.projections.iter().any(|projection| {
+                    matches!(
+                        projection,
+                        Projection::NodeLabels {
+                            variable: projected,
+                            label: projected_label,
+                            ..
+                        } if projected == variable && projected_label == label
+                    )
+                })
+            }
             OrderExpression::Literal(literal) => {
                 self.plan.projections.iter().any(|projection| {
                     matches!(projection, Projection::Literal { literal: projected, .. } if projected == literal)
@@ -1000,6 +1025,10 @@ impl<'a> GraphPlanValidator<'a> {
                     ..
                 }
                 | Projection::RelationshipType {
+                    alias: projection_alias,
+                    ..
+                }
+                | Projection::NodeLabels {
                     alias: projection_alias,
                     ..
                 }
@@ -1290,6 +1319,43 @@ impl<'a> GraphPlanValidator<'a> {
                 }
             }
         }
+    }
+
+    fn validate_node_labels_projection(
+        &self,
+        variable: &str,
+        label: &str,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        let binding = self.bindings.get(variable).ok_or_else(|| {
+            Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                path.clone(),
+                format!("unknown graph variable '{variable}'"),
+            )
+            .into_core_error()
+        })?;
+        let ValidatedBindingKind::Node(node) = binding.kind() else {
+            return Err(Diagnostic::new(
+                "INVALID_LABELS_PROJECTION",
+                path,
+                format!("labels({variable}) requires a node variable"),
+            )
+            .into_core_error());
+        };
+        if node.label != label {
+            return Err(Diagnostic::new(
+                "INVALID_LABELS_PROJECTION",
+                path,
+                format!(
+                    "labels({variable}) expected node label '{}', got '{label}'",
+                    node.label
+                ),
+            )
+            .into_core_error());
+        }
+        Ok(())
     }
 
     fn validate_key_projection(
@@ -1976,6 +2042,41 @@ relationships:
 
         assert!(
             error.to_string().contains("INVALID_KEY_PROJECTION"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_accepts_node_labels_projections() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::NodeLabels {
+            variable: "person".to_string(),
+            label: "Person".to_string(),
+            alias: "labels".to_string(),
+        }];
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("node labels projection should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_labels_projection_on_relationships() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::NodeLabels {
+            variable: "owns".to_string(),
+            label: "OWNS".to_string(),
+            alias: "labels".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("relationship labels projection should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_LABELS_PROJECTION"),
             "{error:?}"
         );
     }

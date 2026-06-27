@@ -147,6 +147,16 @@ pub enum Projection {
         /// Output alias.
         alias: String,
     },
+    /// Project the static labels of a node variable as a one-element list,
+    /// preserving null for unmatched optional nodes.
+    NodeLabels {
+        /// Graph node variable.
+        variable: String,
+        /// Static graph node label.
+        label: String,
+        /// Output alias.
+        alias: String,
+    },
     /// Project a literal value.
     Literal {
         /// Literal to project.
@@ -323,6 +333,13 @@ pub enum OrderExpression {
         variable: String,
         /// Static graph relationship type.
         relationship_type: String,
+    },
+    /// Order by the static labels of a node variable.
+    NodeLabels {
+        /// Graph node variable.
+        variable: String,
+        /// Static graph node label.
+        label: String,
     },
     /// Order by a literal value.
     Literal(Literal),

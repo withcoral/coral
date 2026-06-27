@@ -1824,6 +1824,64 @@ async fn cypher_id_and_type_projections_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_labels_projection_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier IS NOT NULL \
+         RETURN service.name AS service, labels(service) AS labels \
+         ORDER BY service",
+    )
+    .await
+    .expect("labels() projection should execute");
+
+    assert!(
+        execution.translated_sql().contains("make_array('Service')"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "labels": ["Service"]}),
+            json!({"service": "deployments", "labels": ["Service"]}),
+            json!({"service": "experiments", "labels": ["Service"]}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_labels_projection_preserves_optional_nulls() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {name: 'legacy-sync'}) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, labels(person) AS owner_labels",
+    )
+    .await
+    .expect("labels() projection over an optional node should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "legacy-sync"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_order_by_id_functions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

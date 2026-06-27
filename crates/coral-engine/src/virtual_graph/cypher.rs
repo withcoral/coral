@@ -342,6 +342,10 @@ fn set_projection_output_alias(projection: &mut Projection, alias: String) {
             alias: projection_alias,
             ..
         }
+        | Projection::NodeLabels {
+            alias: projection_alias,
+            ..
+        }
         | Projection::RelationshipType {
             alias: projection_alias,
             ..
@@ -424,6 +428,7 @@ fn projection_output_alias(projection: &Projection) -> Option<&str> {
     match projection {
         Projection::Property { alias, .. } => alias.as_deref(),
         Projection::Key { alias, .. }
+        | Projection::NodeLabels { alias, .. }
         | Projection::RelationshipType { alias, .. }
         | Projection::Literal { alias, .. }
         | Projection::CountAll { alias }
@@ -1054,6 +1059,9 @@ fn compile_order_expression(
         Expression::FunctionCall(function) if is_type_function(function) => {
             compile_type_order_expression(function, path, plan, context)
         }
+        Expression::FunctionCall(function) if is_labels_function(function) => {
+            compile_labels_order_expression(function, path, plan, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             aggregate_order_expression_for_projection(function, projections, path, context)
         }
@@ -1218,6 +1226,10 @@ fn projection_order_expression_for_alias(
                 alias: projection_alias,
                 ..
             }
+            | Projection::NodeLabels {
+                alias: projection_alias,
+                ..
+            }
             | Projection::Literal {
                 alias: projection_alias,
                 ..
@@ -1274,6 +1286,9 @@ fn compile_projection(
         }
         Expression::FunctionCall(function) if is_type_function(function) => {
             compile_type_projection(function, item, path, plan, context)
+        }
+        Expression::FunctionCall(function) if is_labels_function(function) => {
+            compile_labels_projection(function, item, path, plan, context)
         }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             compile_aggregate_projection(function, item, path, context)
@@ -1353,6 +1368,71 @@ fn compile_type_projection(
             .as_ref()
             .map_or_else(|| "type".to_string(), variable_name),
     })
+}
+
+fn compile_labels_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    let (variable, label) = compile_node_function_target(
+        function,
+        format!("{path}.expression.arguments"),
+        "labels() supports exactly one node variable argument",
+        plan,
+        context,
+    )?;
+    Ok(Projection::NodeLabels {
+        variable,
+        label,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "labels".to_string(), variable_name),
+    })
+}
+
+fn compile_labels_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    let path = path.into();
+    let (variable, label) = compile_node_function_target(
+        function,
+        format!("{path}.arguments"),
+        "labels() supports exactly one node variable argument",
+        plan,
+        context,
+    )?;
+    Ok(OrderExpression::NodeLabels { variable, label })
+}
+
+fn compile_node_function_target(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    message: &'static str,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<(String, String), CoreError> {
+    let path = path.into();
+    let variable =
+        compile_single_variable_function_argument(function, path.clone(), message, context)?;
+    let node = plan
+        .nodes
+        .iter()
+        .find(|node| node.variable == variable)
+        .ok_or_else(|| {
+            unsupported(
+                format!("{path}[0]"),
+                format!("labels() argument '{variable}' is not a node variable"),
+            )
+        })?;
+    Ok((variable, node.label.clone()))
 }
 
 fn compile_single_variable_function_argument(
@@ -1528,6 +1608,13 @@ fn is_type_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("type")
+    )
+}
+
+fn is_labels_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("labels")
     )
 }
 
@@ -3025,6 +3112,32 @@ mod tests {
     }
 
     #[test]
+    fn compiles_labels_projection() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN labels(service) AS service_labels \
+             ORDER BY service_labels",
+        )
+        .expect("labels() projection should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![Projection::NodeLabels {
+                variable: "service".to_string(),
+                label: "Service".to_string(),
+                alias: "service_labels".to_string(),
+            }]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("service_labels".to_string()),
+                direction: OrderDirection::Ascending,
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_order_by_id_and_type_functions() {
         let plan = compile_cypher(
             "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
@@ -3056,6 +3169,41 @@ mod tests {
                     direction: OrderDirection::Ascending,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_order_by_labels_function() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY labels(service) DESC",
+        )
+        .expect("labels() order expression should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::NodeLabels {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+                direction: OrderDirection::Descending,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_labels_on_relationship_variables() {
+        let error = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             RETURN labels(owns) AS labels",
+        )
+        .expect_err("labels() should require a node variable");
+
+        assert!(
+            error.to_string().contains("labels() argument 'owns'"),
+            "{error:?}"
         );
     }
 

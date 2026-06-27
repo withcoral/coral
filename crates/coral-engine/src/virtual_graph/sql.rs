@@ -536,6 +536,17 @@ impl<'a> Lowerer<'a> {
                         quote_ident(alias)
                     ));
                 }
+                Projection::NodeLabels {
+                    variable,
+                    label,
+                    alias,
+                } => {
+                    rendered.push(format!(
+                        "{} AS {}",
+                        self.render_node_labels_ref(variable, label)?,
+                        quote_ident(alias)
+                    ));
+                }
                 Projection::RelationshipType {
                     variable,
                     relationship_type,
@@ -651,6 +662,7 @@ impl<'a> Lowerer<'a> {
             .filter_map(|projection| match projection {
                 Projection::Property { property, .. } => Some(property),
                 Projection::Key { .. }
+                | Projection::NodeLabels { .. }
                 | Projection::RelationshipType { .. }
                 | Projection::Literal { .. }
                 | Projection::CountAll { .. }
@@ -665,6 +677,7 @@ impl<'a> Lowerer<'a> {
                     .filter_map(|projection| match projection {
                         Projection::Key { variable, .. } => Some(variable),
                         Projection::Property { .. }
+                        | Projection::NodeLabels { .. }
                         | Projection::RelationshipType { .. }
                         | Projection::Literal { .. }
                         | Projection::CountAll { .. }
@@ -685,6 +698,7 @@ impl<'a> Lowerer<'a> {
                         } => Some((variable, relationship_type)),
                         Projection::Property { .. }
                         | Projection::Key { .. }
+                        | Projection::NodeLabels { .. }
                         | Projection::Literal { .. }
                         | Projection::CountAll { .. }
                         | Projection::Aggregate { .. } => None,
@@ -692,6 +706,24 @@ impl<'a> Lowerer<'a> {
                     .map(|(variable, relationship_type)| {
                         self.render_relationship_type_ref(variable, relationship_type)
                     }),
+            )
+            .chain(
+                self.validated
+                    .plan()
+                    .projections
+                    .iter()
+                    .filter_map(|projection| match projection {
+                        Projection::NodeLabels {
+                            variable, label, ..
+                        } => Some((variable, label)),
+                        Projection::Property { .. }
+                        | Projection::Key { .. }
+                        | Projection::RelationshipType { .. }
+                        | Projection::Literal { .. }
+                        | Projection::CountAll { .. }
+                        | Projection::Aggregate { .. } => None,
+                    })
+                    .map(|(variable, label)| self.render_node_labels_ref(variable, label)),
             )
             .collect::<Result<Vec<_>, _>>()?;
         if properties.is_empty() {
@@ -976,6 +1008,9 @@ impl<'a> Lowerer<'a> {
         match expression {
             OrderExpression::Property(property) => self.render_property_ref(property),
             OrderExpression::Key { variable } => self.render_binding_key_ref(variable),
+            OrderExpression::NodeLabels { variable, label } => {
+                self.render_node_labels_ref(variable, label)
+            }
             OrderExpression::RelationshipType {
                 variable,
                 relationship_type,
@@ -1030,6 +1065,25 @@ impl<'a> Lowerer<'a> {
         ))
     }
 
+    fn render_node_labels_ref(&self, variable: &str, label: &str) -> Result<String, CoreError> {
+        let binding = self.validated.binding(variable)?;
+        let ValidatedBindingKind::Node(node) = binding.kind() else {
+            return Err(CoreError::internal(
+                "validated labels expression did not reference a node",
+            ));
+        };
+        if node.label != label {
+            return Err(CoreError::internal(
+                "validated labels expression did not match the node label",
+            ));
+        }
+        let presence = self.render_binding_presence_ref(variable)?;
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE make_array({}) END",
+            quote_string_literal(label)
+        ))
+    }
+
     fn render_relationship_presence_ref(&self, variable: &str) -> Result<String, CoreError> {
         let binding = self.validated.binding(variable)?;
         let ValidatedBindingKind::Relationship(relationship) = binding.kind() else {
@@ -1063,6 +1117,9 @@ impl<'a> Lowerer<'a> {
         match projection {
             Projection::Property { property, .. } => self.render_property_ref(property),
             Projection::Key { variable, .. } => self.render_binding_key_ref(variable),
+            Projection::NodeLabels {
+                variable, label, ..
+            } => self.render_node_labels_ref(variable, label),
             Projection::RelationshipType {
                 variable,
                 relationship_type,
@@ -1160,6 +1217,7 @@ fn projection_output_alias(projection: &Projection) -> Option<&str> {
     match projection {
         Projection::Property { alias, .. } => alias.as_deref(),
         Projection::Key { alias, .. }
+        | Projection::NodeLabels { alias, .. }
         | Projection::RelationshipType { alias, .. }
         | Projection::Literal { alias, .. }
         | Projection::CountAll { alias }
@@ -1568,6 +1626,11 @@ relationships:
                 variable: "person".to_string(),
                 alias: "person_id".to_string(),
             },
+            Projection::NodeLabels {
+                variable: "person".to_string(),
+                label: "Person".to_string(),
+                alias: "person_labels".to_string(),
+            },
             Projection::Key {
                 variable: "owns".to_string(),
                 alias: "ownership_id".to_string(),
@@ -1585,7 +1648,7 @@ relationships:
 
         assert_eq!(
             translation.sql(),
-            "SELECT \"n0\".\"id\" AS \"person_id\", \"r0\".\"ownership_id\" AS \"ownership_id\", CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL ELSE 'OWNS' END AS \"relationship_type\" \
+            "SELECT \"n0\".\"id\" AS \"person_id\", CASE WHEN \"n0\".\"id\" IS NULL THEN NULL ELSE make_array('Person') END AS \"person_labels\", \"r0\".\"ownership_id\" AS \"ownership_id\", CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL ELSE 'OWNS' END AS \"relationship_type\" \
              FROM \"ops\".\"people\" AS \"n0\" \
              JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
              JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"service_id\" = \"n1\".\"id\" \
