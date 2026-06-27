@@ -8286,6 +8286,42 @@ mod tests {
     }
 
     #[test]
+    fn deduplicates_static_relationship_type_alternatives_before_union_expansion() {
+        let query = compile_cypher_query(
+            "MATCH (source:Service)-[relationship:DEPENDS_ON|DEPENDS_ON]->(target:Service) \
+             RETURN type(relationship) AS relationship_type",
+        )
+        .expect("duplicate static relationship type alternatives should compile");
+
+        let GraphQuery::Plan(plan) = query else {
+            panic!(
+                "duplicate static relationship type alternatives should collapse to one graph plan"
+            );
+        };
+        assert_eq!(
+            plan.relationships
+                .first()
+                .expect("first relationship")
+                .relationship_type,
+            "DEPENDS_ON"
+        );
+    }
+
+    #[test]
+    fn rejects_static_label_alternatives_that_exceed_branch_cap() {
+        let labels = (0..=MAX_STATIC_LABEL_TYPE_ALTERNATIVE_BRANCHES)
+            .map(|index| format!("Label{index}"))
+            .collect::<Vec<_>>()
+            .join("|");
+        let cypher = format!("MATCH (entity:{labels}) RETURN entity.name AS name");
+
+        let error = compile_cypher_query(&cypher)
+            .expect_err("excessive static label alternatives should be capped");
+
+        assert!(error.to_string().contains("more than 64 branches"));
+    }
+
+    #[test]
     fn compiles_static_relationship_type_alternatives_as_union_all() {
         let query = compile_cypher_query(
             "MATCH (source:Service)-[relationship:DEPENDS_ON|OWNS]->(target:Service) \
