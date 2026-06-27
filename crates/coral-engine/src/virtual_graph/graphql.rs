@@ -3,10 +3,12 @@ use graphql_parser::query::{
 };
 use ordered_float::OrderedFloat;
 
+use super::declaration::Declaration;
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    ComparisonOperator, GraphPlan, Literal, NodePattern, OrderDirection, OrderExpression, OrderKey,
-    PredicateRhs, Projection, PropertyPredicate, PropertyRef,
+    ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection,
+    OrderExpression, OrderKey, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
+    RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -27,11 +29,29 @@ pub fn compile_graphql(graphql: &str) -> Result<GraphPlan, CoreError> {
     let document = parse_query::<String>(graphql).map_err(|error| {
         Diagnostic::new("GRAPHQL_PARSE_ERROR", "query", error.to_string()).into_core_error()
     })?;
-    compile_document(&document)
+    compile_document(&document, None)
+}
+
+/// Parses and compiles the Coral-supported read-only GraphQL virtual graph
+/// subset using a graph declaration for relationship nesting.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the query cannot be parsed or uses
+/// GraphQL features outside Coral's current read-only virtual graph subset.
+pub fn compile_graphql_for_graph(
+    graph: &Declaration,
+    graphql: &str,
+) -> Result<GraphPlan, CoreError> {
+    let document = parse_query::<String>(graphql).map_err(|error| {
+        Diagnostic::new("GRAPHQL_PARSE_ERROR", "query", error.to_string()).into_core_error()
+    })?;
+    compile_document(&document, Some(graph))
 }
 
 fn compile_document(
     document: &graphql_parser::query::Document<'_, String>,
+    graph: Option<&Declaration>,
 ) -> Result<GraphPlan, CoreError> {
     let [definition] = document.definitions.as_slice() else {
         return Err(unsupported(
@@ -40,7 +60,7 @@ fn compile_document(
         ));
     };
     match definition {
-        Definition::Operation(operation) => compile_operation(operation),
+        Definition::Operation(operation) => compile_operation(operation, graph),
         Definition::Fragment(_) => Err(unsupported(
             "query.definitions[0]",
             "GraphQL fragments are not supported yet",
@@ -48,10 +68,13 @@ fn compile_document(
     }
 }
 
-fn compile_operation(operation: &OperationDefinition<'_, String>) -> Result<GraphPlan, CoreError> {
+fn compile_operation(
+    operation: &OperationDefinition<'_, String>,
+    graph: Option<&Declaration>,
+) -> Result<GraphPlan, CoreError> {
     match operation {
         OperationDefinition::SelectionSet(selection_set) => {
-            compile_root_selection_set(selection_set, "query.selectionSet")
+            compile_root_selection_set(selection_set, graph, "query.selectionSet")
         }
         OperationDefinition::Query(query) => {
             if !query.variable_definitions.is_empty() {
@@ -66,7 +89,7 @@ fn compile_operation(operation: &OperationDefinition<'_, String>) -> Result<Grap
                     "GraphQL query directives are not supported yet",
                 ));
             }
-            compile_root_selection_set(&query.selection_set, "query.selectionSet")
+            compile_root_selection_set(&query.selection_set, graph, "query.selectionSet")
         }
         OperationDefinition::Mutation(_) | OperationDefinition::Subscription(_) => {
             Err(unsupported(
@@ -79,6 +102,7 @@ fn compile_operation(operation: &OperationDefinition<'_, String>) -> Result<Grap
 
 fn compile_root_selection_set(
     selection_set: &SelectionSet<'_, String>,
+    graph: Option<&Declaration>,
     path: impl Into<String>,
 ) -> Result<GraphPlan, CoreError> {
     let path = path.into();
@@ -94,11 +118,12 @@ fn compile_root_selection_set(
             "GraphQL fragments are not supported yet",
         ));
     };
-    compile_root_field(root, format!("{path}.items[0]"))
+    compile_root_field(root, graph, format!("{path}.items[0]"))
 }
 
 fn compile_root_field(
     root: &Field<'_, String>,
+    graph: Option<&Declaration>,
     path: impl Into<String>,
 ) -> Result<GraphPlan, CoreError> {
     let path = path.into();
@@ -131,11 +156,7 @@ fn compile_root_field(
         optional_relationships: Vec::new(),
         optional_matches: Vec::new(),
         distinct: false,
-        projections: compile_projection_selection_set(
-            &root.selection_set,
-            &variable,
-            format!("{path}.selectionSet"),
-        )?,
+        projections: Vec::new(),
         predicates: Vec::new(),
         predicate: None,
         post_projection_predicate: None,
@@ -143,6 +164,18 @@ fn compile_root_field(
         skip: None,
         limit: None,
     };
+
+    compile_selection_set_into_plan(
+        &mut plan,
+        graph,
+        &root.selection_set,
+        &NodeContext {
+            variable: variable.clone(),
+            label: root.name.clone(),
+            is_root: true,
+        },
+        format!("{path}.selectionSet"),
+    )?;
 
     for (index, (name, value)) in root.arguments.iter().enumerate() {
         compile_root_argument(
@@ -157,13 +190,21 @@ fn compile_root_field(
     Ok(plan)
 }
 
-fn compile_projection_selection_set(
+#[derive(Debug, Clone)]
+struct NodeContext {
+    variable: String,
+    label: String,
+    is_root: bool,
+}
+
+fn compile_selection_set_into_plan(
+    plan: &mut GraphPlan,
+    graph: Option<&Declaration>,
     selection_set: &SelectionSet<'_, String>,
-    variable: &str,
+    context: &NodeContext,
     path: impl Into<String>,
-) -> Result<Vec<Projection>, CoreError> {
+) -> Result<(), CoreError> {
     let path = path.into();
-    let mut projections = Vec::with_capacity(selection_set.items.len());
     for (index, selection) in selection_set.items.iter().enumerate() {
         let Selection::Field(field) = selection else {
             return Err(unsupported(
@@ -171,33 +212,299 @@ fn compile_projection_selection_set(
                 "GraphQL fragments are not supported yet",
             ));
         };
-        if !field.arguments.is_empty() {
-            return Err(unsupported(
-                format!("{path}.items[{index}].arguments"),
-                "GraphQL property field arguments are not supported",
-            ));
-        }
         if !field.directives.is_empty() {
             return Err(unsupported(
                 format!("{path}.items[{index}].directives"),
-                "GraphQL property field directives are not supported",
+                "GraphQL field directives are not supported",
             ));
         }
-        if !field.selection_set.items.is_empty() {
-            return Err(unsupported(
-                format!("{path}.items[{index}].selectionSet"),
-                "GraphQL relationship nesting is not supported yet",
-            ));
+        if field.selection_set.items.is_empty() {
+            if !field.arguments.is_empty() {
+                return Err(unsupported(
+                    format!("{path}.items[{index}].arguments"),
+                    "GraphQL property field arguments are not supported",
+                ));
+            }
+            plan.projections.push(Projection::Property {
+                property: PropertyRef {
+                    variable: context.variable.clone(),
+                    property: field.name.clone(),
+                },
+                alias: Some(projection_alias(field, context)),
+            });
+        } else {
+            let graph = graph.ok_or_else(|| {
+                unsupported(
+                    format!("{path}.items[{index}].selectionSet"),
+                    "GraphQL relationship nesting requires a graph declaration",
+                )
+            })?;
+            compile_relationship_field(
+                plan,
+                graph,
+                context,
+                field,
+                format!("{path}.items[{index}]"),
+            )?;
         }
-        projections.push(Projection::Property {
-            property: PropertyRef {
-                variable: variable.to_string(),
-                property: field.name.clone(),
-            },
-            alias: field.alias.clone().or_else(|| Some(field.name.clone())),
-        });
     }
-    Ok(projections)
+    Ok(())
+}
+
+fn compile_relationship_field(
+    plan: &mut GraphPlan,
+    graph: &Declaration,
+    source: &NodeContext,
+    field: &Field<'_, String>,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    let (direction, relationship_type, endpoint_argument) =
+        compile_relationship_field_name(&field.name, format!("{path}.name"))?;
+    let target_label =
+        compile_relationship_target_label(field, endpoint_argument, format!("{path}.arguments"))?;
+
+    ensure_node_label(
+        graph,
+        &target_label,
+        format!("{path}.arguments.{endpoint_argument}"),
+    )?;
+    ensure_relationship_mapping(
+        graph,
+        &relationship_type,
+        direction,
+        &source.label,
+        &target_label,
+        &path,
+    )?;
+
+    let relationship_index = plan.relationships.len();
+    let relationship_variable = field
+        .arguments
+        .iter()
+        .any(|(name, _)| name == "relationshipWhere")
+        .then(|| format!("relationship{relationship_index}"));
+    let target_variable = nested_variable_for_field(field, &target_label, plan.nodes.len());
+
+    for (index, (name, value)) in field.arguments.iter().enumerate() {
+        let argument_path = format!("{path}.arguments[{index}]");
+        match name.as_str() {
+            "to" | "from" | "label" => {
+                if name != endpoint_argument {
+                    return Err(unsupported(
+                        argument_path,
+                        format!(
+                            "GraphQL relationship field '{}' requires '{}' instead of '{}'",
+                            field.name, endpoint_argument, name
+                        ),
+                    ));
+                }
+            }
+            "where" => plan.predicates.extend(compile_where_argument(
+                &target_variable,
+                value,
+                argument_path,
+            )?),
+            "relationshipWhere" => {
+                let relationship_variable = relationship_variable
+                    .as_deref()
+                    .ok_or_else(|| CoreError::internal("relationshipWhere variable missing"))?;
+                plan.predicates.extend(compile_where_argument(
+                    relationship_variable,
+                    value,
+                    argument_path,
+                )?);
+            }
+            "orderBy" | "limit" | "offset" | "skip" | "distinct" => {
+                return Err(unsupported(
+                    argument_path,
+                    "GraphQL nested relationship fields do not support row modifiers yet",
+                ));
+            }
+            _ => {
+                return Err(unsupported(
+                    argument_path,
+                    format!("unsupported GraphQL relationship argument '{name}'"),
+                ));
+            }
+        }
+    }
+
+    plan.nodes.push(NodePattern {
+        variable: target_variable.clone(),
+        label: target_label.clone(),
+    });
+    plan.relationships.push(RelationshipPattern {
+        variable: relationship_variable,
+        relationship_type,
+        left: source.variable.clone(),
+        direction,
+        right: target_variable.clone(),
+    });
+
+    compile_selection_set_into_plan(
+        plan,
+        Some(graph),
+        &field.selection_set,
+        &NodeContext {
+            variable: target_variable,
+            label: target_label,
+            is_root: false,
+        },
+        format!("{path}.selectionSet"),
+    )
+}
+
+fn compile_relationship_field_name(
+    name: &str,
+    path: impl Into<String>,
+) -> Result<(Direction, String, &'static str), CoreError> {
+    let path = path.into();
+    if let Some(relationship_type) = name.strip_prefix("out_") {
+        return non_empty_relationship_type(relationship_type, path, Direction::Outgoing, "to");
+    }
+    if let Some(relationship_type) = name.strip_prefix("in_") {
+        return non_empty_relationship_type(relationship_type, path, Direction::Incoming, "from");
+    }
+    if let Some(relationship_type) = name.strip_prefix("any_") {
+        return non_empty_relationship_type(
+            relationship_type,
+            path,
+            Direction::Undirected,
+            "label",
+        );
+    }
+    Err(unsupported(
+        path,
+        "GraphQL relationship fields must be named out_TYPE, in_TYPE, or any_TYPE",
+    ))
+}
+
+fn non_empty_relationship_type(
+    relationship_type: &str,
+    path: String,
+    direction: Direction,
+    endpoint_argument: &'static str,
+) -> Result<(Direction, String, &'static str), CoreError> {
+    if relationship_type.is_empty() {
+        return Err(unsupported(
+            path,
+            "GraphQL relationship field is missing a relationship type",
+        ));
+    }
+    Ok((direction, relationship_type.to_string(), endpoint_argument))
+}
+
+fn compile_relationship_target_label(
+    field: &Field<'_, String>,
+    endpoint_argument: &str,
+    path: impl Into<String>,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    let mut target_label = None;
+    for (index, (name, value)) in field.arguments.iter().enumerate() {
+        if name == endpoint_argument {
+            if target_label.is_some() {
+                return Err(unsupported(
+                    format!("{path}[{index}]"),
+                    format!("GraphQL relationship argument '{endpoint_argument}' is duplicated"),
+                ));
+            }
+            target_label = Some(compile_name_value(
+                value,
+                format!("{path}.{endpoint_argument}"),
+            )?);
+        }
+    }
+    target_label.ok_or_else(|| {
+        unsupported(
+            path,
+            format!("GraphQL relationship field requires '{endpoint_argument}'"),
+        )
+    })
+}
+
+fn ensure_node_label(
+    graph: &Declaration,
+    label: &str,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    if graph.node(label).is_some() {
+        return Ok(());
+    }
+    Err(unsupported(
+        path,
+        format!("unknown GraphQL target node label '{label}'"),
+    ))
+}
+
+fn ensure_relationship_mapping(
+    graph: &Declaration,
+    relationship_type: &str,
+    direction: Direction,
+    left_label: &str,
+    right_label: &str,
+    path: &str,
+) -> Result<(), CoreError> {
+    let candidates = graph
+        .relationships_for_type(relationship_type)
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Err(unsupported(
+            format!("{path}.name"),
+            format!("unknown GraphQL relationship type '{relationship_type}'"),
+        ));
+    }
+    let matches = candidates
+        .iter()
+        .copied()
+        .filter(|relationship| {
+            let matches_forward =
+                left_label == relationship.from.label && right_label == relationship.to.label;
+            let matches_reverse =
+                left_label == relationship.to.label && right_label == relationship.from.label;
+            match direction {
+                Direction::Outgoing => matches_forward,
+                Direction::Incoming => matches_reverse,
+                Direction::Undirected => matches_forward || matches_reverse,
+            }
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [_] => Ok(()),
+        [] => {
+            let available = candidates
+                .iter()
+                .map(|relationship| {
+                    format!("{} -> {}", relationship.from.label, relationship.to.label)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(unsupported(
+                path.to_string(),
+                format!(
+                    "GraphQL relationship type '{relationship_type}' has no mapping for {left_label} -> {right_label}; available endpoint mappings: {available}"
+                ),
+            ))
+        }
+        _ => Err(unsupported(
+            path.to_string(),
+            format!(
+                "GraphQL relationship type '{relationship_type}' with endpoints {left_label} -> {right_label} is ambiguous"
+            ),
+        )),
+    }
+}
+
+fn projection_alias(field: &Field<'_, String>, context: &NodeContext) -> String {
+    field.alias.clone().unwrap_or_else(|| {
+        if context.is_root {
+            field.name.clone()
+        } else {
+            format!("{}_{}", context.variable, field.name)
+        }
+    })
 }
 
 fn compile_root_argument(
@@ -527,6 +834,17 @@ fn variable_for_label(label: &str) -> String {
     }
 }
 
+fn nested_variable_for_label(label: &str, index: usize) -> String {
+    format!("{}{}", variable_for_label(label), index)
+}
+
+fn nested_variable_for_field(field: &Field<'_, String>, label: &str, index: usize) -> String {
+    field
+        .alias
+        .clone()
+        .unwrap_or_else(|| nested_variable_for_label(label, index))
+}
+
 fn unsupported(path: impl Into<String>, message: impl Into<String>) -> CoreError {
     Diagnostic::new("UNSUPPORTED_GRAPHQL", path, message).into_core_error()
 }
@@ -596,6 +914,148 @@ mod tests {
     }
 
     #[test]
+    fn compiles_nested_outgoing_relationship_query_with_declaration() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph(
+            &graph,
+            r#"
+            {
+              Person(where: { team: { eq: "infra" } }) {
+                owner: name
+                out_OWNS(
+                  to: Service
+                  relationshipWhere: { source: { eq: "pagerduty" } }
+                  where: { tier: { eq: "prod" } }
+                ) {
+                  service: name
+                  risk
+                }
+              }
+            }
+            "#,
+        )
+        .expect("nested GraphQL query should compile");
+
+        assert_eq!(
+            plan.nodes,
+            vec![
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "service1".to_string(),
+                    label: "Service".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: Some("relationship0".to_string()),
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "service1".to_string(),
+            }]
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "person".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("owner".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service1".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service1".to_string(),
+                        property: "risk".to_string(),
+                    },
+                    alias: Some("service1_risk".to_string()),
+                },
+            ]
+        );
+        assert_eq!(plan.predicates.len(), 3);
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.variable == "person" && predicate.property.property == "team"
+        }));
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.variable == "service1" && predicate.property.property == "tier"
+        }));
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.variable == "relationship0"
+                && predicate.property.property == "source"
+        }));
+    }
+
+    #[test]
+    fn compiles_nested_incoming_relationship_query_with_declaration() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph(
+            &graph,
+            r"
+            {
+              Service {
+                service: name
+                owners: in_OWNS(from: Person) {
+                  owner: name
+                  team
+                }
+              }
+            }
+            ",
+        )
+        .expect("incoming nested GraphQL query should compile");
+
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "OWNS".to_string(),
+                left: "service".to_string(),
+                direction: Direction::Incoming,
+                right: "owners".to_string(),
+            }]
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "owners".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("owner".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "owners".to_string(),
+                        property: "team".to_string(),
+                    },
+                    alias: Some("owners_team".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn rejects_nested_graphql_selection() {
         let error = compile_graphql(
             r"
@@ -635,4 +1095,52 @@ mod tests {
             "unexpected error: {error}"
         );
     }
+
+    #[test]
+    fn rejects_nested_graphql_relationship_endpoint_mismatches() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let error = compile_graphql_for_graph(
+            &graph,
+            r"
+            {
+              Person {
+                out_OWNS(to: Person) { name }
+              }
+            }
+            ",
+        )
+        .expect_err("endpoint mismatch should be rejected");
+
+        assert!(
+            error.to_string().contains("has no mapping"),
+            "unexpected error: {error}"
+        );
+    }
+
+    const TEST_GRAPH: &str = r"
+version: 1
+name: test
+nodes:
+  - label: Person
+    table: { schema: ops, name: people }
+    key: id
+    properties:
+      name: full_name
+      team: team
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+    properties:
+      name: service_name
+      tier: tier
+      risk: risk_score
+relationships:
+  - type: OWNS
+    table: { schema: ops, name: ownerships }
+    key: ownership_id
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
+    properties:
+      source: source
+";
 }

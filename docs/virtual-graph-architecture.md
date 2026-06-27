@@ -125,7 +125,7 @@ procedure calls, and broad expression semantics.
 
 The GraphQL frontend follows the same rule as Cypher: parse GraphQL into the
 shared graph IR and let validation, catalog checks, SQL lowering, and execution
-remain separate. The first supported slice is intentionally root-node oriented:
+remain separate. The supported slice is intentionally graph-query oriented:
 
 - exactly one query operation or anonymous selection set;
 - exactly one root field whose name is the graph node label;
@@ -133,8 +133,18 @@ remain separate. The first supported slice is intentionally root-node oriented:
 - root `where` object predicates over selected node properties;
 - `orderBy` object or list of objects using property fields and `ASC` / `DESC`;
 - integer `limit`, `offset` / `skip`, and boolean `distinct` root arguments.
+- nested relationship fields named `out_TYPE(to: Label)`, `in_TYPE(from:
+  Label)`, or `any_TYPE(label: Label)`;
+- nested relationship target filters via `where` and relationship property
+  filters via `relationshipWhere`.
 
-Fragments, directives, variables, mutations, subscriptions, and relationship
-nesting are rejected with GraphQL-specific diagnostics until their IR contracts
-are defined. Relationship nesting should be declaration-aware and compile
-directly to relationship patterns, not to Cypher strings.
+Nested relationship fields compile directly to `NodePattern` and
+`RelationshipPattern` IR entries. Endpoint labels are checked against the graph
+declaration before lowering, and the existing graph validator still resolves the
+final relationship mapping. Selected nested node properties are flattened into
+the tabular result set; GraphQL object materialization is intentionally out of
+scope for the DataFusion execution path.
+
+Fragments, directives, variables, mutations, subscriptions, nested row
+modifiers, and optional GraphQL traversals are rejected with GraphQL-specific
+diagnostics until their IR contracts are defined.

@@ -90,7 +90,7 @@ pub use virtual_graph::{
     ProjectionPredicateRhs as GraphProjectionPredicateRhs,
     PropertyPredicate as GraphPropertyPredicate, PropertyRef as GraphPropertyRef,
     RelationshipPattern, SqlTranslation as GraphSqlTranslation, compile_cypher,
-    compile_cypher_with_parameters, compile_graphql,
+    compile_cypher_with_parameters, compile_graphql, compile_graphql_for_graph,
 };
 
 /// High-level query operations for the local query engine.
@@ -379,7 +379,7 @@ impl CoralQuery {
             ));
         }
 
-        let plan = compile_graphql(graphql)?;
+        let plan = compile_graphql_for_graph(graph, graphql)?;
         Self::execute_graph_plan(sources, runtime, graph, &plan).await
     }
 
@@ -402,7 +402,7 @@ impl CoralQuery {
             ));
         }
 
-        let plan = compile_graphql(graphql)?;
+        let plan = compile_graphql_for_graph(graph, graphql)?;
         Self::explain_graph_plan(sources, runtime, graph, &plan).await
     }
 

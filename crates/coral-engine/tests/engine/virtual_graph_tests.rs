@@ -206,6 +206,65 @@ async fn graphql_root_query_executes_against_synthetic_file_sources() {
 }
 
 #[tokio::test]
+async fn graphql_nested_relationship_query_executes_against_synthetic_file_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          Person(where: { team: { eq: "infra" } }) {
+            owner: name
+            out_OWNS(
+              to: Service
+              relationshipWhere: { source: { eq: "pagerduty" } }
+              where: { tier: { eq: "prod" } }
+            ) {
+              service: name
+              out_DEPENDS_ON(
+                to: Service
+                relationshipWhere: { criticality: { eq: "dev" } }
+              ) {
+                dependency: name
+              }
+            }
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("nested GraphQL virtual graph query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"service_dependencies\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"r1\".\"criticality\" = 'dev'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "owner": "Grace Hopper",
+            "service": "deployments",
+            "dependency": "experiments",
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_property_to_property_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
