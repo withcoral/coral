@@ -1937,10 +1937,10 @@ fn attach_optional_match_scope(
         return Ok(());
     }
 
-    if predicate.is_some() && relationship_indices.len() != 1 {
+    if relationship_indices.len() != 1 {
         return Err(unsupported(
             path,
-            "OPTIONAL MATCH predicates currently require a single relationship pattern",
+            "OPTIONAL MATCH currently requires a single relationship pattern to preserve whole-pattern null semantics",
         ));
     }
 
@@ -10820,6 +10820,9 @@ mod tests {
     #[test]
     fn rejects_unsupported_optional_match_shapes() {
         assert_unsupported("OPTIONAL MATCH (service:Service) RETURN service.name");
+        assert_unsupported(
+            "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service)-[:DEPENDS_ON]->(next:Service) RETURN service.name, target.name, next.name",
+        );
         assert_unsupported(
             "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service)-[:DEPENDS_ON]->(next:Service) WHERE next.tier = 'prod' RETURN service.name",
         );

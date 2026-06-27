@@ -600,6 +600,7 @@ impl<'a> GraphPlanValidator<'a> {
         optional_match: &OptionalMatchScope,
     ) -> Result<(), CoreError> {
         let allowed_variables = self.optional_match_scope_variables(index, optional_match)?;
+        Self::validate_optional_match_scope_shape(index, optional_match)?;
         let Some(predicate) = &optional_match.predicate else {
             return Ok(());
         };
@@ -718,14 +719,7 @@ impl<'a> GraphPlanValidator<'a> {
         index: usize,
         optional_match: &OptionalMatchScope,
     ) -> Result<(), CoreError> {
-        if optional_match.relationship_indices.len() != 1 {
-            return Err(Diagnostic::new(
-                "UNSUPPORTED_OPTIONAL_PREDICATE",
-                format!("optional_matches[{index}].predicate"),
-                "optional predicates currently require a single relationship pattern",
-            )
-            .into_core_error());
-        }
+        Self::validate_optional_match_scope_shape(index, optional_match)?;
         let relationship_index = *optional_match
             .relationship_indices
             .first()
@@ -734,6 +728,21 @@ impl<'a> GraphPlanValidator<'a> {
             .relationships
             .get(relationship_index)
             .ok_or_else(|| CoreError::internal("validated relationship index was invalid"))?;
+        Ok(())
+    }
+
+    fn validate_optional_match_scope_shape(
+        index: usize,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<(), CoreError> {
+        if optional_match.relationship_indices.len() != 1 {
+            return Err(Diagnostic::new(
+                "UNSUPPORTED_OPTIONAL_MATCH_SCOPE",
+                format!("optional_matches[{index}].relationship_indices"),
+                "optional match scopes currently require a single relationship pattern to preserve whole-pattern null semantics",
+            )
+            .into_core_error());
+        }
         Ok(())
     }
 
@@ -3495,6 +3504,35 @@ relationships:
         graph
             .validate_graph_plan(&plan)
             .expect("scoped optional predicate should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_multi_relationship_optional_match_scopes() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        let mut second_relationship = plan
+            .relationships
+            .first()
+            .expect("ownership plan should contain a relationship")
+            .clone();
+        second_relationship.variable = Some("second_owns".to_string());
+        plan.relationships.push(second_relationship);
+        plan.optional_relationships = vec![0, 1];
+        plan.optional_matches = vec![OptionalMatchScope {
+            relationship_indices: vec![0, 1],
+            predicate: None,
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("multi-relationship optional scope should fail validation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("UNSUPPORTED_OPTIONAL_MATCH_SCOPE"),
+            "{error:?}"
+        );
     }
 
     #[test]
