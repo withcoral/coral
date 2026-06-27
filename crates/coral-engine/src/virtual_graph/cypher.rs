@@ -9957,6 +9957,36 @@ fn compile_literal_list(
     }
 }
 
+fn compile_literal_list_index(
+    list: &Expression,
+    index: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let values = compile_literal_list(list, format!("{path}.list"), context)?;
+    let index = compile_literal(index, format!("{path}.index"), context)?;
+    let Literal::Integer(index) = index else {
+        return Err(unsupported(
+            format!("{path}.index"),
+            "literal list indexes require an integer literal or scalar integer parameter",
+        ));
+    };
+    let len = i64::try_from(values.len())
+        .map_err(|error| CoreError::internal(format!("literal list length overflow: {error}")))?;
+    let normalized = if index < 0 { len + index } else { index };
+    if normalized < 0 || normalized >= len {
+        return Ok(Literal::Null);
+    }
+    let index = usize::try_from(normalized).map_err(|error| {
+        CoreError::internal(format!("literal list index normalization failed: {error}"))
+    })?;
+    values
+        .get(index)
+        .cloned()
+        .ok_or_else(|| CoreError::internal("literal list index was out of bounds after checking"))
+}
+
 fn compile_literal(
     expression: &Expression,
     path: impl Into<String>,
@@ -9965,6 +9995,9 @@ fn compile_literal(
     let path = path.into();
     match expression {
         Expression::Parenthesized(inner) => compile_literal(inner, path, context),
+        Expression::ListIndex { list, index, .. } => {
+            compile_literal_list_index(list, index, path, context)
+        }
         Expression::Literal(CypherLiteral::String(value)) => {
             Ok(Literal::String(value.value.clone()))
         }
@@ -10064,7 +10097,7 @@ fn literal_list_element_kind(literal: &Literal) -> Option<LiteralListElementKind
 fn is_literal_projection_expression(expression: &Expression) -> bool {
     match expression {
         Expression::Parenthesized(inner) => is_literal_projection_expression(inner),
-        Expression::Literal(_) | Expression::Parameter(_) => true,
+        Expression::ListIndex { .. } | Expression::Literal(_) | Expression::Parameter(_) => true,
         Expression::UnaryOp {
             op: UnaryOperator::Negate,
             operand,
@@ -10078,7 +10111,7 @@ fn is_literal_expression(expression: &Expression) -> bool {
     match expression {
         Expression::Parenthesized(inner) => is_literal_expression(inner),
         Expression::Literal(CypherLiteral::List(_)) => false,
-        Expression::Literal(_) | Expression::Parameter(_) => true,
+        Expression::ListIndex { .. } | Expression::Literal(_) | Expression::Parameter(_) => true,
         Expression::UnaryOp {
             op: UnaryOperator::Negate,
             operand,

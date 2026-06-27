@@ -5920,6 +5920,76 @@ async fn cypher_literal_list_size_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_literal_list_indexes_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([
+        (
+            "selected_tiers".to_string(),
+            GraphCypherParameterValue::List(vec![
+                GraphLiteral::String("prod".to_string()),
+                GraphLiteral::String("dev".to_string()),
+            ]),
+        ),
+        (
+            "selected_index".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::Integer(1)),
+        ),
+    ]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier = ['prod', 'critical'][0] \
+         RETURN service.name AS service, \
+                ['prod', 'dev'][0] AS first_tier, \
+                ['prod', 'dev'][-1] AS last_tier, \
+                ['prod', 'dev'][5] AS missing_tier, \
+                $selected_tiers[$selected_index] AS parameter_tier \
+         ORDER BY service",
+        &parameters,
+    )
+    .await
+    .expect("literal list index query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("'prod' AS \"first_tier\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("NULL AS \"missing_tier\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({
+                "service": "billing-api",
+                "first_tier": "prod",
+                "last_tier": "dev",
+                "parameter_tier": "dev",
+            }),
+            json!({
+                "service": "deployments",
+                "first_tier": "prod",
+                "last_tier": "dev",
+                "parameter_tier": "dev",
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_is_empty_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -5953,6 +6023,31 @@ async fn cypher_is_empty_execute_against_synthetic_sources() {
             json!({"service": "experiments"}),
             json!({"service": "legacy-sync"}),
         ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_literal_list_indexes_reject_dynamic_elements() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN [service.name][0] AS first_name",
+    )
+    .await
+    .expect_err("literal list indexes should reject dynamic list elements");
+
+    assert!(
+        error
+            .to_string()
+            .contains("only string, numeric, boolean, and null literals are supported"),
+        "{error}"
     );
 }
 
