@@ -171,6 +171,7 @@ remain separate. The supported slice is intentionally graph-query oriented:
 - `@include(if:)` and `@skip(if:)` on fields, fragment spreads, and inline
   fragments, with boolean literals or typed boolean variables;
 - root `where` object predicates over selected node properties, including
+  equality shorthand values such as `where: { tier: "prod" }`, explicit
   equality, inequality, range, string, regex, list-membership, and null filters
   plus generated-client-friendly operator aliases and negated property filters,
   with `and`, `or`, `xor`, and `not` boolean filter composition;
@@ -182,7 +183,8 @@ remain separate. The supported slice is intentionally graph-query oriented:
   arguments;
 - typed GraphQL variables bound through the explicit variable API in supported
   scalar literal, scalar-list `in`, enum/string name, boolean, and
-  non-negative integer positions;
+  non-negative integer positions, including scalar variables used as shorthand
+  equality filters;
 - nested relationship fields named `out_TYPE(to: Label)`, `in_TYPE(from:
   Label)`, or `any_TYPE(label: Label)`;
 - nested relationship target filters via `where` and relationship property
