@@ -1387,6 +1387,18 @@ impl<'a> Lowerer<'a> {
                 "UPPER({})",
                 self.render_scalar_expression(expression)?
             )),
+            ScalarExpression::Trim { expression } => Ok(format!(
+                "TRIM({})",
+                self.render_scalar_expression(expression)?
+            )),
+            ScalarExpression::LTrim { expression } => Ok(format!(
+                "LTRIM({})",
+                self.render_scalar_expression(expression)?
+            )),
+            ScalarExpression::RTrim { expression } => Ok(format!(
+                "RTRIM({})",
+                self.render_scalar_expression(expression)?
+            )),
         }
     }
 }

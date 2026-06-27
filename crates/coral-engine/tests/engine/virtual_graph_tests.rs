@@ -1419,6 +1419,51 @@ async fn cypher_string_case_scalar_expressions_execute_against_synthetic_sources
 }
 
 #[tokio::test]
+async fn cypher_trim_scalar_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE trim(service.name) = 'billing-api' \
+         RETURN trim('  billing-api  ') AS trimmed_service, \
+                lTrim('  left') AS left_trimmed, \
+                rTrim('right  ') AS right_trimmed \
+         ORDER BY trim('  billing-api  ')",
+    )
+    .await
+    .expect("trim scalar expression query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("TRIM(\"n0\".\"service_name\") = 'billing-api'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("LTRIM('  left') AS \"left_trimmed\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "trimmed_service": "billing-api",
+            "left_trimmed": "left",
+            "right_trimmed": "right",
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_scalar_null_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

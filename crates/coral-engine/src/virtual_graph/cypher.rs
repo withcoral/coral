@@ -1102,6 +1102,15 @@ fn compile_order_expression(
         Expression::FunctionCall(function) if is_to_upper_function(function) => {
             compile_to_upper_order_expression(function, path, context)
         }
+        Expression::FunctionCall(function) if is_trim_function(function) => {
+            compile_trim_order_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_ltrim_function(function) => {
+            compile_ltrim_order_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_rtrim_function(function) => {
+            compile_rtrim_order_expression(function, path, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             aggregate_order_expression_for_projection(function, projections, path, context)
         }
@@ -1381,6 +1390,15 @@ fn compile_projection(
         Expression::FunctionCall(function) if is_to_upper_function(function) => {
             compile_to_upper_projection(function, item, path, context)
         }
+        Expression::FunctionCall(function) if is_trim_function(function) => {
+            compile_trim_projection(function, item, path, context)
+        }
+        Expression::FunctionCall(function) if is_ltrim_function(function) => {
+            compile_ltrim_projection(function, item, path, context)
+        }
+        Expression::FunctionCall(function) if is_rtrim_function(function) => {
+            compile_rtrim_projection(function, item, path, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             compile_aggregate_projection(function, item, path, context)
         }
@@ -1503,6 +1521,66 @@ fn compile_to_upper_projection(
     })
 }
 
+fn compile_trim_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_trim_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "trim".to_string(), variable_name),
+    })
+}
+
+fn compile_ltrim_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_ltrim_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "lTrim".to_string(), variable_name),
+    })
+}
+
+fn compile_rtrim_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_rtrim_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "rTrim".to_string(), variable_name),
+    })
+}
+
 fn compile_coalesce_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -1562,6 +1640,42 @@ fn compile_to_upper_scalar_expression(
     })
 }
 
+fn compile_trim_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Trim {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "trim", context,
+        )?),
+    })
+}
+
+fn compile_ltrim_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::LTrim {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "lTrim", context,
+        )?),
+    })
+}
+
+fn compile_rtrim_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::RTrim {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "rTrim", context,
+        )?),
+    })
+}
+
 fn compile_single_scalar_function_argument(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -1604,6 +1718,15 @@ fn compile_scalar_expression(
         Expression::FunctionCall(function) if is_to_upper_function(function) => {
             compile_to_upper_scalar_expression(function, path, context)
         }
+        Expression::FunctionCall(function) if is_trim_function(function) => {
+            compile_trim_scalar_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_ltrim_function(function) => {
+            compile_ltrim_scalar_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_rtrim_function(function) => {
+            compile_rtrim_scalar_expression(function, path, context)
+        }
         Expression::FunctionCall(function) => Err(unsupported(
             path,
             format!(
@@ -1613,7 +1736,7 @@ fn compile_scalar_expression(
         )),
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toLower(), or toUpper() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toLower(), toUpper(), trim(), lTrim(), or rTrim() expressions",
         )),
     }
 }
@@ -1814,6 +1937,30 @@ fn compile_to_upper_order_expression(
     compile_to_upper_scalar_expression(function, path, context).map(OrderExpression::Scalar)
 }
 
+fn compile_trim_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_trim_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
+fn compile_ltrim_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_ltrim_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
+fn compile_rtrim_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_rtrim_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
 fn compile_optional_predicate_scalar_expression(
     expression: &Expression,
     path: impl Into<String>,
@@ -1835,6 +1982,15 @@ fn compile_optional_predicate_scalar_expression(
         )),
         Expression::FunctionCall(function) if is_to_upper_function(function) => Ok(Some(
             compile_to_upper_scalar_expression(function, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_trim_function(function) => Ok(Some(
+            compile_trim_scalar_expression(function, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_ltrim_function(function) => Ok(Some(
+            compile_ltrim_scalar_expression(function, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_rtrim_function(function) => Ok(Some(
+            compile_rtrim_scalar_expression(function, path, context)?,
         )),
         _ => Ok(None),
     }
@@ -1868,6 +2024,21 @@ fn compile_scalar_predicate_rhs(
                 compile_to_upper_scalar_expression(function, path, context)?,
             ))
         }
+        Expression::FunctionCall(function) if is_trim_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_trim_scalar_expression(function, path, context)?,
+            ))
+        }
+        Expression::FunctionCall(function) if is_ltrim_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_ltrim_scalar_expression(function, path, context)?,
+            ))
+        }
+        Expression::FunctionCall(function) if is_rtrim_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_rtrim_scalar_expression(function, path, context)?,
+            ))
+        }
         Expression::PropertyLookup { .. } => Ok(ScalarPredicateRhs::Expression(
             ScalarExpression::Property(compile_property_ref(expression, path)?),
         )),
@@ -1876,7 +2047,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toLower(), or toUpper() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toLower(), toUpper(), trim(), lTrim(), or rTrim() expressions",
         )),
     }
 }
@@ -2151,6 +2322,27 @@ fn is_to_upper_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("toUpper")
+    )
+}
+
+fn is_trim_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("trim")
+    )
+}
+
+fn is_ltrim_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("lTrim")
+    )
+}
+
+fn is_rtrim_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("rTrim")
     )
 }
 
@@ -5057,6 +5249,52 @@ mod tests {
             plan.order_by.as_slice(),
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::ToLower { .. }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
+    }
+
+    #[test]
+    fn compiles_trim_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE trim(service.tier) = 'prod' \
+             RETURN lTrim(service.name) AS left_trimmed \
+             ORDER BY rTrim(service.name)",
+        )
+        .expect("trim scalar expressions should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Trim {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    })),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                    "prod".to_string()
+                ))),
+            }))
+        );
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: ScalarExpression::LTrim {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    })),
+                },
+                alias: "left_trimmed".to_string(),
+            }]
+        );
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::RTrim { .. }),
                 direction: OrderDirection::Ascending,
             }]
         ));

@@ -161,6 +161,21 @@ pub enum ScalarExpression {
         /// Inner expression to normalize.
         expression: Box<ScalarExpression>,
     },
+    /// Trim whitespace from both ends of a scalar expression.
+    Trim {
+        /// Inner expression to normalize.
+        expression: Box<ScalarExpression>,
+    },
+    /// Trim whitespace from the left side of a scalar expression.
+    LTrim {
+        /// Inner expression to normalize.
+        expression: Box<ScalarExpression>,
+    },
+    /// Trim whitespace from the right side of a scalar expression.
+    RTrim {
+        /// Inner expression to normalize.
+        expression: Box<ScalarExpression>,
+    },
 }
 
 /// Projection in the shared graph IR.
