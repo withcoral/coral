@@ -148,7 +148,8 @@ The supported foundation subset is intentionally narrow:
   `count(DISTINCT node)`, `count(relationship)` with keyed or keyless mappings,
   `count(DISTINCT relationship)` for keyed mappings, `collect(property)`,
   `collect(DISTINCT property)` lowered through null-filtered `ARRAY_AGG`
-  with an empty-list fallback, numeric property aggregates, property and
+  with an empty-list fallback, GQL aggregate aliases `collect_list`,
+  `stdev_samp`, and `stdev_pop`, numeric property aggregates, property and
   identity `ORDER BY`, direct aggregate `ORDER BY` expressions that match
   projected aggregates, and projection alias `ORDER BY` including aggregate
   aliases;

@@ -7731,6 +7731,61 @@ async fn cypher_statistical_aggregate_projections_execute_against_synthetic_sour
 }
 
 #[tokio::test]
+async fn cypher_gql_aggregate_function_aliases_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier IS NOT NULL \
+         RETURN collect_list(service.tier) AS tiers, \
+                stdev_samp(service.risk) AS sample_risk, \
+                stdev_pop(service.risk) AS population_risk",
+    )
+    .await
+    .expect("GQL aggregate aliases should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("STDDEV_SAMP(\"n0\".\"risk_score\") AS \"sample_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains(
+            "COALESCE(ARRAY_AGG(\"n0\".\"tier\") FILTER (WHERE (\"n0\".\"tier\") IS NOT NULL), make_array()) AS \"tiers\""
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let mut rows = execution_to_rows(execution.execution());
+    let row = rows
+        .get_mut(0)
+        .expect("aggregate alias query should return one row");
+    sort_string_array_field(row, "tiers");
+    assert_eq!(row.get("tiers"), Some(&json!(["dev", "prod", "prod"])));
+    assert_close(
+        row.get("sample_risk")
+            .and_then(Value::as_f64)
+            .expect("sample_risk should be a float"),
+        0.327_871_926_215_100_03,
+    );
+    assert_close(
+        row.get("population_risk")
+            .and_then(Value::as_f64)
+            .expect("population_risk should be a float"),
+        0.267_706_306_736_816_83,
+    );
+}
+
+#[tokio::test]
 async fn cypher_distinct_standard_deviation_rejects_before_execution() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

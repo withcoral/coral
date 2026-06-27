@@ -7704,7 +7704,9 @@ fn compile_aggregate_function(function: &FunctionInvocation) -> Option<Aggregate
     };
     if name.name.eq_ignore_ascii_case("count") {
         Some(AggregateFunction::Count)
-    } else if name.name.eq_ignore_ascii_case("collect") {
+    } else if name.name.eq_ignore_ascii_case("collect")
+        || name.name.eq_ignore_ascii_case("collect_list")
+    {
         Some(AggregateFunction::Collect)
     } else if name.name.eq_ignore_ascii_case("sum") {
         Some(AggregateFunction::Sum)
@@ -7712,9 +7714,13 @@ fn compile_aggregate_function(function: &FunctionInvocation) -> Option<Aggregate
         Some(AggregateFunction::Avg)
     } else if name.name.eq_ignore_ascii_case("median") {
         Some(AggregateFunction::Median)
-    } else if name.name.eq_ignore_ascii_case("stDev") {
+    } else if name.name.eq_ignore_ascii_case("stDev")
+        || name.name.eq_ignore_ascii_case("stdev_samp")
+    {
         Some(AggregateFunction::StdDev)
-    } else if name.name.eq_ignore_ascii_case("stDevP") {
+    } else if name.name.eq_ignore_ascii_case("stDevP")
+        || name.name.eq_ignore_ascii_case("stdev_pop")
+    {
         Some(AggregateFunction::StdDevP)
     } else if name.name.eq_ignore_ascii_case("min") {
         Some(AggregateFunction::Min)
@@ -17698,6 +17704,50 @@ mod tests {
         assert_eq!(
             plan.projections,
             vec![
+                Projection::Aggregate {
+                    function: super::AggregateFunction::StdDev,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "sample_risk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: super::AggregateFunction::StdDevP,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "population_risk".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_gql_aggregate_function_aliases() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN collect_list(service.tier) AS tiers, \
+                    stdev_samp(service.risk) AS sample_risk, \
+                    stdev_pop(service.risk) AS population_risk",
+        )
+        .expect("GQL aggregate aliases should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Aggregate {
+                    function: super::AggregateFunction::Collect,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "tiers".to_string(),
+                },
                 Projection::Aggregate {
                     function: super::AggregateFunction::StdDev,
                     target: AggregateTarget::Property(PropertyRef {
