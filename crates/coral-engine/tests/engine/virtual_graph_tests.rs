@@ -2011,6 +2011,48 @@ async fn cypher_trigonometric_scalar_expressions_execute_against_synthetic_sourc
 }
 
 #[tokio::test]
+async fn cypher_math_constant_scalar_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {name: 'experiments'}) \
+         WHERE service.risk < pi() \
+         RETURN service.name AS service, pi() AS pi_value, e() AS e_value",
+    )
+    .await
+    .expect("math constant scalar function query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("3.141592653589793 AS \"pi_value\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("2.718281828459045 AS \"e_value\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "service": "experiments",
+            "pi_value": std::f64::consts::PI,
+            "e_value": std::f64::consts::E,
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_unary_negation_scalar_expressions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

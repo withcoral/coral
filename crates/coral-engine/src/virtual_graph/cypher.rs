@@ -1985,6 +1985,26 @@ fn compile_log10_scalar_expression(
     })
 }
 
+fn compile_pi_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    compile_zero_scalar_function_arguments(function, path, "pi")?;
+    Ok(ScalarExpression::Literal(Literal::Float(
+        ordered_float::OrderedFloat(std::f64::consts::PI),
+    )))
+}
+
+fn compile_e_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    compile_zero_scalar_function_arguments(function, path, "e")?;
+    Ok(ScalarExpression::Literal(Literal::Float(
+        ordered_float::OrderedFloat(std::f64::consts::E),
+    )))
+}
+
 fn compile_sin_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -2105,6 +2125,21 @@ fn compile_radians_scalar_expression(
     })
 }
 
+fn compile_zero_scalar_function_arguments(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    function_name: &str,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    if function.arguments.is_empty() {
+        return Ok(());
+    }
+    Err(unsupported(
+        format!("{path}.arguments"),
+        format!("{function_name}() requires exactly zero arguments"),
+    ))
+}
+
 fn compile_single_scalar_function_argument(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -2196,6 +2231,10 @@ fn compile_scalar_function_expression(
         compile_log_scalar_expression(function, path.clone(), context)?
     } else if is_log10_function(function) {
         compile_log10_scalar_expression(function, path.clone(), context)?
+    } else if is_pi_function(function) {
+        compile_pi_scalar_expression(function, path.clone())?
+    } else if is_e_function(function) {
+        compile_e_scalar_expression(function, path.clone())?
     } else if is_sin_function(function) {
         compile_sin_scalar_expression(function, path.clone(), context)?
     } else if is_cos_function(function) {
@@ -2274,7 +2313,7 @@ fn compile_scalar_expression(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), or radians() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), or radians() expressions",
         )),
     }
 }
@@ -2532,7 +2571,7 @@ fn compile_scalar_predicate_rhs(
                 Some(expression) => Ok(ScalarPredicateRhs::Expression(expression)),
                 None => Err(unsupported(
                     path,
-                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), or radians() expressions",
+                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), or radians() expressions",
                 )),
             }
         }
@@ -2544,7 +2583,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), or radians() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), or radians() expressions",
         )),
     }
 }
@@ -3047,6 +3086,20 @@ fn is_log10_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("log10")
+    )
+}
+
+fn is_pi_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("pi")
+    )
+}
+
+fn is_e_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("e")
     )
 }
 
@@ -3652,16 +3705,7 @@ fn compile_binary_comparison(
     let path = path.into();
     let operator = compile_comparison_operator(operator, format!("{path}.operator"))?;
     if let Some(property) = compile_optional_property_ref(lhs, format!("{path}.lhs"))? {
-        if let Some(predicate) =
-            compile_dynamic_string_property_predicate(&property, operator, rhs, &path, context)?
-        {
-            return Ok(predicate);
-        }
-        return Ok(PredicateExpression::Comparison(PropertyPredicate {
-            property,
-            operator,
-            rhs: compile_predicate_rhs(rhs, format!("{path}.rhs"), mode, context)?,
-        }));
+        return compile_left_property_comparison(property, operator, rhs, &path, mode, context);
     }
     if let Some(plan) = mode.graph_plan() {
         if let Some(variable) = compile_optional_id_ref(lhs, format!("{path}.lhs"), plan, context)?
@@ -3751,6 +3795,31 @@ fn compile_binary_comparison(
     Err(unsupported(path, mode.unsupported_comparison_message()))
 }
 
+fn compile_left_property_comparison(
+    property: PropertyRef,
+    operator: ComparisonOperator,
+    rhs: &Expression,
+    path: &str,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    if let Some(predicate) =
+        compile_dynamic_string_property_predicate(&property, operator, rhs, path, context)?
+    {
+        return Ok(predicate);
+    }
+    if let Some(predicate) =
+        compile_dynamic_scalar_property_predicate(&property, operator, rhs, path, context)?
+    {
+        return Ok(predicate);
+    }
+    Ok(PredicateExpression::Comparison(PropertyPredicate {
+        property,
+        operator,
+        rhs: compile_predicate_rhs(rhs, format!("{path}.rhs"), mode, context)?,
+    }))
+}
+
 fn compile_dynamic_string_property_predicate(
     property: &PropertyRef,
     operator: ComparisonOperator,
@@ -3759,6 +3828,32 @@ fn compile_dynamic_string_property_predicate(
     context: &CypherCompileContext,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     if !is_string_comparison_operator(operator) || is_literal_expression(rhs) {
+        return Ok(None);
+    }
+
+    let Some(rhs) =
+        compile_optional_predicate_scalar_expression(rhs, format!("{path}.rhs"), context)?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(PredicateExpression::ScalarComparison(
+        ScalarPredicate {
+            lhs: ScalarExpression::Property(property.clone()),
+            operator,
+            rhs: ScalarPredicateRhs::Expression(rhs),
+        },
+    )))
+}
+
+fn compile_dynamic_scalar_property_predicate(
+    property: &PropertyRef,
+    operator: ComparisonOperator,
+    rhs: &Expression,
+    path: &str,
+    context: &CypherCompileContext,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    if is_string_comparison_operator(operator) || is_literal_expression(rhs) {
         return Ok(None);
     }
 
@@ -6747,6 +6842,75 @@ mod tests {
             let error = compile_cypher(cypher).expect_err("wrong arity should be rejected");
             assert!(
                 error.to_string().contains("requires exactly two arguments"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn compiles_math_constant_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service.risk < pi() \
+             RETURN pi() AS pi_value, e() AS e_value, sin(pi()) AS zeroish \
+             ORDER BY e()",
+        )
+        .expect("math constants should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "risk".to_string(),
+                }),
+                operator: ComparisonOperator::LessThan,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Float(
+                    ordered_float::OrderedFloat(std::f64::consts::PI),
+                ))),
+            }))
+        );
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Float(pi)),
+                    alias
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Float(e)),
+                    ..
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Sin { expression },
+                    ..
+                },
+            ] if *pi == ordered_float::OrderedFloat(std::f64::consts::PI)
+                && *e == ordered_float::OrderedFloat(std::f64::consts::E)
+                && alias == "pi_value"
+                && matches!(expression.as_ref(), ScalarExpression::Literal(Literal::Float(value))
+                    if *value == ordered_float::OrderedFloat(std::f64::consts::PI))
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Literal(Literal::Float(e))),
+                direction: OrderDirection::Ascending,
+            }] if *e == ordered_float::OrderedFloat(std::f64::consts::E)
+        ));
+    }
+
+    #[test]
+    fn rejects_math_constants_with_arguments() {
+        for cypher in [
+            "MATCH (service:Service) RETURN pi(1) AS value",
+            "MATCH (service:Service) RETURN e(service.risk) AS value",
+        ] {
+            let error = compile_cypher(cypher).expect_err("math constants take no arguments");
+            assert!(
+                error
+                    .to_string()
+                    .contains("requires exactly zero arguments"),
                 "{error}"
             );
         }

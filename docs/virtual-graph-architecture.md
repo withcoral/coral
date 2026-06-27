@@ -108,9 +108,10 @@ The supported foundation subset is intentionally narrow:
   `char_length`, and `character_length`, and zero-based `substring` lowered
   to DataFusion `SUBSTRING`, plus `left`, `right`, `reverse`, numeric
   `abs`, `ceil`, `floor`, `round`, `sqrt`, `sign`, `exp`, `log`, `log10`,
-  and trigonometric `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`,
-  `atan2`, `degrees`, and `radians`; Cypher `log` lowers to DataFusion `ln`
-  to preserve natural-log semantics;
+  constants `pi` and `e`, and trigonometric `sin`, `cos`, `tan`, `cot`,
+  `asin`, `acos`, `atan`, `atan2`, `degrees`, and `radians`; Cypher `log`
+  lowers to DataFusion `ln` to preserve natural-log semantics, while `pi()`
+  and `e()` compile to deterministic float literals;
 - inline node property maps normalized to equality predicates;
 - inline relationship property maps normalized to equality predicates, with
   internal relationship variables for anonymous edges;
