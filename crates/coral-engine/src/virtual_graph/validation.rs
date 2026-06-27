@@ -972,6 +972,7 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Key { variable }
             | ScalarExpression::ElementId { variable }
             | ScalarExpression::GraphIdentity { variable }
+            | ScalarExpression::GraphPresence { variable }
             | ScalarExpression::RelationshipType { variable, .. } => {
                 variables.insert(variable.as_str());
             }
@@ -1303,6 +1304,7 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Key { variable }
             | ScalarExpression::ElementId { variable }
             | ScalarExpression::GraphIdentity { variable }
+            | ScalarExpression::GraphPresence { variable }
             | ScalarExpression::RelationshipType { variable, .. } => {
                 Self::validate_variable_not_optional(variable, optional_variables, path)
             }
@@ -2583,6 +2585,23 @@ impl<'a> GraphPlanValidator<'a> {
         }
     }
 
+    fn validate_graph_presence_projection(
+        &self,
+        variable: &str,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        validate_variable(path.clone(), variable)?;
+        self.bindings.get(variable).map(|_| ()).ok_or_else(|| {
+            Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                path,
+                format!("unknown graph variable '{variable}'"),
+            )
+            .into_core_error()
+        })
+    }
+
     fn validate_relationship_type_projection(
         &self,
         variable: &str,
@@ -2756,6 +2775,7 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::Key { .. }
             | ScalarExpression::ElementId { .. }
             | ScalarExpression::GraphIdentity { .. }
+            | ScalarExpression::GraphPresence { .. }
             | ScalarExpression::RelationshipType { .. } => {
                 self.infer_atomic_scalar_type(expression, &path)
             }
@@ -2798,6 +2818,10 @@ impl<'a> GraphPlanValidator<'a> {
             }
             ScalarExpression::GraphIdentity { variable } => {
                 self.validate_graph_identity_projection(variable, path)?;
+                Ok(ScalarType::String)
+            }
+            ScalarExpression::GraphPresence { variable } => {
+                self.validate_graph_presence_projection(variable, path)?;
                 Ok(ScalarType::String)
             }
             ScalarExpression::RelationshipType {

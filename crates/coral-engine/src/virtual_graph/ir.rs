@@ -161,6 +161,11 @@ pub enum ScalarExpression {
         /// Graph variable.
         variable: String,
     },
+    /// Internal graph binding presence value used for `count(variable)`.
+    GraphPresence {
+        /// Graph variable.
+        variable: String,
+    },
     /// Static type of a relationship variable, preserving null for unmatched
     /// optional relationships.
     RelationshipType {

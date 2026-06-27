@@ -51,6 +51,7 @@ struct CompiledRelationship {
 
 const MAX_STATIC_LABEL_TYPE_ALTERNATIVE_BRANCHES: usize = 64;
 const INTERNAL_GRAPH_IDENTITY_FUNCTION: &str = "__coral_graph_identity";
+const INTERNAL_GRAPH_PRESENCE_FUNCTION: &str = "__coral_graph_presence";
 
 #[derive(Debug, Clone)]
 enum StaticLabelTypeAlternativeSite {
@@ -657,7 +658,7 @@ fn compile_static_alternative_outer_aggregate_item(
             if function.distinct {
                 graph_identity_function_expression_for_variable(&variable, function)
             } else {
-                id_function_expression_for_variable(&variable, function)
+                graph_presence_function_expression_for_variable(&variable, function)
             }
         }
     };
@@ -680,11 +681,11 @@ fn graph_identity_function_expression_for_variable(
     function_expression_for_variable(INTERNAL_GRAPH_IDENTITY_FUNCTION, variable, source_function)
 }
 
-fn id_function_expression_for_variable(
+fn graph_presence_function_expression_for_variable(
     variable: &str,
     source_function: &FunctionInvocation,
 ) -> Expression {
-    function_expression_for_variable("id", variable, source_function)
+    function_expression_for_variable(INTERNAL_GRAPH_PRESENCE_FUNCTION, variable, source_function)
 }
 
 fn function_expression_for_variable(
@@ -2749,6 +2750,7 @@ fn rename_non_unary_scalar_expression_variables(
         ScalarExpression::Key { variable }
         | ScalarExpression::ElementId { variable }
         | ScalarExpression::GraphIdentity { variable }
+        | ScalarExpression::GraphPresence { variable }
         | ScalarExpression::RelationshipType { variable, .. } => {
             rename_string(variable, renames);
         }
@@ -2804,39 +2806,7 @@ fn rename_non_unary_scalar_expression_variables(
         } => {
             rename_case_expression_variables(alternatives, else_expression.as_deref_mut(), renames);
         }
-        ScalarExpression::ToString { .. }
-        | ScalarExpression::ToInteger { .. }
-        | ScalarExpression::ToFloat { .. }
-        | ScalarExpression::ToBoolean { .. }
-        | ScalarExpression::ToStringOrNull { .. }
-        | ScalarExpression::ToIntegerOrNull { .. }
-        | ScalarExpression::ToFloatOrNull { .. }
-        | ScalarExpression::ToBooleanOrNull { .. }
-        | ScalarExpression::ToLower { .. }
-        | ScalarExpression::ToUpper { .. }
-        | ScalarExpression::Trim { .. }
-        | ScalarExpression::LTrim { .. }
-        | ScalarExpression::RTrim { .. }
-        | ScalarExpression::CharacterLength { .. }
-        | ScalarExpression::Reverse { .. }
-        | ScalarExpression::Abs { .. }
-        | ScalarExpression::Ceil { .. }
-        | ScalarExpression::Floor { .. }
-        | ScalarExpression::Sqrt { .. }
-        | ScalarExpression::Sign { .. }
-        | ScalarExpression::Exp { .. }
-        | ScalarExpression::Log { .. }
-        | ScalarExpression::Log10 { .. }
-        | ScalarExpression::Sin { .. }
-        | ScalarExpression::Cos { .. }
-        | ScalarExpression::Tan { .. }
-        | ScalarExpression::Cot { .. }
-        | ScalarExpression::Asin { .. }
-        | ScalarExpression::Acos { .. }
-        | ScalarExpression::Atan { .. }
-        | ScalarExpression::Degrees { .. }
-        | ScalarExpression::Radians { .. }
-        | ScalarExpression::Negate { .. } => {
+        _ => {
             unreachable!("unary scalar expressions handled before structural rename")
         }
     }
@@ -3175,6 +3145,7 @@ fn reject_ignored_path_variable_references_in_scalar_expression(
         ScalarExpression::Key { variable }
         | ScalarExpression::ElementId { variable }
         | ScalarExpression::GraphIdentity { variable }
+        | ScalarExpression::GraphPresence { variable }
         | ScalarExpression::RelationshipType { variable, .. } => {
             reject_ignored_path_variable(variable, state, path)
         }
@@ -3278,6 +3249,7 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
         | ScalarExpression::Key { .. }
         | ScalarExpression::ElementId { .. }
         | ScalarExpression::GraphIdentity { .. }
+        | ScalarExpression::GraphPresence { .. }
         | ScalarExpression::RelationshipType { .. } => {
             unreachable!("simple scalar expressions handled before structural path checks")
         }
@@ -4502,6 +4474,9 @@ fn compile_projection(
         }
         Expression::FunctionCall(function) if is_internal_graph_identity_function(function) => {
             compile_internal_graph_identity_projection(function, item, path, plan, context)
+        }
+        Expression::FunctionCall(function) if is_internal_graph_presence_function(function) => {
+            compile_internal_graph_presence_projection(function, item, path, plan, context)
         }
         Expression::FunctionCall(function) if is_type_function(function) => {
             compile_type_projection(function, item, path, plan, context)
@@ -5792,6 +5767,35 @@ fn compile_internal_graph_identity_projection(
     })
 }
 
+fn compile_internal_graph_presence_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    let variable = compile_single_variable_function_argument(
+        function,
+        format!("{path}.expression.arguments"),
+        "internal graph presence requires exactly one graph variable argument",
+        context,
+    )?;
+    if !plan_uses_variable(plan, &variable) {
+        return Err(unsupported(
+            format!("{path}.expression.arguments[0]"),
+            format!("internal graph presence argument '{variable}' is not a bound graph variable"),
+        ));
+    }
+    Ok(Projection::Expression {
+        expression: ScalarExpression::GraphPresence { variable },
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "graphPresence".to_string(), variable_name),
+    })
+}
+
 fn compile_type_projection(
     function: &FunctionInvocation,
     item: &ProjectionItem,
@@ -6416,6 +6420,13 @@ fn is_internal_graph_identity_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name == INTERNAL_GRAPH_IDENTITY_FUNCTION
+    )
+}
+
+fn is_internal_graph_presence_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name == INTERNAL_GRAPH_PRESENCE_FUNCTION
     )
 }
 
@@ -9176,6 +9187,13 @@ mod tests {
             union.first.projection_output_names(),
             vec!["name".to_string(), "__coral_agg_1".to_string()]
         );
+        assert!(matches!(
+            union.first.projections.get(1),
+            Some(Projection::Expression {
+                expression: ScalarExpression::GraphPresence { variable },
+                alias,
+            }) if variable == "service" && alias == "__coral_agg_1"
+        ));
         assert_eq!(
             union.outer_projection,
             Some(GraphUnionOuterProjection {

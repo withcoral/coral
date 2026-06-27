@@ -1552,6 +1552,13 @@ impl<'a> Lowerer<'a> {
         ))
     }
 
+    fn render_binding_graph_presence_ref(&self, variable: &str) -> Result<String, CoreError> {
+        Ok(format!(
+            "CAST({} AS VARCHAR)",
+            self.render_binding_presence_ref(variable)?
+        ))
+    }
+
     fn render_property_ref(&self, property: &PropertyRef) -> Result<String, CoreError> {
         let binding = self.validated.binding(&property.variable)?;
         let column = match binding.kind() {
@@ -1586,6 +1593,9 @@ impl<'a> Lowerer<'a> {
             }
             ScalarExpression::GraphIdentity { variable } => {
                 self.render_binding_graph_identity_ref(variable)
+            }
+            ScalarExpression::GraphPresence { variable } => {
+                self.render_binding_graph_presence_ref(variable)
             }
             ScalarExpression::RelationshipType {
                 variable,
