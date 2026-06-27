@@ -7,7 +7,8 @@ use super::ir::{
     GraphPlan, KeyPredicate, Literal, OptionalMatchScope, OrderExpression, PredicateExpression,
     PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarExpression,
+    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarExpression, ScalarPredicate,
+    ScalarPredicateRhs,
 };
 use crate::CoreError;
 
@@ -730,6 +731,10 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateExpression::PropertyKeyMembership(predicate) => {
                 variables.insert(predicate.variable.as_str());
             }
+            PredicateExpression::ScalarComparison(predicate) => {
+                Self::collect_scalar_expression_variables(&predicate.lhs, variables);
+                Self::collect_scalar_predicate_rhs_variables(&predicate.rhs, variables);
+            }
             PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
                 Self::collect_predicate_expression_variables(left, variables);
                 Self::collect_predicate_expression_variables(right, variables);
@@ -763,6 +768,35 @@ impl<'a> GraphPlanValidator<'a> {
         }
     }
 
+    fn collect_scalar_predicate_rhs_variables<'b>(
+        rhs: &'b ScalarPredicateRhs,
+        variables: &mut BTreeSet<&'b str>,
+    ) {
+        match rhs {
+            ScalarPredicateRhs::Expression(expression) => {
+                Self::collect_scalar_expression_variables(expression, variables);
+            }
+            ScalarPredicateRhs::List(_) => {}
+        }
+    }
+
+    fn collect_scalar_expression_variables<'b>(
+        expression: &'b ScalarExpression,
+        variables: &mut BTreeSet<&'b str>,
+    ) {
+        match expression {
+            ScalarExpression::Property(property) => {
+                variables.insert(property.variable.as_str());
+            }
+            ScalarExpression::Literal(_) => {}
+            ScalarExpression::Coalesce { expressions } => {
+                for expression in expressions {
+                    Self::collect_scalar_expression_variables(expression, variables);
+                }
+            }
+        }
+    }
+
     fn validate_predicate_expression_not_optional(
         predicate: &PredicateExpression,
         optional_variables: &BTreeSet<&str>,
@@ -792,6 +826,9 @@ impl<'a> GraphPlanValidator<'a> {
                     optional_variables,
                     path,
                 )
+            }
+            PredicateExpression::ScalarComparison(predicate) => {
+                Self::validate_scalar_predicate_not_optional(predicate, optional_variables, path)
             }
             PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
                 Self::validate_predicate_expression_not_optional(
@@ -907,6 +944,63 @@ impl<'a> GraphPlanValidator<'a> {
         }
     }
 
+    fn validate_scalar_predicate_not_optional(
+        predicate: &ScalarPredicate,
+        optional_variables: &BTreeSet<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        Self::validate_scalar_expression_not_optional(
+            &predicate.lhs,
+            optional_variables,
+            format!("{path}.lhs"),
+        )?;
+        Self::validate_scalar_predicate_rhs_not_optional(
+            &predicate.rhs,
+            optional_variables,
+            format!("{path}.rhs"),
+        )
+    }
+
+    fn validate_scalar_predicate_rhs_not_optional(
+        rhs: &ScalarPredicateRhs,
+        optional_variables: &BTreeSet<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        match rhs {
+            ScalarPredicateRhs::Expression(expression) => {
+                Self::validate_scalar_expression_not_optional(expression, optional_variables, path)
+            }
+            ScalarPredicateRhs::List(_) => Ok(()),
+        }
+    }
+
+    fn validate_scalar_expression_not_optional(
+        expression: &ScalarExpression,
+        optional_variables: &BTreeSet<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        match expression {
+            ScalarExpression::Property(property) => Self::validate_variable_not_optional(
+                &property.variable,
+                optional_variables,
+                format!("{path}.variable"),
+            ),
+            ScalarExpression::Literal(_) => Ok(()),
+            ScalarExpression::Coalesce { expressions } => {
+                for (index, expression) in expressions.iter().enumerate() {
+                    Self::validate_scalar_expression_not_optional(
+                        expression,
+                        optional_variables,
+                        format!("{path}[{index}]"),
+                    )?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn validate_variable_not_optional(
         variable: &str,
         optional_variables: &BTreeSet<&str>,
@@ -997,6 +1091,9 @@ impl<'a> GraphPlanValidator<'a> {
             }
             PredicateExpression::PropertyKeyMembership(predicate) => {
                 self.validate_property_key_membership_predicate(predicate, path)
+            }
+            PredicateExpression::ScalarComparison(predicate) => {
+                self.validate_scalar_predicate(predicate, path)
             }
             PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
                 self.validate_predicate_expression(left, format!("{path}.left"))?;
@@ -1280,6 +1377,58 @@ impl<'a> GraphPlanValidator<'a> {
                 self.validate_element_id_projection(variable, format!("{path}.rhs"))
             }
             PredicateRhs::List(_) => {
+                if predicate.operator != ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "literal lists are only supported with IN predicates",
+                    )
+                    .into_core_error());
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn validate_scalar_predicate(
+        &self,
+        predicate: &ScalarPredicate,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        self.validate_scalar_expression(&predicate.lhs, format!("{path}.lhs"))?;
+        match &predicate.rhs {
+            ScalarPredicateRhs::Expression(expression) => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                self.validate_scalar_expression(expression, format!("{path}.rhs"))?;
+                if matches!(
+                    predicate.operator,
+                    ComparisonOperator::StartsWith
+                        | ComparisonOperator::EndsWith
+                        | ComparisonOperator::Contains
+                ) && !matches!(expression, ScalarExpression::Literal(Literal::String(_)))
+                {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "string predicates require a string literal right-hand side",
+                    )
+                    .into_core_error());
+                }
+                if let ScalarExpression::Literal(literal) = expression {
+                    Self::validate_literal_predicate(path, predicate.operator, literal)
+                } else {
+                    Ok(())
+                }
+            }
+            ScalarPredicateRhs::List(_) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
@@ -2177,6 +2326,7 @@ mod tests {
         AggregateFunction, AggregateTarget, Direction, KeyPredicate, NodePattern,
         OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
         PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+        ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
     };
 
     const GRAPH: &str = r"
@@ -2615,6 +2765,33 @@ relationships:
     }
 
     #[test]
+    fn validate_graph_plan_rejects_unknown_properties_in_scalar_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::Coalesce {
+                expressions: vec![
+                    ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "missing".to_string(),
+                    }),
+                    ScalarExpression::Literal(Literal::String("unknown".to_string())),
+                ],
+            },
+            operator: ComparisonOperator::Equal,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                "prod".to_string(),
+            ))),
+        }));
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("unknown scalar predicate property should fail validation");
+
+        assert!(error.to_string().contains("UNKNOWN_PROPERTY"), "{error:?}");
+    }
+
+    #[test]
     fn validate_graph_plan_rejects_keyless_relationship_key_projections() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan();
@@ -2759,6 +2936,37 @@ relationships:
         let error = graph
             .validate_graph_plan(&plan)
             .expect_err("optional binding predicate should fail validation");
+
+        assert!(
+            error.to_string().contains("UNSUPPORTED_OPTIONAL_PREDICATE"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_scalar_predicates_on_optional_bindings() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.optional_relationships = vec![0];
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::Coalesce {
+                expressions: vec![
+                    ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    ScalarExpression::Literal(Literal::String("unassigned".to_string())),
+                ],
+            },
+            operator: ComparisonOperator::Equal,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                "prod".to_string(),
+            ))),
+        }));
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("optional scalar predicate should fail validation");
 
         assert!(
             error.to_string().contains("UNSUPPORTED_OPTIONAL_PREDICATE"),

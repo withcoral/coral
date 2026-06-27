@@ -8,7 +8,7 @@ use super::ir::{
     GraphPlan, KeyPredicate, Literal, OrderDirection, OrderExpression, PredicateExpression,
     PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyRef, ScalarExpression,
+    PropertyRef, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -726,6 +726,9 @@ impl<'a> Lowerer<'a> {
             PredicateExpression::PropertyKeyMembership(predicate) => {
                 self.render_property_key_membership_predicate(predicate)
             }
+            PredicateExpression::ScalarComparison(predicate) => {
+                self.render_scalar_predicate(predicate)
+            }
             PredicateExpression::And { left, right } => Ok(format!(
                 "({} AND {})",
                 self.render_predicate_expression(left)?,
@@ -885,6 +888,65 @@ impl<'a> Lowerer<'a> {
                 "{property} {} {}",
                 render_operator(predicate.operator),
                 self.render_predicate_rhs(&predicate.rhs)?
+            )),
+        }
+    }
+
+    fn render_scalar_predicate(&self, predicate: &ScalarPredicate) -> Result<String, CoreError> {
+        let lhs = self.render_scalar_expression(&predicate.lhs)?;
+        match (&predicate.operator, &predicate.rhs) {
+            (ComparisonOperator::In, ScalarPredicateRhs::List(literals)) => {
+                if literals.is_empty() {
+                    return Ok("FALSE".to_string());
+                }
+                let rendered = literals
+                    .iter()
+                    .map(render_literal)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok(format!("{lhs} IN ({rendered})"))
+            }
+            (ComparisonOperator::In, _) => Err(CoreError::internal(
+                "validated scalar IN predicate did not contain a literal list",
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(value))),
+            ) => Ok(format!(
+                "{lhs} LIKE {} ESCAPE '\\'",
+                render_like_pattern(predicate.operator, value)
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                _,
+            ) => Err(CoreError::internal(
+                "validated scalar string predicate did not contain a string literal",
+            )),
+            (
+                ComparisonOperator::Equal,
+                ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null)),
+            ) => Ok(format!("{lhs} IS NULL")),
+            (
+                ComparisonOperator::NotEqual,
+                ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null)),
+            ) => Ok(format!("{lhs} IS NOT NULL")),
+            (
+                ComparisonOperator::GreaterThan
+                | ComparisonOperator::GreaterThanOrEqual
+                | ComparisonOperator::LessThan
+                | ComparisonOperator::LessThanOrEqual,
+                ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null)),
+            ) => Err(CoreError::internal(
+                "validated scalar predicate contained an invalid null comparison",
+            )),
+            _ => Ok(format!(
+                "{lhs} {} {}",
+                render_operator(predicate.operator),
+                self.render_scalar_predicate_rhs(&predicate.rhs)?
             )),
         }
     }
@@ -1066,6 +1128,15 @@ impl<'a> Lowerer<'a> {
             PredicateRhs::ElementId { variable } => self.render_binding_element_id_ref(variable),
             PredicateRhs::List(_) => Err(CoreError::internal(
                 "validated literal list predicate reached generic RHS renderer",
+            )),
+        }
+    }
+
+    fn render_scalar_predicate_rhs(&self, rhs: &ScalarPredicateRhs) -> Result<String, CoreError> {
+        match rhs {
+            ScalarPredicateRhs::Expression(expression) => self.render_scalar_expression(expression),
+            ScalarPredicateRhs::List(_) => Err(CoreError::internal(
+                "validated scalar literal list predicate reached generic RHS renderer",
             )),
         }
     }
@@ -1411,7 +1482,7 @@ mod tests {
         Literal, NodePattern, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey,
         PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
         ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
-        RelationshipPattern,
+        RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
     };
 
     const GRAPH: &str = r"
@@ -2497,6 +2568,41 @@ relationships: []
             translation.sql().contains(
                 "WHERE \"n1\".\"service_name\" LIKE 'bill\\_\\%%' ESCAPE '\\' AND \"n1\".\"service_name\" LIKE '%api%' ESCAPE '\\'"
             ),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_scalar_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::Coalesce {
+                expressions: vec![
+                    ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    ScalarExpression::Literal(Literal::String("unassigned".to_string())),
+                ],
+            },
+            operator: ComparisonOperator::In,
+            rhs: ScalarPredicateRhs::List(vec![
+                Literal::String("prod".to_string()),
+                Literal::String("dev".to_string()),
+            ]),
+        }));
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("scalar predicate should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE COALESCE(\"n1\".\"tier\", 'unassigned') IN ('prod', 'dev')"),
             "{}",
             translation.sql()
         );

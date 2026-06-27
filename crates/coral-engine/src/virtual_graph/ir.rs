@@ -90,6 +90,15 @@ pub enum PredicateRhs {
     List(Vec<Literal>),
 }
 
+/// Right-hand side of a scalar expression predicate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScalarPredicateRhs {
+    /// Compare against another scalar expression.
+    Expression(ScalarExpression),
+    /// Compare against a literal list.
+    List(Vec<Literal>),
+}
+
 /// Right-hand side of a post-projection predicate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectionPredicateRhs {
@@ -318,6 +327,17 @@ pub struct PropertyKeyMembershipPredicate {
     pub key: String,
 }
 
+/// Predicate over scalar graph expressions such as `coalesce(...)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScalarPredicate {
+    /// Left-hand scalar expression.
+    pub lhs: ScalarExpression,
+    /// Comparison operator.
+    pub operator: ComparisonOperator,
+    /// Right-hand comparison operand.
+    pub rhs: ScalarPredicateRhs,
+}
+
 /// Scope introduced by one `OPTIONAL MATCH` clause.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptionalMatchScope {
@@ -342,6 +362,8 @@ pub enum PredicateExpression {
     Presence(PresencePredicate),
     /// Leaf declared property key membership test.
     PropertyKeyMembership(PropertyKeyMembershipPredicate),
+    /// Leaf scalar expression comparison.
+    ScalarComparison(ScalarPredicate),
     /// Boolean conjunction.
     And {
         /// Left-hand expression.

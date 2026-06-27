@@ -28,7 +28,7 @@ use super::ir::{
     OrderExpression, OrderKey, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
     ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
     PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
-    ScalarExpression,
+    ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
 };
 use crate::CoreError;
 
@@ -1651,6 +1651,49 @@ fn compile_coalesce_order_expression(
     compile_coalesce_scalar_expression(function, path, context).map(OrderExpression::Scalar)
 }
 
+fn compile_optional_predicate_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_predicate_scalar_expression(inner, path, context)
+        }
+        Expression::FunctionCall(function) if is_coalesce_function(function) => Ok(Some(
+            compile_coalesce_scalar_expression(function, path, context)?,
+        )),
+        _ => Ok(None),
+    }
+}
+
+fn compile_scalar_predicate_rhs(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarPredicateRhs, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_scalar_predicate_rhs(inner, path, context),
+        Expression::FunctionCall(function) if is_coalesce_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_coalesce_scalar_expression(function, path, context)?,
+            ))
+        }
+        Expression::PropertyLookup { .. } => Ok(ScalarPredicateRhs::Expression(
+            ScalarExpression::Property(compile_property_ref(expression, path)?),
+        )),
+        expression if is_literal_expression(expression) => Ok(ScalarPredicateRhs::Expression(
+            ScalarExpression::Literal(compile_literal(expression, path, context)?),
+        )),
+        _ => Err(unsupported(
+            path,
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, or nested coalesce() expressions",
+        )),
+    }
+}
+
 fn compile_keys_projection(
     function: &FunctionInvocation,
     item: &ProjectionItem,
@@ -2002,7 +2045,7 @@ fn compile_predicate_expression(
         }
         _ => Err(unsupported(
             path,
-            "WHERE only supports property comparisons combined with AND, OR, and NOT",
+            "WHERE only supports graph property, id(), elementId(), labels(), keys(), and coalesce() predicates combined with AND, OR, and NOT",
         )),
     }
 }
@@ -2303,6 +2346,7 @@ fn is_conjunctive_expression(expression: &PredicateExpression) -> bool {
         | PredicateExpression::ElementIdComparison(_)
         | PredicateExpression::Presence(_)
         | PredicateExpression::PropertyKeyMembership(_)
+        | PredicateExpression::ScalarComparison(_)
         | PredicateExpression::Or { .. }
         | PredicateExpression::Not { .. } => false,
     }
@@ -2323,6 +2367,7 @@ fn append_conjunctive_expression(
         | PredicateExpression::ElementIdComparison(_)
         | PredicateExpression::Presence(_)
         | PredicateExpression::PropertyKeyMembership(_)
+        | PredicateExpression::ScalarComparison(_)
         | PredicateExpression::Or { .. }
         | PredicateExpression::Not { .. } => {
             unreachable!("non-conjunctive predicate expression reached conjunctive appender")
@@ -2439,6 +2484,15 @@ fn compile_binary_comparison(
             },
         ));
     }
+    if let Some(lhs) =
+        compile_optional_predicate_scalar_expression(lhs, format!("{path}.lhs"), context)?
+    {
+        return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs,
+            operator,
+            rhs: compile_scalar_predicate_rhs(rhs, format!("{path}.rhs"), context)?,
+        }));
+    }
     if let Some(property) = compile_optional_property_ref(rhs, format!("{path}.rhs"))? {
         return Ok(PredicateExpression::Comparison(PropertyPredicate {
             property,
@@ -2464,6 +2518,15 @@ fn compile_binary_comparison(
             },
         ));
     }
+    if let Some(rhs) =
+        compile_optional_predicate_scalar_expression(rhs, format!("{path}.rhs"), context)?
+    {
+        return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: rhs,
+            operator: invert_comparison_operator(operator, format!("{path}.operator"))?,
+            rhs: compile_scalar_predicate_rhs(lhs, format!("{path}.lhs"), context)?,
+        }));
+    }
 
     if contains_type_function(lhs) || contains_type_function(rhs) {
         let lhs = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
@@ -2482,7 +2545,7 @@ fn compile_binary_comparison(
 
     Err(unsupported(
         path,
-        "comparisons must include at least one variable.property, id(variable), elementId(variable), or type(relationship) operand",
+        "comparisons must include at least one variable.property, id(variable), elementId(variable), type(relationship), or coalesce(...) operand",
     ))
 }
 
@@ -2530,6 +2593,15 @@ fn compile_in_predicate(
             },
         ));
     }
+    if let Some(lhs) =
+        compile_optional_predicate_scalar_expression(lhs, format!("{path}.lhs"), context)?
+    {
+        return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs,
+            operator: ComparisonOperator::In,
+            rhs: ScalarPredicateRhs::List(literals),
+        }));
+    }
     if contains_type_function(lhs) {
         let literal = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
         return Ok(PredicateExpression::Boolean(evaluate_literal_in_list(
@@ -2544,7 +2616,7 @@ fn compile_in_predicate(
     }
     Err(unsupported(
         format!("{path}.lhs"),
-        "IN predicates require variable.property, id(variable), elementId(variable), type(relationship), '<label>' IN labels(node), or '<key>' IN keys(variable)",
+        "IN predicates require variable.property, id(variable), elementId(variable), type(relationship), coalesce(...), '<label>' IN labels(node), or '<key>' IN keys(variable)",
     ))
 }
 
@@ -4682,6 +4754,83 @@ mod tests {
                 }),
                 direction: OrderDirection::Descending,
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_coalesce_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE coalesce(service.tier, 'unassigned') = 'prod' \
+             RETURN service.name AS service",
+        )
+        .expect("coalesce predicate should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Coalesce {
+                    expressions: vec![
+                        ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "tier".to_string(),
+                        }),
+                        ScalarExpression::Literal(Literal::String("unassigned".to_string())),
+                    ],
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                    "prod".to_string()
+                ))),
+            }))
+        );
+    }
+
+    #[test]
+    fn compiles_reversed_coalesce_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE 'prod' = coalesce(service.tier, 'unassigned') \
+             RETURN service.name AS service",
+        )
+        .expect("reversed coalesce predicate should compile");
+
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                operator: ComparisonOperator::Equal,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn compiles_coalesce_in_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE coalesce(service.tier, 'unassigned') IN ['prod', 'dev'] \
+             RETURN service.name AS service",
+        )
+        .expect("coalesce IN predicate should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Coalesce {
+                    expressions: vec![
+                        ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "tier".to_string(),
+                        }),
+                        ScalarExpression::Literal(Literal::String("unassigned".to_string())),
+                    ],
+                },
+                operator: ComparisonOperator::In,
+                rhs: ScalarPredicateRhs::List(vec![
+                    Literal::String("prod".to_string()),
+                    Literal::String("dev".to_string()),
+                ]),
+            }))
         );
     }
 
