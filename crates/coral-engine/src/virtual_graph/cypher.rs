@@ -20,6 +20,7 @@ use decypher::ast::query::{
 use decypher::cst::{AstNode as _, AstToken as _, Ident};
 use decypher::syntax::{SyntaxKind, SyntaxNode};
 use ordered_float::OrderedFloat;
+use regex::Regex;
 
 use super::diagnostic::Diagnostic;
 use super::ir::{
@@ -3611,7 +3612,7 @@ fn compile_binary_projection_comparison(
     context: &CypherCompileContext,
 ) -> Result<ProjectionPredicate, CoreError> {
     let path = path.into();
-    let operator = compile_comparison_operator(operator, format!("{path}.operator"))?;
+    let operator = compile_comparison_operator(operator);
     if let Some(alias) = compile_optional_projection_alias_ref(lhs) {
         return Ok(ProjectionPredicate {
             alias,
@@ -3832,7 +3833,7 @@ fn compile_binary_comparison(
     context: &CypherCompileContext,
 ) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
-    let operator = compile_comparison_operator(operator, format!("{path}.operator"))?;
+    let operator = compile_comparison_operator(operator);
     if let Some(property) = compile_optional_property_ref(lhs, format!("{path}.lhs"))? {
         return compile_left_property_comparison(property, operator, rhs, &path, mode, context);
     }
@@ -4599,6 +4600,20 @@ fn evaluate_literal_comparison(
                 "CONTAINS literal comparisons require string operands",
             )),
         },
+        ComparisonOperator::RegexMatch => match (lhs, rhs) {
+            (Literal::String(lhs), Literal::String(rhs)) => Regex::new(rhs)
+                .map(|pattern| pattern.is_match(lhs))
+                .map_err(|error| {
+                    unsupported(
+                        path,
+                        format!("invalid regex literal for =~ comparison: {error}"),
+                    )
+                }),
+            _ => Err(unsupported(
+                path,
+                "=~ literal comparisons require string operands",
+            )),
+        },
         ComparisonOperator::GreaterThan
         | ComparisonOperator::GreaterThanOrEqual
         | ComparisonOperator::LessThan
@@ -4997,24 +5012,18 @@ fn compile_non_negative_integer(
     }
 }
 
-fn compile_comparison_operator(
-    operator: CypherComparisonOperator,
-    path: impl Into<String>,
-) -> Result<ComparisonOperator, CoreError> {
+fn compile_comparison_operator(operator: CypherComparisonOperator) -> ComparisonOperator {
     match operator {
-        CypherComparisonOperator::Eq => Ok(ComparisonOperator::Equal),
-        CypherComparisonOperator::Ne => Ok(ComparisonOperator::NotEqual),
-        CypherComparisonOperator::Gt => Ok(ComparisonOperator::GreaterThan),
-        CypherComparisonOperator::Ge => Ok(ComparisonOperator::GreaterThanOrEqual),
-        CypherComparisonOperator::Lt => Ok(ComparisonOperator::LessThan),
-        CypherComparisonOperator::Le => Ok(ComparisonOperator::LessThanOrEqual),
-        CypherComparisonOperator::StartsWith => Ok(ComparisonOperator::StartsWith),
-        CypherComparisonOperator::EndsWith => Ok(ComparisonOperator::EndsWith),
-        CypherComparisonOperator::Contains => Ok(ComparisonOperator::Contains),
-        CypherComparisonOperator::RegexMatch => Err(unsupported(
-            path,
-            "regex comparison operators are not supported yet",
-        )),
+        CypherComparisonOperator::Eq => ComparisonOperator::Equal,
+        CypherComparisonOperator::Ne => ComparisonOperator::NotEqual,
+        CypherComparisonOperator::Gt => ComparisonOperator::GreaterThan,
+        CypherComparisonOperator::Ge => ComparisonOperator::GreaterThanOrEqual,
+        CypherComparisonOperator::Lt => ComparisonOperator::LessThan,
+        CypherComparisonOperator::Le => ComparisonOperator::LessThanOrEqual,
+        CypherComparisonOperator::StartsWith => ComparisonOperator::StartsWith,
+        CypherComparisonOperator::EndsWith => ComparisonOperator::EndsWith,
+        CypherComparisonOperator::Contains => ComparisonOperator::Contains,
+        CypherComparisonOperator::RegexMatch => ComparisonOperator::RegexMatch,
     }
 }
 
@@ -5032,7 +5041,8 @@ fn invert_comparison_operator(
         ComparisonOperator::In
         | ComparisonOperator::StartsWith
         | ComparisonOperator::EndsWith
-        | ComparisonOperator::Contains => Err(unsupported(
+        | ComparisonOperator::Contains
+        | ComparisonOperator::RegexMatch => Err(unsupported(
             path,
             "this comparison operator requires a variable.property left-hand side",
         )),
@@ -5045,6 +5055,7 @@ fn is_string_comparison_operator(operator: ComparisonOperator) -> bool {
         ComparisonOperator::StartsWith
             | ComparisonOperator::EndsWith
             | ComparisonOperator::Contains
+            | ComparisonOperator::RegexMatch
     )
 }
 
@@ -8472,9 +8483,47 @@ mod tests {
     }
 
     #[test]
-    fn rejects_regex_predicates() {
+    fn compiles_regex_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) WHERE service.name =~ '^billing.*' RETURN service.name",
+        )
+        .expect("regex predicate should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                },
+                operator: ComparisonOperator::RegexMatch,
+                rhs: PredicateRhs::Literal(Literal::String("^billing.*".to_string())),
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_dynamic_regex_predicate_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) WHERE service.name =~ left(service.name, 4) RETURN service.name",
+        )
+        .expect("dynamic regex predicate should compile");
+
+        assert!(plan.predicates.is_empty());
+        assert!(matches!(
+            &plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Property(PropertyRef { property, .. }),
+                operator: ComparisonOperator::RegexMatch,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Left { .. }),
+            })) if property == "name"
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_literal_regex_predicates() {
         assert_unsupported(
-            "MATCH (service:Service) WHERE service.name =~ '.*api' RETURN service.name",
+            "MATCH (service:Service) WHERE 'billing-api' =~ '[' RETURN service.name",
         );
     }
 

@@ -1680,19 +1680,10 @@ impl<'a> GraphPlanValidator<'a> {
                     )
                     .into_core_error());
                 }
-                if matches!(
+                Self::validate_non_literal_string_predicate_operand(
+                    path.clone(),
                     predicate.operator,
-                    ComparisonOperator::StartsWith
-                        | ComparisonOperator::EndsWith
-                        | ComparisonOperator::Contains
-                ) {
-                    return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
-                        path,
-                        "string predicates require a string literal right-hand side",
-                    )
-                    .into_core_error());
-                }
+                )?;
                 self.validate_property_ref(property, format!("{path}.rhs"))
             }
             PredicateRhs::Key { variable } => {
@@ -1704,19 +1695,10 @@ impl<'a> GraphPlanValidator<'a> {
                     )
                     .into_core_error());
                 }
-                if matches!(
+                Self::validate_non_literal_string_predicate_operand(
+                    path.clone(),
                     predicate.operator,
-                    ComparisonOperator::StartsWith
-                        | ComparisonOperator::EndsWith
-                        | ComparisonOperator::Contains
-                ) {
-                    return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
-                        path,
-                        "string predicates require a string literal right-hand side",
-                    )
-                    .into_core_error());
-                }
+                )?;
                 self.validate_key_projection(variable, format!("{path}.rhs"))
             }
             PredicateRhs::ElementId { variable } => {
@@ -1728,19 +1710,10 @@ impl<'a> GraphPlanValidator<'a> {
                     )
                     .into_core_error());
                 }
-                if matches!(
+                Self::validate_non_literal_string_predicate_operand(
+                    path.clone(),
                     predicate.operator,
-                    ComparisonOperator::StartsWith
-                        | ComparisonOperator::EndsWith
-                        | ComparisonOperator::Contains
-                ) {
-                    return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
-                        path,
-                        "string predicates require a string literal right-hand side",
-                    )
-                    .into_core_error());
-                }
+                )?;
                 self.validate_element_id_projection(variable, format!("{path}.rhs"))
             }
             PredicateRhs::List(_) => {
@@ -1830,6 +1803,7 @@ impl<'a> GraphPlanValidator<'a> {
                     ComparisonOperator::StartsWith
                         | ComparisonOperator::EndsWith
                         | ComparisonOperator::Contains
+                        | ComparisonOperator::RegexMatch
                 ) {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
@@ -1854,6 +1828,7 @@ impl<'a> GraphPlanValidator<'a> {
                     ComparisonOperator::StartsWith
                         | ComparisonOperator::EndsWith
                         | ComparisonOperator::Contains
+                        | ComparisonOperator::RegexMatch
                 ) {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
@@ -1919,6 +1894,7 @@ impl<'a> GraphPlanValidator<'a> {
                     ComparisonOperator::StartsWith
                         | ComparisonOperator::EndsWith
                         | ComparisonOperator::Contains
+                        | ComparisonOperator::RegexMatch
                 ) {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
@@ -1957,6 +1933,7 @@ impl<'a> GraphPlanValidator<'a> {
                     ComparisonOperator::StartsWith
                         | ComparisonOperator::EndsWith
                         | ComparisonOperator::Contains
+                        | ComparisonOperator::RegexMatch
                 ) {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
@@ -2015,7 +1992,8 @@ impl<'a> GraphPlanValidator<'a> {
             | ComparisonOperator::In
             | ComparisonOperator::StartsWith
             | ComparisonOperator::EndsWith
-            | ComparisonOperator::Contains => Err(Diagnostic::new(
+            | ComparisonOperator::Contains
+            | ComparisonOperator::RegexMatch => Err(Diagnostic::new(
                 "INVALID_PRESENCE_PREDICATE",
                 path,
                 "graph variable presence predicates only support IS NULL and IS NOT NULL",
@@ -2076,6 +2054,7 @@ impl<'a> GraphPlanValidator<'a> {
                     ComparisonOperator::StartsWith
                         | ComparisonOperator::EndsWith
                         | ComparisonOperator::Contains
+                        | ComparisonOperator::RegexMatch
                 ) {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
@@ -2324,6 +2303,7 @@ impl<'a> GraphPlanValidator<'a> {
             ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
                 | ComparisonOperator::Contains
+                | ComparisonOperator::RegexMatch
         ) {
             return Ok(());
         }
@@ -2336,6 +2316,27 @@ impl<'a> GraphPlanValidator<'a> {
             .into_core_error());
         }
         Ok(())
+    }
+
+    fn validate_non_literal_string_predicate_operand(
+        path: impl Into<String>,
+        operator: ComparisonOperator,
+    ) -> Result<(), CoreError> {
+        if !matches!(
+            operator,
+            ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains
+                | ComparisonOperator::RegexMatch
+        ) {
+            return Ok(());
+        }
+        Err(Diagnostic::new(
+            "INVALID_PREDICATE_OPERAND",
+            path,
+            "string predicates require a string literal right-hand side",
+        )
+        .into_core_error())
     }
 
     fn validate_literal_predicate(
@@ -3718,6 +3719,29 @@ relationships:
         let error = graph
             .validate_graph_plan(&plan)
             .expect_err("property RHS for string predicate should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_PREDICATE_OPERAND"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_non_string_rhs_for_regex_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicates = vec![PropertyPredicate {
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "name".to_string(),
+            },
+            operator: ComparisonOperator::RegexMatch,
+            rhs: PredicateRhs::Literal(Literal::Integer(10)),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("non-string RHS for regex predicate should fail validation");
 
         assert!(
             error.to_string().contains("INVALID_PREDICATE_OPERAND"),

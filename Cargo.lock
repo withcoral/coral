@@ -1357,6 +1357,7 @@ dependencies = [
  "opentelemetry_sdk",
  "ordered-float 5.3.0",
  "parquet",
+ "regex",
  "reqwest 0.13.3",
  "rmcp",
  "serde",

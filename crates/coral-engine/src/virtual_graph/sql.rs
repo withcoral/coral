@@ -809,6 +809,13 @@ impl<'a> Lowerer<'a> {
             ) => Err(CoreError::internal(
                 "validated projected string predicate did not contain a string literal",
             )),
+            (
+                ComparisonOperator::RegexMatch,
+                ProjectionPredicateRhs::Literal(Literal::String(value)),
+            ) => Ok(render_regex_predicate(&alias, &quote_string_literal(value))),
+            (ComparisonOperator::RegexMatch, _) => Err(CoreError::internal(
+                "validated projected regex predicate did not contain a string literal",
+            )),
             (ComparisonOperator::Equal, ProjectionPredicateRhs::Literal(Literal::Null)) => {
                 Ok(format!("{alias} IS NULL"))
             }
@@ -868,6 +875,13 @@ impl<'a> Lowerer<'a> {
                 _,
             ) => Err(CoreError::internal(
                 "validated string predicate did not contain a string literal",
+            )),
+            (ComparisonOperator::RegexMatch, PredicateRhs::List(_)) => Err(CoreError::internal(
+                "validated regex predicate did not contain a scalar RHS",
+            )),
+            (ComparisonOperator::RegexMatch, rhs) => Ok(render_regex_predicate(
+                &property,
+                &self.render_predicate_rhs(rhs)?,
             )),
             (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
                 Ok(format!("{property} IS NULL"))
@@ -939,6 +953,15 @@ impl<'a> Lowerer<'a> {
             ) => Err(CoreError::internal(
                 "validated scalar string predicate did not contain a string literal",
             )),
+            (ComparisonOperator::RegexMatch, ScalarPredicateRhs::List(_)) => {
+                Err(CoreError::internal(
+                    "validated scalar regex predicate did not contain a scalar RHS",
+                ))
+            }
+            (ComparisonOperator::RegexMatch, ScalarPredicateRhs::Expression(expression)) => {
+                let rhs = self.render_scalar_expression(expression)?;
+                Ok(render_regex_predicate(&lhs, &rhs))
+            }
             (
                 ComparisonOperator::Equal,
                 ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null)),
@@ -997,6 +1020,13 @@ impl<'a> Lowerer<'a> {
                 _,
             ) => Err(CoreError::internal(
                 "validated id() string predicate did not contain a string literal",
+            )),
+            (ComparisonOperator::RegexMatch, PredicateRhs::List(_)) => Err(CoreError::internal(
+                "validated id() regex predicate did not contain a scalar RHS",
+            )),
+            (ComparisonOperator::RegexMatch, rhs) => Ok(render_regex_predicate(
+                &key,
+                &self.render_predicate_rhs(rhs)?,
             )),
             (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
                 Ok(format!("{key} IS NULL"))
@@ -1058,6 +1088,13 @@ impl<'a> Lowerer<'a> {
             ) => Err(CoreError::internal(
                 "validated elementId() string predicate did not contain a string literal",
             )),
+            (ComparisonOperator::RegexMatch, PredicateRhs::List(_)) => Err(CoreError::internal(
+                "validated elementId() regex predicate did not contain a scalar RHS",
+            )),
+            (ComparisonOperator::RegexMatch, rhs) => Ok(render_regex_predicate(
+                &element_id,
+                &self.render_predicate_rhs(rhs)?,
+            )),
             (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
                 Ok(format!("{element_id} IS NULL"))
             }
@@ -1096,7 +1133,8 @@ impl<'a> Lowerer<'a> {
             | ComparisonOperator::In
             | ComparisonOperator::StartsWith
             | ComparisonOperator::EndsWith
-            | ComparisonOperator::Contains => Err(CoreError::internal(
+            | ComparisonOperator::Contains
+            | ComparisonOperator::RegexMatch => Err(CoreError::internal(
                 "validated presence predicate contained an invalid operator",
             )),
         }
@@ -1746,6 +1784,9 @@ fn render_operator(operator: ComparisonOperator) -> &'static str {
         ComparisonOperator::StartsWith => "STARTS WITH",
         ComparisonOperator::EndsWith => "ENDS WITH",
         ComparisonOperator::Contains => "CONTAINS",
+        ComparisonOperator::RegexMatch => {
+            unreachable!("regex predicates lower through regexp_like")
+        }
     }
 }
 
@@ -1825,6 +1866,10 @@ fn render_string_function_predicate(operator: ComparisonOperator, lhs: &str, rhs
         _ => unreachable!("string function requested for non-string predicate operator"),
     };
     format!("{function_name}({lhs}, {rhs})")
+}
+
+fn render_regex_predicate(lhs: &str, rhs: &str) -> String {
+    format!("regexp_like({lhs}, {rhs})")
 }
 
 fn escape_like_literal(value: &str) -> String {
@@ -2987,6 +3032,59 @@ relationships: []
         assert!(
             translation.sql().contains(
                 "WHERE starts_with(\"n1\".\"service_name\", left(\"n1\".\"service_name\", 4))"
+            ),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_regex_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates = vec![PropertyPredicate {
+            property: PropertyRef {
+                variable: "service".to_string(),
+                property: "name".to_string(),
+            },
+            operator: ComparisonOperator::RegexMatch,
+            rhs: PredicateRhs::Literal(Literal::String("^bill.*".to_string())),
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("regex predicate should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE regexp_like(\"n1\".\"service_name\", '^bill.*')"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_dynamic_regex_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: service_name_expression(),
+            operator: ComparisonOperator::RegexMatch,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Left {
+                expression: Box::new(service_name_expression()),
+                count: Box::new(ScalarExpression::Literal(Literal::Integer(4))),
+            }),
+        }));
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("dynamic regex predicate should lower");
+
+        assert!(
+            translation.sql().contains(
+                "WHERE regexp_like(\"n1\".\"service_name\", left(\"n1\".\"service_name\", 4))"
             ),
             "{}",
             translation.sql()

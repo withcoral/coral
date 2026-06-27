@@ -70,6 +70,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `WHERE '<key>' IN keys(variable)` | Supported foundation | String-literal and scalar string parameter membership predicates lower against declared graph property metadata |
 | Cypher parameters | Supported foundation | Explicit typed parameter API binds scalar values in literal positions and list values as `IN` right-hand sides before SQL lowering |
 | `WHERE ... STARTS WITH` / `ENDS WITH` / `CONTAINS` | Supported foundation | String-literal and string-parameter RHS lowers to escaped SQL `LIKE`; scalar expression RHS lowers to DataFusion `starts_with`, `ends_with`, and `contains` |
+| `WHERE ... =~` regex matching | Supported foundation | String-literal, string-parameter, and scalar expression RHS lowers to DataFusion `regexp_like`; semantics follow DataFusion/Rust regex rather than Neo4j's Java regex dialect |
 | `WHERE ... IS NULL` / `IS NOT NULL` | Supported foundation | Lowers to SQL `IS NULL` / `IS NOT NULL` |
 | Inline node property maps | Supported foundation | Normalized to equality predicates, e.g. `(n:Service {tier: 'prod'})` |
 | Inline relationship property maps | Supported foundation | Anonymous relationships get internal variables for property predicates |
@@ -95,7 +96,6 @@ unsupported behavior should be rejected clearly instead of guessed.
 | General list-expression predicates | Rejected | Only literal-list `IN` and static `'<Label>' IN labels(node)` are supported; arbitrary list expressions need a richer list IR |
 | Multi-hop or undirected optional-local predicates | Rejected | Needs broader optional-scope grouping and orientation-aware predicate placement |
 | `WHERE XOR` | Rejected | Not portable across target SQL dialects |
-| `WHERE ... =~` regex matching | Rejected | Needs regex dialect compatibility across DataFusion targets |
 | Variable-length paths | Rejected | Needs recursive/path expansion semantics |
 | Path variables and path values | Rejected | Needs graph value representation |
 | User variables beginning with `__coral_` | Rejected | Prefix reserved for internal planner bindings |

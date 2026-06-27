@@ -43,6 +43,8 @@ pub enum ComparisonOperator {
     EndsWith,
     /// String substring comparison.
     Contains,
+    /// Regular expression match comparison.
+    RegexMatch,
 }
 
 /// Literal value supported by the initial graph IR.
