@@ -1882,6 +1882,37 @@ async fn cypher_labels_projection_preserves_optional_nulls() {
 }
 
 #[tokio::test]
+async fn cypher_label_membership_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE 'Service' IN labels(service) AND NOT ('Team' IN labels(service)) \
+         RETURN count(service) AS services",
+    )
+    .await
+    .expect("labels() membership predicates should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("WHERE (TRUE AND NOT (FALSE))"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"services": 4})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_order_by_id_functions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

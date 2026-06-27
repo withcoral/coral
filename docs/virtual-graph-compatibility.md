@@ -61,6 +61,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Literal-left comparisons | Supported foundation | Operators are inverted around the property operand where possible |
 | `WHERE` boolean logic | Supported foundation | `AND`, `OR`, `NOT`, and parentheses lower to SQL boolean predicates |
 | `WHERE ... IN [...]` | Supported foundation | Literal scalar lists, including numeric and null members, lower to SQL `IN`; empty lists lower to `FALSE` |
+| `WHERE '<Label>' IN labels(node)` | Supported foundation | String-literal and scalar string parameter membership predicates fold against the statically mapped node label |
 | Cypher parameters | Supported foundation | Explicit typed parameter API binds scalar values in literal positions and list values as `IN` right-hand sides before SQL lowering |
 | `WHERE ... STARTS WITH` / `ENDS WITH` / `CONTAINS` | Supported foundation | String-literal RHS lowers to escaped SQL `LIKE` |
 | `WHERE ... IS NULL` / `IS NOT NULL` | Supported foundation | Lowers to SQL `IS NULL` / `IS NOT NULL` |
@@ -81,7 +82,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Terminal `WITH` projections | Supported foundation | Terminal projection, alias filtering, ordering, skip, and limit are supported without staging another `MATCH` |
 | `OPTIONAL MATCH` | Supported foundation | Requires an already-bound node anchor and one connected pattern part; preserves unmatched rows with nullable optional bindings |
 | Optional-local `WHERE` and inline property maps | Supported foundation | Supported for single-hop directed optional patterns by placing predicates inside the null-preserving join scope |
-| Label-list predicates | Rejected | Predicate forms such as `'Service' IN labels(n)` need list-expression predicate support; use static label patterns instead |
+| General list-expression predicates | Rejected | Only literal-list `IN` and static `'<Label>' IN labels(node)` are supported; arbitrary list expressions need a richer list IR |
 | Multi-hop or undirected optional-local predicates | Rejected | Needs broader optional-scope grouping and orientation-aware predicate placement |
 | `WHERE XOR` | Rejected | Not portable across target SQL dialects |
 | `WHERE ... =~` regex matching | Rejected | Needs regex dialect compatibility across DataFusion targets |

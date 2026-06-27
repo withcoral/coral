@@ -2171,6 +2171,11 @@ fn compile_in_predicate(
     context: &CypherCompileContext,
 ) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
+    if let Some(predicate) =
+        compile_label_membership_predicate(lhs, rhs, path.clone(), plan, context)?
+    {
+        return Ok(predicate);
+    }
     let literals = compile_literal_list(rhs, format!("{path}.rhs"), context)?;
     if let Some(property) = compile_optional_property_ref(lhs, format!("{path}.lhs"))? {
         return Ok(PredicateExpression::Comparison(PropertyPredicate {
@@ -2192,8 +2197,52 @@ fn compile_in_predicate(
     }
     Err(unsupported(
         format!("{path}.lhs"),
-        "IN predicates require variable.property, id(variable), or type(relationship) on the left-hand side",
+        "IN predicates require variable.property, id(variable), type(relationship), or '<label>' IN labels(node)",
     ))
+}
+
+fn compile_label_membership_predicate(
+    lhs: &Expression,
+    rhs: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    let path = path.into();
+    let Some((_, label)) = compile_optional_labels_ref(rhs, format!("{path}.rhs"), plan, context)?
+    else {
+        return Ok(None);
+    };
+    let literal = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
+    let Literal::String(candidate) = literal else {
+        return Err(unsupported(
+            format!("{path}.lhs"),
+            "label membership predicates require a string literal or scalar string parameter",
+        ));
+    };
+    Ok(Some(PredicateExpression::Boolean(candidate == label)))
+}
+
+fn compile_optional_labels_ref(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<(String, String)>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_optional_labels_ref(inner, path, plan, context),
+        Expression::FunctionCall(function) if is_labels_function(function) => {
+            Ok(Some(compile_node_function_target(
+                function,
+                format!("{path}.arguments"),
+                "labels() supports exactly one node variable argument",
+                plan,
+                context,
+            )?))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn compile_predicate_rhs(
@@ -3253,6 +3302,58 @@ mod tests {
         assert_eq!(
             non_matching.predicate,
             Some(PredicateExpression::Boolean(false))
+        );
+    }
+
+    #[test]
+    fn compiles_label_membership_predicates_as_boolean_constants() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE 'Service' IN labels(service) AND NOT ('Team' IN labels(service)) \
+             RETURN service.name AS service",
+        )
+        .expect("labels() membership predicates should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::Boolean(true)),
+                right: Box::new(PredicateExpression::Not {
+                    expression: Box::new(PredicateExpression::Boolean(false)),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_parameterized_label_membership_predicates() {
+        let parameters = BTreeMap::from([(
+            "label".to_string(),
+            CypherParameterValue::Literal(Literal::String("Service".to_string())),
+        )]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (service:Service) \
+             WHERE $label IN labels(service) \
+             RETURN service.name AS service",
+            &parameters,
+        )
+        .expect("parameterized labels() membership should compile");
+
+        assert_eq!(plan.predicate, Some(PredicateExpression::Boolean(true)));
+    }
+
+    #[test]
+    fn rejects_non_string_label_membership_predicates() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE 1 IN labels(service) \
+             RETURN service.name AS service",
+        )
+        .expect_err("label membership should require a string literal");
+
+        assert!(
+            error.to_string().contains("label membership predicates"),
+            "{error:?}"
         );
     }
 

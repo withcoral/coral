@@ -93,7 +93,8 @@ The supported foundation subset is intentionally narrow:
 - `id(node)`, `id(keyedRelationship)`, `type(relationship)`, and
   `labels(node)` in projections and ordering, with optional relationship and
   node function projections preserving null for unmatched optional bindings;
-- `id(...)` and `type(relationship)` in predicates;
+- `id(...)`, `type(relationship)`, and static
+  `'<Label>' IN labels(node)` membership in predicates;
 - string prefix, suffix, and substring predicates lowered to escaped SQL
   `LIKE`;
 - inline node property maps normalized to equality predicates;
