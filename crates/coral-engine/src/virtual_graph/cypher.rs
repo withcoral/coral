@@ -92,6 +92,12 @@ enum LabelTypeAlternative {
 }
 
 #[derive(Debug, Clone, Copy)]
+enum RelationshipEndpoint {
+    Start,
+    End,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct PathBinding {
     length: usize,
 }
@@ -643,6 +649,7 @@ fn compile_static_alternative_outer_aggregate_item(
         function,
         function_kind,
         &format!("{path}.return.items[{index}]"),
+        None,
         context,
     )?;
     let source_expression = match target {
@@ -4377,15 +4384,22 @@ fn compile_order_expression(
                     function,
                     projections,
                     path,
+                    plan,
                     context,
                 );
             }
             Ok(OrderExpression::Property(compile_property_ref(
-                expression, path,
+                expression,
+                path,
+                Some(plan),
+                context,
             )?))
         }
         _ => Ok(OrderExpression::Property(compile_property_ref(
-            expression, path,
+            expression,
+            path,
+            Some(plan),
+            context,
         )?)),
     }
 }
@@ -4409,6 +4423,7 @@ fn aggregate_order_expression_for_projection(
     function: &FunctionInvocation,
     projections: &[Projection],
     path: impl Into<String>,
+    plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
@@ -4421,7 +4436,8 @@ fn aggregate_order_expression_for_projection(
             ),
         )
     })?;
-    let target = compile_function_aggregate_target(function, function_kind, &path, context)?;
+    let target =
+        compile_function_aggregate_target(function, function_kind, &path, Some(plan), context)?;
     let aliases = projections
         .iter()
         .filter_map(|projection| match projection {
@@ -4716,7 +4732,7 @@ fn compile_projection(
                 return Ok(projection);
             }
             if compile_aggregate_function(function).is_some() {
-                return compile_aggregate_projection(function, item, path, context);
+                return compile_aggregate_projection(function, item, path, plan, context);
             }
             Err(unsupported(
                 format!("{path}.expression"),
@@ -4727,7 +4743,12 @@ fn compile_projection(
             ))
         }
         expression => Ok(Projection::Property {
-            property: compile_property_ref(expression, format!("{path}.expression"))?,
+            property: compile_property_ref(
+                expression,
+                format!("{path}.expression"),
+                Some(plan),
+                context,
+            )?,
             alias: item.alias.as_ref().map(variable_name),
         }),
     }
@@ -5846,7 +5867,7 @@ fn compile_scalar_expression_in_mode(
             compile_scalar_expression_in_mode(inner, path, plan, context)
         }
         Expression::PropertyLookup { .. } => Ok(ScalarExpression::Property(compile_property_ref(
-            expression, path,
+            expression, path, plan, context,
         )?)),
         expression if is_literal_expression(expression) => Ok(ScalarExpression::Literal(
             compile_literal(expression, path, context)?,
@@ -6289,7 +6310,7 @@ fn compile_scalar_predicate_rhs(
             }
         }
         Expression::PropertyLookup { .. } => Ok(ScalarPredicateRhs::Expression(
-            ScalarExpression::Property(compile_property_ref(expression, path)?),
+            ScalarExpression::Property(compile_property_ref(expression, path, plan, context)?),
         )),
         expression if is_literal_expression(expression) => Ok(ScalarPredicateRhs::Expression(
             ScalarExpression::Literal(compile_literal(expression, path, context)?),
@@ -6472,6 +6493,7 @@ fn compile_aggregate_projection(
     function: &FunctionInvocation,
     item: &ProjectionItem,
     path: impl Into<String>,
+    plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
@@ -6489,7 +6511,8 @@ fn compile_aggregate_projection(
         function.distinct,
         format!("{path}.expression.distinct"),
     )?;
-    let target = compile_function_aggregate_target(function, function_kind, &path, context)?;
+    let target =
+        compile_function_aggregate_target(function, function_kind, &path, Some(plan), context)?;
     Ok(Projection::Aggregate {
         function: function_kind,
         target,
@@ -6505,10 +6528,16 @@ fn compile_function_aggregate_target(
     function: &FunctionInvocation,
     function_kind: AggregateFunction,
     path: &str,
+    plan: Option<&GraphPlan>,
     context: &CypherCompileContext,
 ) -> Result<AggregateTarget, CoreError> {
     match function.arguments.as_slice() {
-        [argument] => compile_aggregate_target(argument, format!("{path}.expression.arguments[0]")),
+        [argument] => compile_aggregate_target(
+            argument,
+            format!("{path}.expression.arguments[0]"),
+            plan,
+            context,
+        ),
         [] if function_kind == AggregateFunction::Count => {
             let variable = context.variable_function_argument(function).ok_or_else(|| {
                 unsupported(
@@ -6565,15 +6594,17 @@ fn variable_name_from_cst(node: &SyntaxNode) -> Option<String> {
 fn compile_aggregate_target(
     expression: &Expression,
     path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
 ) -> Result<AggregateTarget, CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_aggregate_target(inner, path),
+        Expression::Parenthesized(inner) => compile_aggregate_target(inner, path, plan, context),
         Expression::Variable(variable) => Ok(AggregateTarget::VariableKey {
             variable: variable_name(variable),
         }),
         _ => Ok(AggregateTarget::Property(compile_property_ref(
-            expression, path,
+            expression, path, plan, context,
         )?)),
     }
 }
@@ -6702,6 +6733,37 @@ fn is_keys_function(function: &FunctionInvocation) -> bool {
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("keys")
     )
+}
+
+fn is_start_node_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("startNode")
+    )
+}
+
+fn is_end_node_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("endNode")
+    )
+}
+
+fn relationship_endpoint_function(function: &FunctionInvocation) -> Option<RelationshipEndpoint> {
+    if is_start_node_function(function) {
+        Some(RelationshipEndpoint::Start)
+    } else if is_end_node_function(function) {
+        Some(RelationshipEndpoint::End)
+    } else {
+        None
+    }
+}
+
+fn relationship_endpoint_function_name(endpoint: RelationshipEndpoint) -> &'static str {
+    match endpoint {
+        RelationshipEndpoint::Start => "startNode",
+        RelationshipEndpoint::End => "endNode",
+    }
 }
 
 fn is_length_function(function: &FunctionInvocation) -> bool {
@@ -7089,9 +7151,14 @@ fn compile_predicate_expression_in_mode(
         Expression::IsNull {
             operand, negated, ..
         } => compile_null_predicate(operand, *negated, path, mode, context),
-        Expression::FunctionCall(function) if is_exists_function(function) => Ok(
-            PredicateExpression::Comparison(compile_exists_predicate(function, path)?),
-        ),
+        Expression::FunctionCall(function) if is_exists_function(function) => {
+            Ok(PredicateExpression::Comparison(compile_exists_predicate(
+                function,
+                path,
+                mode.graph_plan(),
+                context,
+            )?))
+        }
         Expression::FunctionCall(function) if is_empty_function(function) => {
             Ok(PredicateExpression::ScalarComparison(
                 compile_is_empty_predicate(function, path, mode.static_metadata_plan(), context)?,
@@ -7099,7 +7166,7 @@ fn compile_predicate_expression_in_mode(
         }
         Expression::PropertyLookup { .. } => {
             Ok(PredicateExpression::Comparison(PropertyPredicate {
-                property: compile_property_ref(expression, path)?,
+                property: compile_property_ref(expression, path, mode.graph_plan(), context)?,
                 operator: ComparisonOperator::Equal,
                 rhs: PredicateRhs::Literal(Literal::Boolean(true)),
             }))
@@ -7142,6 +7209,8 @@ fn compile_binary_predicate_expression(
 fn compile_exists_predicate(
     function: &FunctionInvocation,
     path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
 ) -> Result<PropertyPredicate, CoreError> {
     let path = path.into();
     let [argument] = function.arguments.as_slice() else {
@@ -7151,7 +7220,7 @@ fn compile_exists_predicate(
         ));
     };
     Ok(PropertyPredicate {
-        property: compile_property_ref(argument, format!("{path}.arguments[0]"))?,
+        property: compile_property_ref(argument, format!("{path}.arguments[0]"), plan, context)?,
         operator: ComparisonOperator::NotEqual,
         rhs: PredicateRhs::Literal(Literal::Null),
     })
@@ -7579,7 +7648,9 @@ fn compile_binary_comparison(
 ) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
     let operator = compile_comparison_operator(operator);
-    if let Some(property) = compile_optional_property_ref(lhs, format!("{path}.lhs"))? {
+    if let Some(property) =
+        compile_optional_property_ref(lhs, format!("{path}.lhs"), mode.graph_plan(), context)?
+    {
         return compile_left_property_comparison(property, operator, rhs, &path, mode, context);
     }
     if let Some(plan) = mode.graph_plan() {
@@ -7608,7 +7679,9 @@ fn compile_binary_comparison(
     {
         return Ok(predicate);
     }
-    if let Some(property) = compile_optional_property_ref(rhs, format!("{path}.rhs"))? {
+    if let Some(property) =
+        compile_optional_property_ref(rhs, format!("{path}.rhs"), mode.graph_plan(), context)?
+    {
         return Ok(PredicateExpression::Comparison(PropertyPredicate {
             property,
             operator: invert_comparison_operator(operator, format!("{path}.operator"))?,
@@ -7817,7 +7890,9 @@ fn compile_in_predicate(
         }
     }
     let literals = compile_literal_list(rhs, format!("{path}.rhs"), context)?;
-    if let Some(property) = compile_optional_property_ref(lhs, format!("{path}.lhs"))? {
+    if let Some(property) =
+        compile_optional_property_ref(lhs, format!("{path}.lhs"), mode.graph_plan(), context)?
+    {
         return Ok(PredicateExpression::Comparison(PropertyPredicate {
             property,
             operator: ComparisonOperator::In,
@@ -8078,7 +8153,10 @@ fn compile_predicate_rhs(
     match expression {
         Expression::Parenthesized(inner) => compile_predicate_rhs(inner, path, mode, context),
         Expression::PropertyLookup { .. } => Ok(PredicateRhs::Property(compile_property_ref(
-            expression, path,
+            expression,
+            path,
+            mode.graph_plan(),
+            context,
         )?)),
         Expression::FunctionCall(function) if is_id_function(function) => match mode.graph_plan() {
             Some(plan) => Ok(PredicateRhs::Key {
@@ -8130,7 +8208,12 @@ fn compile_null_predicate(
     } else {
         ComparisonOperator::Equal
     };
-    if let Some(property) = compile_optional_property_ref(operand, format!("{path}.operand"))? {
+    if let Some(property) = compile_optional_property_ref(
+        operand,
+        format!("{path}.operand"),
+        mode.graph_plan(),
+        context,
+    )? {
         return Ok(PredicateExpression::Comparison(PropertyPredicate {
             property,
             operator,
@@ -8543,22 +8626,16 @@ fn compare_integer_float_literals(
 fn compile_property_ref(
     expression: &Expression,
     path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
 ) -> Result<PropertyRef, CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_property_ref(inner, path),
-        Expression::PropertyLookup { base, property, .. } => {
-            let Expression::Variable(variable) = base.as_ref() else {
-                return Err(unsupported(
-                    format!("{path}.base"),
-                    "property references must be variable.property",
-                ));
-            };
-            Ok(PropertyRef {
-                variable: variable_name(variable),
-                property: property.name.name.clone(),
-            })
-        }
+        Expression::Parenthesized(inner) => compile_property_ref(inner, path, plan, context),
+        Expression::PropertyLookup { base, property, .. } => Ok(PropertyRef {
+            variable: compile_property_base_variable(base, format!("{path}.base"), plan, context)?,
+            property: property.name.name.clone(),
+        }),
         _ => Err(unsupported(
             path,
             "only variable.property expressions are supported here",
@@ -8569,12 +8646,108 @@ fn compile_property_ref(
 fn compile_optional_property_ref(
     expression: &Expression,
     path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
 ) -> Result<Option<PropertyRef>, CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_optional_property_ref(inner, path),
-        Expression::PropertyLookup { .. } => compile_property_ref(expression, path).map(Some),
+        Expression::Parenthesized(inner) => {
+            compile_optional_property_ref(inner, path, plan, context)
+        }
+        Expression::PropertyLookup { .. } => {
+            compile_property_ref(expression, path, plan, context).map(Some)
+        }
         _ => Ok(None),
+    }
+}
+
+fn compile_property_base_variable(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_property_base_variable(inner, path, plan, context)
+        }
+        Expression::Variable(variable) => Ok(variable_name(variable)),
+        Expression::FunctionCall(function)
+            if is_start_node_function(function) || is_end_node_function(function) =>
+        {
+            let Some(plan) = plan else {
+                return Err(unsupported(
+                    path,
+                    "relationship endpoint property references require graph context",
+                ));
+            };
+            compile_relationship_endpoint_variable(function, path, plan, context)
+        }
+        _ => Err(unsupported(
+            path,
+            "property references must be variable.property or startNode()/endNode() relationship endpoint properties",
+        )),
+    }
+}
+
+fn compile_relationship_endpoint_variable(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    let endpoint = relationship_endpoint_function(function).ok_or_else(|| {
+        unsupported(
+            path.clone(),
+            format!(
+                "function '{}' is not a relationship endpoint function",
+                qualified_function_name(function)
+            ),
+        )
+    })?;
+    let function_name = relationship_endpoint_function_name(endpoint);
+    let variable = compile_single_variable_function_argument(
+        function,
+        format!("{path}.arguments"),
+        match endpoint {
+            RelationshipEndpoint::Start => {
+                "startNode() supports exactly one relationship variable argument"
+            }
+            RelationshipEndpoint::End => {
+                "endNode() supports exactly one relationship variable argument"
+            }
+        },
+        context,
+    )?;
+    let relationship = plan
+        .relationships
+        .iter()
+        .find(|relationship| relationship.variable.as_deref() == Some(variable.as_str()))
+        .ok_or_else(|| {
+            unsupported(
+                format!("{path}.arguments[0]"),
+                format!(
+                    "{function_name}() argument '{variable}' is not a named relationship variable"
+                ),
+            )
+        })?;
+    match relationship.direction {
+        Direction::Outgoing => Ok(match endpoint {
+            RelationshipEndpoint::Start => relationship.left.clone(),
+            RelationshipEndpoint::End => relationship.right.clone(),
+        }),
+        Direction::Incoming => Ok(match endpoint {
+            RelationshipEndpoint::Start => relationship.right.clone(),
+            RelationshipEndpoint::End => relationship.left.clone(),
+        }),
+        Direction::Undirected => Err(unsupported(
+            path,
+            format!(
+                "{function_name}() over undirected relationships is not supported yet because endpoint orientation is data-dependent"
+            ),
+        )),
     }
 }
 
@@ -10946,6 +11119,176 @@ mod tests {
                 direction: OrderDirection::Ascending,
                 nulls: None,
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_relationship_endpoint_property_projections() {
+        let plan = compile_cypher(
+            "MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \
+             RETURN startNode(dependency).name AS source, endNode(dependency).name AS target \
+             ORDER BY endNode(dependency).name",
+        )
+        .expect("relationship endpoint property projections should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "source".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("source".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("target".to_string()),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "target".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_reversed_relationship_endpoint_property_projections() {
+        let plan = compile_cypher(
+            "MATCH (target:Service)<-[dependency:DEPENDS_ON]-(source:Service) \
+             RETURN startNode(dependency).name AS source, endNode(dependency).name AS target",
+        )
+        .expect("reversed relationship endpoint property projections should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "source".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("source".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("target".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_relationship_endpoint_properties_in_predicates_and_scalars() {
+        let plan = compile_cypher(
+            "MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \
+             WHERE startNode(dependency).tier = 'prod' \
+             RETURN lower(endNode(dependency).name) AS target \
+             ORDER BY endNode(dependency).name",
+        )
+        .expect("relationship endpoint property scalar expressions should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "source".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            }]
+        );
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: ScalarExpression::ToLower {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    })),
+                },
+                alias: "target".to_string(),
+            }]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "target".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_relationship_endpoint_property_aggregates() {
+        let plan = compile_cypher(
+            "MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \
+             RETURN count(startNode(dependency).name) AS sources",
+        )
+        .expect("relationship endpoint aggregate target should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Aggregate {
+                function: AggregateFunction::Count,
+                target: AggregateTarget::Property(PropertyRef {
+                    variable: "source".to_string(),
+                    property: "name".to_string(),
+                }),
+                distinct: false,
+                alias: "sources".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_relationship_endpoint_properties_on_undirected_relationships() {
+        let error = compile_cypher(
+            "MATCH (left:Service)-[dependency:DEPENDS_ON]-(right:Service) \
+             RETURN startNode(dependency).name AS source",
+        )
+        .expect_err("undirected relationship endpoint properties should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("startNode() over undirected relationships is not supported yet"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_relationship_endpoint_properties_on_node_variables() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN startNode(service).name AS source",
+        )
+        .expect_err("relationship endpoint functions should require relationship variables");
+
+        assert!(
+            error
+                .to_string()
+                .contains("startNode() argument 'service' is not a named relationship variable"),
+            "{error}"
         );
     }
 

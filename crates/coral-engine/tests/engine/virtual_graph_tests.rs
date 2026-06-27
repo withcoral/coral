@@ -6619,6 +6619,79 @@ async fn cypher_relationship_type_scalar_expressions_preserve_optional_nulls() {
 }
 
 #[tokio::test]
+async fn cypher_relationship_endpoint_properties_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \
+         WHERE startNode(dependency).tier = 'prod' \
+           AND endNode(dependency).name = 'experiments' \
+         RETURN startNode(dependency).name AS source, \
+                endNode(dependency).name AS target, \
+                lower(endNode(dependency).tier) AS target_tier \
+         ORDER BY startNode(dependency).name",
+    )
+    .await
+    .expect("relationship endpoint property query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"tier\" = 'prod'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n1\".\"service_name\" = 'experiments'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"source": "billing-api", "target": "experiments", "target_tier": "dev"}),
+            json!({"source": "deployments", "target": "experiments", "target_tier": "dev"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_reversed_relationship_endpoint_properties_keep_mapping_orientation() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (target:Service)<-[dependency:DEPENDS_ON]-(source:Service) \
+         RETURN startNode(dependency).name AS source, endNode(dependency).name AS target \
+         ORDER BY source, target",
+    )
+    .await
+    .expect("reversed relationship endpoint property query should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"source": "billing-api", "target": "deployments"}),
+            json!({"source": "billing-api", "target": "experiments"}),
+            json!({"source": "deployments", "target": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_identity_scalar_expressions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
