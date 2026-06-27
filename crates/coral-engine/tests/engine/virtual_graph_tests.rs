@@ -349,6 +349,51 @@ async fn cypher_static_node_label_alternatives_grouped_count_property_after_unio
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_count_node_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN owner.name AS owner, count(service) AS services \
+         ORDER BY owner",
+    )
+    .await
+    .expect("static label alternatives with grouped outer count(node) should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COUNT(\"__coral_agg_1\") AS \"services\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n1\".\"id\" AS \"__coral_agg_1\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "services": 1}),
+            json!({"owner": "Grace Hopper", "services": 1}),
+            json!({"owner": "Katherine Johnson", "services": 1}),
+            json!({"owner": "analytics", "services": 1}),
+            json!({"owner": "infra", "services": 1}),
+            json!({"owner": "platform", "services": 2}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_collect_property_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

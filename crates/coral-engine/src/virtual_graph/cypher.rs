@@ -323,8 +323,9 @@ fn compile_single_query_as_graph_query(
         return Ok(GraphQuery::Plan(plan));
     }
 
-    validate_static_label_type_alternative_expansion_supported(single_query, &path)?;
-    let outer_projection_plan = analyze_static_alternative_outer_projection(single_query, &path)?;
+    validate_static_label_type_alternative_expansion_supported(single_query, &path, context)?;
+    let outer_projection_plan =
+        analyze_static_alternative_outer_projection(single_query, &path, context)?;
     let hidden_order_plan = analyze_static_alternative_hidden_order(
         single_query,
         outer_projection_plan.as_ref(),
@@ -441,6 +442,7 @@ enum StaticAlternativeOuterProjectionItem {
 fn analyze_static_alternative_outer_projection(
     single_query: &SingleQuery,
     path: &str,
+    context: &CypherCompileContext,
 ) -> Result<Option<StaticAlternativeOuterProjectionPlan>, CoreError> {
     let return_clause = final_return_clause(single_query, path)?;
     let mut items = Vec::new();
@@ -454,7 +456,7 @@ fn analyze_static_alternative_outer_projection(
         if let Some(alias) = count_star_item_alias(item) {
             items.push(StaticAlternativeOuterProjectionItem::CountAll { alias });
         } else if let Some(item) =
-            compile_static_alternative_outer_aggregate_item(item, index, path)?
+            compile_static_alternative_outer_aggregate_item(item, index, path, context)?
         {
             items.push(item);
         } else if expression_contains_aggregate(&item.expression) {
@@ -612,6 +614,7 @@ fn compile_static_alternative_outer_aggregate_item(
     item: &ProjectionItem,
     index: usize,
     path: &str,
+    context: &CypherCompileContext,
 ) -> Result<Option<StaticAlternativeOuterProjectionItem>, CoreError> {
     let Some(function) = aggregate_function_call(&item.expression) else {
         return Ok(None);
@@ -627,26 +630,69 @@ fn compile_static_alternative_outer_aggregate_item(
         function.distinct,
         format!("{path}.return.items[{index}].expression.distinct"),
     )?;
-    let [argument] = function.arguments.as_slice() else {
-        return Err(unsupported(
-            format!("{path}.return.items[{index}].expression.arguments"),
-            "static label/type alternatives with aggregate graph variables require staged query planning and are not supported yet; use count(*) or aggregate node.property",
-        ));
-    };
-    compile_property_ref(
-        argument,
-        format!("{path}.return.items[{index}].expression.arguments[0]"),
+    let target = compile_function_aggregate_target(
+        function,
+        function_kind,
+        &format!("{path}.return.items[{index}]"),
+        context,
     )?;
+    let source_expression = match target {
+        AggregateTarget::Property(_) => {
+            let [argument] = function.arguments.as_slice() else {
+                return Err(unsupported(
+                    format!("{path}.return.items[{index}].expression.arguments"),
+                    "static label/type alternatives with property aggregates require one graph property argument",
+                ));
+            };
+            argument.clone()
+        }
+        AggregateTarget::VariableKey { variable } => {
+            if function_kind != AggregateFunction::Count {
+                return Err(unsupported(
+                    format!("{path}.return.items[{index}].expression.arguments"),
+                    "static label/type alternatives only support count(variable) over graph variables",
+                ));
+            }
+            if function.distinct {
+                return Err(unsupported(
+                    format!("{path}.return.items[{index}].expression.distinct"),
+                    "static label/type alternatives with count(DISTINCT variable) require label-aware graph identity projection and are not supported yet",
+                ));
+            }
+            id_function_expression_for_variable(&variable, function)
+        }
+    };
     Ok(Some(StaticAlternativeOuterProjectionItem::Aggregate {
         function: function_kind,
         source_alias: format!("__coral_agg_{index}"),
-        source_expression: Box::new(argument.clone()),
+        source_expression: Box::new(source_expression),
         distinct: function.distinct,
         alias: item.alias.as_ref().map_or_else(
             || aggregate_function_name(function_kind).to_string(),
             variable_name,
         ),
     }))
+}
+
+fn id_function_expression_for_variable(
+    variable: &str,
+    source_function: &FunctionInvocation,
+) -> Expression {
+    let span = source_function.span;
+    Expression::FunctionCall(FunctionInvocation {
+        name: vec![SymbolicName {
+            name: "id".to_string(),
+            span,
+        }],
+        distinct: false,
+        arguments: vec![Expression::Variable(Variable {
+            name: SymbolicName {
+                name: variable.to_string(),
+                span,
+            },
+        })],
+        span,
+    })
 }
 
 fn aggregate_function_call(expression: &Expression) -> Option<&FunctionInvocation> {
@@ -1538,16 +1584,20 @@ fn apply_reading_clause_static_label_type_alternative(
 fn validate_static_label_type_alternative_expansion_supported(
     single_query: &SingleQuery,
     path: &str,
+    context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     match &single_query.kind {
         SingleQueryKind::SinglePart(single_part) => {
             validate_single_part_static_label_type_alternative_expansion_supported(
                 single_part,
                 path,
+                context,
             )
         }
         SingleQueryKind::MultiPart(multi_part) => {
-            validate_multi_part_static_label_type_alternative_expansion_supported(multi_part, path)
+            validate_multi_part_static_label_type_alternative_expansion_supported(
+                multi_part, path, context,
+            )
         }
     }
 }
@@ -1555,14 +1605,16 @@ fn validate_static_label_type_alternative_expansion_supported(
 fn validate_single_part_static_label_type_alternative_expansion_supported(
     single_part: &SinglePartQuery,
     path: &str,
+    context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     let return_clause = return_clause_from_single_part(single_part, path)?;
-    validate_return_allows_static_label_type_alternative_expansion(return_clause, path)
+    validate_return_allows_static_label_type_alternative_expansion(return_clause, path, context)
 }
 
 fn validate_multi_part_static_label_type_alternative_expansion_supported(
     multi_part: &MultiPartQuery,
     path: &str,
+    context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     for (index, part) in multi_part.parts.iter().enumerate() {
         if !part.updating_clauses.is_empty() {
@@ -1579,6 +1631,7 @@ fn validate_multi_part_static_label_type_alternative_expansion_supported(
     validate_single_part_static_label_type_alternative_expansion_supported(
         &multi_part.final_part,
         &format!("{path}.final_part"),
+        context,
     )
 }
 
@@ -1612,10 +1665,12 @@ fn validate_with_allows_static_label_type_alternative_expansion(
 fn validate_return_allows_static_label_type_alternative_expansion(
     return_clause: &Return,
     path: &str,
+    context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     for (index, item) in return_clause.items.iter().enumerate() {
         if count_star_item_alias(item).is_none()
-            && compile_static_alternative_outer_aggregate_item(item, index, path)?.is_none()
+            && compile_static_alternative_outer_aggregate_item(item, index, path, context)?
+                .is_none()
             && expression_contains_aggregate(&item.expression)
         {
             return Err(unsupported(
@@ -8990,6 +9045,65 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn compiles_static_label_alternatives_with_count_node_projection() {
+        let query = compile_cypher_query(
+            "MATCH (entity:Person|Team)-[:OWNS]->(service:Service) \
+             RETURN entity.name AS name, count(service) AS services \
+             ORDER BY count(service) DESC, name",
+        )
+        .expect("count(node) should compile as an outer union aggregate");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert_eq!(
+            union.first.projection_output_names(),
+            vec!["name".to_string(), "__coral_agg_1".to_string()]
+        );
+        assert_eq!(
+            union.outer_projection,
+            Some(GraphUnionOuterProjection {
+                items: vec![
+                    GraphUnionOuterProjectionItem::Column {
+                        name: "name".to_string(),
+                    },
+                    GraphUnionOuterProjectionItem::Aggregate {
+                        function: AggregateFunction::Count,
+                        source: "__coral_agg_1".to_string(),
+                        distinct: false,
+                        alias: "services".to_string(),
+                    },
+                ],
+                group_by: vec!["name".to_string()],
+            })
+        );
+        assert_eq!(
+            union.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("services".to_string()),
+                    direction: OrderDirection::Descending,
+                },
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("name".to_string()),
+                    direction: OrderDirection::Ascending,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_static_label_alternatives_with_distinct_count_node_projection() {
+        let error = compile_cypher_query(
+            "MATCH (entity:Person|Team)-[:OWNS]->(service:Service) \
+             RETURN count(DISTINCT entity) AS owners",
+        )
+        .expect_err("distinct graph variable counts need label-aware graph identities");
+
+        assert!(error.to_string().contains("label-aware graph identity"));
     }
 
     #[test]
