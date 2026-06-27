@@ -57,7 +57,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `WHERE` property comparisons | Supported foundation | String, integer, float, boolean, null literal, and property-to-property comparisons |
 | `WHERE id(...)` predicates | Supported foundation | Node ids and keyed relationship ids lower to mapped key comparisons and `IN` predicates |
 | `WHERE type(r)` predicates | Supported foundation | Folded to boolean predicates because each relationship pattern has one static type |
-| `WHERE node:Label` predicates | Supported foundation | Static node label expressions fold against the mapped node label, including grouped `AND`/`OR`/`NOT`; dynamic labels remain rejected |
+| `WHERE node:Label` / `relationship:TYPE` predicates | Supported foundation | Static label/type expressions fold against the mapped node label or relationship type, including grouped conjunction/disjunction/negation; dynamic labels remain rejected |
 | Chained comparisons | Supported foundation | Normalized to conjunctions, e.g. `10 <= n.score < 20` |
 | Literal-left comparisons | Supported foundation | Operators are inverted around the property operand where possible |
 | `WHERE` boolean logic | Supported foundation | `AND`, `OR`, `NOT`, and parentheses lower to SQL boolean predicates |

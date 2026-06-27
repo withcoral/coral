@@ -1697,7 +1697,7 @@ fn compile_predicate_expression(
         }
         Expression::In { lhs, rhs, .. } => compile_in_predicate(lhs, rhs, path, plan, context),
         Expression::NodeLabels { base, labels, .. } => {
-            compile_node_label_predicate(base, labels, path, plan)
+            compile_graph_label_predicate(base, labels, path, plan)
         }
         Expression::Literal(CypherLiteral::Boolean(value)) => {
             Ok(PredicateExpression::Boolean(*value))
@@ -2226,28 +2226,24 @@ fn compile_label_membership_predicate(
     Ok(Some(PredicateExpression::Boolean(candidate == label)))
 }
 
-fn compile_node_label_predicate(
+fn compile_graph_label_predicate(
     base: &Expression,
     labels: &[LabelExpression],
     path: impl Into<String>,
     plan: &GraphPlan,
 ) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
-    let variable = compile_node_label_variable(base, format!("{path}.base"))?;
-    let node = plan
-        .nodes
-        .iter()
-        .find(|node| node.variable == variable)
-        .ok_or_else(|| {
-            unsupported(
-                format!("{path}.base"),
-                format!("label predicate variable '{variable}' is not a node variable"),
-            )
-        })?;
+    let variable = compile_label_predicate_variable(base, format!("{path}.base"))?;
+    let mapped_label = mapped_graph_label_for_variable(plan, &variable).ok_or_else(|| {
+        unsupported(
+            format!("{path}.base"),
+            format!("label predicate variable '{variable}' is not a node or relationship variable"),
+        )
+    })?;
     if labels.is_empty() {
         return Err(unsupported(
             format!("{path}.labels"),
-            "node label predicates require at least one label",
+            "graph label predicates require at least one label or relationship type",
         ));
     }
 
@@ -2257,7 +2253,7 @@ fn compile_node_label_predicate(
             Ok(matches
                 && evaluate_static_label_expression(
                     label,
-                    &node.label,
+                    mapped_label,
                     format!("{path}.labels[{index}]"),
                 )?)
         },
@@ -2265,19 +2261,29 @@ fn compile_node_label_predicate(
     Ok(PredicateExpression::Boolean(matches))
 }
 
-fn compile_node_label_variable(
+fn compile_label_predicate_variable(
     expression: &Expression,
     path: impl Into<String>,
 ) -> Result<String, CoreError> {
     let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_node_label_variable(inner, path),
+        Expression::Parenthesized(inner) => compile_label_predicate_variable(inner, path),
         Expression::Variable(variable) => Ok(variable_name(variable)),
         _ => Err(unsupported(
             path,
-            "node label predicates require a node variable",
+            "graph label predicates require a node or relationship variable",
         )),
     }
+}
+
+fn mapped_graph_label_for_variable<'a>(plan: &'a GraphPlan, variable: &str) -> Option<&'a str> {
+    if let Some(node) = plan.nodes.iter().find(|node| node.variable == variable) {
+        return Some(node.label.as_str());
+    }
+    plan.relationships
+        .iter()
+        .find(|relationship| relationship.variable.as_deref() == Some(variable))
+        .map(|relationship| relationship.relationship_type.as_str())
 }
 
 fn evaluate_static_label_expression(
@@ -3482,19 +3488,22 @@ mod tests {
     }
 
     #[test]
-    fn rejects_node_label_predicates_on_relationship_variables() {
-        let error = compile_cypher(
+    fn compiles_relationship_type_predicates_as_boolean_constants() {
+        let plan = compile_cypher(
             "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
-             WHERE owns:OWNS \
+             WHERE owns:OWNS AND NOT (owns:DEPENDS_ON) \
              RETURN service.name AS service",
         )
-        .expect_err("node label predicates should require node variables");
+        .expect("relationship type predicates should compile");
 
-        assert!(
-            error
-                .to_string()
-                .contains("label predicate variable 'owns'"),
-            "{error:?}"
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::Boolean(true)),
+                right: Box::new(PredicateExpression::Not {
+                    expression: Box::new(PredicateExpression::Boolean(false)),
+                }),
+            })
         );
     }
 
