@@ -1437,6 +1437,21 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Round { expression, places } => {
                 self.render_round_expression(expression, places.as_deref())
             }
+            ScalarExpression::Sqrt { expression } => {
+                self.render_unary_function_expression("sqrt", expression)
+            }
+            ScalarExpression::Sign { expression } => {
+                self.render_unary_function_expression("signum", expression)
+            }
+            ScalarExpression::Exp { expression } => {
+                self.render_unary_function_expression("exp", expression)
+            }
+            ScalarExpression::Log { expression } => {
+                self.render_unary_function_expression("ln", expression)
+            }
+            ScalarExpression::Log10 { expression } => {
+                self.render_unary_function_expression("log10", expression)
+            }
             ScalarExpression::Negate { expression } => {
                 Ok(format!("-({})", self.render_scalar_expression(expression)?))
             }
@@ -3086,6 +3101,105 @@ relationships: []
     }
 
     #[test]
+    fn lower_graph_plan_renders_more_numeric_scalar_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.projections = vec![
+            Projection::Expression {
+                expression: ScalarExpression::Sqrt {
+                    expression: Box::new(service_risk_expression()),
+                },
+                alias: "risk_root".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Sign {
+                    expression: Box::new(ScalarExpression::Arithmetic {
+                        operator: ArithmeticOperator::Subtract,
+                        left: Box::new(service_risk_expression()),
+                        right: Box::new(ScalarExpression::Literal(Literal::Float(
+                            ordered_float::OrderedFloat(0.5),
+                        ))),
+                    }),
+                },
+                alias: "risk_sign".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Exp {
+                    expression: Box::new(service_risk_expression()),
+                },
+                alias: "risk_exp".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Log10 {
+                    expression: Box::new(service_risk_expression()),
+                },
+                alias: "risk_log10".to_string(),
+            },
+        ];
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::Log {
+                expression: Box::new(service_risk_expression()),
+            },
+            operator: ComparisonOperator::LessThan,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(0))),
+        }));
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::Scalar(ScalarExpression::Sqrt {
+                expression: Box::new(service_risk_expression()),
+            }),
+            direction: OrderDirection::Ascending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("additional numeric scalar expressions should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("sqrt(\"n1\".\"risk_score\") AS \"risk_root\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("signum((\"n1\".\"risk_score\" - 0.5)) AS \"risk_sign\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("exp(\"n1\".\"risk_score\") AS \"risk_exp\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("log10(\"n1\".\"risk_score\") AS \"risk_log10\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE ln(\"n1\".\"risk_score\") < 0"),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("ORDER BY sqrt(\"n1\".\"risk_score\") ASC"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
     fn lower_graph_plan_renders_unary_negation_scalar_expressions() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan(Direction::Outgoing);
@@ -3879,5 +3993,12 @@ relationships: []
             skip: None,
             limit: Some(25),
         }
+    }
+
+    fn service_risk_expression() -> ScalarExpression {
+        ScalarExpression::Property(PropertyRef {
+            variable: "service".to_string(),
+            property: "risk".to_string(),
+        })
     }
 }

@@ -1925,6 +1925,66 @@ fn compile_round_scalar_expression(
     }
 }
 
+fn compile_sqrt_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Sqrt {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "sqrt", context,
+        )?),
+    })
+}
+
+fn compile_sign_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Sign {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "sign", context,
+        )?),
+    })
+}
+
+fn compile_exp_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Exp {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "exp", context,
+        )?),
+    })
+}
+
+fn compile_log_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Log {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "log", context,
+        )?),
+    })
+}
+
+fn compile_log10_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Log10 {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "log10", context,
+        )?),
+    })
+}
+
 fn compile_single_scalar_function_argument(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -2005,7 +2065,17 @@ fn compile_scalar_function_expression(
     } else if is_floor_function(function) {
         compile_floor_scalar_expression(function, path.clone(), context)?
     } else if is_round_function(function) {
-        compile_round_scalar_expression(function, path, context)?
+        compile_round_scalar_expression(function, path.clone(), context)?
+    } else if is_sqrt_function(function) {
+        compile_sqrt_scalar_expression(function, path.clone(), context)?
+    } else if is_sign_function(function) {
+        compile_sign_scalar_expression(function, path.clone(), context)?
+    } else if is_exp_function(function) {
+        compile_exp_scalar_expression(function, path.clone(), context)?
+    } else if is_log_function(function) {
+        compile_log_scalar_expression(function, path.clone(), context)?
+    } else if is_log10_function(function) {
+        compile_log10_scalar_expression(function, path, context)?
     } else {
         return Ok(None);
     };
@@ -2064,7 +2134,7 @@ fn compile_scalar_expression(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), or round() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), or log10() expressions",
         )),
     }
 }
@@ -2322,7 +2392,7 @@ fn compile_scalar_predicate_rhs(
                 Some(expression) => Ok(ScalarPredicateRhs::Expression(expression)),
                 None => Err(unsupported(
                     path,
-                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), or round() expressions",
+                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), or log10() expressions",
                 )),
             }
         }
@@ -2334,7 +2404,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), or round() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), or log10() expressions",
         )),
     }
 }
@@ -2802,6 +2872,41 @@ fn is_round_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("round")
+    )
+}
+
+fn is_sqrt_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("sqrt")
+    )
+}
+
+fn is_sign_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("sign")
+    )
+}
+
+fn is_exp_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("exp")
+    )
+}
+
+fn is_log_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("log")
+    )
+}
+
+fn is_log10_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("log10")
     )
 }
 
@@ -6168,6 +6273,79 @@ mod tests {
     }
 
     #[test]
+    fn compiles_more_numeric_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE sqrt(service.risk) < 1.0 AND sign(service.risk - 0.5) = 1 \
+             RETURN sqrt(service.risk) AS risk_root, \
+                    sign(service.risk - 0.5) AS risk_sign, \
+                    exp(service.risk) AS risk_exp, \
+                    log(service.risk) AS risk_log, \
+                    log10(service.risk) AS risk_log10 \
+             ORDER BY log(service.risk)",
+        )
+        .expect("additional numeric scalar functions should compile");
+
+        assert!(matches!(
+            &plan.predicate,
+            Some(PredicateExpression::And { left, right })
+                if matches!(
+                    left.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::Sqrt { .. },
+                        operator: ComparisonOperator::LessThan,
+                        ..
+                    })
+                ) && matches!(
+                    right.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::Sign { expression },
+                        operator: ComparisonOperator::Equal,
+                        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(1))),
+                    }) if matches!(
+                        expression.as_ref(),
+                        ScalarExpression::Arithmetic {
+                            operator: ArithmeticOperator::Subtract,
+                            ..
+                        }
+                    )
+                )
+        ));
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Sqrt { .. },
+                    alias
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Sign { .. },
+                    ..
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Exp { .. },
+                    ..
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Log { .. },
+                    ..
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Log10 { .. },
+                    ..
+                },
+            ] if alias == "risk_root"
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Log { .. }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
+    }
+
+    #[test]
     fn rejects_round_with_unsupported_arity() {
         let error = compile_cypher(
             "MATCH (service:Service) \
@@ -6181,6 +6359,23 @@ mod tests {
                 .contains("round() requires exactly one or two arguments"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn rejects_more_numeric_scalars_with_unsupported_arity() {
+        for cypher in [
+            "MATCH (service:Service) RETURN sqrt() AS value",
+            "MATCH (service:Service) RETURN sign(service.risk, 1) AS value",
+            "MATCH (service:Service) RETURN exp(service.risk, 1) AS value",
+            "MATCH (service:Service) RETURN log(service.risk, 10) AS value",
+            "MATCH (service:Service) RETURN log10(service.risk, 10) AS value",
+        ] {
+            let error = compile_cypher(cypher).expect_err("wrong arity should be rejected");
+            assert!(
+                error.to_string().contains("requires exactly one argument"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

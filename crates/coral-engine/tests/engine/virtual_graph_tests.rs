@@ -1896,6 +1896,60 @@ async fn cypher_numeric_scalar_expressions_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_more_numeric_scalar_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {name: 'experiments'}) \
+         RETURN service.name AS service, \
+                sqrt(service.risk) AS risk_root, \
+                sign(service.risk - 0.5) AS risk_sign, \
+                exp(0.0) AS exp_zero, \
+                log(1.0) AS ln_one, \
+                log10(100.0) AS log10_hundred",
+    )
+    .await
+    .expect("additional numeric scalar function query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("sqrt(\"n0\".\"risk_score\") AS \"risk_root\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("signum((\"n0\".\"risk_score\" - 0.5)) AS \"risk_sign\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("ln(1) AS \"ln_one\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "service": "experiments",
+            "risk_root": 0.5,
+            "risk_sign": -1.0,
+            "exp_zero": 1.0,
+            "ln_one": 0.0,
+            "log10_hundred": 2.0,
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_unary_negation_scalar_expressions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

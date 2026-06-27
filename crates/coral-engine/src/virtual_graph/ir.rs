@@ -256,6 +256,31 @@ pub enum ScalarExpression {
         /// Optional decimal places expression.
         places: Option<Box<ScalarExpression>>,
     },
+    /// Square root of a numeric scalar expression.
+    Sqrt {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
+    /// Sign of a numeric scalar expression.
+    Sign {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
+    /// Exponential function of a numeric scalar expression.
+    Exp {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
+    /// Natural logarithm of a numeric scalar expression.
+    Log {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
+    /// Base-10 logarithm of a numeric scalar expression.
+    Log10 {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
     /// Negate a numeric scalar expression.
     Negate {
         /// Inner expression to negate.

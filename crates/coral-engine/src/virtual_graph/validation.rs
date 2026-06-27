@@ -12,6 +12,31 @@ use super::ir::{
 };
 use crate::CoreError;
 
+macro_rules! unary_scalar_expression_pattern {
+    () => {
+        ScalarExpression::ToString { .. }
+            | ScalarExpression::ToInteger { .. }
+            | ScalarExpression::ToFloat { .. }
+            | ScalarExpression::ToBoolean { .. }
+            | ScalarExpression::ToLower { .. }
+            | ScalarExpression::ToUpper { .. }
+            | ScalarExpression::Trim { .. }
+            | ScalarExpression::LTrim { .. }
+            | ScalarExpression::RTrim { .. }
+            | ScalarExpression::CharacterLength { .. }
+            | ScalarExpression::Reverse { .. }
+            | ScalarExpression::Abs { .. }
+            | ScalarExpression::Ceil { .. }
+            | ScalarExpression::Floor { .. }
+            | ScalarExpression::Sqrt { .. }
+            | ScalarExpression::Sign { .. }
+            | ScalarExpression::Exp { .. }
+            | ScalarExpression::Log { .. }
+            | ScalarExpression::Log10 { .. }
+            | ScalarExpression::Negate { .. }
+    };
+}
+
 /// Graph plan validated against a specific declaration.
 #[derive(Debug, Clone)]
 pub(crate) struct ValidatedGraphPlan<'a> {
@@ -784,6 +809,11 @@ impl<'a> GraphPlanValidator<'a> {
         expression: &'b ScalarExpression,
         variables: &mut BTreeSet<&'b str>,
     ) {
+        if let Some(expression) = Self::unary_scalar_expression_operand(expression) {
+            Self::collect_scalar_expression_variables(expression, variables);
+            return;
+        }
+
         match expression {
             ScalarExpression::Property(property) => {
                 variables.insert(property.variable.as_str());
@@ -794,22 +824,8 @@ impl<'a> GraphPlanValidator<'a> {
                     Self::collect_scalar_expression_variables(expression, variables);
                 }
             }
-            ScalarExpression::ToString { expression }
-            | ScalarExpression::ToInteger { expression }
-            | ScalarExpression::ToFloat { expression }
-            | ScalarExpression::ToBoolean { expression }
-            | ScalarExpression::ToLower { expression }
-            | ScalarExpression::ToUpper { expression }
-            | ScalarExpression::Trim { expression }
-            | ScalarExpression::LTrim { expression }
-            | ScalarExpression::RTrim { expression }
-            | ScalarExpression::CharacterLength { expression }
-            | ScalarExpression::Reverse { expression }
-            | ScalarExpression::Abs { expression }
-            | ScalarExpression::Ceil { expression }
-            | ScalarExpression::Floor { expression }
-            | ScalarExpression::Negate { expression } => {
-                Self::collect_scalar_expression_variables(expression, variables);
+            unary_scalar_expression_pattern!() => {
+                unreachable!("unary scalar expressions handled above")
             }
             ScalarExpression::Round { expression, places } => {
                 Self::collect_scalar_expression_variables(expression, variables);
@@ -858,6 +874,32 @@ impl<'a> GraphPlanValidator<'a> {
                     Self::collect_scalar_expression_variables(else_expression, variables);
                 }
             }
+        }
+    }
+
+    fn unary_scalar_expression_operand(expression: &ScalarExpression) -> Option<&ScalarExpression> {
+        match expression {
+            ScalarExpression::ToString { expression }
+            | ScalarExpression::ToInteger { expression }
+            | ScalarExpression::ToFloat { expression }
+            | ScalarExpression::ToBoolean { expression }
+            | ScalarExpression::ToLower { expression }
+            | ScalarExpression::ToUpper { expression }
+            | ScalarExpression::Trim { expression }
+            | ScalarExpression::LTrim { expression }
+            | ScalarExpression::RTrim { expression }
+            | ScalarExpression::CharacterLength { expression }
+            | ScalarExpression::Reverse { expression }
+            | ScalarExpression::Abs { expression }
+            | ScalarExpression::Ceil { expression }
+            | ScalarExpression::Floor { expression }
+            | ScalarExpression::Sqrt { expression }
+            | ScalarExpression::Sign { expression }
+            | ScalarExpression::Exp { expression }
+            | ScalarExpression::Log { expression }
+            | ScalarExpression::Log10 { expression }
+            | ScalarExpression::Negate { expression } => Some(expression),
+            _ => None,
         }
     }
 
@@ -1045,6 +1087,14 @@ impl<'a> GraphPlanValidator<'a> {
         path: impl Into<String>,
     ) -> Result<(), CoreError> {
         let path = path.into();
+        if let Some(expression) = Self::unary_scalar_expression_operand(expression) {
+            return Self::validate_scalar_expression_not_optional(
+                expression,
+                optional_variables,
+                format!("{path}.expression"),
+            );
+        }
+
         match expression {
             ScalarExpression::Property(property) => Self::validate_variable_not_optional(
                 &property.variable,
@@ -1059,26 +1109,8 @@ impl<'a> GraphPlanValidator<'a> {
                     &path,
                 )
             }
-            ScalarExpression::ToString { expression }
-            | ScalarExpression::ToInteger { expression }
-            | ScalarExpression::ToFloat { expression }
-            | ScalarExpression::ToBoolean { expression }
-            | ScalarExpression::ToLower { expression }
-            | ScalarExpression::ToUpper { expression }
-            | ScalarExpression::Trim { expression }
-            | ScalarExpression::LTrim { expression }
-            | ScalarExpression::RTrim { expression }
-            | ScalarExpression::CharacterLength { expression }
-            | ScalarExpression::Reverse { expression }
-            | ScalarExpression::Abs { expression }
-            | ScalarExpression::Ceil { expression }
-            | ScalarExpression::Floor { expression }
-            | ScalarExpression::Negate { expression } => {
-                Self::validate_scalar_expression_not_optional(
-                    expression,
-                    optional_variables,
-                    format!("{path}.expression"),
-                )
+            unary_scalar_expression_pattern!() => {
+                unreachable!("unary scalar expressions handled above")
             }
             ScalarExpression::Round { expression, places } => {
                 Self::validate_optional_binary_scalar_expression_not_optional(
@@ -2351,6 +2383,10 @@ impl<'a> GraphPlanValidator<'a> {
         path: impl Into<String>,
     ) -> Result<(), CoreError> {
         let path = path.into();
+        if let Some(expression) = Self::unary_scalar_expression_operand(expression) {
+            return self.validate_scalar_expression(expression, format!("{path}.expression"));
+        }
+
         match expression {
             ScalarExpression::Property(property) => self.validate_property_ref(property, path),
             ScalarExpression::Literal(_) => Ok(()),
@@ -2368,22 +2404,8 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 Ok(())
             }
-            ScalarExpression::ToString { expression }
-            | ScalarExpression::ToInteger { expression }
-            | ScalarExpression::ToFloat { expression }
-            | ScalarExpression::ToBoolean { expression }
-            | ScalarExpression::ToLower { expression }
-            | ScalarExpression::ToUpper { expression }
-            | ScalarExpression::Trim { expression }
-            | ScalarExpression::LTrim { expression }
-            | ScalarExpression::RTrim { expression }
-            | ScalarExpression::CharacterLength { expression }
-            | ScalarExpression::Reverse { expression }
-            | ScalarExpression::Abs { expression }
-            | ScalarExpression::Ceil { expression }
-            | ScalarExpression::Floor { expression }
-            | ScalarExpression::Negate { expression } => {
-                self.validate_scalar_expression(expression, format!("{path}.expression"))
+            unary_scalar_expression_pattern!() => {
+                unreachable!("unary scalar expressions handled above")
             }
             ScalarExpression::Round { expression, places } => {
                 self.validate_scalar_expression(expression, format!("{path}.expression"))?;
