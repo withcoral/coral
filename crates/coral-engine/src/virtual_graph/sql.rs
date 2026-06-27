@@ -1375,6 +1375,10 @@ impl<'a> Lowerer<'a> {
                     .join(", ");
                 Ok(format!("COALESCE({rendered})"))
             }
+            ScalarExpression::ToString { expression } => Ok(format!(
+                "CAST({} AS VARCHAR)",
+                self.render_scalar_expression(expression)?
+            )),
         }
     }
 }

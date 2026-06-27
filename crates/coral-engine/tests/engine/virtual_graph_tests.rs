@@ -1221,6 +1221,48 @@ async fn cypher_coalesce_in_predicates_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_to_string_scalar_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE toString(service.risk) STARTS WITH '0.9' \
+         RETURN service.name AS service, toString(service.risk) AS risk_text \
+         ORDER BY toString(service.risk), service",
+    )
+    .await
+    .expect("toString scalar expression query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("CAST(\"n0\".\"risk_score\" AS VARCHAR) LIKE '0.9%' ESCAPE '\\'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("CAST(\"n0\".\"risk_score\" AS VARCHAR) AS \"risk_text\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "risk_text": "0.9"}),
+            json!({"service": "legacy-sync", "risk_text": "0.95"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_literal_list_projections_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

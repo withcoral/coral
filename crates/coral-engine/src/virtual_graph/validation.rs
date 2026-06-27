@@ -794,6 +794,9 @@ impl<'a> GraphPlanValidator<'a> {
                     Self::collect_scalar_expression_variables(expression, variables);
                 }
             }
+            ScalarExpression::ToString { expression } => {
+                Self::collect_scalar_expression_variables(expression, variables);
+            }
         }
     }
 
@@ -997,6 +1000,13 @@ impl<'a> GraphPlanValidator<'a> {
                     )?;
                 }
                 Ok(())
+            }
+            ScalarExpression::ToString { expression } => {
+                Self::validate_scalar_expression_not_optional(
+                    expression,
+                    optional_variables,
+                    format!("{path}.expression"),
+                )
             }
         }
     }
@@ -2074,6 +2084,9 @@ impl<'a> GraphPlanValidator<'a> {
                     self.validate_scalar_expression(expression, format!("{path}[{index}]"))?;
                 }
                 Ok(())
+            }
+            ScalarExpression::ToString { expression } => {
+                self.validate_scalar_expression(expression, format!("{path}.expression"))
             }
         }
     }

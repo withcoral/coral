@@ -146,6 +146,11 @@ pub enum ScalarExpression {
         /// Candidate expressions in priority order.
         expressions: Vec<ScalarExpression>,
     },
+    /// Cast a scalar expression to a string value.
+    ToString {
+        /// Inner expression to cast.
+        expression: Box<ScalarExpression>,
+    },
 }
 
 /// Projection in the shared graph IR.

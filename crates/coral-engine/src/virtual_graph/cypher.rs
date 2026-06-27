@@ -1093,6 +1093,9 @@ fn compile_order_expression(
         Expression::FunctionCall(function) if is_coalesce_function(function) => {
             compile_coalesce_order_expression(function, path, context)
         }
+        Expression::FunctionCall(function) if is_to_string_function(function) => {
+            compile_to_string_order_expression(function, path, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             aggregate_order_expression_for_projection(function, projections, path, context)
         }
@@ -1363,6 +1366,9 @@ fn compile_projection(
         Expression::FunctionCall(function) if is_coalesce_function(function) => {
             compile_coalesce_projection(function, item, path, context)
         }
+        Expression::FunctionCall(function) if is_to_string_function(function) => {
+            compile_to_string_projection(function, item, path, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             compile_aggregate_projection(function, item, path, context)
         }
@@ -1425,6 +1431,26 @@ fn compile_coalesce_projection(
     })
 }
 
+fn compile_to_string_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_to_string_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "toString".to_string(), variable_name),
+    })
+}
+
 fn compile_coalesce_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -1448,6 +1474,27 @@ fn compile_coalesce_scalar_expression(
     Ok(ScalarExpression::Coalesce { expressions })
 }
 
+fn compile_to_string_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "toString() requires exactly one argument",
+        ));
+    };
+    Ok(ScalarExpression::ToString {
+        expression: Box::new(compile_scalar_expression(
+            argument,
+            format!("{path}.arguments[0]"),
+            context,
+        )?),
+    })
+}
+
 fn compile_scalar_expression(
     expression: &Expression,
     path: impl Into<String>,
@@ -1465,6 +1512,9 @@ fn compile_scalar_expression(
         Expression::FunctionCall(function) if is_coalesce_function(function) => {
             compile_coalesce_scalar_expression(function, path, context)
         }
+        Expression::FunctionCall(function) if is_to_string_function(function) => {
+            compile_to_string_scalar_expression(function, path, context)
+        }
         Expression::FunctionCall(function) => Err(unsupported(
             path,
             format!(
@@ -1474,7 +1524,7 @@ fn compile_scalar_expression(
         )),
         _ => Err(unsupported(
             path,
-            "coalesce() arguments must be variable.property expressions, scalar literals, scalar parameters, or nested coalesce() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, nested coalesce() expressions, or nested toString() expressions",
         )),
     }
 }
@@ -1651,6 +1701,14 @@ fn compile_coalesce_order_expression(
     compile_coalesce_scalar_expression(function, path, context).map(OrderExpression::Scalar)
 }
 
+fn compile_to_string_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_to_string_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
 fn compile_optional_predicate_scalar_expression(
     expression: &Expression,
     path: impl Into<String>,
@@ -1663,6 +1721,9 @@ fn compile_optional_predicate_scalar_expression(
         }
         Expression::FunctionCall(function) if is_coalesce_function(function) => Ok(Some(
             compile_coalesce_scalar_expression(function, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_to_string_function(function) => Ok(Some(
+            compile_to_string_scalar_expression(function, path, context)?,
         )),
         _ => Ok(None),
     }
@@ -1681,6 +1742,11 @@ fn compile_scalar_predicate_rhs(
                 compile_coalesce_scalar_expression(function, path, context)?,
             ))
         }
+        Expression::FunctionCall(function) if is_to_string_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_to_string_scalar_expression(function, path, context)?,
+            ))
+        }
         Expression::PropertyLookup { .. } => Ok(ScalarPredicateRhs::Expression(
             ScalarExpression::Property(compile_property_ref(expression, path)?),
         )),
@@ -1689,7 +1755,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, or nested coalesce() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, nested coalesce() expressions, or nested toString() expressions",
         )),
     }
 }
@@ -1943,6 +2009,13 @@ fn is_coalesce_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("coalesce")
+    )
+}
+
+fn is_to_string_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("toString")
     )
 }
 
@@ -4753,6 +4826,48 @@ mod tests {
                     ],
                 }),
                 direction: OrderDirection::Descending,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_to_string_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE toString(service.risk) STARTS WITH '0.9' \
+             RETURN toString(service.risk) AS risk_text \
+             ORDER BY toString(service.risk)",
+        )
+        .expect("toString scalar expressions should compile");
+
+        let expected_expression = ScalarExpression::ToString {
+            expression: Box::new(ScalarExpression::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "risk".to_string(),
+            })),
+        };
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: expected_expression.clone(),
+                operator: ComparisonOperator::StartsWith,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                    "0.9".to_string()
+                ))),
+            }))
+        );
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: expected_expression.clone(),
+                alias: "risk_text".to_string(),
+            }]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(expected_expression),
+                direction: OrderDirection::Ascending,
             }]
         );
     }
