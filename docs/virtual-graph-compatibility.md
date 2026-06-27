@@ -100,7 +100,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | User variables beginning with `__coral_` | Rejected | Prefix reserved for internal planner bindings |
 | General `WITH`, `UNION`, subqueries, procedure calls | Rejected | Non-terminal projection boundaries and set/pipeline semantics need staged planning |
 | Parameterized property maps | Rejected | Full map expansion would need shape-aware parameter semantics; use scalar inline property values instead |
-| GraphQL parser | Supported foundation | Root-node query fields compile directly to shared IR with scalar property selections, `where`, `orderBy`, `limit`, `offset`/`skip`, and `distinct`; relationship fields named `out_TYPE(to: Label)`, `in_TYPE(from: Label)`, or `any_TYPE(label: Label)` compile to normal graph patterns; `_edge { ... }` projects relationship properties |
+| GraphQL parser | Supported foundation | Root-node query fields compile directly to shared IR with scalar property selections, `where`, `orderBy`, `limit`, `offset`/`skip`, and `distinct`; `where`, nested `where`, and `relationshipWhere` support property predicates plus `and`, `or`, and `not` boolean composition; relationship fields named `out_TYPE(to: Label)`, `in_TYPE(from: Label)`, or `any_TYPE(label: Label)` compile to normal graph patterns; `_edge { ... }` projects relationship properties |
 | GraphQL nested row modifiers | Rejected | Per-parent `orderBy`, `limit`, `offset`/`skip`, and `distinct` require collection semantics rather than global SQL modifiers |
 | Writes | Rejected by product invariant | Coral virtual graph is read-only |
 

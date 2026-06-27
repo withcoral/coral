@@ -148,13 +148,15 @@ remain separate. The supported slice is intentionally graph-query oriented:
 - exactly one query operation or anonymous selection set;
 - exactly one root field whose name is the graph node label;
 - scalar property selections with optional GraphQL aliases;
-- root `where` object predicates over selected node properties;
+- root `where` object predicates over selected node properties, including
+  `and`, `or`, and `not` boolean filter composition;
 - `orderBy` object or list of objects using property fields and `ASC` / `DESC`;
 - integer `limit`, `offset` / `skip`, and boolean `distinct` root arguments.
 - nested relationship fields named `out_TYPE(to: Label)`, `in_TYPE(from:
   Label)`, or `any_TYPE(label: Label)`;
 - nested relationship target filters via `where` and relationship property
-  filters via `relationshipWhere`;
+  filters via `relationshipWhere`, with the same boolean composition support
+  as root filters;
 - relationship property projections through reserved `_edge { ... }`
   selections inside relationship fields.
 

@@ -7,8 +7,8 @@ use super::declaration::Declaration;
 use super::diagnostic::Diagnostic;
 use super::ir::{
     ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection,
-    OrderExpression, OrderKey, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
-    RelationshipPattern,
+    OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection, PropertyPredicate,
+    PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -310,20 +310,18 @@ fn compile_relationship_field(
                     ));
                 }
             }
-            "where" => plan.predicates.extend(compile_where_argument(
-                &target_variable,
-                value,
-                argument_path,
-            )?),
+            "where" => append_where_predicate(
+                plan,
+                compile_where_argument(&target_variable, value, argument_path)?,
+            ),
             "relationshipWhere" => {
                 let relationship_variable = relationship_variable
                     .as_deref()
                     .ok_or_else(|| CoreError::internal("relationshipWhere variable missing"))?;
-                plan.predicates.extend(compile_where_argument(
-                    relationship_variable,
-                    value,
-                    argument_path,
-                )?);
+                append_where_predicate(
+                    plan,
+                    compile_where_argument(relationship_variable, value, argument_path)?,
+                );
             }
             "orderBy" | "limit" | "offset" | "skip" | "distinct" => {
                 return Err(unsupported(
@@ -607,8 +605,7 @@ fn compile_root_argument(
     let path = path.into();
     match name {
         "where" => {
-            plan.predicates
-                .extend(compile_where_argument(variable, value, path)?);
+            append_where_predicate(plan, compile_where_argument(variable, value, path)?);
             Ok(())
         }
         "orderBy" => {
@@ -639,31 +636,206 @@ fn compile_where_argument(
     variable: &str,
     value: &Value<'_, String>,
     path: impl Into<String>,
-) -> Result<Vec<PropertyPredicate>, CoreError> {
+) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
     let Value::Object(properties) = value else {
         return Err(unsupported(path, "GraphQL where must be an object"));
     };
-    let mut predicates = Vec::new();
+    let mut expression = None;
     for (property, condition) in properties {
-        let condition_path = format!("{path}.{property}");
-        let Value::Object(operators) = condition else {
-            return Err(unsupported(
-                condition_path,
-                "GraphQL where property conditions must be objects",
-            ));
-        };
-        for (operator, value) in operators {
-            predicates.push(compile_where_operator(
+        let next = if let Some(operator) = graphql_boolean_operator(property) {
+            compile_where_boolean_operator(
+                variable,
+                operator,
+                condition,
+                format!("{path}.{property}"),
+            )?
+        } else {
+            compile_where_property_conditions(
                 variable,
                 property,
-                operator,
-                value,
-                format!("{path}.{property}.{operator}"),
-            )?);
+                condition,
+                format!("{path}.{property}"),
+            )?
+        };
+        expression = append_optional_and(expression, next);
+    }
+    Ok(expression)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GraphqlBooleanOperator {
+    And,
+    Or,
+    Not,
+}
+
+fn graphql_boolean_operator(name: &str) -> Option<GraphqlBooleanOperator> {
+    match name {
+        "and" | "AND" | "_and" => Some(GraphqlBooleanOperator::And),
+        "or" | "OR" | "_or" => Some(GraphqlBooleanOperator::Or),
+        "not" | "NOT" | "_not" => Some(GraphqlBooleanOperator::Not),
+        _ => None,
+    }
+}
+
+fn compile_where_boolean_operator(
+    variable: &str,
+    operator: GraphqlBooleanOperator,
+    value: &Value<'_, String>,
+    path: impl Into<String>,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    let path = path.into();
+    match operator {
+        GraphqlBooleanOperator::And | GraphqlBooleanOperator::Or => {
+            let Value::List(items) = value else {
+                return Err(unsupported(
+                    path,
+                    "GraphQL where and/or operators must contain a list of objects",
+                ));
+            };
+            if items.is_empty() {
+                return Err(unsupported(
+                    path,
+                    "GraphQL where and/or operators require at least one object",
+                ));
+            }
+            let mut expression = None;
+            for (index, item) in items.iter().enumerate() {
+                let next = compile_where_argument(variable, item, format!("{path}[{index}]"))?;
+                expression = match operator {
+                    GraphqlBooleanOperator::And => append_optional_and(expression, next),
+                    GraphqlBooleanOperator::Or => append_optional_or(expression, next),
+                    GraphqlBooleanOperator::Not => unreachable!("NOT is handled separately"),
+                };
+            }
+            expression
+                .map(Some)
+                .ok_or_else(|| unsupported(path, "GraphQL where boolean list was empty"))
+        }
+        GraphqlBooleanOperator::Not => {
+            let expression = compile_where_argument(variable, value, path.clone())?
+                .ok_or_else(|| unsupported(path, "GraphQL where not requires an object"))?;
+            Ok(Some(PredicateExpression::Not {
+                expression: Box::new(expression),
+            }))
         }
     }
-    Ok(predicates)
+}
+
+fn compile_where_property_conditions(
+    variable: &str,
+    property: &str,
+    condition: &Value<'_, String>,
+    path: impl Into<String>,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    let path = path.into();
+    let Value::Object(operators) = condition else {
+        return Err(unsupported(
+            path,
+            "GraphQL where property conditions must be objects",
+        ));
+    };
+    let mut expression = None;
+    for (operator, value) in operators {
+        let predicate = compile_where_operator(
+            variable,
+            property,
+            operator,
+            value,
+            format!("{path}.{operator}"),
+        )?;
+        expression =
+            append_optional_and(expression, Some(PredicateExpression::Comparison(predicate)));
+    }
+    Ok(expression)
+}
+
+fn append_where_predicate(plan: &mut GraphPlan, expression: Option<PredicateExpression>) {
+    let Some(expression) = expression else {
+        return;
+    };
+    if is_conjunctive_property_expression(&expression) {
+        append_conjunctive_property_expression(expression, &mut plan.predicates);
+    } else {
+        plan.predicate = Some(match plan.predicate.take() {
+            Some(existing) => PredicateExpression::And {
+                left: Box::new(existing),
+                right: Box::new(expression),
+            },
+            None => expression,
+        });
+    }
+}
+
+fn append_optional_and(
+    expression: Option<PredicateExpression>,
+    next: Option<PredicateExpression>,
+) -> Option<PredicateExpression> {
+    match (expression, next) {
+        (Some(left), Some(right)) => Some(PredicateExpression::And {
+            left: Box::new(left),
+            right: Box::new(right),
+        }),
+        (Some(expression), None) | (None, Some(expression)) => Some(expression),
+        (None, None) => None,
+    }
+}
+
+fn append_optional_or(
+    expression: Option<PredicateExpression>,
+    next: Option<PredicateExpression>,
+) -> Option<PredicateExpression> {
+    match (expression, next) {
+        (Some(left), Some(right)) => Some(PredicateExpression::Or {
+            left: Box::new(left),
+            right: Box::new(right),
+        }),
+        (Some(expression), None) | (None, Some(expression)) => Some(expression),
+        (None, None) => None,
+    }
+}
+
+fn is_conjunctive_property_expression(expression: &PredicateExpression) -> bool {
+    match expression {
+        PredicateExpression::Comparison(_) => true,
+        PredicateExpression::And { left, right } => {
+            is_conjunctive_property_expression(left) && is_conjunctive_property_expression(right)
+        }
+        PredicateExpression::Boolean(_)
+        | PredicateExpression::KeyComparison(_)
+        | PredicateExpression::ElementIdComparison(_)
+        | PredicateExpression::Presence(_)
+        | PredicateExpression::PropertyKeyMembership(_)
+        | PredicateExpression::ScalarComparison(_)
+        | PredicateExpression::Or { .. }
+        | PredicateExpression::Xor { .. }
+        | PredicateExpression::Not { .. } => false,
+    }
+}
+
+fn append_conjunctive_property_expression(
+    expression: PredicateExpression,
+    predicates: &mut Vec<PropertyPredicate>,
+) {
+    match expression {
+        PredicateExpression::Comparison(predicate) => predicates.push(predicate),
+        PredicateExpression::And { left, right } => {
+            append_conjunctive_property_expression(*left, predicates);
+            append_conjunctive_property_expression(*right, predicates);
+        }
+        PredicateExpression::Boolean(_)
+        | PredicateExpression::KeyComparison(_)
+        | PredicateExpression::ElementIdComparison(_)
+        | PredicateExpression::Presence(_)
+        | PredicateExpression::PropertyKeyMembership(_)
+        | PredicateExpression::ScalarComparison(_)
+        | PredicateExpression::Or { .. }
+        | PredicateExpression::Xor { .. }
+        | PredicateExpression::Not { .. } => {
+            unreachable!("non-conjunctive GraphQL predicate reached conjunctive appender")
+        }
+    }
 }
 
 fn compile_where_operator(
@@ -1004,6 +1176,34 @@ mod tests {
     }
 
     #[test]
+    fn compiles_root_boolean_where_filters() {
+        let plan = compile_graphql(
+            r#"
+            query {
+              Service(
+                where: {
+                  or: [
+                    { tier: { eq: "prod" } }
+                    { risk: { gte: 0.9 } }
+                  ]
+                  not: { name: { contains: "legacy" } }
+                }
+              ) {
+                name
+              }
+            }
+            "#,
+        )
+        .expect("GraphQL boolean where filters should compile");
+
+        assert!(plan.predicates.is_empty());
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::And { .. })
+        ));
+    }
+
+    #[test]
     fn compiles_nested_outgoing_relationship_query_with_declaration() {
         let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
         let plan = compile_graphql_for_graph(
@@ -1096,6 +1296,43 @@ mod tests {
             predicate.property.variable == "relationship0"
                 && predicate.property.property == "source"
         }));
+    }
+
+    #[test]
+    fn compiles_nested_boolean_where_filters_with_declaration() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph(
+            &graph,
+            r#"
+            {
+              Person(where: { or: [{ team: { eq: "infra" } }, { team: { eq: "analytics" } }] }) {
+                owner: name
+                out_OWNS(
+                  to: Service
+                  where: { or: [{ tier: { eq: "prod" } }, { name: { contains: "experiments" } }] }
+                  relationshipWhere: { not: { source: { isNull: true } } }
+                ) {
+                  service: name
+                  _edge { source }
+                }
+              }
+            }
+            "#,
+        )
+        .expect("nested GraphQL boolean where filters should compile");
+
+        assert!(plan.predicates.is_empty());
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::And { .. })
+        ));
+        assert!(matches!(
+            plan.relationships.as_slice(),
+            [RelationshipPattern {
+                variable: Some(variable),
+                ..
+            }] if variable == "relationship0"
+        ));
     }
 
     #[test]
@@ -1203,6 +1440,23 @@ mod tests {
                 .to_string()
                 .contains("unsupported GraphQL orderBy key"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_graphql_boolean_where_lists() {
+        let error = compile_graphql(
+            r"
+            {
+              Service(where: { or: [] }) { name }
+            }
+            ",
+        )
+        .expect_err("empty boolean filter list should fail");
+
+        assert!(
+            error.to_string().contains("require at least one object"),
+            "{error:?}"
         );
     }
 
