@@ -8264,6 +8264,52 @@ async fn cypher_optional_relationship_endpoint_values_preserve_optional_nulls() 
 }
 
 #[tokio::test]
+async fn cypher_optional_relationship_endpoint_aggregates_count_only_matched_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(dependency_service:Service) \
+         RETURN service.name AS service, \
+                count(endNode(dependency)) AS dependencies, \
+                count(DISTINCT startNode(dependency)) AS distinct_sources \
+         ORDER BY service",
+    )
+    .await
+    .expect("optional endpoint aggregate values should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "COUNT(CASE WHEN \"r0\".\"from_service_id\" IS NULL THEN NULL ELSE \"n1\".\"id\" END) AS \"dependencies\""
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains(
+            "COUNT(DISTINCT CASE WHEN \"r0\".\"from_service_id\" IS NULL THEN NULL ELSE \"n0\".\"id\" END) AS \"distinct_sources\""
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dependencies": 2, "distinct_sources": 1}),
+            json!({"service": "deployments", "dependencies": 1, "distinct_sources": 1}),
+            json!({"service": "experiments", "dependencies": 0, "distinct_sources": 0}),
+            json!({"service": "legacy-sync", "dependencies": 0, "distinct_sources": 0}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_optional_relationship_endpoint_metadata_preserves_optional_nulls() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -28,7 +28,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Numeric literals | Supported foundation | Integer and finite floating-point literals, including negated values |
 | `COUNT(*)` | Supported foundation | Standalone or grouped by projected properties |
 | `COUNT(property)` | Supported foundation | Counts non-null mapped property values; optional `DISTINCT` is supported |
-| `COUNT(node)` | Supported foundation | Counts node key occurrences; `COUNT(DISTINCT node)` counts distinct declared node keys |
+| `COUNT(node)` | Supported foundation | Counts node key occurrences; `COUNT(DISTINCT node)` counts distinct declared node keys; endpoint forms such as `count(endNode(r))` over optional relationships count only matched relationship rows |
 | `COUNT(relationship)` | Supported foundation | Counts declared relationship key values; keyless relationship mappings are rejected |
 | Collection aggregate functions | Supported foundation | `COLLECT(property)` and `COLLECT(DISTINCT property)` lower to DataFusion `ARRAY_AGG`; graph-value collection is deferred |
 | Numeric aggregate functions | Supported foundation | `SUM`, `AVG`, `MIN`, and `MAX` over mapped graph properties |
@@ -82,7 +82,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `RETURN DISTINCT` | Supported foundation | Supported for projected rows; `ORDER BY` with `DISTINCT` must use projected properties |
 | `RETURN count(*)` | Supported foundation | Supported as a standalone aggregate projection |
 | `RETURN count(property)` | Supported foundation | Supports `count(property)` and `count(DISTINCT property)` |
-| `RETURN count(node)` | Supported foundation | Supports `count(node)` and `count(DISTINCT node)` over declared node keys |
+| `RETURN count(node)` | Supported foundation | Supports `count(node)` and `count(DISTINCT node)` over declared node keys; endpoint forms such as `count(endNode(r))` over optional relationships are null-gated by relationship presence |
 | `RETURN count(relationship)` | Supported foundation | Counts keyed or keyless relationship rows; `count(DISTINCT relationship)` requires a declared relationship key |
 | `RETURN collect(property)` | Supported foundation | Supports property collection with optional `DISTINCT`; collecting nodes, relationships, or paths is rejected until graph values are modeled |
 | `RETURN id(...)` / `elementId(...)` / `type(r)` | Supported foundation | Projects mapped keys, string-cast mapped keys, and fixed relationship types; `elementId(relationship)` requires a declared relationship key; optional relationship types and optional relationship endpoint identity expressions preserve nulls |

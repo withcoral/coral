@@ -643,6 +643,15 @@ pub enum AggregateTarget {
         /// Graph variable to aggregate.
         variable: String,
     },
+    /// Aggregate a graph variable key only when another graph binding is
+    /// present. Used for relationship endpoint aggregates over optional
+    /// relationships.
+    PresenceGatedVariableKey {
+        /// Graph variable whose key is aggregated.
+        variable: String,
+        /// Graph variable whose binding controls nullability.
+        presence_variable: String,
+    },
 }
 
 /// Property comparison predicate.

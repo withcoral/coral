@@ -3324,6 +3324,45 @@ impl<'a> GraphPlanValidator<'a> {
                     ValidatedBindingKind::Node(_) | ValidatedBindingKind::Relationship(_) => Ok(()),
                 }
             }
+            AggregateTarget::PresenceGatedVariableKey {
+                variable,
+                presence_variable,
+            } => {
+                if function != AggregateFunction::Count {
+                    return Err(Diagnostic::new(
+                        "INVALID_AGGREGATE_TARGET",
+                        path,
+                        format!(
+                            "{}({variable}) requires a graph property argument; only count(variable) can aggregate a graph variable key",
+                            aggregate_function_name(function)
+                        ),
+                    )
+                    .into_core_error());
+                }
+                validate_variable(format!("{path}.variable"), variable)?;
+                validate_variable(format!("{path}.presence_variable"), presence_variable)?;
+                let binding = self.bindings.get(variable.as_str()).ok_or_else(|| {
+                    Diagnostic::new(
+                        "UNKNOWN_VARIABLE",
+                        format!("{path}.variable"),
+                        format!("unknown graph variable '{variable}'"),
+                    )
+                    .into_core_error()
+                })?;
+                self.bindings
+                    .get(presence_variable.as_str())
+                    .ok_or_else(|| {
+                        Diagnostic::new(
+                            "UNKNOWN_VARIABLE",
+                            format!("{path}.presence_variable"),
+                            format!("unknown graph variable '{presence_variable}'"),
+                        )
+                        .into_core_error()
+                    })?;
+                match binding.kind() {
+                    ValidatedBindingKind::Node(_) | ValidatedBindingKind::Relationship(_) => Ok(()),
+                }
+            }
         }
     }
 
@@ -3357,7 +3396,8 @@ impl<'a> GraphPlanValidator<'a> {
             | AggregateFunction::StdDevP => Ok(ScalarType::Float),
             AggregateFunction::Min | AggregateFunction::Max => match target {
                 AggregateTarget::Property(property) => self.property_ref_scalar_type(property),
-                AggregateTarget::VariableKey { .. } => Ok(ScalarType::Unknown),
+                AggregateTarget::VariableKey { .. }
+                | AggregateTarget::PresenceGatedVariableKey { .. } => Ok(ScalarType::Unknown),
             },
         }
     }

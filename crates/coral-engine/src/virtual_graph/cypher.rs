@@ -724,6 +724,12 @@ fn compile_static_alternative_outer_aggregate_item(
                 graph_presence_function_expression_for_variable(&variable, function)
             }
         }
+        AggregateTarget::PresenceGatedVariableKey { .. } => {
+            return Err(unsupported(
+                format!("{path}.return.items[{index}].expression.arguments"),
+                "pattern alternatives do not support optional relationship endpoint aggregates yet",
+            ));
+        }
     };
     Ok(Some(StaticAlternativeOuterProjectionItem::Aggregate {
         function: function_kind,
@@ -3086,6 +3092,13 @@ fn rename_aggregate_target_variables(
     match target {
         AggregateTarget::Property(property) => rename_property_ref_variables(property, renames),
         AggregateTarget::VariableKey { variable } => rename_string(variable, renames),
+        AggregateTarget::PresenceGatedVariableKey {
+            variable,
+            presence_variable,
+        } => {
+            rename_string(variable, renames);
+            rename_string(presence_variable, renames);
+        }
     }
 }
 
@@ -3451,6 +3464,17 @@ fn reject_ignored_path_variable_references_in_aggregate_target(
         }
         AggregateTarget::VariableKey { variable } => {
             reject_ignored_path_variable(variable, state, path)
+        }
+        AggregateTarget::PresenceGatedVariableKey {
+            variable,
+            presence_variable,
+        } => {
+            reject_ignored_path_variable(variable, state, format!("{path}.variable"))?;
+            reject_ignored_path_variable(
+                presence_variable,
+                state,
+                format!("{path}.presence_variable"),
+            )
         }
     }
 }
@@ -7622,8 +7646,15 @@ fn compile_aggregate_target(
                     "relationship endpoint aggregate targets require graph context",
                 ));
             };
-            Ok(AggregateTarget::VariableKey {
-                variable: compile_relationship_endpoint_variable(function, path, plan, context)?,
+            let value = compile_relationship_endpoint_ref(function, path, plan, context)?;
+            Ok(match value.presence_variable {
+                Some(presence_variable) => AggregateTarget::PresenceGatedVariableKey {
+                    variable: value.variable,
+                    presence_variable,
+                },
+                None => AggregateTarget::VariableKey {
+                    variable: value.variable,
+                },
             })
         }
         _ => Ok(AggregateTarget::Property(compile_property_ref(
@@ -13118,6 +13149,41 @@ mod tests {
                 distinct: false,
                 alias: "targets".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_relationship_endpoint_identity_aggregates_on_optional_relationships() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(dependency_service:Service) \
+             RETURN count(endNode(dependency)) AS dependencies, \
+                    count(DISTINCT startNode(dependency)) AS sources",
+        )
+        .expect("optional relationship endpoint identity aggregates should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Aggregate {
+                    function: AggregateFunction::Count,
+                    target: AggregateTarget::PresenceGatedVariableKey {
+                        variable: "dependency_service".to_string(),
+                        presence_variable: "dependency".to_string(),
+                    },
+                    distinct: false,
+                    alias: "dependencies".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Count,
+                    target: AggregateTarget::PresenceGatedVariableKey {
+                        variable: "service".to_string(),
+                        presence_variable: "dependency".to_string(),
+                    },
+                    distinct: true,
+                    alias: "sources".to_string(),
+                },
+            ]
         );
     }
 

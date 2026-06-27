@@ -2442,6 +2442,16 @@ impl<'a> Lowerer<'a> {
                     self.render_binding_key_ref(variable)
                 }
             }
+            AggregateTarget::PresenceGatedVariableKey {
+                variable,
+                presence_variable,
+            } => {
+                let presence = self.render_binding_presence_ref(presence_variable)?;
+                let key = self.render_binding_key_ref(variable)?;
+                Ok(format!(
+                    "CASE WHEN {presence} IS NULL THEN NULL ELSE {key} END"
+                ))
+            }
         }
     }
 
