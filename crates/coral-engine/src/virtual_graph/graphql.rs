@@ -2115,6 +2115,7 @@ fn is_conjunctive_property_expression(expression: &PredicateExpression) -> bool 
         | PredicateExpression::ElementIdComparison(_)
         | PredicateExpression::Presence(_)
         | PredicateExpression::PropertyKeyMembership(_)
+        | PredicateExpression::ExistsPattern(_)
         | PredicateExpression::ScalarComparison(_)
         | PredicateExpression::Or { .. }
         | PredicateExpression::Xor { .. }
@@ -2137,6 +2138,7 @@ fn append_conjunctive_property_expression(
         | PredicateExpression::ElementIdComparison(_)
         | PredicateExpression::Presence(_)
         | PredicateExpression::PropertyKeyMembership(_)
+        | PredicateExpression::ExistsPattern(_)
         | PredicateExpression::ScalarComparison(_)
         | PredicateExpression::Or { .. }
         | PredicateExpression::Xor { .. }
@@ -3131,6 +3133,7 @@ mod tests {
             | PredicateExpression::ElementIdComparison(_)
             | PredicateExpression::Presence(_)
             | PredicateExpression::PropertyKeyMembership(_)
+            | PredicateExpression::ExistsPattern(_)
             | PredicateExpression::ScalarComparison(_) => false,
         }
     }

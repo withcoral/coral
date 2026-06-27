@@ -1,15 +1,16 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use super::declaration::{Declaration, Relationship, TableRef};
+use super::declaration::{Declaration, Node, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator, Direction,
-    ElementIdPredicate, GraphPlan, GraphQuery, GraphUnion, GraphUnionOuterProjectionItem,
-    KeyPredicate, Literal, NullOrder, OptionalMatchScope, OrderDirection, OrderExpression,
-    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyRef, ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    ElementIdPredicate, ExistsPatternPredicate, GraphPlan, GraphQuery, GraphUnion,
+    GraphUnionOuterProjectionItem, KeyPredicate, Literal, NullOrder, OptionalMatchScope,
+    OrderDirection, OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate,
+    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
+    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -734,7 +735,7 @@ impl<'a> Lowerer<'a> {
         joined_nodes: &mut BTreeSet<&'a str>,
         from_clause: &mut String,
         index: usize,
-        pattern: &'a super::ir::RelationshipPattern,
+        pattern: &'a RelationshipPattern,
         relationship: &Relationship,
         options: JoinRelationshipOptions<'_>,
     ) -> Result<(), CoreError> {
@@ -810,7 +811,7 @@ impl<'a> Lowerer<'a> {
         joined_nodes: &mut BTreeSet<&'a str>,
         from_clause: &mut String,
         relationship: &Relationship,
-        pattern: &'a super::ir::RelationshipPattern,
+        pattern: &'a RelationshipPattern,
         relationship_alias: &str,
         options: JoinFromKnownNodeOptions<'_>,
     ) -> Result<(), CoreError> {
@@ -959,7 +960,7 @@ impl<'a> Lowerer<'a> {
     fn relationship_outer_condition_for_known_node(
         validated: &ValidatedGraphPlan<'a>,
         relationship: &Relationship,
-        pattern: &'a super::ir::RelationshipPattern,
+        pattern: &'a RelationshipPattern,
         relationship_alias: &str,
         relationship_join: String,
     ) -> Result<String, CoreError> {
@@ -975,7 +976,7 @@ impl<'a> Lowerer<'a> {
     fn relationship_inner_unknown_condition_for_known_node(
         validated: &ValidatedGraphPlan<'a>,
         relationship: &Relationship,
-        pattern: &'a super::ir::RelationshipPattern,
+        pattern: &'a RelationshipPattern,
         relationship_alias: &str,
         unknown_variable: &str,
         unknown_is_left: bool,
@@ -1000,7 +1001,7 @@ impl<'a> Lowerer<'a> {
         validated: &ValidatedGraphPlan<'a>,
         relationship: &Relationship,
         relationship_alias: &str,
-        pattern: &'a super::ir::RelationshipPattern,
+        pattern: &'a RelationshipPattern,
     ) -> Result<String, CoreError> {
         let orientations = Self::relationship_orientations(validated, relationship, pattern)?;
         let left_binding = validated.binding(&pattern.left)?;
@@ -1036,7 +1037,7 @@ impl<'a> Lowerer<'a> {
     fn relationship_known_node_condition(
         validated: &ValidatedGraphPlan<'a>,
         relationship: &Relationship,
-        pattern: &'a super::ir::RelationshipPattern,
+        pattern: &'a RelationshipPattern,
         relationship_alias: &str,
         node_variable: &str,
         node_is_left: bool,
@@ -1068,9 +1069,42 @@ impl<'a> Lowerer<'a> {
     fn relationship_orientations(
         validated: &ValidatedGraphPlan<'a>,
         relationship: &Relationship,
-        pattern: &'a super::ir::RelationshipPattern,
+        pattern: &'a RelationshipPattern,
     ) -> Result<Vec<RelationshipOrientation>, CoreError> {
-        match pattern.direction {
+        let left_node = validated.node_binding(&pattern.left)?;
+        let right_node = validated.node_binding(&pattern.right)?;
+        Self::relationship_orientations_for_labels(
+            relationship,
+            pattern.direction,
+            &left_node.label,
+            &right_node.label,
+        )
+    }
+
+    fn relationship_matches_labels(
+        relationship: &Relationship,
+        direction: Direction,
+        left_label: &str,
+        right_label: &str,
+    ) -> bool {
+        let matches_forward =
+            left_label == relationship.from.label && right_label == relationship.to.label;
+        let matches_reverse =
+            left_label == relationship.to.label && right_label == relationship.from.label;
+        match direction {
+            Direction::Outgoing => matches_forward,
+            Direction::Incoming => matches_reverse,
+            Direction::Undirected => matches_forward || matches_reverse,
+        }
+    }
+
+    fn relationship_orientations_for_labels(
+        relationship: &Relationship,
+        direction: Direction,
+        left_label: &str,
+        right_label: &str,
+    ) -> Result<Vec<RelationshipOrientation>, CoreError> {
+        match direction {
             Direction::Outgoing => Ok(vec![RelationshipOrientation {
                 left_relationship_key: relationship.from.key.clone(),
                 right_relationship_key: relationship.to.key.clone(),
@@ -1080,20 +1114,14 @@ impl<'a> Lowerer<'a> {
                 right_relationship_key: relationship.from.key.clone(),
             }]),
             Direction::Undirected => {
-                let left_node = validated.node_binding(&pattern.left)?;
-                let right_node = validated.node_binding(&pattern.right)?;
                 let mut orientations = Vec::with_capacity(2);
-                if left_node.label == relationship.from.label
-                    && right_node.label == relationship.to.label
-                {
+                if left_label == relationship.from.label && right_label == relationship.to.label {
                     orientations.push(RelationshipOrientation {
                         left_relationship_key: relationship.from.key.clone(),
                         right_relationship_key: relationship.to.key.clone(),
                     });
                 }
-                if left_node.label == relationship.to.label
-                    && right_node.label == relationship.from.label
-                {
+                if left_label == relationship.to.label && right_label == relationship.from.label {
                     orientations.push(RelationshipOrientation {
                         left_relationship_key: relationship.to.key.clone(),
                         right_relationship_key: relationship.from.key.clone(),
@@ -1324,6 +1352,9 @@ impl<'a> Lowerer<'a> {
             PredicateExpression::Presence(predicate) => self.render_presence_predicate(predicate),
             PredicateExpression::PropertyKeyMembership(predicate) => {
                 self.render_property_key_membership_predicate(predicate)
+            }
+            PredicateExpression::ExistsPattern(predicate) => {
+                self.render_exists_pattern_predicate(predicate)
             }
             PredicateExpression::ScalarComparison(predicate) => {
                 self.render_scalar_predicate(predicate)
@@ -1765,6 +1796,397 @@ impl<'a> Lowerer<'a> {
         Ok(format!(
             "CASE WHEN {presence} IS NULL THEN NULL ELSE {value} END"
         ))
+    }
+
+    fn render_exists_pattern_predicate(
+        &self,
+        predicate: &ExistsPatternPredicate,
+    ) -> Result<String, CoreError> {
+        let local_nodes = self.exists_local_node_map(predicate)?;
+        let relationship = self.exists_relationship_mapping(predicate, &local_nodes)?;
+        let relationship_alias = "__coral_exists_r0";
+        let relationship_variable = predicate.relationship.variable.as_deref();
+        let local_aliases = Self::exists_local_node_aliases(predicate);
+        let mut from_clause = format!(
+            "{} AS {}",
+            render_table_ref(&relationship.table),
+            quote_ident(relationship_alias)
+        );
+        for node in &predicate.nodes {
+            let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
+                CoreError::internal("validated EXISTS local node mapping was missing")
+            })?;
+            let alias = local_aliases.get(node.variable.as_str()).ok_or_else(|| {
+                CoreError::internal("validated EXISTS local node alias was missing")
+            })?;
+            write!(
+                from_clause,
+                " JOIN {} AS {} ON TRUE",
+                render_table_ref(&node_mapping.table),
+                quote_ident(alias)
+            )
+            .map_err(|_| CoreError::internal("failed to render EXISTS pattern SQL"))?;
+        }
+
+        let mut conditions = vec![self.exists_relationship_condition(
+            predicate,
+            relationship,
+            relationship_alias,
+            &local_nodes,
+            &local_aliases,
+        )?];
+        for property_predicate in &predicate.predicates {
+            conditions.push(self.render_exists_property_predicate(
+                property_predicate,
+                relationship,
+                relationship_alias,
+                &local_nodes,
+                &local_aliases,
+                relationship_variable,
+            )?);
+        }
+        Ok(format!(
+            "EXISTS (SELECT 1 FROM {from_clause} WHERE {})",
+            conditions.join(" AND ")
+        ))
+    }
+
+    fn exists_local_node_map<'b>(
+        &self,
+        predicate: &'b ExistsPatternPredicate,
+    ) -> Result<BTreeMap<&'b str, &'a Node>, CoreError> {
+        let mut local_nodes = BTreeMap::new();
+        for node in &predicate.nodes {
+            let mapping = self.validated.graph().node(&node.label).ok_or_else(|| {
+                CoreError::internal("validated EXISTS node label was not resolvable")
+            })?;
+            local_nodes.insert(node.variable.as_str(), mapping);
+        }
+        Ok(local_nodes)
+    }
+
+    fn exists_local_node_aliases(predicate: &ExistsPatternPredicate) -> BTreeMap<&str, String> {
+        predicate
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.variable.as_str(), format!("__coral_exists_n{index}")))
+            .collect()
+    }
+
+    fn exists_relationship_mapping<'b>(
+        &self,
+        predicate: &'b ExistsPatternPredicate,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+    ) -> Result<&'a Relationship, CoreError> {
+        let left_node = self.exists_node_mapping(local_nodes, &predicate.relationship.left)?;
+        let right_node = self.exists_node_mapping(local_nodes, &predicate.relationship.right)?;
+        let matches = self
+            .validated
+            .graph()
+            .relationships_for_type(&predicate.relationship.relationship_type)
+            .filter(|relationship| {
+                Self::relationship_matches_labels(
+                    relationship,
+                    predicate.relationship.direction,
+                    &left_node.label,
+                    &right_node.label,
+                )
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [relationship] => Ok(*relationship),
+            [] => Err(CoreError::internal(
+                "validated EXISTS relationship mapping was not resolvable",
+            )),
+            _ => Err(CoreError::internal(
+                "validated EXISTS relationship mapping was ambiguous",
+            )),
+        }
+    }
+
+    fn exists_node_mapping<'b>(
+        &self,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        variable: &str,
+    ) -> Result<&'a Node, CoreError> {
+        if let Some(node) = local_nodes.get(variable).copied() {
+            return Ok(node);
+        }
+        let binding = self.validated.binding(variable)?;
+        let ValidatedBindingKind::Node(node) = binding.kind() else {
+            return Err(CoreError::internal(
+                "validated EXISTS endpoint was not a node binding",
+            ));
+        };
+        Ok(*node)
+    }
+
+    fn exists_relationship_condition<'b>(
+        &self,
+        predicate: &'b ExistsPatternPredicate,
+        relationship: &Relationship,
+        relationship_alias: &str,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        let left_node = self.exists_node_mapping(local_nodes, &predicate.relationship.left)?;
+        let right_node = self.exists_node_mapping(local_nodes, &predicate.relationship.right)?;
+        let orientations = Self::relationship_orientations_for_labels(
+            relationship,
+            predicate.relationship.direction,
+            &left_node.label,
+            &right_node.label,
+        )?;
+        let has_multiple_orientations = orientations.len() > 1;
+        let conditions = orientations
+            .iter()
+            .map(|orientation| {
+                let left_ref = self.exists_node_key_ref(
+                    &predicate.relationship.left,
+                    left_node,
+                    local_nodes,
+                    local_aliases,
+                )?;
+                let right_ref = self.exists_node_key_ref(
+                    &predicate.relationship.right,
+                    right_node,
+                    local_nodes,
+                    local_aliases,
+                )?;
+                let condition = format!(
+                    "{}.{} = {} AND {}.{} = {}",
+                    quote_ident(relationship_alias),
+                    quote_ident(&orientation.left_relationship_key),
+                    left_ref,
+                    quote_ident(relationship_alias),
+                    quote_ident(&orientation.right_relationship_key),
+                    right_ref
+                );
+                if has_multiple_orientations {
+                    Ok(format!("({condition})"))
+                } else {
+                    Ok(condition)
+                }
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?;
+        Self::render_condition_disjunction(&conditions)
+    }
+
+    fn exists_node_key_ref<'b>(
+        &self,
+        variable: &str,
+        node: &Node,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        if local_nodes.contains_key(variable) {
+            let alias = local_aliases
+                .get(variable)
+                .ok_or_else(|| CoreError::internal("validated EXISTS node alias was missing"))?;
+            return Ok(format!("{}.{}", quote_ident(alias), quote_ident(&node.key)));
+        }
+        self.render_binding_key_ref(variable)
+    }
+
+    fn render_exists_property_predicate<'b>(
+        &self,
+        predicate: &PropertyPredicate,
+        relationship: &Relationship,
+        relationship_alias: &str,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+        relationship_variable: Option<&str>,
+    ) -> Result<String, CoreError> {
+        let property = self.render_exists_property_ref(
+            &predicate.property,
+            relationship,
+            relationship_alias,
+            local_nodes,
+            local_aliases,
+            relationship_variable,
+        )?;
+        match (&predicate.operator, &predicate.rhs) {
+            (ComparisonOperator::In, PredicateRhs::List(literals)) => {
+                if literals.is_empty() {
+                    return Ok("FALSE".to_string());
+                }
+                let rendered = literals
+                    .iter()
+                    .map(render_literal)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok(format!("{property} IN ({rendered})"))
+            }
+            (ComparisonOperator::In, _) => Err(CoreError::internal(
+                "validated EXISTS IN predicate did not contain a literal list",
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                PredicateRhs::Literal(Literal::String(value)),
+            ) => Ok(format!(
+                "{property} LIKE {} ESCAPE '\\'",
+                render_like_pattern(predicate.operator, value)
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                _,
+            ) => Err(CoreError::internal(
+                "validated EXISTS string predicate did not contain a string literal",
+            )),
+            (ComparisonOperator::RegexMatch, PredicateRhs::List(_)) => Err(CoreError::internal(
+                "validated EXISTS regex predicate did not contain a scalar RHS",
+            )),
+            (ComparisonOperator::RegexMatch, rhs) => Ok(render_regex_predicate(
+                &property,
+                &self.render_exists_predicate_rhs(
+                    rhs,
+                    relationship,
+                    relationship_alias,
+                    local_nodes,
+                    local_aliases,
+                    relationship_variable,
+                )?,
+            )),
+            (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
+                Ok(format!("{property} IS NULL"))
+            }
+            (ComparisonOperator::NotEqual, PredicateRhs::Literal(Literal::Null)) => {
+                Ok(format!("{property} IS NOT NULL"))
+            }
+            (
+                ComparisonOperator::GreaterThan
+                | ComparisonOperator::GreaterThanOrEqual
+                | ComparisonOperator::LessThan
+                | ComparisonOperator::LessThanOrEqual,
+                PredicateRhs::Literal(Literal::Null),
+            ) => Err(CoreError::internal(
+                "validated EXISTS predicate contained an invalid null comparison",
+            )),
+            _ => Ok(format!(
+                "{property} {} {}",
+                render_operator(predicate.operator),
+                self.render_exists_predicate_rhs(
+                    &predicate.rhs,
+                    relationship,
+                    relationship_alias,
+                    local_nodes,
+                    local_aliases,
+                    relationship_variable,
+                )?
+            )),
+        }
+    }
+
+    fn render_exists_predicate_rhs<'b>(
+        &self,
+        rhs: &PredicateRhs,
+        relationship: &Relationship,
+        relationship_alias: &str,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+        relationship_variable: Option<&str>,
+    ) -> Result<String, CoreError> {
+        match rhs {
+            PredicateRhs::Literal(literal) => Ok(render_literal(literal)),
+            PredicateRhs::Property(property) => self.render_exists_property_ref(
+                property,
+                relationship,
+                relationship_alias,
+                local_nodes,
+                local_aliases,
+                relationship_variable,
+            ),
+            PredicateRhs::Key { variable } => self.render_exists_key_ref(
+                variable,
+                relationship,
+                relationship_alias,
+                local_nodes,
+                local_aliases,
+                relationship_variable,
+            ),
+            PredicateRhs::ElementId { variable } => Ok(format!(
+                "CAST({} AS VARCHAR)",
+                self.render_exists_key_ref(
+                    variable,
+                    relationship,
+                    relationship_alias,
+                    local_nodes,
+                    local_aliases,
+                    relationship_variable,
+                )?
+            )),
+            PredicateRhs::List(_) => Err(CoreError::internal(
+                "validated EXISTS literal list predicate reached generic RHS renderer",
+            )),
+        }
+    }
+
+    fn render_exists_property_ref<'b>(
+        &self,
+        property: &PropertyRef,
+        relationship: &Relationship,
+        relationship_alias: &str,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+        relationship_variable: Option<&str>,
+    ) -> Result<String, CoreError> {
+        if relationship_variable == Some(property.variable.as_str()) {
+            let column = relationship
+                .column_for_property(&property.property)
+                .ok_or_else(|| {
+                    CoreError::internal("validated EXISTS relationship property was not resolvable")
+                })?;
+            return Ok(format!(
+                "{}.{}",
+                quote_ident(relationship_alias),
+                quote_ident(column)
+            ));
+        }
+        if let Some(node) = local_nodes.get(property.variable.as_str()).copied() {
+            let alias = local_aliases
+                .get(property.variable.as_str())
+                .ok_or_else(|| CoreError::internal("validated EXISTS node alias was missing"))?;
+            let column = node
+                .column_for_property(&property.property)
+                .ok_or_else(|| {
+                    CoreError::internal("validated EXISTS node property was not resolvable")
+                })?;
+            return Ok(format!("{}.{}", quote_ident(alias), quote_ident(column)));
+        }
+        self.render_property_ref(property)
+    }
+
+    fn render_exists_key_ref<'b>(
+        &self,
+        variable: &str,
+        relationship: &Relationship,
+        relationship_alias: &str,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+        relationship_variable: Option<&str>,
+    ) -> Result<String, CoreError> {
+        if relationship_variable == Some(variable) {
+            let key = relationship.key.as_deref().ok_or_else(|| {
+                CoreError::internal("validated EXISTS relationship key was not resolvable")
+            })?;
+            return Ok(format!(
+                "{}.{}",
+                quote_ident(relationship_alias),
+                quote_ident(key)
+            ));
+        }
+        if let Some(node) = local_nodes.get(variable).copied() {
+            let alias = local_aliases
+                .get(variable)
+                .ok_or_else(|| CoreError::internal("validated EXISTS node alias was missing"))?;
+            return Ok(format!("{}.{}", quote_ident(alias), quote_ident(&node.key)));
+        }
+        self.render_binding_key_ref(variable)
     }
 
     fn render_projection_predicate_rhs(
@@ -2690,11 +3112,12 @@ fn quote_string_literal(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
-        AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
-        Literal, NodePattern, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey,
-        PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
-        ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
-        RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+        AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ExistsPatternPredicate,
+        GraphPlan, KeyPredicate, Literal, NodePattern, OptionalMatchScope, OrderDirection,
+        OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
+        ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+        PropertyPredicate, PropertyRef, RelationshipPattern, ScalarExpression, ScalarPredicate,
+        ScalarPredicateRhs,
     };
 
     const GRAPH: &str = r"
@@ -5277,6 +5700,113 @@ relationships: []
             "{}",
             translation.sql()
         );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_exists_pattern_predicates_as_correlated_subqueries() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = GraphPlan {
+            nodes: vec![NodePattern {
+                variable: "service".to_string(),
+                label: "Service".to_string(),
+            }],
+            relationships: Vec::new(),
+            optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
+            distinct: false,
+            projections: vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("service".to_string()),
+            }],
+            predicates: Vec::new(),
+            predicate: Some(PredicateExpression::ExistsPattern(ExistsPatternPredicate {
+                nodes: vec![NodePattern {
+                    variable: "dependency".to_string(),
+                    label: "Service".to_string(),
+                }],
+                relationship: RelationshipPattern {
+                    variable: Some("dependency_edge".to_string()),
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "service".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "dependency".to_string(),
+                },
+                predicates: vec![
+                    PropertyPredicate {
+                        property: PropertyRef {
+                            variable: "dependency".to_string(),
+                            property: "tier".to_string(),
+                        },
+                        operator: ComparisonOperator::Equal,
+                        rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+                    },
+                    PropertyPredicate {
+                        property: PropertyRef {
+                            variable: "dependency_edge".to_string(),
+                            property: "criticality".to_string(),
+                        },
+                        operator: ComparisonOperator::Equal,
+                        rhs: PredicateRhs::Literal(Literal::String("runtime".to_string())),
+                    },
+                ],
+            })),
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("EXISTS predicate expression should lower");
+
+        assert!(
+            translation.sql().contains(
+                "EXISTS (SELECT 1 FROM \"ops\".\"service_dependencies\" AS \"__coral_exists_r0\" \
+                 JOIN \"ops\".\"services\" AS \"__coral_exists_n0\" ON TRUE WHERE"
+            ),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("\"__coral_exists_r0\".\"from_service_id\" = \"n0\".\"id\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("\"__coral_exists_r0\".\"to_service_id\" = \"__coral_exists_n0\".\"id\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("\"__coral_exists_n0\".\"tier\" = 'prod'"),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("\"__coral_exists_r0\".\"criticality\" = 'runtime'"),
+            "{}",
+            translation.sql()
+        );
+
+        plan.predicate = Some(PredicateExpression::Not {
+            expression: Box::new(plan.predicate.take().expect("predicate")),
+        });
+        let negated = graph
+            .lower_graph_plan(&plan)
+            .expect("negated EXISTS predicate expression should lower");
+        assert!(negated.sql().contains("WHERE NOT (EXISTS (SELECT 1"));
     }
 
     #[test]

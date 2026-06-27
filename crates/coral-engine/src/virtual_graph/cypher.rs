@@ -4,8 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection, With};
 use decypher::ast::expr::{
     BinaryOperator as CypherBinaryOperator, CaseExpression,
-    ComparisonOperator as CypherComparisonOperator, Expression, FunctionInvocation,
-    Literal as CypherLiteral, NumberLiteral, Parameter as CypherParameter, UnaryOperator,
+    ComparisonOperator as CypherComparisonOperator, ExistsExpression, ExistsInner, Expression,
+    FunctionInvocation, Literal as CypherLiteral, NumberLiteral, Parameter as CypherParameter,
+    UnaryOperator,
 };
 use decypher::ast::names::{SymbolicName, Variable};
 use decypher::ast::pattern::{
@@ -25,10 +26,10 @@ use regex::Regex;
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator, Direction,
-    ElementIdPredicate, GraphPlan, GraphQuery, GraphUnion, GraphUnionBranch,
-    GraphUnionOuterProjection, GraphUnionOuterProjectionItem, KeyPredicate, Literal, NodePattern,
-    OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
-    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    ElementIdPredicate, ExistsPatternPredicate, GraphPlan, GraphQuery, GraphUnion,
+    GraphUnionBranch, GraphUnionOuterProjection, GraphUnionOuterProjectionItem, KeyPredicate,
+    Literal, NodePattern, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey,
+    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
     PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
     ScalarPredicate, ScalarPredicateRhs,
@@ -3122,6 +3123,19 @@ fn rename_predicate_expression_variables(
         PredicateExpression::PropertyKeyMembership(predicate) => {
             rename_string(&mut predicate.variable, renames);
         }
+        PredicateExpression::ExistsPattern(predicate) => {
+            for node in &mut predicate.nodes {
+                rename_string(&mut node.variable, renames);
+            }
+            if let Some(variable) = &mut predicate.relationship.variable {
+                rename_string(variable, renames);
+            }
+            rename_string(&mut predicate.relationship.left, renames);
+            rename_string(&mut predicate.relationship.right, renames);
+            for predicate in &mut predicate.predicates {
+                rename_property_predicate_variables(predicate, renames);
+            }
+        }
         PredicateExpression::ScalarComparison(predicate) => {
             rename_scalar_expression_variables(&mut predicate.lhs, renames);
             rename_scalar_predicate_rhs_variables(&mut predicate.rhs, renames);
@@ -3479,6 +3493,40 @@ fn reject_ignored_path_variable_references_in_predicate(
         }
         PredicateExpression::PropertyKeyMembership(predicate) => {
             reject_ignored_path_variable(&predicate.variable, state, format!("{path}.variable"))
+        }
+        PredicateExpression::ExistsPattern(predicate) => {
+            for (index, node) in predicate.nodes.iter().enumerate() {
+                reject_ignored_path_variable(
+                    &node.variable,
+                    state,
+                    format!("{path}.nodes[{index}].variable"),
+                )?;
+            }
+            if let Some(variable) = &predicate.relationship.variable {
+                reject_ignored_path_variable(
+                    variable,
+                    state,
+                    format!("{path}.relationship.variable"),
+                )?;
+            }
+            reject_ignored_path_variable(
+                &predicate.relationship.left,
+                state,
+                format!("{path}.relationship.left"),
+            )?;
+            reject_ignored_path_variable(
+                &predicate.relationship.right,
+                state,
+                format!("{path}.relationship.right"),
+            )?;
+            for (index, predicate) in predicate.predicates.iter().enumerate() {
+                reject_ignored_path_variable_references_in_property_predicate(
+                    predicate,
+                    state,
+                    format!("{path}.predicates[{index}]"),
+                )?;
+            }
+            Ok(())
         }
         PredicateExpression::ScalarComparison(predicate) => {
             reject_ignored_path_variable_references_in_scalar_expression(
@@ -7676,6 +7724,9 @@ fn compile_predicate_expression_in_mode(
                 context,
             )?))
         }
+        Expression::Exists(exists) => {
+            compile_exists_pattern_predicate(exists, path, mode.graph_plan(), context)
+        }
         Expression::FunctionCall(function) if is_empty_function(function) => {
             Ok(PredicateExpression::ScalarComparison(
                 compile_is_empty_predicate(function, path, mode.static_metadata_plan(), context)?,
@@ -7741,6 +7792,81 @@ fn compile_exists_predicate(
         operator: ComparisonOperator::NotEqual,
         rhs: PredicateRhs::Literal(Literal::Null),
     })
+}
+
+fn compile_exists_pattern_predicate(
+    exists: &ExistsExpression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    let Some(plan) = plan else {
+        return Err(unsupported(
+            path,
+            "EXISTS pattern predicates require graph context",
+        ));
+    };
+    let ExistsInner::Pattern(pattern, where_clause) = exists.inner.as_ref() else {
+        return Err(unsupported(
+            path,
+            "EXISTS subqueries with MATCH/RETURN require staged query planning and are not supported yet",
+        ));
+    };
+    if where_clause.is_some() {
+        return Err(unsupported(
+            format!("{path}.where"),
+            "EXISTS pattern predicates currently support inline property maps; WHERE inside EXISTS requires scoped predicate planning",
+        ));
+    }
+    let [part] = pattern.parts.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.pattern.parts"),
+            "EXISTS pattern predicates currently support exactly one connected pattern part",
+        ));
+    };
+
+    let mut exists_plan = plan.clone();
+    let mut exists_state = CypherCompileState::default();
+    let node_start = exists_plan.nodes.len();
+    let relationship_start = exists_plan.relationships.len();
+    let predicate_start = exists_plan.predicates.len();
+    compile_pattern_part_into(part, 0, false, &mut exists_plan, &mut exists_state, context)?;
+
+    let relationships = exists_plan
+        .relationships
+        .get(relationship_start..)
+        .ok_or_else(|| CoreError::internal("EXISTS relationship slice was invalid"))?
+        .to_vec();
+    let [relationship] = relationships.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.pattern.relationships"),
+            "EXISTS pattern predicates currently support exactly one relationship pattern",
+        ));
+    };
+    let outer_variables = bound_graph_variables(plan);
+    if !outer_variables.contains(&relationship.left)
+        && !outer_variables.contains(&relationship.right)
+    {
+        return Err(unsupported(
+            format!("{path}.pattern"),
+            "EXISTS pattern predicates must be anchored to a currently bound graph variable",
+        ));
+    }
+
+    Ok(PredicateExpression::ExistsPattern(ExistsPatternPredicate {
+        nodes: exists_plan
+            .nodes
+            .get(node_start..)
+            .ok_or_else(|| CoreError::internal("EXISTS node slice was invalid"))?
+            .to_vec(),
+        relationship: relationship.clone(),
+        predicates: exists_plan
+            .predicates
+            .get(predicate_start..)
+            .ok_or_else(|| CoreError::internal("EXISTS predicate slice was invalid"))?
+            .to_vec(),
+    }))
 }
 
 fn compile_is_empty_predicate(
@@ -8050,6 +8176,7 @@ fn is_conjunctive_expression(expression: &PredicateExpression) -> bool {
         | PredicateExpression::ElementIdComparison(_)
         | PredicateExpression::Presence(_)
         | PredicateExpression::PropertyKeyMembership(_)
+        | PredicateExpression::ExistsPattern(_)
         | PredicateExpression::ScalarComparison(_)
         | PredicateExpression::Or { .. }
         | PredicateExpression::Xor { .. }
@@ -8072,6 +8199,7 @@ fn append_conjunctive_expression(
         | PredicateExpression::ElementIdComparison(_)
         | PredicateExpression::Presence(_)
         | PredicateExpression::PropertyKeyMembership(_)
+        | PredicateExpression::ExistsPattern(_)
         | PredicateExpression::ScalarComparison(_)
         | PredicateExpression::Or { .. }
         | PredicateExpression::Xor { .. }

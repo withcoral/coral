@@ -1175,6 +1175,132 @@ async fn cypher_inline_node_property_maps_execute_as_predicates() {
 }
 
 #[tokio::test]
+async fn cypher_exists_pattern_predicates_execute_as_semijoins() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { (service)-[:DEPENDS_ON]->(:Service) } \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher EXISTS pattern predicate should execute");
+
+    assert!(
+        execution.translated_sql().contains("EXISTS (SELECT 1 FROM"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_pattern_predicates_apply_inline_maps() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { (service)-[:DEPENDS_ON {source: 'catalog'}]->(:Service {tier: 'dev'}) } \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher EXISTS pattern predicate with property maps should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"__coral_exists_r0\".\"source\" = 'catalog'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"__coral_exists_n0\".\"tier\" = 'dev'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api"})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_pattern_predicates_support_outer_right_endpoint() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { (:Service {name: 'billing-api'})-[:DEPENDS_ON]->(service) } \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher EXISTS pattern predicate with outer right endpoint should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "deployments"}),
+            json!({"service": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_subquery_where_is_rejected_until_scoped_subqueries_land() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { (service)-[:DEPENDS_ON]->(target:Service) WHERE target.tier = 'dev' } \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect_err("WHERE inside EXISTS pattern predicates should be rejected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("EXISTS subqueries with MATCH/RETURN require staged query planning"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
 async fn graphql_root_query_executes_against_synthetic_file_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

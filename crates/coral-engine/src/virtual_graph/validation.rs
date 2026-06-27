@@ -4,12 +4,12 @@ use super::declaration::{Declaration, Node, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
-    GraphPlan, GraphQuery, GraphUnionOuterProjection, GraphUnionOuterProjectionItem, KeyPredicate,
-    Literal, OptionalMatchScope, OrderExpression, PredicateExpression, PredicateRhs,
-    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
-    ProjectionPredicateRhs, PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef,
-    RelationshipPattern, ScalarCaseAlternative, ScalarExpression, ScalarPredicate,
-    ScalarPredicateRhs,
+    ExistsPatternPredicate, GraphPlan, GraphQuery, GraphUnionOuterProjection,
+    GraphUnionOuterProjectionItem, KeyPredicate, Literal, OptionalMatchScope, OrderExpression,
+    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
+    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
+    ScalarPredicate, ScalarPredicateRhs,
 };
 use crate::{CatalogInfo, CoreError};
 
@@ -54,6 +54,7 @@ macro_rules! unary_scalar_expression_pattern {
 /// Graph plan validated against a specific declaration.
 #[derive(Debug, Clone)]
 pub(crate) struct ValidatedGraphPlan<'a> {
+    graph: &'a Declaration,
     plan: &'a GraphPlan,
     bindings: BTreeMap<&'a str, ValidatedBinding<'a>>,
     relationship_mappings: Vec<&'a Relationship>,
@@ -138,6 +139,10 @@ impl Declaration {
 }
 
 impl<'a> ValidatedGraphPlan<'a> {
+    pub(crate) fn graph(&self) -> &'a Declaration {
+        self.graph
+    }
+
     pub(crate) fn plan(&self) -> &'a GraphPlan {
         self.plan
     }
@@ -219,6 +224,13 @@ struct GraphPlanValidator<'a> {
     relationship_mappings: Vec<&'a Relationship>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ExistsPredicateValidationContext<'a, 'b> {
+    relationship: &'a Relationship,
+    local_nodes: &'b BTreeMap<&'b str, &'a Node>,
+    relationship_variable: Option<&'b str>,
+}
+
 impl<'a> GraphPlanValidator<'a> {
     fn new(graph: &'a Declaration, plan: &'a GraphPlan, catalog: Option<&'a CatalogInfo>) -> Self {
         Self {
@@ -234,6 +246,7 @@ impl<'a> GraphPlanValidator<'a> {
         self.validate_plan()?;
 
         Ok(ValidatedGraphPlan {
+            graph: self.graph,
             plan: self.plan,
             bindings: self.bindings,
             relationship_mappings: self.relationship_mappings,
@@ -982,6 +995,9 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateExpression::PropertyKeyMembership(predicate) => {
                 variables.insert(predicate.variable.as_str());
             }
+            PredicateExpression::ExistsPattern(predicate) => {
+                Self::collect_exists_pattern_outer_variables(predicate, variables);
+            }
             PredicateExpression::ScalarComparison(predicate) => {
                 Self::collect_scalar_expression_variables(&predicate.lhs, variables);
                 Self::collect_scalar_predicate_rhs_variables(&predicate.rhs, variables);
@@ -996,6 +1012,40 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::collect_predicate_expression_variables(expression, variables);
             }
         }
+    }
+
+    fn collect_exists_pattern_outer_variables<'b>(
+        predicate: &'b ExistsPatternPredicate,
+        variables: &mut BTreeSet<&'b str>,
+    ) {
+        let local_variables = Self::exists_pattern_local_variables(predicate);
+        if !local_variables.contains(predicate.relationship.left.as_str()) {
+            variables.insert(predicate.relationship.left.as_str());
+        }
+        if !local_variables.contains(predicate.relationship.right.as_str()) {
+            variables.insert(predicate.relationship.right.as_str());
+        }
+        for property_predicate in &predicate.predicates {
+            let mut predicate_variables = BTreeSet::new();
+            Self::collect_property_predicate_variables(
+                property_predicate,
+                &mut predicate_variables,
+            );
+            variables.extend(
+                predicate_variables
+                    .into_iter()
+                    .filter(|variable| !local_variables.contains(*variable)),
+            );
+        }
+    }
+
+    fn exists_pattern_local_variables(predicate: &ExistsPatternPredicate) -> BTreeSet<&str> {
+        predicate
+            .nodes
+            .iter()
+            .map(|node| node.variable.as_str())
+            .chain(predicate.relationship.variable.as_deref())
+            .collect()
     }
 
     fn collect_property_predicate_variables<'b>(
@@ -1192,6 +1242,13 @@ impl<'a> GraphPlanValidator<'a> {
                     path,
                 )
             }
+            PredicateExpression::ExistsPattern(predicate) => {
+                Self::validate_exists_pattern_predicate_not_optional(
+                    predicate,
+                    optional_variables,
+                    path,
+                )
+            }
             PredicateExpression::ScalarComparison(predicate) => {
                 Self::validate_scalar_predicate_not_optional(predicate, optional_variables, path)
             }
@@ -1286,6 +1343,62 @@ impl<'a> GraphPlanValidator<'a> {
             optional_variables,
             format!("{path}.variable"),
         )
+    }
+
+    fn validate_exists_pattern_predicate_not_optional(
+        predicate: &ExistsPatternPredicate,
+        optional_variables: &BTreeSet<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        let local_variables = Self::exists_pattern_local_variables(predicate);
+        for (field, variable) in [
+            ("relationship.left", predicate.relationship.left.as_str()),
+            ("relationship.right", predicate.relationship.right.as_str()),
+        ] {
+            if !local_variables.contains(variable) {
+                Self::validate_variable_not_optional(
+                    variable,
+                    optional_variables,
+                    format!("{path}.{field}"),
+                )?;
+            }
+        }
+        for (index, property_predicate) in predicate.predicates.iter().enumerate() {
+            if !local_variables.contains(property_predicate.property.variable.as_str()) {
+                Self::validate_variable_not_optional(
+                    &property_predicate.property.variable,
+                    optional_variables,
+                    format!("{path}.predicates[{index}].property.variable"),
+                )?;
+            }
+            match &property_predicate.rhs {
+                PredicateRhs::Property(property)
+                    if !local_variables.contains(property.variable.as_str()) =>
+                {
+                    Self::validate_variable_not_optional(
+                        &property.variable,
+                        optional_variables,
+                        format!("{path}.predicates[{index}].rhs.variable"),
+                    )?;
+                }
+                PredicateRhs::Key { variable } | PredicateRhs::ElementId { variable }
+                    if !local_variables.contains(variable.as_str()) =>
+                {
+                    Self::validate_variable_not_optional(
+                        variable,
+                        optional_variables,
+                        format!("{path}.predicates[{index}].rhs.variable"),
+                    )?;
+                }
+                PredicateRhs::Literal(_)
+                | PredicateRhs::List(_)
+                | PredicateRhs::Property(_)
+                | PredicateRhs::Key { .. }
+                | PredicateRhs::ElementId { .. } => {}
+            }
+        }
+        Ok(())
     }
 
     fn validate_predicate_rhs_not_optional(
@@ -1735,6 +1848,9 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateExpression::PropertyKeyMembership(predicate) => {
                 self.validate_property_key_membership_predicate(predicate, path)
             }
+            PredicateExpression::ExistsPattern(predicate) => {
+                self.validate_exists_pattern_predicate(predicate, path)
+            }
             PredicateExpression::ScalarComparison(predicate) => {
                 self.validate_scalar_predicate(predicate, path)
             }
@@ -2028,6 +2144,477 @@ impl<'a> GraphPlanValidator<'a> {
             &predicate.rhs,
             &path,
         )
+    }
+
+    fn validate_exists_pattern_predicate(
+        &self,
+        predicate: &ExistsPatternPredicate,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        let local_nodes = self.validate_exists_pattern_nodes(predicate, &path)?;
+        let relationship =
+            self.resolve_exists_relationship_mapping(predicate, &local_nodes, &path)?;
+        let scope = ExistsPredicateValidationContext {
+            relationship,
+            local_nodes: &local_nodes,
+            relationship_variable: predicate.relationship.variable.as_deref(),
+        };
+        self.validate_exists_relationship_variable(predicate, &local_nodes, &path)?;
+        if local_nodes.contains_key(predicate.relationship.left.as_str())
+            && local_nodes.contains_key(predicate.relationship.right.as_str())
+        {
+            return Err(Diagnostic::new(
+                "UNSUPPORTED_EXISTS_PATTERN",
+                format!("{path}.relationship"),
+                "EXISTS pattern predicates must be anchored to at least one previously bound node variable",
+            )
+            .into_core_error());
+        }
+        for (index, property_predicate) in predicate.predicates.iter().enumerate() {
+            self.validate_exists_property_predicate(
+                property_predicate,
+                scope,
+                format!("{path}.predicates[{index}]"),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_exists_pattern_nodes<'b>(
+        &self,
+        predicate: &'b ExistsPatternPredicate,
+        path: &str,
+    ) -> Result<BTreeMap<&'b str, &'a Node>, CoreError> {
+        let mut local_nodes = BTreeMap::new();
+        for (index, pattern) in predicate.nodes.iter().enumerate() {
+            validate_variable(format!("{path}.nodes[{index}].variable"), &pattern.variable)?;
+            if self.bindings.contains_key(pattern.variable.as_str()) {
+                return Err(Diagnostic::new(
+                    "DUPLICATE_VARIABLE",
+                    format!("{path}.nodes[{index}].variable"),
+                    format!(
+                        "EXISTS pattern node variable '{}' shadows an outer graph variable",
+                        pattern.variable
+                    ),
+                )
+                .into_core_error());
+            }
+            if local_nodes.contains_key(pattern.variable.as_str()) {
+                return Err(Diagnostic::new(
+                    "DUPLICATE_VARIABLE",
+                    format!("{path}.nodes[{index}].variable"),
+                    format!(
+                        "EXISTS pattern node variable '{}' is bound more than once",
+                        pattern.variable
+                    ),
+                )
+                .into_core_error());
+            }
+            let node = self.graph.node(&pattern.label).ok_or_else(|| {
+                Diagnostic::new(
+                    "UNKNOWN_NODE_LABEL",
+                    format!("{path}.nodes[{index}].label"),
+                    format!("unknown node label '{}'", pattern.label),
+                )
+                .into_core_error()
+            })?;
+            local_nodes.insert(pattern.variable.as_str(), node);
+        }
+        Ok(local_nodes)
+    }
+
+    fn validate_exists_relationship_variable(
+        &self,
+        predicate: &ExistsPatternPredicate,
+        local_nodes: &BTreeMap<&str, &Node>,
+        path: &str,
+    ) -> Result<(), CoreError> {
+        let Some(variable) = predicate.relationship.variable.as_deref() else {
+            return Ok(());
+        };
+        validate_variable(format!("{path}.relationship.variable"), variable)?;
+        if self.bindings.contains_key(variable) || local_nodes.contains_key(variable) {
+            return Err(Diagnostic::new(
+                "DUPLICATE_VARIABLE",
+                format!("{path}.relationship.variable"),
+                format!("EXISTS pattern relationship variable '{variable}' shadows another graph variable"),
+            )
+            .into_core_error());
+        }
+        Ok(())
+    }
+
+    fn resolve_exists_relationship_mapping<'b>(
+        &self,
+        predicate: &'b ExistsPatternPredicate,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        path: &str,
+    ) -> Result<&'a Relationship, CoreError> {
+        let left_node = self.exists_node_binding_for_path(
+            local_nodes,
+            &predicate.relationship.left,
+            format!("{path}.relationship.left"),
+        )?;
+        let right_node = self.exists_node_binding_for_path(
+            local_nodes,
+            &predicate.relationship.right,
+            format!("{path}.relationship.right"),
+        )?;
+        let candidates = self
+            .graph
+            .relationships_for_type(&predicate.relationship.relationship_type)
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Err(Diagnostic::new(
+                "UNKNOWN_RELATIONSHIP_TYPE",
+                format!("{path}.relationship.type"),
+                format!(
+                    "unknown relationship type '{}'",
+                    predicate.relationship.relationship_type
+                ),
+            )
+            .into_core_error());
+        }
+
+        let matches = candidates
+            .iter()
+            .copied()
+            .filter(|relationship| {
+                Self::relationship_matches_pattern(
+                    relationship,
+                    predicate.relationship.direction,
+                    &left_node.label,
+                    &right_node.label,
+                )
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [relationship] => Ok(*relationship),
+            [] => {
+                let available = candidates
+                    .iter()
+                    .map(|relationship| {
+                        format!(
+                            "{} -> {}",
+                            relationship.from.label, relationship.to.label
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Err(Diagnostic::new(
+                    "RELATIONSHIP_ENDPOINT_MISMATCH",
+                    format!("{path}.relationship"),
+                    format!(
+                        "relationship type '{}' has no mapping for {} -> {}; available endpoint mappings: {}",
+                        predicate.relationship.relationship_type, left_node.label, right_node.label, available
+                    ),
+                )
+                .into_core_error())
+            }
+            _ => Err(Diagnostic::new(
+                "AMBIGUOUS_RELATIONSHIP_MAPPING",
+                format!("{path}.relationship"),
+                format!(
+                    "relationship type '{}' with endpoints {} -> {} matches {} mappings; add direction or use distinct relationship types",
+                    predicate.relationship.relationship_type,
+                    left_node.label,
+                    right_node.label,
+                    matches.len()
+                ),
+            )
+            .into_core_error()),
+        }
+    }
+
+    fn exists_node_binding_for_path<'b>(
+        &self,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        variable: &str,
+        path: impl Into<String>,
+    ) -> Result<&'a Node, CoreError> {
+        if let Some(node) = local_nodes.get(variable).copied() {
+            return Ok(node);
+        }
+        let path = path.into();
+        match self.bindings.get(variable).map(ValidatedBinding::kind) {
+            Some(ValidatedBindingKind::Node(node)) => Ok(*node),
+            Some(ValidatedBindingKind::Relationship(_)) => Err(Diagnostic::new(
+                "INVALID_ENDPOINT_VARIABLE",
+                path,
+                format!("relationship endpoint '{variable}' is not a node variable"),
+            )
+            .into_core_error()),
+            None => Err(Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                path,
+                format!("relationship references unknown node variable '{variable}'"),
+            )
+            .into_core_error()),
+        }
+    }
+
+    fn validate_exists_property_predicate<'b>(
+        &self,
+        predicate: &PropertyPredicate,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        self.validate_exists_property_ref(
+            &predicate.property,
+            scope.relationship,
+            scope.local_nodes,
+            scope.relationship_variable,
+            format!("{path}.property"),
+        )?;
+        match &predicate.rhs {
+            PredicateRhs::Literal(literal) => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path.clone(),
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
+                Self::validate_literal_predicate(path.clone(), predicate.operator, literal)
+            }
+            PredicateRhs::Property(property) => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path.clone(),
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                Self::validate_non_literal_string_predicate_operand(
+                    path.clone(),
+                    predicate.operator,
+                )?;
+                self.validate_exists_property_ref(
+                    property,
+                    scope.relationship,
+                    scope.local_nodes,
+                    scope.relationship_variable,
+                    format!("{path}.rhs"),
+                )
+            }
+            PredicateRhs::Key { variable } | PredicateRhs::ElementId { variable } => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path.clone(),
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                Self::validate_non_literal_string_predicate_operand(
+                    path.clone(),
+                    predicate.operator,
+                )?;
+                self.validate_exists_key_ref(
+                    variable,
+                    scope.relationship,
+                    scope.local_nodes,
+                    scope.relationship_variable,
+                    format!("{path}.rhs"),
+                )
+            }
+            PredicateRhs::List(_) => {
+                if predicate.operator != ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path.clone(),
+                        "literal lists are only supported with IN predicates",
+                    )
+                    .into_core_error());
+                }
+                Ok(())
+            }
+        }?;
+        let lhs_type = self.exists_property_ref_scalar_type(
+            &predicate.property,
+            scope.relationship,
+            scope.local_nodes,
+            scope.relationship_variable,
+        )?;
+        self.validate_exists_predicate_rhs_operand_types(predicate, lhs_type, scope, &path)
+    }
+
+    fn validate_exists_property_ref<'b>(
+        &self,
+        property: &PropertyRef,
+        relationship: &'a Relationship,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        relationship_variable: Option<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        let column = self.exists_column_for_property(
+            property,
+            relationship,
+            local_nodes,
+            relationship_variable,
+        )?;
+        if column.is_none() {
+            return Err(Diagnostic::new(
+                "UNKNOWN_PROPERTY",
+                path,
+                format!(
+                    "variable '{}' does not expose property '{}'",
+                    property.variable, property.property
+                ),
+            )
+            .into_core_error());
+        }
+        Ok(())
+    }
+
+    fn validate_exists_key_ref<'b>(
+        &self,
+        variable: &str,
+        relationship: &'a Relationship,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        relationship_variable: Option<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        if relationship_variable == Some(variable) {
+            if relationship.key.is_some() {
+                return Ok(());
+            }
+            return Err(Diagnostic::new(
+                "INVALID_KEY_PROJECTION",
+                path,
+                format!(
+                    "id({variable}) requires relationship type '{}' to declare a key column",
+                    relationship.relationship_type
+                ),
+            )
+            .into_core_error());
+        }
+        if local_nodes.contains_key(variable) {
+            return Ok(());
+        }
+        self.validate_key_projection(variable, path)
+    }
+
+    fn exists_column_for_property<'b>(
+        &self,
+        property: &PropertyRef,
+        relationship: &'a Relationship,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        relationship_variable: Option<&str>,
+    ) -> Result<Option<&'a str>, CoreError> {
+        if relationship_variable == Some(property.variable.as_str()) {
+            return Ok(relationship.column_for_property(&property.property));
+        }
+        if let Some(node) = local_nodes.get(property.variable.as_str()).copied() {
+            return Ok(node.column_for_property(&property.property));
+        }
+        let binding = self
+            .bindings
+            .get(property.variable.as_str())
+            .ok_or_else(|| {
+                Diagnostic::new(
+                    "UNKNOWN_VARIABLE",
+                    "property.variable",
+                    format!("unknown graph variable '{}'", property.variable),
+                )
+                .into_core_error()
+            })?;
+        Ok(match binding.kind() {
+            ValidatedBindingKind::Node(node) => node.column_for_property(&property.property),
+            ValidatedBindingKind::Relationship(relationship) => {
+                relationship.column_for_property(&property.property)
+            }
+        })
+    }
+
+    fn exists_property_ref_scalar_type<'b>(
+        &self,
+        property: &PropertyRef,
+        relationship: &'a Relationship,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        relationship_variable: Option<&str>,
+    ) -> Result<ScalarType, CoreError> {
+        if relationship_variable == Some(property.variable.as_str()) {
+            let Some(column) = relationship.column_for_property(&property.property) else {
+                return Ok(ScalarType::Unknown);
+            };
+            return Ok(self.column_scalar_type(&relationship.table, column));
+        }
+        if let Some(node) = local_nodes.get(property.variable.as_str()).copied() {
+            let Some(column) = node.column_for_property(&property.property) else {
+                return Ok(ScalarType::Unknown);
+            };
+            return Ok(self.column_scalar_type(&node.table, column));
+        }
+        self.property_ref_scalar_type(property)
+    }
+
+    fn validate_exists_predicate_rhs_operand_types<'b>(
+        &self,
+        predicate: &PropertyPredicate,
+        lhs_type: ScalarType,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<(), CoreError> {
+        match &predicate.rhs {
+            PredicateRhs::Literal(literal) => Self::validate_scalar_predicate_operand_types(
+                predicate.operator,
+                lhs_type,
+                literal_scalar_type(literal),
+                path,
+            ),
+            PredicateRhs::Property(property) => {
+                let rhs_type = self.exists_property_ref_scalar_type(
+                    property,
+                    scope.relationship,
+                    scope.local_nodes,
+                    scope.relationship_variable,
+                )?;
+                Self::validate_scalar_predicate_operand_types(
+                    predicate.operator,
+                    lhs_type,
+                    rhs_type,
+                    path,
+                )
+            }
+            PredicateRhs::Key { variable } => {
+                let rhs_type = if scope.relationship_variable == Some(variable.as_str()) {
+                    scope
+                        .relationship
+                        .key
+                        .as_deref()
+                        .map_or(ScalarType::Unknown, |column| {
+                            self.column_scalar_type(&scope.relationship.table, column)
+                        })
+                } else if let Some(node) = scope.local_nodes.get(variable.as_str()).copied() {
+                    self.column_scalar_type(&node.table, &node.key)
+                } else {
+                    self.key_scalar_type(variable)?
+                };
+                Self::validate_scalar_predicate_operand_types(
+                    predicate.operator,
+                    lhs_type,
+                    rhs_type,
+                    path,
+                )
+            }
+            PredicateRhs::ElementId { .. } => Self::validate_scalar_predicate_operand_types(
+                predicate.operator,
+                lhs_type,
+                ScalarType::String,
+                path,
+            ),
+            PredicateRhs::List(literals) => {
+                Self::validate_scalar_in_list_operand_types(lhs_type, literals, path)
+            }
+        }
     }
 
     fn validate_scalar_predicate(
