@@ -3585,12 +3585,10 @@ impl<'a> GraphPlanValidator<'a> {
                 let index = *remaining_relationships
                     .first()
                     .ok_or_else(|| CoreError::internal("remaining relationship set was empty"))?;
-                return Err(Diagnostic::new(
-                    "DISCONNECTED_PATTERN",
-                    format!("relationships[{index}]"),
-                    "relationship is not connected to the first node pattern",
-                )
-                .into_core_error());
+                let pattern = self.plan.relationships.get(index).ok_or_else(|| {
+                    CoreError::internal("validated relationship index was out of bounds")
+                })?;
+                joined_nodes.insert(pattern.left.as_str());
             }
         }
         Ok(joined_nodes)
@@ -3626,15 +3624,37 @@ impl<'a> GraphPlanValidator<'a> {
                 let index = *remaining_relationships.first().ok_or_else(|| {
                     CoreError::internal("remaining optional relationship set was empty")
                 })?;
-                return Err(Diagnostic::new(
-                    "OPTIONAL_MATCH_NOT_ANCHORED",
-                    format!("optional_relationships[{index}]"),
-                    "optional relationship is not anchored to a mandatory or earlier optional binding",
-                )
-                .into_core_error());
+                let anchor = self.optional_relationship_component_anchor(index)?;
+                joined_nodes.insert(anchor);
             }
         }
         Ok(joined_nodes)
+    }
+
+    fn optional_relationship_component_anchor(
+        &self,
+        relationship_index: usize,
+    ) -> Result<&'a str, CoreError> {
+        let pattern = self
+            .plan
+            .relationships
+            .get(relationship_index)
+            .ok_or_else(|| CoreError::internal("validated relationship index was out of bounds"))?;
+        let left_position = self.node_position(pattern.left.as_str())?;
+        let right_position = self.node_position(pattern.right.as_str())?;
+        if left_position <= right_position {
+            Ok(pattern.left.as_str())
+        } else {
+            Ok(pattern.right.as_str())
+        }
+    }
+
+    fn node_position(&self, variable: &str) -> Result<usize, CoreError> {
+        self.plan
+            .nodes
+            .iter()
+            .position(|node| node.variable == variable)
+            .ok_or_else(|| CoreError::internal("validated node variable was missing"))
     }
 
     fn optional_variables(&self, mandatory_nodes: &BTreeSet<&'a str>) -> BTreeSet<&'a str> {
@@ -5454,6 +5474,54 @@ relationships:
         graph
             .validate_graph_plan(&plan)
             .expect("disconnected mandatory nodes should validate for CROSS JOIN lowering");
+    }
+
+    #[test]
+    fn validate_graph_plan_accepts_optional_match_from_disconnected_component() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "owned".to_string(),
+                    label: "Service".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: Some("owns".to_string()),
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "owned".to_string(),
+            }],
+            optional_relationships: vec![0],
+            optional_matches: Vec::new(),
+            distinct: false,
+            projections: vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "owned".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("owned".to_string()),
+            }],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("optional match should anchor to disconnected mandatory component");
     }
 
     fn typed_ownership_catalog() -> CatalogInfo {

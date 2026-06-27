@@ -264,12 +264,48 @@ impl<'a> Lowerer<'a> {
             let progressed =
                 self.join_available_relationships(&mut remaining_relationships, optional)?;
             if !progressed {
+                if optional {
+                    let index = *remaining_relationships.first().ok_or_else(|| {
+                        CoreError::internal("remaining optional relationship set was empty")
+                    })?;
+                    let anchor = self.optional_relationship_component_anchor(index)?;
+                    self.cross_join_node(anchor)?;
+                    continue;
+                }
                 return Err(CoreError::internal(
                     "validated graph plan contained an unjoinable relationship",
                 ));
             }
         }
         Ok(())
+    }
+
+    fn optional_relationship_component_anchor(
+        &self,
+        relationship_index: usize,
+    ) -> Result<&'a str, CoreError> {
+        let pattern = self
+            .validated
+            .plan()
+            .relationships
+            .get(relationship_index)
+            .ok_or_else(|| CoreError::internal("validated relationship index was out of bounds"))?;
+        let left_position = self.node_position(pattern.left.as_str())?;
+        let right_position = self.node_position(pattern.right.as_str())?;
+        if left_position <= right_position {
+            Ok(pattern.left.as_str())
+        } else {
+            Ok(pattern.right.as_str())
+        }
+    }
+
+    fn node_position(&self, variable: &str) -> Result<usize, CoreError> {
+        self.validated
+            .plan()
+            .nodes
+            .iter()
+            .position(|node| node.variable == variable)
+            .ok_or_else(|| CoreError::internal("validated node variable was missing"))
     }
 
     fn join_available_relationships(
@@ -2451,6 +2487,79 @@ relationships:
              FROM \"ops\".\"services\" AS \"n0\" \
              LEFT JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"service_id\" = \"n0\".\"id\" \
              LEFT JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"person_id\" = \"n1\".\"id\""
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_optional_relationship_from_disconnected_component() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "owned".to_string(),
+                    label: "Service".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "owned".to_string(),
+            }],
+            optional_relationships: vec![0],
+            optional_matches: Vec::new(),
+            distinct: false,
+            projections: vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "person".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("person".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "owned".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("owned".to_string()),
+                },
+            ],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("optional relationship from disconnected component should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n0\".\"service_name\" AS \"service\", \"n1\".\"full_name\" AS \"person\", \"n2\".\"service_name\" AS \"owned\" \
+             FROM \"ops\".\"services\" AS \"n0\" \
+             CROSS JOIN \"ops\".\"people\" AS \"n1\" \
+             LEFT JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n1\".\"id\" \
+             LEFT JOIN \"ops\".\"services\" AS \"n2\" ON \"r0\".\"service_id\" = \"n2\".\"id\""
         );
     }
 

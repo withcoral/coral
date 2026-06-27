@@ -3416,6 +3416,44 @@ async fn cypher_disconnected_comma_patterns_execute_as_cross_joins() {
 }
 
 #[tokio::test]
+async fn cypher_optional_match_can_anchor_to_disconnected_mandatory_component() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service), (person:Person) \
+         OPTIONAL MATCH (person)-[:OWNS]->(owned:Service) \
+         WHERE owned.tier = 'missing' \
+         RETURN service.name AS service, person.name AS person, owned.name AS owned \
+         ORDER BY service, person \
+         LIMIT 4",
+    )
+    .await
+    .expect("optional match should anchor to the disconnected person component");
+
+    assert!(
+        execution.translated_sql().contains("CROSS JOIN")
+            && execution.translated_sql().contains("LEFT JOIN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "person": "Ada Lovelace"}),
+            json!({"service": "billing-api", "person": "Grace Hopper"}),
+            json!({"service": "billing-api", "person": "Katherine Johnson"}),
+            json!({"service": "deployments", "person": "Ada Lovelace"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_is_null_predicates_execute_with_sql_null_semantics() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
