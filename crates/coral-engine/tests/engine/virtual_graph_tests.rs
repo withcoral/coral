@@ -1151,6 +1151,56 @@ async fn cypher_optional_match_false_where_preserves_left_rows() {
 }
 
 #[tokio::test]
+async fn cypher_case_graph_null_checks_execute_against_optional_matches() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[owns:OWNS]->(service) \
+         RETURN service.name AS service, \
+                CASE \
+                  WHEN person IS NULL THEN 'unowned' \
+                  WHEN id(owns) IS NOT NULL THEN person.name \
+                  ELSE 'unknown' \
+                END AS ownership_state, \
+                CASE WHEN id(person) IS NULL THEN 'missing' ELSE 'present' END AS owner_presence \
+         ORDER BY service",
+    )
+    .await
+    .expect("CASE graph null checks should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("CASE WHEN \"n1\".\"id\" IS NULL THEN 'unowned'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("WHEN \"r0\".\"ownership_id\" IS NOT NULL THEN \"n1\".\"full_name\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "ownership_state": "Ada Lovelace", "owner_presence": "present"}),
+            json!({"service": "deployments", "ownership_state": "Grace Hopper", "owner_presence": "present"}),
+            json!({"service": "experiments", "ownership_state": "Katherine Johnson", "owner_presence": "present"}),
+            json!({"service": "legacy-sync", "ownership_state": "unowned", "owner_presence": "missing"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_disconnected_comma_patterns_are_rejected_before_sql_planning() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

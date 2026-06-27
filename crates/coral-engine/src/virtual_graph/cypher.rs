@@ -92,14 +92,14 @@ impl CypherCompileContext {
 #[derive(Clone, Copy)]
 enum PredicateCompileMode<'a> {
     Graph { plan: &'a GraphPlan },
-    CaseWhen,
+    CaseWhen { plan: Option<&'a GraphPlan> },
 }
 
 impl<'a> PredicateCompileMode<'a> {
     fn graph_plan(self) -> Option<&'a GraphPlan> {
         match self {
             Self::Graph { plan } => Some(plan),
-            Self::CaseWhen => None,
+            Self::CaseWhen { plan } => plan,
         }
     }
 
@@ -108,7 +108,7 @@ impl<'a> PredicateCompileMode<'a> {
             Self::Graph { .. } => {
                 "WHERE only supports graph property, id(), elementId(), labels(), keys(), exists(property), isEmpty(scalar), and supported scalar predicates combined with AND, OR, XOR, and NOT"
             }
-            Self::CaseWhen => {
+            Self::CaseWhen { .. } => {
                 "CASE WHEN predicates support property/scalar comparisons, IN literal lists, null checks, exists(property), isEmpty(scalar), boolean literals, and AND/OR/XOR/NOT"
             }
         }
@@ -119,7 +119,7 @@ impl<'a> PredicateCompileMode<'a> {
             Self::Graph { .. } => {
                 "comparisons must include at least one variable.property, id(variable), elementId(variable), type(relationship), or supported scalar expression operand"
             }
-            Self::CaseWhen => {
+            Self::CaseWhen { .. } => {
                 "CASE WHEN comparisons must include at least one variable.property or supported scalar expression operand"
             }
         }
@@ -130,7 +130,7 @@ impl<'a> PredicateCompileMode<'a> {
             Self::Graph { .. } => {
                 "IN predicates require variable.property, id(variable), elementId(variable), type(relationship), supported scalar expression, '<label>' IN labels(node), or '<key>' IN keys(variable)"
             }
-            Self::CaseWhen => {
+            Self::CaseWhen { .. } => {
                 "CASE WHEN IN predicates require variable.property or supported scalar expression left-hand sides"
             }
         }
@@ -141,9 +141,16 @@ impl<'a> PredicateCompileMode<'a> {
             Self::Graph { .. } => {
                 "IS NULL predicates require a graph variable, variable.property, id(variable), elementId(variable), type(relationship), or supported scalar expression"
             }
-            Self::CaseWhen => {
-                "CASE WHEN null checks require variable.property or supported scalar expression operands"
+            Self::CaseWhen { .. } => {
+                "CASE WHEN null checks require a graph variable, variable.property, id(variable), elementId(variable), or supported scalar expression operands"
             }
+        }
+    }
+
+    fn graph_metadata_plan(self) -> Option<&'a GraphPlan> {
+        match self {
+            Self::Graph { plan } => Some(plan),
+            Self::CaseWhen { .. } => None,
         }
     }
 }
@@ -1204,7 +1211,7 @@ fn compile_order_expression(
         expression if is_boolean_scalar_expression(expression) => Ok(OrderExpression::Scalar(
             compile_boolean_scalar_expression(expression, path, plan, context)?,
         )),
-        Expression::Case(case) => compile_case_order_expression(case, path, context),
+        Expression::Case(case) => compile_case_order_expression(case, path, plan, context),
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_order_expression(function, path, plan, context)
         }
@@ -1498,7 +1505,7 @@ fn compile_projection(
             ..
         }
         | Expression::BinaryOp { .. } => compile_arithmetic_projection(item, path, context),
-        Expression::Case(case) => compile_case_projection(case, item, path, context),
+        Expression::Case(case) => compile_case_projection(case, item, path, plan, context),
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_projection(function, item, path, plan, context)
         }
@@ -1608,11 +1615,17 @@ fn compile_case_projection(
     case: &CaseExpression,
     item: &ProjectionItem,
     path: impl Into<String>,
+    plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
     Ok(Projection::Expression {
-        expression: compile_case_scalar_expression(case, format!("{path}.expression"), context)?,
+        expression: compile_case_scalar_expression_with_plan(
+            case,
+            format!("{path}.expression"),
+            plan,
+            context,
+        )?,
         alias: item
             .alias
             .as_ref()
@@ -2702,9 +2715,10 @@ fn compile_arithmetic_order_expression(
 fn compile_case_order_expression(
     case: &CaseExpression,
     path: impl Into<String>,
+    plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
-    compile_case_scalar_expression(case, path, context).map(OrderExpression::Scalar)
+    compile_case_scalar_expression_with_plan(case, path, plan, context).map(OrderExpression::Scalar)
 }
 
 fn compile_optional_boolean_scalar_expression(
@@ -2845,6 +2859,34 @@ fn compile_case_scalar_expression(
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
+    compile_case_scalar_expression_in_mode(
+        case,
+        path,
+        PredicateCompileMode::CaseWhen { plan: None },
+        context,
+    )
+}
+
+fn compile_case_scalar_expression_with_plan(
+    case: &CaseExpression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    compile_case_scalar_expression_in_mode(
+        case,
+        path,
+        PredicateCompileMode::CaseWhen { plan: Some(plan) },
+        context,
+    )
+}
+
+fn compile_case_scalar_expression_in_mode(
+    case: &CaseExpression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
     if case.alternatives.is_empty() {
         return Err(unsupported(
@@ -2864,14 +2906,14 @@ fn compile_case_scalar_expression(
                     CypherComparisonOperator::Eq,
                     &alternative.when,
                     format!("{path}.alternatives[{index}].when"),
-                    PredicateCompileMode::CaseWhen,
+                    mode,
                     context,
                 )?
             } else {
                 compile_predicate_expression_in_mode(
                     &alternative.when,
                     format!("{path}.alternatives[{index}].when"),
-                    PredicateCompileMode::CaseWhen,
+                    mode,
                     context,
                 )?
             };
@@ -4091,7 +4133,7 @@ fn compile_binary_comparison(
         }));
     }
 
-    if let Some(plan) = mode.graph_plan()
+    if let Some(plan) = mode.graph_metadata_plan()
         && (contains_type_function(lhs) || contains_type_function(rhs))
     {
         let lhs = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
@@ -4246,7 +4288,7 @@ fn compile_in_predicate(
             rhs: ScalarPredicateRhs::List(literals),
         }));
     }
-    if let Some(plan) = mode.graph_plan()
+    if let Some(plan) = mode.graph_metadata_plan()
         && contains_type_function(lhs)
     {
         let literal = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
@@ -4570,7 +4612,7 @@ fn compile_null_predicate(
                 operator,
             }));
         }
-        if contains_type_function(operand) {
+        if mode.graph_metadata_plan().is_some() && contains_type_function(operand) {
             return Ok(PredicateExpression::Boolean(negated));
         }
     }
@@ -4691,16 +4733,17 @@ fn compile_predicate_literal_in_mode(
         Expression::Parenthesized(inner) => {
             compile_predicate_literal_in_mode(inner, path, mode, context)
         }
-        Expression::FunctionCall(function) if is_type_function(function) => match mode.graph_plan()
-        {
-            Some(plan) => compile_type_literal(function, path, plan, context),
-            None => Err(unsupported(
-                path,
-                "CASE WHEN predicates do not support type() operands yet",
-            )),
-        },
+        Expression::FunctionCall(function) if is_type_function(function) => {
+            match mode.graph_metadata_plan() {
+                Some(plan) => compile_type_literal(function, path, plan, context),
+                None => Err(unsupported(
+                    path,
+                    "CASE WHEN predicates do not support type() operands yet",
+                )),
+            }
+        }
         Expression::FunctionCall(function)
-            if matches!(mode, PredicateCompileMode::CaseWhen)
+            if matches!(mode, PredicateCompileMode::CaseWhen { .. })
                 && (is_id_function(function)
                     || is_element_id_function(function)
                     || is_labels_function(function)
@@ -7823,6 +7866,96 @@ mod tests {
                 direction: OrderDirection::Ascending,
             }]
         ));
+    }
+
+    #[test]
+    fn compiles_graph_null_checks_inside_searched_case_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[owns:OWNS]->(service) \
+             RETURN CASE \
+                      WHEN person IS NULL THEN 'unowned' \
+                      WHEN id(owns) IS NOT NULL THEN person.name \
+                      ELSE 'unknown' \
+                    END AS ownership_state \
+             ORDER BY CASE WHEN person IS NOT NULL THEN 0 ELSE 1 END",
+        )
+        .expect("CASE graph null checks should compile");
+
+        let [
+            Projection::Expression {
+                expression:
+                    ScalarExpression::Case {
+                        alternatives,
+                        else_expression,
+                    },
+                alias,
+            },
+        ] = plan.projections.as_slice()
+        else {
+            panic!("expected CASE expression projection");
+        };
+        assert_eq!(alias, "ownership_state");
+        let [unowned, owned] = alternatives.as_slice() else {
+            panic!("expected two CASE alternatives");
+        };
+        assert_eq!(
+            unowned.when,
+            PredicateExpression::Presence(PresencePredicate {
+                variable: "person".to_string(),
+                operator: ComparisonOperator::Equal,
+            })
+        );
+        assert!(matches!(
+            &owned.when,
+            PredicateExpression::KeyComparison(KeyPredicate {
+                variable,
+                operator: ComparisonOperator::NotEqual,
+                rhs: PredicateRhs::Literal(Literal::Null),
+            }) if variable == "owns"
+        ));
+        assert_eq!(
+            else_expression.as_deref(),
+            Some(&ScalarExpression::Literal(Literal::String(
+                "unknown".to_string()
+            )))
+        );
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Case {
+                    alternatives,
+                    ..
+                }),
+                direction: OrderDirection::Ascending,
+            }] if matches!(
+                alternatives.as_slice(),
+                [ScalarCaseAlternative {
+                    when: PredicateExpression::Presence(PresencePredicate {
+                        variable,
+                        operator: ComparisonOperator::NotEqual,
+                    }),
+                    ..
+                }] if variable == "person"
+            )
+        ));
+    }
+
+    #[test]
+    fn rejects_graph_metadata_comparisons_inside_searched_case_predicates() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[owns:OWNS]->(service) \
+             RETURN CASE WHEN type(owns) = 'OWNS' THEN 'owned' ELSE 'unknown' END AS state",
+        )
+        .expect_err("CASE metadata comparisons should stay unsupported");
+
+        assert!(
+            error
+                .to_string()
+                .contains("CASE WHEN comparisons must include"),
+            "{error}"
+        );
     }
 
     #[test]
