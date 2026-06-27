@@ -5193,6 +5193,55 @@ async fn cypher_statistical_aggregate_projections_execute_against_synthetic_sour
 }
 
 #[tokio::test]
+async fn cypher_median_aggregate_projection_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier = 'prod' \
+         RETURN median(service.risk) AS median_risk, \
+                median(DISTINCT service.risk) AS distinct_median_risk",
+    )
+    .await
+    .expect("median aggregate Cypher query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("MEDIAN(\"n0\".\"risk_score\") AS \"median_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let sql_execution = CoralQuery::execute_sql(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        "SELECT MEDIAN(risk_score) AS \"median_risk\", \
+                MEDIAN(DISTINCT risk_score) AS \"distinct_median_risk\" \
+         FROM ops.services \
+         WHERE tier = 'prod'",
+    )
+    .await
+    .expect("equivalent SQL should execute");
+
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(&sql_execution);
+    assert_eq!(graph_rows, sql_rows);
+
+    let row = graph_rows
+        .first()
+        .expect("aggregate query should return one row");
+    assert_close(row["median_risk"].as_f64().unwrap(), 0.7);
+    assert_close(row["distinct_median_risk"].as_f64().unwrap(), 0.7);
+}
+
+#[tokio::test]
 async fn cypher_count_node_projection_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

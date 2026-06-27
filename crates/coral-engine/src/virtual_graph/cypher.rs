@@ -4319,6 +4319,8 @@ fn compile_aggregate_function(function: &FunctionInvocation) -> Option<Aggregate
         Some(AggregateFunction::Sum)
     } else if name.name.eq_ignore_ascii_case("avg") {
         Some(AggregateFunction::Avg)
+    } else if name.name.eq_ignore_ascii_case("median") {
+        Some(AggregateFunction::Median)
     } else if name.name.eq_ignore_ascii_case("stDev") {
         Some(AggregateFunction::StdDev)
     } else if name.name.eq_ignore_ascii_case("stDevP") {
@@ -4338,6 +4340,7 @@ fn aggregate_function_name(function: AggregateFunction) -> &'static str {
         AggregateFunction::Collect => "collect",
         AggregateFunction::Sum => "sum",
         AggregateFunction::Avg => "avg",
+        AggregateFunction::Median => "median",
         AggregateFunction::StdDev => "stDev",
         AggregateFunction::StdDevP => "stDevP",
         AggregateFunction::Min => "min",
@@ -11205,6 +11208,39 @@ mod tests {
     }
 
     #[test]
+    fn compiles_median_aggregate_projections() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN median(service.risk) AS median_risk, \
+                    median(DISTINCT service.risk) AS distinct_median_risk",
+        )
+        .expect("median aggregate query should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Aggregate {
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable,
+                        property,
+                    }),
+                    distinct: false,
+                    alias,
+                    ..
+                },
+                Projection::Aggregate {
+                    distinct: true,
+                    alias: distinct_alias,
+                    ..
+                },
+            ] if variable == "service"
+                && property == "risk"
+                && alias == "median_risk"
+                && distinct_alias == "distinct_median_risk"
+        ));
+    }
+
+    #[test]
     fn compiles_count_node_projection() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -11250,7 +11286,6 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_return_functions() {
-        assert_unsupported("MATCH (service:Service) RETURN median(service.id) AS total");
         assert_unsupported("MATCH (service:Service) RETURN id(missing)");
         assert_unsupported("MATCH (service:Service) RETURN type(service)");
     }

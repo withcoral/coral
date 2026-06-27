@@ -1897,6 +1897,7 @@ fn render_aggregate_function(function: AggregateFunction) -> &'static str {
         AggregateFunction::Collect => "ARRAY_AGG",
         AggregateFunction::Sum => "SUM",
         AggregateFunction::Avg => "AVG",
+        AggregateFunction::Median => "MEDIAN",
         AggregateFunction::StdDev => "STDDEV_SAMP",
         AggregateFunction::StdDevP => "STDDEV_POP",
         AggregateFunction::Min => "MIN",
@@ -4564,6 +4565,15 @@ relationships: []
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan(Direction::Outgoing);
         plan.projections.push(Projection::Aggregate {
+            function: AggregateFunction::Median,
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "risk".to_string(),
+            }),
+            distinct: false,
+            alias: "median_risk".to_string(),
+        });
+        plan.projections.push(Projection::Aggregate {
             function: AggregateFunction::StdDev,
             target: AggregateTarget::Property(PropertyRef {
                 variable: "service".to_string(),
@@ -4581,6 +4591,15 @@ relationships: []
             distinct: true,
             alias: "population_risk".to_string(),
         });
+        plan.projections.push(Projection::Aggregate {
+            function: AggregateFunction::Median,
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "risk".to_string(),
+            }),
+            distinct: true,
+            alias: "distinct_median_risk".to_string(),
+        });
 
         let translation = graph
             .lower_graph_plan(&plan)
@@ -4588,8 +4607,10 @@ relationships: []
 
         assert!(
             translation.sql().contains(
-                "STDDEV_SAMP(\"n1\".\"risk_score\") AS \"sample_risk\", \
-                 STDDEV_POP(DISTINCT \"n1\".\"risk_score\") AS \"population_risk\""
+                "MEDIAN(\"n1\".\"risk_score\") AS \"median_risk\", \
+                 STDDEV_SAMP(\"n1\".\"risk_score\") AS \"sample_risk\", \
+                 STDDEV_POP(DISTINCT \"n1\".\"risk_score\") AS \"population_risk\", \
+                 MEDIAN(DISTINCT \"n1\".\"risk_score\") AS \"distinct_median_risk\""
             ),
             "{}",
             translation.sql()
