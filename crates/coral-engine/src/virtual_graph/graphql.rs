@@ -89,8 +89,8 @@ struct GraphqlVariableDeclarations {
 /// operation with one root field whose name is the graph node label. Selected
 /// scalar fields become property projections, and supported root arguments
 /// compile into predicates, ordering, offsets, limits, and distinct row
-/// selection. Relationship nesting is intentionally rejected until a
-/// declaration-aware traversal convention is added.
+/// selection. Relationship fields use the explicit `out_TYPE`, `in_TYPE`, and
+/// `any_TYPE` traversal convention when a graph declaration is available.
 ///
 /// # Errors
 ///
@@ -560,6 +560,28 @@ fn compile_property_field(
         )?;
         return Ok(());
     }
+    if field.name == "_id" {
+        push_graphql_projection(
+            plan,
+            Projection::Key {
+                variable: context.variable.clone(),
+                alias: projection_alias(field, context),
+            },
+            path,
+        )?;
+        return Ok(());
+    }
+    if field.name == "_elementId" {
+        push_graphql_projection(
+            plan,
+            Projection::ElementId {
+                variable: context.variable.clone(),
+                alias: projection_alias(field, context),
+            },
+            path,
+        )?;
+        return Ok(());
+    }
     push_graphql_projection(
         plan,
         Projection::Property {
@@ -937,6 +959,28 @@ fn compile_edge_projection_field(
             plan,
             Projection::Literal {
                 literal: Literal::String(edge_relationship_type.to_string()),
+                alias: edge_projection_alias(property, edge_variable),
+            },
+            path,
+        )?;
+        return Ok(());
+    }
+    if property.name == "_id" {
+        push_graphql_projection(
+            plan,
+            Projection::Key {
+                variable: edge_variable.to_string(),
+                alias: edge_projection_alias(property, edge_variable),
+            },
+            path,
+        )?;
+        return Ok(());
+    }
+    if property.name == "_elementId" {
+        push_graphql_projection(
+            plan,
+            Projection::ElementId {
+                variable: edge_variable.to_string(),
                 alias: edge_projection_alias(property, edge_variable),
             },
             path,
@@ -2826,6 +2870,43 @@ mod tests {
     }
 
     #[test]
+    fn compiles_graphql_node_identity_fields() {
+        let plan = compile_graphql(
+            r"
+            query {
+              Service {
+                nodeId: _id
+                element: _elementId
+                name
+              }
+            }
+            ",
+        )
+        .expect("GraphQL node identity fields should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Key {
+                    variable: "service".to_string(),
+                    alias: "nodeId".to_string(),
+                },
+                Projection::ElementId {
+                    variable: "service".to_string(),
+                    alias: "element".to_string(),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("name".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_root_boolean_where_filters() {
         let plan = compile_graphql(
             r#"
@@ -3881,6 +3962,49 @@ mod tests {
                     && alias == "relationship0_source"
             )
         }));
+    }
+
+    #[test]
+    fn compiles_graphql_edge_identity_fields() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph(
+            &graph,
+            r"
+            {
+              Person {
+                out_OWNS(to: Service) {
+                  name
+                  _edge {
+                    edgeId: _id
+                    edgeElement: _elementId
+                  }
+                }
+              }
+            }
+            ",
+        )
+        .expect("GraphQL edge identity fields should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service1".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service1_name".to_string()),
+                },
+                Projection::Key {
+                    variable: "relationship0".to_string(),
+                    alias: "edgeId".to_string(),
+                },
+                Projection::ElementId {
+                    variable: "relationship0".to_string(),
+                    alias: "edgeElement".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]

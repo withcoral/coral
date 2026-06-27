@@ -954,6 +954,66 @@ async fn graphql_nested_relationship_query_executes_against_synthetic_file_sourc
 }
 
 #[tokio::test]
+async fn graphql_identity_fields_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          Person(where: { team: { eq: "platform" } }) {
+            person_id: _id
+            person_element_id: _elementId
+            person: name
+            out_OWNS(to: Service) {
+              service_id: _id
+              service_element_id: _elementId
+              service: name
+              _edge {
+                ownership_id: _id
+                ownership_element_id: _elementId
+                ownership_type: __typename
+              }
+            }
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("GraphQL identity field query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("CAST(\"n0\".\"id\" AS VARCHAR) AS \"person_element_id\"")
+            && execution
+                .translated_sql()
+                .contains("CAST(\"r0\".\"ownership_id\" AS VARCHAR) AS \"ownership_element_id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "person_id": 1,
+            "person_element_id": "1",
+            "person": "Ada Lovelace",
+            "service_id": 10,
+            "service_element_id": "10",
+            "service": "billing-api",
+            "ownership_id": 100,
+            "ownership_element_id": "100",
+            "ownership_type": "OWNS",
+        })]
+    );
+}
+
+#[tokio::test]
 async fn graphql_edge_fragments_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

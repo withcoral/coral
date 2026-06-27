@@ -152,6 +152,9 @@ remain separate. The supported slice is intentionally graph-query oriented:
 - root field aliases, which are accepted for generated-client compatibility but
   do not change Coral's flat tabular result shape;
 - scalar property selections with optional GraphQL aliases;
+- reserved `_id` and `_elementId` selections on nodes, lowered to mapped key
+  and string element-id projections without overloading user properties named
+  `id`;
 - node-level `__typename`, lowered as a static literal projection of the graph
   node label, and edge-level `__typename`, lowered as the static relationship
   type;
@@ -176,7 +179,7 @@ remain separate. The supported slice is intentionally graph-query oriented:
   as root filters;
 - relationship property and relationship type metadata projections through
   reserved `_edge { ... }` selections inside relationship fields, including
-  named and inline edge fragments.
+  `_id`, `_elementId`, and named and inline edge fragments.
 
 Nested relationship fields compile directly to `NodePattern` and
 `RelationshipPattern` IR entries. Endpoint labels are checked against the graph
