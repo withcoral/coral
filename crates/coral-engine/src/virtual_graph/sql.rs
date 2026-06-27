@@ -383,8 +383,22 @@ impl<'a> Lowerer<'a> {
                 unknown_variable,
                 !known_is_left,
             )?;
-            let outer_condition =
-                Self::join_condition_with_predicate(relationship_join, Some(optional_predicate));
+            let relationship_condition = if pattern.direction == Direction::Undirected
+                && Self::relationship_orientations(validated, relationship, pattern)?.len() > 1
+            {
+                Self::relationship_pair_condition(
+                    validated,
+                    relationship,
+                    relationship_alias,
+                    pattern,
+                )?
+            } else {
+                relationship_join
+            };
+            let outer_condition = Self::join_condition_with_predicate(
+                relationship_condition,
+                Some(optional_predicate),
+            );
             write!(
                 from_clause,
                 " LEFT JOIN ({} AS {} JOIN {} AS {} ON {}) ON {}",
@@ -2300,6 +2314,77 @@ relationships:
              FROM \"ops\".\"services\" AS \"n0\" \
              LEFT JOIN (\"ops\".\"ownerships\" AS \"r0\" JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"person_id\" = \"n1\".\"id\") \
              ON (\"r0\".\"service_id\" = \"n0\".\"id\") AND (\"n1\".\"team\" = 'platform')"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_undirected_optional_predicates_inside_join_scope() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "dependency".to_string(),
+                    label: "Service".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: Some("dependency_edge".to_string()),
+                relationship_type: "DEPENDS_ON".to_string(),
+                left: "service".to_string(),
+                direction: Direction::Undirected,
+                right: "dependency".to_string(),
+            }],
+            optional_relationships: vec![0],
+            optional_matches: vec![OptionalMatchScope {
+                relationship_indices: vec![0],
+                predicate: Some(PredicateExpression::Comparison(PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "dependency".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Literal(Literal::String("dev".to_string())),
+                })),
+            }],
+            distinct: false,
+            projections: vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "dependency".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("dependency".to_string()),
+                },
+            ],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("undirected optional predicate should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n0\".\"service_name\" AS \"service\", \"n1\".\"service_name\" AS \"dependency\" \
+             FROM \"ops\".\"services\" AS \"n0\" \
+             LEFT JOIN (\"ops\".\"service_dependencies\" AS \"r0\" JOIN \"ops\".\"services\" AS \"n1\" ON (\"r0\".\"to_service_id\" = \"n1\".\"id\" OR \"r0\".\"from_service_id\" = \"n1\".\"id\")) \
+             ON (((\"r0\".\"from_service_id\" = \"n0\".\"id\" AND \"r0\".\"to_service_id\" = \"n1\".\"id\") OR (\"r0\".\"to_service_id\" = \"n0\".\"id\" AND \"r0\".\"from_service_id\" = \"n1\".\"id\"))) AND (\"n1\".\"tier\" = 'dev')"
         );
     }
 

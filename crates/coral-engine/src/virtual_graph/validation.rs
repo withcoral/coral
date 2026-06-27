@@ -730,19 +730,10 @@ impl<'a> GraphPlanValidator<'a> {
             .relationship_indices
             .first()
             .ok_or_else(|| CoreError::internal("validated optional match scope was empty"))?;
-        let relationship = self
-            .plan
+        self.plan
             .relationships
             .get(relationship_index)
             .ok_or_else(|| CoreError::internal("validated relationship index was invalid"))?;
-        if relationship.direction == Direction::Undirected {
-            return Err(Diagnostic::new(
-                "UNSUPPORTED_OPTIONAL_PREDICATE",
-                format!("optional_matches[{index}].predicate"),
-                "optional predicates on undirected relationships require orientation-aware join grouping",
-            )
-            .into_core_error());
-        }
         Ok(())
     }
 

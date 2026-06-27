@@ -2173,6 +2173,52 @@ async fn cypher_optional_match_where_preserves_rows_with_null_optional_bindings(
 }
 
 #[tokio::test]
+async fn cypher_undirected_optional_match_where_preserves_rows_with_null_optional_bindings() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[dependency_edge:DEPENDS_ON]-(dependency:Service) \
+         WHERE dependency.tier = 'dev' \
+         RETURN service.name AS service, dependency.name AS dependency, type(dependency_edge) AS relationship_type \
+         ORDER BY service, dependency",
+    )
+    .await
+    .expect("undirected OPTIONAL MATCH WHERE Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LEFT JOIN ("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        !execution.translated_sql().contains(" WHERE "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains(" OR "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dependency": "experiments", "relationship_type": "DEPENDS_ON"}),
+            json!({"service": "deployments", "dependency": "experiments", "relationship_type": "DEPENDS_ON"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_optional_match_inline_property_maps_execute_as_join_predicates() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

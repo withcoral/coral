@@ -1892,18 +1892,6 @@ fn attach_optional_match_scope(
             "OPTIONAL MATCH predicates currently require a single relationship pattern",
         ));
     }
-    if predicate.is_some()
-        && relationship_indices.iter().any(|index| {
-            plan.relationships
-                .get(*index)
-                .is_some_and(|pattern| pattern.direction == Direction::Undirected)
-        })
-    {
-        return Err(unsupported(
-            path,
-            "OPTIONAL MATCH predicates on undirected relationships require orientation-aware join grouping and are not supported yet",
-        ));
-    }
 
     plan.optional_matches.push(OptionalMatchScope {
         relationship_indices,
@@ -10609,13 +10597,36 @@ mod tests {
     }
 
     #[test]
+    fn compiles_undirected_optional_match_local_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (service)-[dependency_edge:DEPENDS_ON]-(dependency:Service) \
+             WHERE dependency.tier = 'dev' \
+             RETURN service.name AS service, dependency.name AS dependency",
+        )
+        .expect("undirected OPTIONAL MATCH predicate should compile");
+
+        assert_eq!(plan.optional_relationships, vec![0]);
+        assert_eq!(plan.predicates, Vec::new());
+        assert_eq!(plan.optional_matches.len(), 1);
+        let optional_match = plan
+            .optional_matches
+            .first()
+            .expect("optional match scope should be present");
+        assert_eq!(optional_match.relationship_indices, vec![0]);
+        assert!(optional_match.predicate.is_some());
+        let relationship = plan
+            .relationships
+            .first()
+            .expect("optional relationship should be present");
+        assert_eq!(relationship.direction, Direction::Undirected);
+    }
+
+    #[test]
     fn rejects_unsupported_optional_match_shapes() {
         assert_unsupported("OPTIONAL MATCH (service:Service) RETURN service.name");
         assert_unsupported(
             "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service)-[:DEPENDS_ON]->(next:Service) WHERE next.tier = 'prod' RETURN service.name",
-        );
-        assert_unsupported(
-            "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]-(target:Service) WHERE target.tier = 'prod' RETURN service.name",
         );
         assert_unsupported(
             "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service) MATCH (target)-[:DEPENDS_ON]->(next:Service) RETURN next.name",

@@ -42,7 +42,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Ordering, skip, and limit | Supported foundation | Property order keys, identity order keys, boolean predicate scalar order keys, direct projected aggregate expressions, projection aliases including aggregate aliases, row offset, and row limit |
 | Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
 | Declaration-aware plan validation | Supported foundation | Resolves variables/properties and rejects unsupported plan shapes before SQL rendering |
-| Optional matches | Supported foundation | Anchored optional relationships lower to `LEFT JOIN`; single-hop directed optional-local predicates and inline property maps lower into the nullable join scope |
+| Optional matches | Supported foundation | Anchored optional relationships lower to `LEFT JOIN`; single-hop directed and undirected optional-local predicates and inline property maps lower into the nullable join scope |
 | Variable-length paths | Deferred | Requires recursive/path expansion semantics |
 | Path values | Deferred | Requires graph value representation |
 
@@ -94,9 +94,9 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `WITH` pass-through | Supported foundation | Transparent `WITH var, ...`, `WITH var AS alias, ...`, and `WITH *` preserve all bound graph variables; graph-variable aliases atomically rename the shared graph plan, `WHERE` predicates over carried variables lower into the normal predicate tree, and terminal graph-variable `WITH` clauses may apply `ORDER BY`, `SKIP`, and `LIMIT` when no later `MATCH` requires staged row semantics |
 | Terminal `WITH` projections | Supported foundation | Terminal projection, alias filtering, ordering, skip, and limit are supported without staging another `MATCH` |
 | `OPTIONAL MATCH` | Supported foundation | Requires an already-bound node anchor and one connected pattern part; preserves unmatched rows with nullable optional bindings |
-| Optional-local `WHERE` and inline property maps | Supported foundation | Supported for single-hop directed optional patterns by placing predicates inside the null-preserving join scope |
+| Optional-local `WHERE` and inline property maps | Supported foundation | Supported for single-hop directed and undirected optional patterns by placing predicates inside the null-preserving join scope |
 | General list-expression predicates | Rejected | Only literal-list `IN` and static `'<Label>' IN labels(node)` are supported; arbitrary list expressions need a richer list IR |
-| Multi-hop or undirected optional-local predicates | Rejected | Needs broader optional-scope grouping and orientation-aware predicate placement |
+| Multi-hop optional-local predicates | Rejected | Needs broader optional-scope grouping across multiple nullable relationship joins |
 | Variable-length paths | Rejected | Exact-one relationship ranges/quantifiers are accepted as single-hop syntax; all other variable-length ranges still need recursive/path expansion semantics |
 | Path variables in `MATCH p = (...)` | Supported foundation | Accepted as non-materialized compatibility bindings when `p` is not carried by `WITH *` and is not used as a graph value; explicit `WITH var, ...` drops ignored path bindings |
 | Path values | Rejected | Returning, filtering, or otherwise materializing path values needs graph value representation |
