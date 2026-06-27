@@ -397,6 +397,78 @@ async fn graphql_object_variables_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_order_by_object_variable_executes_against_synthetic_sources() {
+    fn object(
+        entries: impl IntoIterator<Item = (&'static str, GraphGraphqlVariableValue)>,
+    ) -> GraphGraphqlVariableValue {
+        GraphGraphqlVariableValue::Object(
+            entries
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect(),
+        )
+    }
+
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let variables = BTreeMap::from([
+        (
+            "tier".to_string(),
+            GraphGraphqlVariableValue::Literal(GraphLiteral::String("prod".to_string())),
+        ),
+        (
+            "order".to_string(),
+            object([
+                (
+                    "field",
+                    GraphGraphqlVariableValue::Literal(GraphLiteral::String("name".to_string())),
+                ),
+                (
+                    "direction",
+                    GraphGraphqlVariableValue::Literal(GraphLiteral::String("DESC".to_string())),
+                ),
+            ]),
+        ),
+    ]);
+
+    let execution = CoralQuery::execute_graphql_with_variables(
+        &[source],
+        test_runtime(),
+        &graph,
+        r"
+        query Services($tier: String!, $order: ServiceOrder!) {
+          Service(
+            where: { tier: { eq: $tier } }
+            orderBy: $order
+          ) {
+            service: name
+          }
+        }
+        ",
+        &variables,
+    )
+    .await
+    .expect("GraphQL orderBy object variable query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ORDER BY \"n0\".\"service_name\" DESC"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "deployments"}),
+            json!({"service": "billing-api"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_variable_defaults_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

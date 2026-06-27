@@ -26,7 +26,7 @@ pub enum GraphqlVariableValue {
     List(Vec<Literal>),
     /// Object variable, usable where supported GraphQL input objects are accepted.
     Object(BTreeMap<String, GraphqlVariableValue>),
-    /// List of object variables, usable by boolean `where` groups such as `and` and `or`.
+    /// List of object variables, usable where supported object-list input is accepted.
     ObjectList(Vec<BTreeMap<String, GraphqlVariableValue>>),
 }
 
@@ -1926,6 +1926,26 @@ fn compile_order_by_argument(
 ) -> Result<Vec<OrderKey>, CoreError> {
     let path = path.into();
     match value {
+        Value::Variable(graphql_variable) => match context
+            .parameter_value(graphql_variable, path.clone())?
+        {
+            GraphqlVariableValue::Object(object) => Ok(vec![compile_order_by_variable_object(
+                variable, object, path,
+            )?]),
+            GraphqlVariableValue::ObjectList(items) => items
+                .iter()
+                .enumerate()
+                .map(|(index, object)| {
+                    compile_order_by_variable_object(variable, object, format!("{path}[{index}]"))
+                })
+                .collect(),
+            GraphqlVariableValue::Literal(_) | GraphqlVariableValue::List(_) => Err(unsupported(
+                path,
+                format!(
+                    "GraphQL variable '${graphql_variable}' must be an orderBy object or list of objects"
+                ),
+            )),
+        },
         Value::Object(_) => Ok(vec![compile_order_by_object(
             variable, value, path, context,
         )?]),
@@ -1969,6 +1989,38 @@ fn compile_order_by_object(
         .get("direction")
         .map_or(Ok(OrderDirection::Ascending), |value| {
             compile_order_direction(value, format!("{path}.direction"), context)
+        })?;
+    Ok(OrderKey {
+        expression: OrderExpression::Property(PropertyRef {
+            variable: variable.to_string(),
+            property: field,
+        }),
+        direction,
+    })
+}
+
+fn compile_order_by_variable_object(
+    variable: &str,
+    object: &BTreeMap<String, GraphqlVariableValue>,
+    path: impl Into<String>,
+) -> Result<OrderKey, CoreError> {
+    let path = path.into();
+    for name in object.keys() {
+        if name != "field" && name != "direction" {
+            return Err(unsupported(
+                format!("{path}.{name}"),
+                format!("unsupported GraphQL orderBy key '{name}'"),
+            ));
+        }
+    }
+    let field_value = object
+        .get("field")
+        .ok_or_else(|| unsupported(format!("{path}.field"), "GraphQL orderBy requires field"))?;
+    let field = compile_variable_name_value(field_value, format!("{path}.field"))?;
+    let direction = object
+        .get("direction")
+        .map_or(Ok(OrderDirection::Ascending), |value| {
+            compile_variable_order_direction(value, format!("{path}.direction"))
         })?;
     Ok(OrderKey {
         expression: OrderExpression::Property(PropertyRef {
@@ -2058,6 +2110,39 @@ fn compile_variable_boolean(
         ));
     };
     Ok(*value)
+}
+
+fn compile_variable_name_value(
+    value: &GraphqlVariableValue,
+    path: impl Into<String>,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    match value {
+        GraphqlVariableValue::Literal(Literal::String(value)) => Ok(value.clone()),
+        GraphqlVariableValue::Literal(_)
+        | GraphqlVariableValue::List(_)
+        | GraphqlVariableValue::Object(_)
+        | GraphqlVariableValue::ObjectList(_) => Err(unsupported(
+            path,
+            "GraphQL variable value must be a string or enum name",
+        )),
+    }
+}
+
+fn compile_variable_order_direction(
+    value: &GraphqlVariableValue,
+    path: impl Into<String>,
+) -> Result<OrderDirection, CoreError> {
+    let path = path.into();
+    let direction = compile_variable_name_value(value, path.clone())?;
+    match direction.as_str() {
+        "ASC" | "asc" => Ok(OrderDirection::Ascending),
+        "DESC" | "desc" => Ok(OrderDirection::Descending),
+        _ => Err(unsupported(
+            path,
+            "GraphQL orderBy direction must be ASC or DESC",
+        )),
+    }
 }
 
 fn compile_literal(
@@ -2732,6 +2817,101 @@ mod tests {
     }
 
     #[test]
+    fn compiles_root_query_with_order_by_object_variable() {
+        let variables = BTreeMap::from([(
+            "order".to_string(),
+            variable_object([
+                (
+                    "field",
+                    GraphqlVariableValue::Literal(Literal::String("name".to_string())),
+                ),
+                (
+                    "direction",
+                    GraphqlVariableValue::Literal(Literal::String("DESC".to_string())),
+                ),
+            ]),
+        )]);
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services($order: ServiceOrder!) {
+              Service(orderBy: $order) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect("GraphQL orderBy object variable should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Descending,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_root_query_with_order_by_object_list_variable() {
+        let variables = BTreeMap::from([(
+            "orders".to_string(),
+            GraphqlVariableValue::ObjectList(vec![
+                variable_object_map([
+                    (
+                        "field",
+                        GraphqlVariableValue::Literal(Literal::String("tier".to_string())),
+                    ),
+                    (
+                        "direction",
+                        GraphqlVariableValue::Literal(Literal::String("ASC".to_string())),
+                    ),
+                ]),
+                variable_object_map([
+                    (
+                        "field",
+                        GraphqlVariableValue::Literal(Literal::String("name".to_string())),
+                    ),
+                    (
+                        "direction",
+                        GraphqlVariableValue::Literal(Literal::String("DESC".to_string())),
+                    ),
+                ]),
+            ]),
+        )]);
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services($orders: [ServiceOrder!]!) {
+              Service(orderBy: $orders) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect("GraphQL orderBy object-list variable should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                },
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    }),
+                    direction: OrderDirection::Descending,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_root_query_with_variable_defaults() {
         let plan = compile_graphql_with_variables(
             r#"
@@ -2959,6 +3139,30 @@ mod tests {
             error
                 .to_string()
                 .contains("must be a property condition object"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_graphql_scalar_variable_in_order_by_position() {
+        let variables = BTreeMap::from([(
+            "order".to_string(),
+            GraphqlVariableValue::Literal(Literal::String("name".to_string())),
+        )]);
+        let error = compile_graphql_with_variables(
+            r"
+            query Services($order: ServiceOrder!) {
+              Service(orderBy: $order) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect_err("scalar variable in orderBy position should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must be an orderBy object or list of objects"),
             "{error}"
         );
     }

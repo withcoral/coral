@@ -390,7 +390,7 @@ impl CoralQuery {
     /// Scalar variables can be used anywhere the supported GraphQL subset
     /// accepts scalar literals or enum-like names; list variables can be used
     /// as `in` right-hand sides; object variables can be used as supported
-    /// `where`, nested `where`, and `relationshipWhere` filter objects.
+    /// `where`, nested `where`, `relationshipWhere`, and `orderBy` objects.
     ///
     /// # Errors
     ///
