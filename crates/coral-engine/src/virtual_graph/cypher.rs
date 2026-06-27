@@ -6201,10 +6201,33 @@ mod tests {
              RETURN person.name AS owner",
         )
         .expect("non-matching type() predicate should compile");
+        let string_matching = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE type(owns) STARTS WITH 'OW' \
+                AND type(owns) ENDS WITH 'NS' \
+                AND type(owns) CONTAINS 'WN' \
+                AND type(owns) =~ '^OW.*' \
+             RETURN person.name AS owner",
+        )
+        .expect("matching type() string predicates should compile");
+        let string_non_matching = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE type(owns) STARTS WITH 'DEP' \
+             RETURN person.name AS owner",
+        )
+        .expect("non-matching type() string predicate should compile");
 
         assert_eq!(matching.predicate, Some(PredicateExpression::Boolean(true)));
         assert_eq!(
             non_matching.predicate,
+            Some(PredicateExpression::Boolean(false))
+        );
+        assert!(matches!(
+            string_matching.predicate,
+            Some(PredicateExpression::And { .. })
+        ));
+        assert_eq!(
+            string_non_matching.predicate,
             Some(PredicateExpression::Boolean(false))
         );
     }

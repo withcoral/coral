@@ -4551,7 +4551,13 @@ async fn cypher_id_and_type_predicates_execute_against_synthetic_sources() {
         test_runtime(),
         &graph,
         "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
-         WHERE id(person) = 2 AND id(owns) IN [100, 200] AND type(owns) = 'OWNS' \
+         WHERE id(person) = 2 \
+           AND id(owns) IN [100, 200] \
+           AND type(owns) = 'OWNS' \
+           AND type(owns) STARTS WITH 'OW' \
+           AND type(owns) ENDS WITH 'NS' \
+           AND type(owns) CONTAINS 'WN' \
+           AND type(owns) =~ '^OW.*' \
          RETURN person.name AS owner, service.name AS service",
     )
     .await
