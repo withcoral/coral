@@ -3,13 +3,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::declaration::{Declaration, Node, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
-    ExistsPatternPredicate, GraphPlan, GraphQuery, GraphUnionOuterProjection,
-    GraphUnionOuterProjectionItem, KeyPredicate, Literal, OptionalMatchScope, OrderExpression,
-    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
-    ScalarPredicate, ScalarPredicateRhs,
+    AggregateFunction, AggregateTarget, ComparisonOperator, CountSubqueryPattern, Direction,
+    ElementIdPredicate, ExistsPatternPredicate, GraphPlan, GraphQuery, GraphUnionOuterProjection,
+    GraphUnionOuterProjectionItem, KeyPredicate, Literal, NodePattern, OptionalMatchScope,
+    OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
+    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
+    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
 };
 use crate::{CatalogInfo, CoreError};
 
@@ -1060,6 +1060,33 @@ impl<'a> GraphPlanValidator<'a> {
             .collect()
     }
 
+    fn count_subquery_node_local_variables(nodes: &[NodePattern]) -> BTreeSet<&str> {
+        nodes.iter().map(|node| node.variable.as_str()).collect()
+    }
+
+    fn collect_count_subquery_outer_variables<'b>(
+        pattern: &'b CountSubqueryPattern,
+        variables: &mut BTreeSet<&'b str>,
+    ) {
+        match pattern {
+            CountSubqueryPattern::Relationships(predicate) => {
+                Self::collect_exists_pattern_outer_variables(predicate, variables);
+            }
+            CountSubqueryPattern::Nodes { nodes, predicates } => {
+                let local_variables = Self::count_subquery_node_local_variables(nodes);
+                for predicate in predicates {
+                    let mut predicate_variables = BTreeSet::new();
+                    Self::collect_property_predicate_variables(predicate, &mut predicate_variables);
+                    variables.extend(
+                        predicate_variables
+                            .into_iter()
+                            .filter(|variable| !local_variables.contains(*variable)),
+                    );
+                }
+            }
+        }
+    }
+
     fn collect_property_predicate_variables<'b>(
         predicate: &'b PropertyPredicate,
         variables: &mut BTreeSet<&'b str>,
@@ -1113,7 +1140,7 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::collect_predicate_expression_variables(predicate, variables);
             }
             ScalarExpression::CountSubquery { pattern } => {
-                Self::collect_exists_pattern_outer_variables(pattern, variables);
+                Self::collect_count_subquery_outer_variables(pattern, variables);
             }
             ScalarExpression::Key { variable }
             | ScalarExpression::ElementId { variable }
@@ -1418,6 +1445,61 @@ impl<'a> GraphPlanValidator<'a> {
         Ok(())
     }
 
+    fn validate_count_subquery_pattern_not_optional(
+        pattern: &CountSubqueryPattern,
+        optional_variables: &BTreeSet<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        match pattern {
+            CountSubqueryPattern::Relationships(predicate) => {
+                Self::validate_exists_pattern_predicate_not_optional(
+                    predicate,
+                    optional_variables,
+                    path,
+                )
+            }
+            CountSubqueryPattern::Nodes { nodes, predicates } => {
+                let local_variables = Self::count_subquery_node_local_variables(nodes);
+                for (index, property_predicate) in predicates.iter().enumerate() {
+                    if !local_variables.contains(property_predicate.property.variable.as_str()) {
+                        Self::validate_variable_not_optional(
+                            &property_predicate.property.variable,
+                            optional_variables,
+                            format!("{path}.predicates[{index}].property.variable"),
+                        )?;
+                    }
+                    match &property_predicate.rhs {
+                        PredicateRhs::Property(property)
+                            if !local_variables.contains(property.variable.as_str()) =>
+                        {
+                            Self::validate_variable_not_optional(
+                                &property.variable,
+                                optional_variables,
+                                format!("{path}.predicates[{index}].rhs.variable"),
+                            )?;
+                        }
+                        PredicateRhs::Key { variable } | PredicateRhs::ElementId { variable }
+                            if !local_variables.contains(variable.as_str()) =>
+                        {
+                            Self::validate_variable_not_optional(
+                                variable,
+                                optional_variables,
+                                format!("{path}.predicates[{index}].rhs.variable"),
+                            )?;
+                        }
+                        PredicateRhs::Literal(_)
+                        | PredicateRhs::List(_)
+                        | PredicateRhs::Property(_)
+                        | PredicateRhs::Key { .. }
+                        | PredicateRhs::ElementId { .. } => {}
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn validate_predicate_rhs_not_optional(
         rhs: &PredicateRhs,
         optional_variables: &BTreeSet<&str>,
@@ -1513,7 +1595,7 @@ impl<'a> GraphPlanValidator<'a> {
                 )
             }
             ScalarExpression::CountSubquery { pattern } => {
-                Self::validate_exists_pattern_predicate_not_optional(
+                Self::validate_count_subquery_pattern_not_optional(
                     pattern,
                     optional_variables,
                     format!("{path}.pattern"),
@@ -2195,21 +2277,68 @@ impl<'a> GraphPlanValidator<'a> {
         Ok(())
     }
 
+    fn validate_count_subquery_pattern(
+        &self,
+        pattern: &CountSubqueryPattern,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        match pattern {
+            CountSubqueryPattern::Relationships(predicate) => {
+                self.validate_exists_pattern_predicate(predicate, path)
+            }
+            CountSubqueryPattern::Nodes { nodes, predicates } => {
+                if nodes.is_empty() {
+                    return Err(Diagnostic::new(
+                        "UNSUPPORTED_COUNT_SUBQUERY",
+                        format!("{path}.nodes"),
+                        "COUNT subqueries without relationship patterns must bind at least one local node",
+                    )
+                    .into_core_error());
+                }
+                let local_nodes =
+                    self.validate_scoped_node_patterns(nodes, &path, "COUNT subquery")?;
+                let relationships = Vec::new();
+                let scope = ExistsPredicateValidationContext {
+                    relationships: &relationships,
+                    local_nodes: &local_nodes,
+                };
+                for (index, property_predicate) in predicates.iter().enumerate() {
+                    self.validate_exists_property_predicate(
+                        property_predicate,
+                        scope,
+                        format!("{path}.predicates[{index}]"),
+                    )?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn validate_exists_pattern_nodes<'b>(
         &self,
         predicate: &'b ExistsPatternPredicate,
         path: &str,
     ) -> Result<BTreeMap<&'b str, &'a Node>, CoreError> {
+        self.validate_scoped_node_patterns(&predicate.nodes, path, "EXISTS pattern")
+    }
+
+    fn validate_scoped_node_patterns<'b>(
+        &self,
+        nodes: &'b [NodePattern],
+        path: &str,
+        scope_name: &str,
+    ) -> Result<BTreeMap<&'b str, &'a Node>, CoreError> {
         let mut local_nodes = BTreeMap::new();
-        for (index, pattern) in predicate.nodes.iter().enumerate() {
+        for (index, pattern) in nodes.iter().enumerate() {
             validate_variable(format!("{path}.nodes[{index}].variable"), &pattern.variable)?;
             if self.bindings.contains_key(pattern.variable.as_str()) {
                 return Err(Diagnostic::new(
                     "DUPLICATE_VARIABLE",
                     format!("{path}.nodes[{index}].variable"),
                     format!(
-                        "EXISTS pattern node variable '{}' shadows an outer graph variable",
-                        pattern.variable
+                        "{scope_name} node variable '{}' shadows an outer graph variable",
+                        pattern.variable,
                     ),
                 )
                 .into_core_error());
@@ -2219,8 +2348,8 @@ impl<'a> GraphPlanValidator<'a> {
                     "DUPLICATE_VARIABLE",
                     format!("{path}.nodes[{index}].variable"),
                     format!(
-                        "EXISTS pattern node variable '{}' is bound more than once",
-                        pattern.variable
+                        "{scope_name} node variable '{}' is bound more than once",
+                        pattern.variable,
                     ),
                 )
                 .into_core_error());
@@ -3592,7 +3721,7 @@ impl<'a> GraphPlanValidator<'a> {
                 Ok(ScalarType::Boolean)
             }
             ScalarExpression::CountSubquery { pattern } => {
-                self.validate_exists_pattern_predicate(pattern, format!("{path}.pattern"))?;
+                self.validate_count_subquery_pattern(pattern, format!("{path}.pattern"))?;
                 Ok(ScalarType::Integer)
             }
             ScalarExpression::Key { variable } => {

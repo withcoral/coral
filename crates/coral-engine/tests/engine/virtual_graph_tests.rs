@@ -1686,6 +1686,82 @@ async fn cypher_count_subqueries_preserve_inner_where_predicates() {
 }
 
 #[tokio::test]
+async fn cypher_count_subqueries_support_node_only_matches() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (team:Team) \
+         WHERE COUNT { MATCH (service:Service) WHERE service.tier = 'prod' } = 2 \
+         RETURN team.name AS team, \
+                COUNT { MATCH (service:Service) WHERE service.tier = 'dev' } AS dev_services \
+         ORDER BY team",
+    )
+    .await
+    .expect("Cypher COUNT node-only subquery should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("SELECT COUNT(*) FROM \"ops\".\"services\" AS \"__coral_count_n0\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"team": "analytics", "dev_services": 1}),
+            json!({"team": "infra", "dev_services": 1}),
+            json!({"team": "platform", "dev_services": 1}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_count_subqueries_support_correlated_node_only_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (team:Team) \
+         RETURN team.name AS team, \
+                COUNT { \
+                  MATCH (service:Service) \
+                  WHERE service.team = team.name \
+                } AS catalog_services \
+         ORDER BY team",
+    )
+    .await
+    .expect("Cypher COUNT node-only subquery with outer property reference should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"__coral_count_n0\".\"owning_team\" = \"n0\".\"team_name\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"team": "analytics", "catalog_services": 1}),
+            json!({"team": "infra", "catalog_services": 1}),
+            json!({"team": "platform", "catalog_services": 2}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_root_query_executes_against_synthetic_file_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

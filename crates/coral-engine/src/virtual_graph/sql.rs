@@ -4,13 +4,14 @@ use std::fmt::Write as _;
 use super::declaration::{Declaration, Node, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator, Direction,
-    ElementIdPredicate, ExistsPatternPredicate, GraphPlan, GraphQuery, GraphUnion,
-    GraphUnionOuterProjectionItem, KeyPredicate, Literal, NullOrder, OptionalMatchScope,
-    OrderDirection, OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate,
-    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
-    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
-    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
+    CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
+    GraphQuery, GraphUnion, GraphUnionOuterProjectionItem, KeyPredicate, Literal, NodePattern,
+    NullOrder, OptionalMatchScope, OrderDirection, OrderExpression, PredicateExpression,
+    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
+    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
+    ScalarPredicate, ScalarPredicateRhs,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -1817,9 +1818,16 @@ impl<'a> Lowerer<'a> {
 
     fn render_count_subquery_expression(
         &self,
-        predicate: &ExistsPatternPredicate,
+        pattern: &CountSubqueryPattern,
     ) -> Result<String, CoreError> {
-        self.render_scoped_pattern_select(predicate, "COUNT(*)")
+        match pattern {
+            CountSubqueryPattern::Relationships(predicate) => {
+                self.render_scoped_pattern_select(predicate, "COUNT(*)")
+            }
+            CountSubqueryPattern::Nodes { nodes, predicates } => {
+                self.render_count_node_subquery(nodes, predicates)
+            }
+        }
     }
 
     fn render_scoped_pattern_select(
@@ -1896,14 +1904,78 @@ impl<'a> Lowerer<'a> {
         ))
     }
 
+    fn render_count_node_subquery(
+        &self,
+        nodes: &[NodePattern],
+        predicates: &[PropertyPredicate],
+    ) -> Result<String, CoreError> {
+        if nodes.is_empty() {
+            return Err(CoreError::internal(
+                "validated COUNT node subquery had no node bindings",
+            ));
+        }
+        let local_nodes = self.scoped_local_node_map(nodes)?;
+        let local_aliases = Self::count_local_node_aliases(nodes);
+        let mut from_clause = String::new();
+        for (index, node) in nodes.iter().enumerate() {
+            let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
+                CoreError::internal("validated COUNT local node mapping was missing")
+            })?;
+            let alias = local_aliases.get(node.variable.as_str()).ok_or_else(|| {
+                CoreError::internal("validated COUNT local node alias was missing")
+            })?;
+            if index > 0 {
+                from_clause.push_str(" JOIN ");
+            }
+            write!(
+                from_clause,
+                "{} AS {}",
+                render_table_ref(&node_mapping.table),
+                quote_ident(alias)
+            )
+            .map_err(|_| CoreError::internal("failed to render COUNT node subquery SQL"))?;
+            if index > 0 {
+                from_clause.push_str(" ON TRUE");
+            }
+        }
+
+        let relationships = Vec::new();
+        let conditions = predicates
+            .iter()
+            .map(|property_predicate| {
+                self.render_exists_property_predicate(
+                    property_predicate,
+                    &relationships,
+                    &local_nodes,
+                    &local_aliases,
+                )
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?;
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+        Ok(format!(
+            "(SELECT COUNT(*) FROM {from_clause}{where_clause})"
+        ))
+    }
+
     fn exists_local_node_map<'b>(
         &self,
         predicate: &'b ExistsPatternPredicate,
     ) -> Result<BTreeMap<&'b str, &'a Node>, CoreError> {
+        self.scoped_local_node_map(&predicate.nodes)
+    }
+
+    fn scoped_local_node_map<'b>(
+        &self,
+        nodes: &'b [NodePattern],
+    ) -> Result<BTreeMap<&'b str, &'a Node>, CoreError> {
         let mut local_nodes = BTreeMap::new();
-        for node in &predicate.nodes {
+        for node in nodes {
             let mapping = self.validated.graph().node(&node.label).ok_or_else(|| {
-                CoreError::internal("validated EXISTS node label was not resolvable")
+                CoreError::internal("validated scoped node label was not resolvable")
             })?;
             local_nodes.insert(node.variable.as_str(), mapping);
         }
@@ -1916,6 +1988,14 @@ impl<'a> Lowerer<'a> {
             .iter()
             .enumerate()
             .map(|(index, node)| (node.variable.as_str(), format!("__coral_exists_n{index}")))
+            .collect()
+    }
+
+    fn count_local_node_aliases(nodes: &[NodePattern]) -> BTreeMap<&str, String> {
+        nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.variable.as_str(), format!("__coral_count_n{index}")))
             .collect()
     }
 

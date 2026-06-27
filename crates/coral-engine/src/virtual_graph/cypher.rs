@@ -25,14 +25,15 @@ use regex::Regex;
 
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator, Direction,
-    ElementIdPredicate, ExistsPatternPredicate, GraphPlan, GraphQuery, GraphUnion,
-    GraphUnionBranch, GraphUnionOuterProjection, GraphUnionOuterProjectionItem, KeyPredicate,
-    Literal, NodePattern, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey,
-    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
-    ScalarPredicate, ScalarPredicateRhs,
+    AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
+    CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
+    GraphQuery, GraphUnion, GraphUnionBranch, GraphUnionOuterProjection,
+    GraphUnionOuterProjectionItem, KeyPredicate, Literal, NodePattern, OptionalMatchScope,
+    OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
+    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
+    ProjectionPredicateRhs, PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef,
+    RelationshipPattern, ScalarCaseAlternative, ScalarExpression, ScalarPredicate,
+    ScalarPredicateRhs,
 };
 use crate::CoreError;
 
@@ -3792,6 +3793,36 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
 }
 
 fn reject_ignored_path_variable_references_in_count_subquery(
+    pattern: &CountSubqueryPattern,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    match pattern {
+        CountSubqueryPattern::Relationships(pattern) => {
+            reject_ignored_path_variable_references_in_exists_pattern(pattern, state, path)?;
+        }
+        CountSubqueryPattern::Nodes { nodes, predicates } => {
+            for (index, node) in nodes.iter().enumerate() {
+                reject_ignored_path_variable(
+                    &node.variable,
+                    state,
+                    format!("{path}.nodes[{index}].variable"),
+                )?;
+            }
+            for (index, predicate) in predicates.iter().enumerate() {
+                reject_ignored_path_variable_references_in_property_predicate(
+                    predicate,
+                    state,
+                    format!("{path}.predicates[{index}]"),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn reject_ignored_path_variable_references_in_exists_pattern(
     pattern: &ExistsPatternPredicate,
     state: &CypherCompileState,
     path: impl Into<String>,
@@ -7928,7 +7959,7 @@ fn compile_count_subquery_scalar_expression(
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
-    let pattern = compile_regular_query_scoped_pattern(
+    let pattern = compile_regular_query_count_subquery_pattern(
         &count.query,
         format!("{path}.query"),
         plan,
@@ -7941,6 +7972,12 @@ fn compile_count_subquery_scalar_expression(
     })
 }
 
+#[derive(Debug)]
+struct CompiledScopedPlan {
+    plan: GraphPlan,
+    delta: ScopedPlanDelta,
+}
+
 fn compile_regular_query_scoped_pattern(
     query: &RegularQuery,
     path: impl Into<String>,
@@ -7950,6 +7987,58 @@ fn compile_regular_query_scoped_pattern(
     missing_match_message: &'static str,
 ) -> Result<ExistsPatternPredicate, CoreError> {
     let path = path.into();
+    let Some(plan) = plan else {
+        return Err(unsupported(
+            path,
+            format!("{feature_name} require graph context"),
+        ));
+    };
+    let scoped = compile_regular_query_scoped_plan(
+        query,
+        &path,
+        plan,
+        context,
+        feature_name,
+        missing_match_message,
+    )?;
+    compile_scoped_plan_delta_pattern(scoped.plan, plan, scoped.delta, path, feature_name)
+}
+
+fn compile_regular_query_count_subquery_pattern(
+    query: &RegularQuery,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+    feature_name: &'static str,
+    missing_match_message: &'static str,
+) -> Result<CountSubqueryPattern, CoreError> {
+    let path = path.into();
+    let Some(plan) = plan else {
+        return Err(unsupported(
+            path,
+            format!("{feature_name} require graph context"),
+        ));
+    };
+    let scoped = compile_regular_query_scoped_plan(
+        query,
+        &path,
+        plan,
+        context,
+        feature_name,
+        missing_match_message,
+    )?;
+    compile_scoped_plan_delta_count_subquery(scoped.plan, plan, scoped.delta, path, feature_name)
+}
+
+fn compile_regular_query_scoped_plan(
+    query: &RegularQuery,
+    path: &str,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+    feature_name: &'static str,
+    missing_match_message: &'static str,
+) -> Result<CompiledScopedPlan, CoreError> {
+    let path = path.to_string();
     if !query.unions.is_empty() {
         return Err(unsupported(
             format!("{path}.unions"),
@@ -7994,20 +8083,17 @@ fn compile_regular_query_scoped_pattern(
             ));
         }
     }
-    let Some(plan) = plan else {
-        return Err(unsupported(
-            path,
-            format!("{feature_name} require graph context"),
-        ));
-    };
     if single_part.reading_clauses.is_empty() {
         return Err(unsupported(format!("{path}.match"), missing_match_message));
     }
     let mut exists_plan = plan.clone();
+    exists_plan.predicate = None;
     let mut exists_state = CypherCompileState::default();
     let node_start = exists_plan.nodes.len();
     let relationship_start = exists_plan.relationships.len();
     let predicate_start = exists_plan.predicates.len();
+    let optional_relationship_start = exists_plan.optional_relationships.len();
+    let optional_match_start = exists_plan.optional_matches.len();
     compile_reading_clauses_into(
         &single_part.reading_clauses,
         format!("{path}.match"),
@@ -8015,23 +8101,24 @@ fn compile_regular_query_scoped_pattern(
         &mut exists_state,
         context,
     )?;
-    if !exists_plan.optional_relationships.is_empty() || !exists_plan.optional_matches.is_empty() {
+    if exists_plan.optional_relationships.len() > optional_relationship_start
+        || exists_plan.optional_matches.len() > optional_match_start
+    {
         return Err(unsupported(
             format!("{path}.match"),
-            "OPTIONAL MATCH inside EXISTS subqueries requires nullable scoped predicate planning and is not supported yet",
+            format!(
+                "OPTIONAL MATCH inside {feature_name} requires nullable scoped predicate planning and is not supported yet"
+            ),
         ));
     }
-    compile_scoped_plan_delta_pattern(
-        exists_plan,
-        plan,
-        ScopedPlanDelta {
+    Ok(CompiledScopedPlan {
+        plan: exists_plan,
+        delta: ScopedPlanDelta {
             nodes_before: node_start,
             relationship_base: relationship_start,
             predicate_offset: predicate_start,
         },
-        path,
-        feature_name,
-    )
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -8054,6 +8141,7 @@ fn compile_scoped_pattern_predicate(
         return Err(unsupported(path, missing_context_message));
     };
     let mut exists_plan = plan.clone();
+    exists_plan.predicate = None;
     let mut exists_state = CypherCompileState::default();
     let node_start = exists_plan.nodes.len();
     let relationship_start = exists_plan.relationships.len();
@@ -8113,22 +8201,8 @@ fn compile_scoped_plan_delta_pattern(
         ));
     }
 
-    let mut predicates = exists_plan
-        .predicates
-        .get(delta.predicate_offset..)
-        .ok_or_else(|| CoreError::internal("EXISTS predicate slice was invalid"))?
-        .to_vec();
-    if let Some(predicate) = exists_plan.predicate.take() {
-        if !is_conjunctive_expression(&predicate) {
-            return Err(unsupported(
-                format!("{path}.where"),
-                format!(
-                    "{feature_name} currently support WHERE clauses with property comparisons joined by AND"
-                ),
-            ));
-        }
-        append_conjunctive_expression(predicate, &mut predicates);
-    }
+    let predicates =
+        take_scoped_plan_delta_predicates(&mut exists_plan, delta, &path, feature_name)?;
 
     Ok(ExistsPatternPredicate {
         nodes: exists_plan
@@ -8139,6 +8213,65 @@ fn compile_scoped_plan_delta_pattern(
         relationships,
         predicates,
     })
+}
+
+fn compile_scoped_plan_delta_count_subquery(
+    mut count_plan: GraphPlan,
+    plan: &GraphPlan,
+    delta: ScopedPlanDelta,
+    path: impl Into<String>,
+    feature_name: &'static str,
+) -> Result<CountSubqueryPattern, CoreError> {
+    let path = path.into();
+    let relationships = count_plan
+        .relationships
+        .get(delta.relationship_base..)
+        .ok_or_else(|| CoreError::internal("COUNT relationship slice was invalid"))?
+        .to_vec();
+    if !relationships.is_empty() {
+        return compile_scoped_plan_delta_pattern(count_plan, plan, delta, path, feature_name)
+            .map(CountSubqueryPattern::Relationships);
+    }
+
+    let nodes = count_plan
+        .nodes
+        .get(delta.nodes_before..)
+        .ok_or_else(|| CoreError::internal("COUNT node slice was invalid"))?
+        .to_vec();
+    if nodes.is_empty() {
+        return Err(unsupported(
+            format!("{path}.pattern.nodes"),
+            "COUNT subqueries without relationship patterns must bind at least one local node",
+        ));
+    }
+    let predicates =
+        take_scoped_plan_delta_predicates(&mut count_plan, delta, &path, feature_name)?;
+    Ok(CountSubqueryPattern::Nodes { nodes, predicates })
+}
+
+fn take_scoped_plan_delta_predicates(
+    plan: &mut GraphPlan,
+    delta: ScopedPlanDelta,
+    path: &str,
+    feature_name: &str,
+) -> Result<Vec<PropertyPredicate>, CoreError> {
+    let mut predicates = plan
+        .predicates
+        .get(delta.predicate_offset..)
+        .ok_or_else(|| CoreError::internal("scoped predicate slice was invalid"))?
+        .to_vec();
+    if let Some(predicate) = plan.predicate.take() {
+        if !is_conjunctive_expression(&predicate) {
+            return Err(unsupported(
+                format!("{path}.where"),
+                format!(
+                    "{feature_name} currently support WHERE clauses with property comparisons joined by AND"
+                ),
+            ));
+        }
+        append_conjunctive_expression(predicate, &mut predicates);
+    }
+    Ok(predicates)
 }
 
 fn compile_is_empty_predicate(

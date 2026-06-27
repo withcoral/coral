@@ -154,10 +154,10 @@ pub enum ScalarExpression {
     Literal(Literal),
     /// A boolean predicate used as a scalar value.
     Predicate(Box<PredicateExpression>),
-    /// Count rows produced by a correlated read-only graph subquery.
+    /// Count rows produced by a read-only graph subquery.
     CountSubquery {
         /// Scoped graph pattern counted by the subquery.
-        pattern: Box<ExistsPatternPredicate>,
+        pattern: Box<CountSubqueryPattern>,
     },
     /// Stable mapped key for a graph variable.
     Key {
@@ -427,6 +427,21 @@ pub enum ScalarExpression {
         alternatives: Vec<ScalarCaseAlternative>,
         /// Optional ELSE fallback.
         else_expression: Option<Box<ScalarExpression>>,
+    },
+}
+
+/// Read-only scoped graph pattern counted by `COUNT { ... }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CountSubqueryPattern {
+    /// Count rows produced by a relationship-backed scoped pattern.
+    Relationships(ExistsPatternPredicate),
+    /// Count rows produced by one or more scoped node patterns.
+    Nodes {
+        /// Node variables introduced by the count subquery. Previously bound
+        /// outer variables are not repeated here.
+        nodes: Vec<NodePattern>,
+        /// Inline node property predicates applied inside the count subquery.
+        predicates: Vec<PropertyPredicate>,
     },
 }
 
