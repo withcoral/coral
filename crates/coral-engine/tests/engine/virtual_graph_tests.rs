@@ -1552,6 +1552,47 @@ async fn cypher_searched_case_scalar_expressions_execute_against_synthetic_sourc
 }
 
 #[tokio::test]
+async fn cypher_generic_case_scalar_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                CASE service.tier \
+                  WHEN 'prod' THEN 'production' \
+                  WHEN 'dev' THEN 'development' \
+                  ELSE 'unknown' \
+                END AS tier_group \
+         ORDER BY service",
+    )
+    .await
+    .expect("generic CASE scalar expression query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("CASE WHEN \"n0\".\"tier\" = 'prod' THEN 'production'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "tier_group": "production"}),
+            json!({"service": "deployments", "tier_group": "production"}),
+            json!({"service": "experiments", "tier_group": "development"}),
+            json!({"service": "legacy-sync", "tier_group": "unknown"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_string_case_scalar_expressions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

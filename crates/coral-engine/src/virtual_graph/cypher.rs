@@ -2485,12 +2485,6 @@ fn compile_case_scalar_expression(
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
-    if case.scrutinee.is_some() {
-        return Err(unsupported(
-            format!("{path}.scrutinee"),
-            "generic CASE expressions are not supported yet; use searched CASE WHEN predicates",
-        ));
-    }
     if case.alternatives.is_empty() {
         return Err(unsupported(
             format!("{path}.alternatives"),
@@ -2503,13 +2497,25 @@ fn compile_case_scalar_expression(
         .iter()
         .enumerate()
         .map(|(index, alternative)| {
-            Ok(ScalarCaseAlternative {
-                when: compile_predicate_expression_in_mode(
+            let when = if let Some(scrutinee) = &case.scrutinee {
+                compile_binary_comparison(
+                    scrutinee,
+                    CypherComparisonOperator::Eq,
                     &alternative.when,
                     format!("{path}.alternatives[{index}].when"),
                     PredicateCompileMode::CaseWhen,
                     context,
-                )?,
+                )?
+            } else {
+                compile_predicate_expression_in_mode(
+                    &alternative.when,
+                    format!("{path}.alternatives[{index}].when"),
+                    PredicateCompileMode::CaseWhen,
+                    context,
+                )?
+            };
+            Ok(ScalarCaseAlternative {
+                when,
                 then: compile_scalar_expression(
                     &alternative.then,
                     format!("{path}.alternatives[{index}].then"),
@@ -6136,18 +6142,50 @@ mod tests {
     }
 
     #[test]
-    fn rejects_generic_case_scalar_expressions() {
-        let error = compile_cypher(
+    fn compiles_generic_case_scalar_expressions() {
+        let plan = compile_cypher(
             "MATCH (service:Service) \
              RETURN CASE service.tier WHEN 'prod' THEN 'production' ELSE 'other' END AS tier",
         )
-        .expect_err("generic CASE should be rejected until equality semantics are modeled");
+        .expect("generic CASE scalar expressions should compile");
 
-        assert!(
-            error
-                .to_string()
-                .contains("generic CASE expressions are not supported yet"),
-            "{error}"
+        let [
+            Projection::Expression {
+                expression:
+                    ScalarExpression::Case {
+                        alternatives,
+                        else_expression,
+                    },
+                alias,
+            },
+        ] = plan.projections.as_slice()
+        else {
+            panic!("expected CASE expression projection");
+        };
+        assert_eq!(alias, "tier");
+        let [production_alternative] = alternatives.as_slice() else {
+            panic!("expected one CASE alternative");
+        };
+        assert_eq!(
+            production_alternative.when,
+            PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            })
+        );
+        assert_eq!(
+            production_alternative.then,
+            ScalarExpression::Literal(Literal::String("production".to_string()))
+        );
+        assert_eq!(
+            else_expression.as_deref(),
+            Some(&ScalarExpression::Literal(Literal::String(
+                "other".to_string()
+            )))
         );
     }
 
