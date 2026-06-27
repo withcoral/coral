@@ -3,28 +3,18 @@ version: 0.1.0
 dsl_version: 3
 backend: http
 description: >-
-  Query real-time infrastructure agent topology, active threshold alarms, and system metrics metadata from Netdata.
-base_url: "{{input.NETDATA_URL}}/api/v1"
+  Query real-time infrastructure agent topology, active health alerts, and
+  metric context metadata from a Netdata Agent.
+base_url: "{{input.NETDATA_URL}}"
 
 inputs:
   NETDATA_URL:
     kind: variable
     hint: |
-      Netdata agent base URL with port and without trailing slash,
+      Netdata Agent base URL with port and without a trailing slash,
       for example `http://localhost:19999` or `https://netdata.infra.local`.
-  NETDATA_TOKEN:
-    kind: secret
-    nullable: true
-    hint: |
-      Optional Netdata Cloud API token or bearer token if the agent endpoint
-      is locked behind an authentication proxy.
-
-auth:
-  type: HeaderAuth
-  headers:
-    - name: Authorization
-      from: template
-      template: Bearer {{input.NETDATA_TOKEN}}
+      Point this at the Agent's own HTTP endpoint (the one that serves
+      `/api/v1` and `/api/v3`), not at Netdata Cloud.
 
 request_headers:
   - name: Accept
@@ -36,10 +26,10 @@ test_queries:
 
 tables:
   - name: nodes
-    description: Runtime parameters, operating system footprints, and hardware specs of the target agent host.
+    description: Runtime parameters, operating system footprint, and hardware specs of the target agent host.
     request:
       method: GET
-      path: /info
+      path: /api/v1/info
     response:
       row_strategy: direct
       rows_path: []
@@ -49,12 +39,12 @@ tables:
       - name: version
         type: Utf8
         nullable: false
-        description: Core engine release version string of the running Netdata agent.
+        description: Release version string of the running Netdata agent.
         expr: {kind: path, path: [version]}
       - name: os_name
         type: Utf8
         nullable: true
-        description: Operating system distribution identity reported by the host (e.g., ubuntu, debian).
+        description: Operating system distribution name reported by the host (e.g., ubuntu, debian).
         expr: {kind: path, path: [os_name]}
       - name: os_version
         type: Utf8
@@ -64,19 +54,19 @@ tables:
       - name: kernel_version
         type: Utf8
         nullable: true
-        description: Absolute tracking version identifier of the running operating system kernel.
+        description: Version identifier of the running operating system kernel.
         expr: {kind: path, path: [kernel_version]}
       - name: cpu_cores
         type: Int64
         nullable: true
-        description: Total physical and logical processing cores allocated to the machine footprint.
+        description: Number of CPU cores monitored on the host.
         expr: {kind: path, path: [monitored_cpus]}
 
   - name: alarms
-    description: Inventory of active and configured system health threshold triggers and warning states.
+    description: Active and configured health alarm states reported by the agent.
     request:
       method: GET
-      path: /alarms
+      path: /api/v1/alarms
       query:
         - name: all
           from: literal
@@ -90,72 +80,83 @@ tables:
       - name: alarm_id
         type: Utf8
         nullable: false
-        description: The key identity token of the alarm entry.
-        expr: {kind: dict_key}
+        description: Dictionary key identifying the alarm entry.
+        expr: {kind: path, path: [_key]}
       - name: alarm_name
         type: Utf8
         nullable: false
-        description: Technical name identifying the system health alert rule.
-        expr: {kind: path, path: [value, name]}
+        description: Name of the health alert rule.
+        expr: {kind: path, path: [name]}
       - name: chart
         type: Utf8
         nullable: false
-        description: Parent telemetry data collection chart the threshold rule targets.
-        expr: {kind: path, path: [value, chart]}
+        description: Chart the alarm rule is attached to.
+        expr: {kind: path, path: [chart]}
       - name: status
         type: Utf8
         nullable: true
-        description: Current evaluation state phase of the threshold trigger (e.g., WARNING, CRITICAL).
-        expr: {kind: path, path: [value, status]}
+        description: Current evaluation state of the alarm (e.g., WARNING, CRITICAL, CLEAR).
+        expr: {kind: path, path: [status]}
       - name: value
         type: Float64
         nullable: true
-        description: Most recent calculation score registered by the metric collector pipeline.
-        expr: {kind: path, path: [value, value]}
+        description: Most recent value evaluated by the alarm.
+        expr: {kind: path, path: [value]}
       - name: family
         type: Utf8
         nullable: true
-        description: Subsystem group classification mapping (e.g., cpu, disk, network).
-        expr: {kind: path, path: [value, family]}
+        description: Subsystem group classification (e.g., cpu, disk, network).
+        expr: {kind: path, path: [family]}
       - name: recipient
         type: Utf8
         nullable: true
-        description: Outbound communication target role handling routing notifications.
-        expr: {kind: path, path: [value, recipient]}
+        description: Notification routing target for the alarm.
+        expr: {kind: path, path: [recipient]}
 
   - name: metrics_metadata
-    description: Discovery matrix cataloging all distinct operational metric charts recorded by the engine.
+    description: >-
+      Catalog of metric contexts collected by the agent, from the current
+      Netdata v3 contexts API.
     request:
       method: GET
-      path: /charts
+      path: /api/v3/contexts
+      query:
+        - name: options
+          from: literal
+          value: titles
     response:
       row_strategy: dict_entries
-      rows_path: [charts]
+      rows_path: [contexts]
     pagination:
       mode: none
     columns:
-      - name: chart_id
+      - name: context_id
         type: Utf8
         nullable: false
-        description: Globally unique programmatic indexing lookup ID of the target chart stream.
-        expr: {kind: dict_key}
-      - name: chart_name
-        type: Utf8
-        nullable: false
-        description: Human-readable charting tracking name assigned within the visual monitoring dashboard.
-        expr: {kind: path, path: [value, name]}
+        description: Unique context identifier (e.g., system.cpu, disk.io).
+        expr: {kind: path, path: [_key]}
       - name: title
         type: Utf8
         nullable: true
-        description: Descriptive summary label title explaining the specific chart data focus.
-        expr: {kind: path, path: [value, title]}
-      - name: unit
+        description: Human-readable title of the context (included via the `titles` option).
+        expr: {kind: path, path: [title]}
+      - name: units
         type: Utf8
         nullable: true
-        description: Metric dimension measurement units utilized by the dataset (e.g., percentage, MiB/s).
-        expr: {kind: path, path: [value, units]}
-      - name: chart_type
+        description: Measurement units for the context (e.g., percentage, MiB/s).
+        expr: {kind: path, path: [units]}
+      - name: family
         type: Utf8
         nullable: true
-        description: Internal architectural component plotting strategy template (e.g., line, area).
-        expr: {kind: path, path: [value, chart_type]}
+        description: Subsystem family the context belongs to (e.g., cpu, disk, network).
+        expr: {kind: path, path: [family]}
+      - name: priority
+        type: Int64
+        nullable: true
+        description: Relative display priority of the context (lower sorts higher).
+        expr: {kind: path, path: [priority]}
+      - name: live
+        type: Boolean
+        nullable: true
+        description: Whether the context is currently collecting data.
+        expr: {kind: path, path: [live]}

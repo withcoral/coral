@@ -1,11 +1,11 @@
 # Netdata (Community)
 
 **Version:** 0.1.0
-**Backend:** HTTP (Netdata Agent v1 REST API)
+**Backend:** HTTP (Netdata Agent REST API)
 **Tables:** 3
-**Base URL:** `{{input.NETDATA_URL}}/api/v1`
+**Base URL:** `{{input.NETDATA_URL}}`
 
-Query Netdata host metadata, active alarms, and metrics catalog definitions directly through Coral SQL using the Netdata agent API.
+Query Netdata host metadata, active alarms, and the metric context catalog directly through Coral SQL using the Netdata **Agent** API.
 
 This integration is intended for infrastructure observability and operational auditing workflows across monitored systems.
 
@@ -35,18 +35,34 @@ coral source add --file <path-to-manifest>
 
 | Input | Kind | Required | Description |
 |---|---|---|---|
-| `NETDATA_URL` | variable | yes | Netdata agent base URL with port, for example `http://localhost:19999` |
-| `NETDATA_TOKEN` | secret | no | Optional bearer token if the Netdata endpoint is protected behind an authentication proxy |
+| `NETDATA_URL` | variable | yes | Netdata **Agent** base URL with port, for example `http://localhost:19999`. Point it at the Agent's HTTP endpoint, not at Netdata Cloud. |
+
+---
+
+# Authentication
+
+**None is required, and this source sends no credentials.**
+
+This source targets a Netdata **Agent**. The Agent's data APIs (`/api/v1`, `/api/v3`) are public by default — they are governed by IP-based access control (`allow dashboard from` in `netdata.conf`), not by a token.
+
+A few clarifications, since this is easy to get wrong:
+
+- **Netdata Cloud API tokens** (created at app.netdata.cloud) authenticate against the Netdata **Cloud** API, a different product surface. They do **not** apply to a self-hosted Agent and are not used here.
+- The Agent can optionally enable **bearer protection** (via `/api/v3/bearer_protection`) or sit behind an authenticating reverse proxy. Coral does not currently send a bearer token to the Agent, so for those setups point `NETDATA_URL` at an endpoint Coral can reach without app-level authentication (for example, an internal address allowed by the Agent's ACL). Token-based Agent access may be added in a future revision.
 
 ---
 
 # Tables Overview
 
-| Table | API Endpoint | Required Filters | Pagination |
-|---|---|---|---|
-| `nodes` | `GET /info` | — | None (returns a single object response) |
-| `alarms` | `GET /alarms?all=true` | — | None (iterates over alarm dictionary entries) |
-| `metrics_metadata` | `GET /charts` | — | None (iterates over chart dictionary entries) |
+| Table | API Endpoint | Pagination |
+|---|---|---|
+| `nodes` | `GET /api/v1/info` | None (single object response) |
+| `alarms` | `GET /api/v1/alarms?all=true` | None (iterates the alarms dictionary) |
+| `metrics_metadata` | `GET /api/v3/contexts?options=titles` | None (iterates the contexts dictionary) |
+
+> Netdata's current API is **v3**. `metrics_metadata` uses `/api/v3/contexts`, which replaces the deprecated `/api/v1/charts` endpoint for context/metric metadata. `nodes` and `alarms` continue to use their `/api/v1` endpoints, which remain functional; they can move to v3 equivalents in a later revision.
+
+Rows from `alarms` and `metrics_metadata` come from JSON **dictionaries** (keyed objects), so Coral uses the `dict_entries` row strategy: each entry's fields are read directly, and the dictionary key is exposed via the `_key` field (surfaced as `alarm_id` / `context_id`).
 
 ---
 
@@ -54,7 +70,7 @@ coral source add --file <path-to-manifest>
 
 ## netdata.nodes
 
-Host runtime metadata and operating system information.
+Host runtime metadata and operating system information (`/api/v1/info`).
 
 | Column | Type | Description |
 |---|---|---|
@@ -62,37 +78,40 @@ Host runtime metadata and operating system information.
 | `os_name` | Utf8 | Operating system distribution name |
 | `os_version` | Utf8 | Operating system version |
 | `kernel_version` | Utf8 | Running kernel version |
-| `cpu_cores` | Int64 | Total monitored CPU cores |
+| `cpu_cores` | Int64 | Number of monitored CPU cores |
 
 ---
 
 ## netdata.alarms
 
-Active and configured system alarm definitions.
+Active and configured health alarm states (`/api/v1/alarms?all=true`).
 
 | Column | Type | Description |
 |---|---|---|
-| `alarm_id` | Utf8 | Alarm dictionary entry key |
-| `alarm_name` | Utf8 | Technical alarm name |
-| `chart` | Utf8 | Chart associated with the alarm |
-| `status` | Utf8 | Current alarm state |
-| `value` | Float64 | Most recent evaluated alarm value |
-| `family` | Utf8 | Alarm subsystem classification |
+| `alarm_id` | Utf8 | Alarm dictionary key |
+| `alarm_name` | Utf8 | Health alert rule name |
+| `chart` | Utf8 | Chart the alarm is attached to |
+| `status` | Utf8 | Current alarm state (e.g., WARNING, CRITICAL, CLEAR) |
+| `value` | Float64 | Most recent evaluated value |
+| `family` | Utf8 | Subsystem classification |
 | `recipient` | Utf8 | Notification routing target |
 
 ---
 
 ## netdata.metrics_metadata
 
-Chart catalog and metric metadata definitions.
+Metric context catalog from the current v3 contexts API (`/api/v3/contexts?options=titles`).
 
 | Column | Type | Description |
 |---|---|---|
-| `chart_id` | Utf8 | Unique chart identifier |
-| `chart_name` | Utf8 | Human-readable chart name |
-| `title` | Utf8 | Chart display title |
-| `unit` | Utf8 | Metric measurement unit |
-| `chart_type` | Utf8 | Visualization chart type |
+| `context_id` | Utf8 | Unique context identifier (e.g., `system.cpu`, `disk.io`) |
+| `title` | Utf8 | Human-readable context title |
+| `units` | Utf8 | Measurement units (e.g., percentage, MiB/s) |
+| `family` | Utf8 | Subsystem family |
+| `priority` | Int64 | Relative display priority (lower sorts higher) |
+| `live` | Boolean | Whether the context is currently collecting |
+
+Per-context dimensions are available from the same endpoint via the `dimensions` option but are not modeled as a separate table in this revision.
 
 ---
 
@@ -101,31 +120,19 @@ Chart catalog and metric metadata definitions.
 ## Find Active Warning or Critical Alarms
 
 ```sql
-SELECT
-  alarm_id,
-  alarm_name,
-  chart,
-  family,
-  status,
-  value
+SELECT alarm_id, alarm_name, chart, family, status, value
 FROM netdata.alarms
 WHERE status IN ('WARNING', 'CRITICAL')
 ORDER BY value DESC;
 ```
 
----
-
-## Inventory Percentage-Based Metrics
+## Inventory Percentage-Based Metric Contexts
 
 ```sql
-SELECT
-  chart_id,
-  chart_name,
-  title,
-  chart_type
+SELECT context_id, title, family, priority
 FROM netdata.metrics_metadata
-WHERE unit = 'percentage'
-ORDER BY chart_id ASC;
+WHERE units = 'percentage'
+ORDER BY context_id ASC;
 ```
 
 ---
@@ -150,15 +157,18 @@ coral source lint sources/community/netdata/manifest.yaml
 
 ```bash
 export NETDATA_URL=http://localhost:19999
-export NETDATA_TOKEN=your_optional_bearer_token
 
 coral source add --file sources/community/netdata/manifest.yaml
 coral source test netdata
+coral sql "SELECT context_id, title, units FROM netdata.metrics_metadata LIMIT 5"
 ```
 
 ---
 
-# Representative Live Output
+# Live Output
+
+> Replace the block below with the actual output from your own `coral source test netdata`
+> run against this manifest. Do not ship placeholder output.
 
 ```text
 $ coral source test netdata
@@ -174,22 +184,16 @@ $ coral source test netdata
   1 declared · 1 passed · 0 failed
 
 ✓ SELECT os_name, kernel_version FROM netdata.nodes LIMIT 1
-
-+---------+--------------------+
-| os_name | kernel_version     |
-+---------+--------------------+
-| ubuntu  | 5.15.0-101-generic |
-+---------+--------------------+
-
-1 row
+  1 row
 ```
 
 ---
 
 # Limitations
 
-- Read-only retrieval scope
-- Does not expose raw historical timeseries data (`/data`) APIs
-- Intended for metadata inventory and operational monitoring workflows
-- `/alarms` and `/charts` endpoints are modeled using Coral `dict_entries` response traversal because Netdata returns dictionary-based payloads rather than flat arrays
-- Large monitoring environments with extensive chart catalogs may require targeted SQL filtering for optimal performance
+- Read-only retrieval scope.
+- No credentials are sent; the Agent API must be reachable under its IP-based ACL. Agent bearer protection and authenticating proxies are not yet supported.
+- Does not expose raw historical timeseries data (`/api/v3/data`).
+- `metrics_metadata` uses the current `/api/v3/contexts` endpoint; `nodes` and `alarms` use `/api/v1` endpoints, which Netdata marks deprecated but still serves.
+- `alarms` and `metrics_metadata` are modeled with Coral's `dict_entries` strategy because Netdata returns keyed dictionaries rather than arrays.
+- Large monitoring environments with extensive context catalogs may need targeted SQL filtering.
