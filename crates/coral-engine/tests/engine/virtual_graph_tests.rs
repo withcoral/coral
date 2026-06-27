@@ -4924,6 +4924,42 @@ async fn cypher_terminal_with_final_return_aliases_execute_against_synthetic_sou
 }
 
 #[tokio::test]
+async fn cypher_terminal_with_reordered_return_aliases_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier IS NOT NULL \
+         WITH service.tier AS tier, count(service) AS services \
+         RETURN services AS service_count, tier AS service_tier \
+         ORDER BY service_count DESC, service_tier",
+    )
+    .await
+    .expect("terminal WITH reordered aliases should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COUNT(\"n0\".\"id\") AS \"service_count\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service_count": 2, "service_tier": "prod"}),
+            json!({"service_count": 1, "service_tier": "dev"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_terminal_with_return_star_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

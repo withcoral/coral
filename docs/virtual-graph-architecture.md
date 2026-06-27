@@ -152,7 +152,8 @@ The supported foundation subset is intentionally narrow:
   projected aggregates, and projection alias `ORDER BY` including aggregate
   aliases;
 - transparent `WITH` pass-through, graph-variable aliasing, terminal
-  graph-variable `WITH` row modifiers, and terminal `WITH` projection subsets;
+  graph-variable `WITH` row modifiers, and terminal `WITH` projection subsets
+  whose final `RETURN` can reorder or rename every projected alias;
 - non-materialized path variable bindings in `MATCH p = (...)` when `p` is not
   carried by `WITH *` or used as a graph value;
 - integer `SKIP` and `LIMIT`.

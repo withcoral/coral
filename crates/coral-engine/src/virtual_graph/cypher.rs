@@ -446,11 +446,18 @@ fn compile_terminal_with_clause(
         ));
     }
 
+    let mut aliases = BTreeSet::new();
     for (index, item) in with.items.iter().enumerate() {
-        if item.alias.is_none() {
+        let Some(alias) = item.alias.as_ref().map(variable_name) else {
             return Err(unsupported(
                 format!("with.items[{index}].alias"),
                 "terminal WITH projections require explicit aliases",
+            ));
+        };
+        if !aliases.insert(alias.clone()) {
+            return Err(unsupported(
+                format!("with.items[{index}].alias"),
+                format!("terminal WITH projection alias '{alias}' is defined more than once"),
             ));
         }
         if matches!(&item.expression, Expression::Variable(_)) {
@@ -496,7 +503,7 @@ fn compile_terminal_with_clause(
 
 fn apply_terminal_return_projection_aliases(
     return_clause: &Return,
-    projections: &mut [Projection],
+    projections: &mut Vec<Projection>,
 ) -> Result<(), CoreError> {
     if return_clause.star {
         if return_clause.items.is_empty() {
@@ -510,15 +517,13 @@ fn apply_terminal_return_projection_aliases(
     if return_clause.items.len() != projections.len() {
         return Err(unsupported(
             "final_part.return.items",
-            "terminal RETURN after WITH must pass through every WITH alias in the same order",
+            "terminal RETURN after WITH must pass through every WITH alias",
         ));
     }
-    for (index, (item, projection)) in return_clause
-        .items
-        .iter()
-        .zip(projections.iter_mut())
-        .enumerate()
-    {
+    let mut reordered = Vec::with_capacity(projections.len());
+    let mut available = projections.clone();
+    let mut returned_aliases = BTreeSet::new();
+    for (index, item) in return_clause.items.iter().enumerate() {
         let Expression::Variable(variable) = &item.expression else {
             return Err(unsupported(
                 format!("final_part.return.items[{index}].expression"),
@@ -526,22 +531,28 @@ fn apply_terminal_return_projection_aliases(
             ));
         };
         let alias = variable_name(variable);
-        let expected = projection_output_alias(projection).ok_or_else(|| {
-            unsupported(
-                format!("final_part.return.items[{index}]"),
-                "terminal WITH projections require aliases",
-            )
-        })?;
-        if alias != expected {
+        if !returned_aliases.insert(alias.clone()) {
             return Err(unsupported(
                 format!("final_part.return.items[{index}].expression"),
-                format!("terminal RETURN expected WITH alias '{expected}', got '{alias}'"),
+                format!("terminal RETURN projects WITH alias '{alias}' more than once"),
             ));
         }
+        let position = available
+            .iter()
+            .position(|projection| projection_output_alias(projection) == Some(alias.as_str()))
+            .ok_or_else(|| {
+                unsupported(
+                    format!("final_part.return.items[{index}].expression"),
+                    format!("terminal RETURN references unknown WITH alias '{alias}'"),
+                )
+            })?;
+        let mut projection = available.remove(position);
         if let Some(alias) = &item.alias {
-            set_projection_output_alias(projection, variable_name(alias));
+            set_projection_output_alias(&mut projection, variable_name(alias));
         }
+        reordered.push(projection);
     }
+    *projections = reordered;
     Ok(())
 }
 
@@ -7713,6 +7724,54 @@ mod tests {
     }
 
     #[test]
+    fn compiles_terminal_with_reordered_final_return_aliases() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH service.tier AS tier, count(service) AS services \
+             RETURN services AS total_services, tier AS service_tier \
+             ORDER BY total_services DESC, service_tier",
+        )
+        .expect("terminal WITH final RETURN aliases should reorder projections");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Aggregate {
+                    function: AggregateFunction::Count,
+                    target: AggregateTarget::VariableKey {
+                        variable: "service".to_string(),
+                    },
+                    distinct: false,
+                    alias: "total_services".to_string(),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("service_tier".to_string()),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("total_services".to_string()),
+                    direction: OrderDirection::Descending,
+                },
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_terminal_with_return_star_alias_passthrough() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -11459,6 +11518,15 @@ mod tests {
         assert_unsupported("MATCH (service:Service) WITH service.name RETURN service.name");
         assert_unsupported("MATCH (service:Service) WITH service AS renamed RETURN renamed");
         assert_unsupported("MATCH (service:Service) WITH service.name AS service RETURN missing");
+        assert_unsupported(
+            "MATCH (service:Service) WITH service.name AS value, service.tier AS value RETURN value",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) WITH service.name AS name, service.tier AS tier RETURN name, name",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) WITH service.name AS name, service.tier AS tier RETURN name",
+        );
         assert_unsupported(
             "MATCH (service:Service) WITH service.name AS service MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN service, target.name",
         );
