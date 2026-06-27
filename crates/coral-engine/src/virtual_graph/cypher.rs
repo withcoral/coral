@@ -1696,6 +1696,9 @@ fn compile_predicate_expression(
             compile_comparison_expression(lhs, operators.as_slice(), path, plan, context)
         }
         Expression::In { lhs, rhs, .. } => compile_in_predicate(lhs, rhs, path, plan, context),
+        Expression::NodeLabels { base, labels, .. } => {
+            compile_node_label_predicate(base, labels, path, plan)
+        }
         Expression::Literal(CypherLiteral::Boolean(value)) => {
             Ok(PredicateExpression::Boolean(*value))
         }
@@ -2221,6 +2224,95 @@ fn compile_label_membership_predicate(
         ));
     };
     Ok(Some(PredicateExpression::Boolean(candidate == label)))
+}
+
+fn compile_node_label_predicate(
+    base: &Expression,
+    labels: &[LabelExpression],
+    path: impl Into<String>,
+    plan: &GraphPlan,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    let variable = compile_node_label_variable(base, format!("{path}.base"))?;
+    let node = plan
+        .nodes
+        .iter()
+        .find(|node| node.variable == variable)
+        .ok_or_else(|| {
+            unsupported(
+                format!("{path}.base"),
+                format!("label predicate variable '{variable}' is not a node variable"),
+            )
+        })?;
+    if labels.is_empty() {
+        return Err(unsupported(
+            format!("{path}.labels"),
+            "node label predicates require at least one label",
+        ));
+    }
+
+    let matches = labels.iter().enumerate().try_fold(
+        true,
+        |matches, (index, label)| -> Result<bool, CoreError> {
+            Ok(matches
+                && evaluate_static_label_expression(
+                    label,
+                    &node.label,
+                    format!("{path}.labels[{index}]"),
+                )?)
+        },
+    )?;
+    Ok(PredicateExpression::Boolean(matches))
+}
+
+fn compile_node_label_variable(
+    expression: &Expression,
+    path: impl Into<String>,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_node_label_variable(inner, path),
+        Expression::Variable(variable) => Ok(variable_name(variable)),
+        _ => Err(unsupported(
+            path,
+            "node label predicates require a node variable",
+        )),
+    }
+}
+
+fn evaluate_static_label_expression(
+    expression: &LabelExpression,
+    mapped_label: &str,
+    path: impl Into<String>,
+) -> Result<bool, CoreError> {
+    let path = path.into();
+    match expression {
+        LabelExpression::Static(label) => Ok(label.name == mapped_label),
+        LabelExpression::Dynamic { .. } => Err(unsupported(
+            path,
+            "dynamic label predicates are not supported yet",
+        )),
+        LabelExpression::Or { lhs, rhs, .. } => {
+            Ok(
+                evaluate_static_label_expression(lhs, mapped_label, format!("{path}.lhs"))?
+                    || evaluate_static_label_expression(rhs, mapped_label, format!("{path}.rhs"))?,
+            )
+        }
+        LabelExpression::And { lhs, rhs, .. } => {
+            Ok(
+                evaluate_static_label_expression(lhs, mapped_label, format!("{path}.lhs"))?
+                    && evaluate_static_label_expression(rhs, mapped_label, format!("{path}.rhs"))?,
+            )
+        }
+        LabelExpression::Not { inner, .. } => Ok(!evaluate_static_label_expression(
+            inner,
+            mapped_label,
+            format!("{path}.inner"),
+        )?),
+        LabelExpression::Group { inner, .. } => {
+            evaluate_static_label_expression(inner, mapped_label, path)
+        }
+    }
 }
 
 fn compile_optional_labels_ref(
@@ -3353,6 +3445,70 @@ mod tests {
 
         assert!(
             error.to_string().contains("label membership predicates"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn compiles_node_label_predicates_as_boolean_constants() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service:Service AND NOT (service:Team) \
+             RETURN service.name AS service",
+        )
+        .expect("node label predicates should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::Boolean(true)),
+                right: Box::new(PredicateExpression::Not {
+                    expression: Box::new(PredicateExpression::Boolean(false)),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_compound_node_label_predicates_as_boolean_constants() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service:Service|Team \
+             RETURN service.name AS service",
+        )
+        .expect("compound node label predicates should compile");
+
+        assert_eq!(plan.predicate, Some(PredicateExpression::Boolean(true)));
+    }
+
+    #[test]
+    fn rejects_node_label_predicates_on_relationship_variables() {
+        let error = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE owns:OWNS \
+             RETURN service.name AS service",
+        )
+        .expect_err("node label predicates should require node variables");
+
+        assert!(
+            error
+                .to_string()
+                .contains("label predicate variable 'owns'"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_dynamic_node_label_predicates() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service:$(label) \
+             RETURN service.name AS service",
+        )
+        .expect_err("dynamic node label predicates should be rejected");
+
+        assert!(
+            error.to_string().contains("dynamic label predicates"),
             "{error:?}"
         );
     }

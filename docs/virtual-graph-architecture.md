@@ -95,6 +95,8 @@ The supported foundation subset is intentionally narrow:
   node function projections preserving null for unmatched optional bindings;
 - `id(...)`, `type(relationship)`, and static
   `'<Label>' IN labels(node)` membership in predicates;
+- static `node:Label` predicates, including grouped label-expression
+  conjunction, disjunction, and negation evaluated against mapped labels;
 - string prefix, suffix, and substring predicates lowered to escaped SQL
   `LIKE`;
 - inline node property maps normalized to equality predicates;
