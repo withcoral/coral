@@ -366,7 +366,7 @@ fn compile_single_query_as_graph_query(
         return Ok(GraphQuery::Plan(plan));
     }
 
-    validate_static_label_type_alternative_expansion_supported(single_query, &path, context)?;
+    validate_pattern_alternative_expansion_supported(single_query, &path, context)?;
     let outer_projection_plan =
         analyze_static_alternative_outer_projection(single_query, &path, context)?;
     let hidden_order_plan = analyze_static_alternative_hidden_order(
@@ -505,7 +505,7 @@ fn analyze_static_alternative_outer_projection(
         } else if expression_contains_aggregate(&item.expression) {
             return Err(unsupported(
                 format!("{path}.return.items[{index}].expression"),
-                "static label/type alternatives with property or non-count aggregate RETURN projections require staged query planning and are not supported yet",
+                "pattern alternatives with property or non-count aggregate RETURN projections require staged query planning and are not supported yet",
             ));
         } else if has_outer_aggregate {
             group_item_indices.push(index);
@@ -665,7 +665,7 @@ fn compile_static_alternative_outer_aggregate_item(
     let function_kind = compile_aggregate_function(function).ok_or_else(|| {
         unsupported(
             format!("{path}.return.items[{index}].expression"),
-            "static label/type alternatives only support property aggregates after expansion",
+            "pattern alternatives only support property aggregates after expansion",
         )
     })?;
     reject_unsupported_distinct_aggregate(
@@ -685,7 +685,7 @@ fn compile_static_alternative_outer_aggregate_item(
             let [argument] = function.arguments.as_slice() else {
                 return Err(unsupported(
                     format!("{path}.return.items[{index}].expression.arguments"),
-                    "static label/type alternatives with property aggregates require one graph property argument",
+                    "pattern alternatives with property aggregates require one graph property argument",
                 ));
             };
             argument.clone()
@@ -694,7 +694,7 @@ fn compile_static_alternative_outer_aggregate_item(
             if function_kind != AggregateFunction::Count {
                 return Err(unsupported(
                     format!("{path}.return.items[{index}].expression.arguments"),
-                    "static label/type alternatives only support count(variable) over graph variables",
+                    "pattern alternatives only support count(variable) over graph variables",
                 ));
             }
             if function.distinct {
@@ -823,13 +823,13 @@ fn analyze_static_alternative_hidden_order(
         if outer_projection.is_some() {
             return Err(unsupported(
                 format!("{path}.return.order.items[{index}].expression"),
-                "static label/type alternatives with aggregate RETURN projections cannot ORDER BY unprojected expressions yet",
+                "pattern alternatives with aggregate RETURN projections cannot ORDER BY unprojected expressions yet",
             ));
         }
         if return_clause.distinct {
             return Err(unsupported(
                 format!("{path}.return.order.items[{index}].expression"),
-                "static label/type alternatives with RETURN DISTINCT cannot ORDER BY unprojected expressions yet",
+                "pattern alternatives with RETURN DISTINCT cannot ORDER BY unprojected expressions yet",
             ));
         }
         hidden_items.push(StaticAlternativeHiddenOrderItem {
@@ -956,7 +956,7 @@ fn compile_static_alternative_outer_order_by(
         .ok_or_else(|| {
             unsupported(
                 format!("{path}.return.order.items[{index}].expression"),
-                "static label/type alternatives with global ORDER BY currently require projected aliases, projected expressions, or row-preserving hidden sort expressions",
+                "pattern alternatives with global ORDER BY currently require projected aliases, projected expressions, or row-preserving hidden sort expressions",
             )
         })?;
         order_by.push(OrderKey {
@@ -1319,7 +1319,7 @@ fn append_explicit_union_component(
             if union_mode == ExplicitUnionMode::Mixed {
                 return Err(unsupported(
                     path,
-                    "static pattern label/type alternatives can be combined with uniform top-level UNION ALL or UNION; mixed UNION and UNION ALL requires nested union grouping",
+                    "pattern alternatives can be combined with uniform top-level UNION ALL or UNION; mixed UNION and UNION ALL requires nested union grouping",
                 ));
             }
             if union.outer_projection.is_some()
@@ -1329,13 +1329,13 @@ fn append_explicit_union_component(
             {
                 return Err(unsupported(
                     path,
-                    "static pattern label/type alternatives with branch-level ORDER BY, SKIP, LIMIT, or aggregate outer projections require nested union grouping",
+                    "pattern alternatives with branch-level ORDER BY, SKIP, LIMIT, or aggregate outer projections require nested union grouping",
                 ));
             }
             if union.distinct && union_mode != ExplicitUnionMode::Distinct {
                 return Err(unsupported(
                     path,
-                    "static pattern label/type alternatives with branch-level DISTINCT can only be flattened into uniform top-level UNION distinct",
+                    "pattern alternatives with branch-level DISTINCT can only be flattened into uniform top-level UNION distinct",
                 ));
             }
             *flattened_static_alternative_union = true;
@@ -1343,7 +1343,7 @@ fn append_explicit_union_component(
             for branch in union.branches {
                 if !branch.all {
                     return Err(CoreError::internal(
-                        "static label/type alternative expansion produced a non-UNION ALL branch",
+                        "pattern alternative expansion produced a non-UNION ALL branch",
                     ));
                 }
                 output.push((Some(true), branch.plan));
@@ -2082,37 +2082,31 @@ fn set_exact_quantifier(quantifier: &mut Quantifier, length: i64) {
     quantifier.end = Some(length);
 }
 
-fn validate_static_label_type_alternative_expansion_supported(
+fn validate_pattern_alternative_expansion_supported(
     single_query: &SingleQuery,
     path: &str,
     context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     match &single_query.kind {
         SingleQueryKind::SinglePart(single_part) => {
-            validate_single_part_static_label_type_alternative_expansion_supported(
-                single_part,
-                path,
-                context,
-            )
+            validate_single_part_pattern_alternative_expansion_supported(single_part, path, context)
         }
         SingleQueryKind::MultiPart(multi_part) => {
-            validate_multi_part_static_label_type_alternative_expansion_supported(
-                multi_part, path, context,
-            )
+            validate_multi_part_pattern_alternative_expansion_supported(multi_part, path, context)
         }
     }
 }
 
-fn validate_single_part_static_label_type_alternative_expansion_supported(
+fn validate_single_part_pattern_alternative_expansion_supported(
     single_part: &SinglePartQuery,
     path: &str,
     context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     let return_clause = return_clause_from_single_part(single_part, path)?;
-    validate_return_allows_static_label_type_alternative_expansion(return_clause, path, context)
+    validate_return_allows_pattern_alternative_expansion(return_clause, path, context)
 }
 
-fn validate_multi_part_static_label_type_alternative_expansion_supported(
+fn validate_multi_part_pattern_alternative_expansion_supported(
     multi_part: &MultiPartQuery,
     path: &str,
     context: &CypherCompileContext,
@@ -2124,46 +2118,46 @@ fn validate_multi_part_static_label_type_alternative_expansion_supported(
                 "write clauses are not supported by Coral virtual graphs",
             ));
         }
-        validate_with_allows_static_label_type_alternative_expansion(
+        validate_with_allows_pattern_alternative_expansion(
             &part.with,
             &format!("{path}.parts[{index}].with"),
         )?;
     }
-    validate_single_part_static_label_type_alternative_expansion_supported(
+    validate_single_part_pattern_alternative_expansion_supported(
         &multi_part.final_part,
         &format!("{path}.final_part"),
         context,
     )
 }
 
-fn validate_with_allows_static_label_type_alternative_expansion(
+fn validate_with_allows_pattern_alternative_expansion(
     with: &With,
     path: &str,
 ) -> Result<(), CoreError> {
     if with.distinct {
         return Err(unsupported(
             format!("{path}.distinct"),
-            "static label/type alternatives with WITH DISTINCT require staged query planning and are not supported yet",
+            "pattern alternatives with WITH DISTINCT require staged query planning and are not supported yet",
         ));
     }
     if with.order.is_some() || with.skip.is_some() || with.limit.is_some() {
         return Err(unsupported(
             path,
-            "static label/type alternatives with WITH ORDER BY, SKIP, or LIMIT require staged query planning and are not supported yet",
+            "pattern alternatives with WITH ORDER BY, SKIP, or LIMIT require staged query planning and are not supported yet",
         ));
     }
     for (index, item) in with.items.iter().enumerate() {
         if expression_contains_aggregate(&item.expression) {
             return Err(unsupported(
                 format!("{path}.items[{index}].expression"),
-                "static label/type alternatives with aggregate WITH projections require staged query planning and are not supported yet",
+                "pattern alternatives with aggregate WITH projections require staged query planning and are not supported yet",
             ));
         }
     }
     Ok(())
 }
 
-fn validate_return_allows_static_label_type_alternative_expansion(
+fn validate_return_allows_pattern_alternative_expansion(
     return_clause: &Return,
     path: &str,
     context: &CypherCompileContext,
@@ -2176,7 +2170,7 @@ fn validate_return_allows_static_label_type_alternative_expansion(
         {
             return Err(unsupported(
                 format!("{path}.return.items[{index}].expression"),
-                "static label/type alternatives with property or non-count aggregate RETURN projections require staged query planning and are not supported yet",
+                "pattern alternatives with property or non-count aggregate RETURN projections require staged query planning and are not supported yet",
             ));
         }
     }
