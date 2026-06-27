@@ -178,6 +178,46 @@ async fn cypher_union_all_preserves_duplicate_rows() {
 }
 
 #[tokio::test]
+async fn cypher_union_branches_preserve_local_ordering_and_limits() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS item \
+         ORDER BY service.name \
+         LIMIT 1 \
+         UNION ALL \
+         MATCH (person:Person) \
+         RETURN person.name AS item \
+         ORDER BY person.name \
+         LIMIT 1",
+    )
+    .await
+    .expect("UNION branches with local modifiers should execute");
+
+    assert!(
+        execution.translated_sql().contains("SELECT * FROM (SELECT"),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by_key(|row| row["item"].as_str().unwrap_or_default().to_string());
+    assert_eq!(
+        rows,
+        vec![
+            json!({"item": "Ada Lovelace"}),
+            json!({"item": "billing-api"})
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_union_rejects_catalog_typed_projection_mismatches_before_sql_execution() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
