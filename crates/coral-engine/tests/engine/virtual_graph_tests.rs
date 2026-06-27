@@ -2184,6 +2184,58 @@ async fn cypher_trim_scalar_expressions_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_gql_string_function_aliases_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE lower(service.name) CONTAINS 'api' \
+         RETURN service.name AS service, \
+                upper(service.tier) AS tier_upper, \
+                btrim('  gql alias  ') AS trimmed_literal \
+         ORDER BY btrim(service.name)",
+    )
+    .await
+    .expect("GQL string alias query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("LOWER(\"n0\".\"service_name\") LIKE '%api%' ESCAPE '\\'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("UPPER(\"n0\".\"tier\") AS \"tier_upper\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("TRIM('  gql alias  ') AS \"trimmed_literal\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "service": "billing-api",
+            "tier_upper": "PROD",
+            "trimmed_literal": "gql alias",
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_replace_scalar_expressions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

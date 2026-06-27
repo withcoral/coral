@@ -1803,9 +1803,13 @@ fn compile_to_lower_scalar_expression(
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
+    let function_name = single_segment_function_name(function).unwrap_or("toLower");
     Ok(ScalarExpression::ToLower {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "toLower", context,
+            function,
+            path,
+            function_name,
+            context,
         )?),
     })
 }
@@ -1815,9 +1819,13 @@ fn compile_to_upper_scalar_expression(
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
+    let function_name = single_segment_function_name(function).unwrap_or("toUpper");
     Ok(ScalarExpression::ToUpper {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "toUpper", context,
+            function,
+            path,
+            function_name,
+            context,
         )?),
     })
 }
@@ -1827,9 +1835,13 @@ fn compile_trim_scalar_expression(
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
+    let function_name = single_segment_function_name(function).unwrap_or("trim");
     Ok(ScalarExpression::Trim {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "trim", context,
+            function,
+            path,
+            function_name,
+            context,
         )?),
     })
 }
@@ -2312,6 +2324,13 @@ fn compile_single_scalar_function_argument(
     compile_scalar_expression(argument, format!("{path}.arguments[0]"), context)
 }
 
+fn single_segment_function_name(function: &FunctionInvocation) -> Option<&str> {
+    match function.name.as_slice() {
+        [name] => Some(name.name.as_str()),
+        _ => None,
+    }
+}
+
 fn compile_two_scalar_function_arguments(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -2481,7 +2500,7 @@ fn compile_scalar_expression(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
 }
@@ -2784,7 +2803,7 @@ fn compile_scalar_predicate_rhs(
                 Some(expression) => Ok(ScalarPredicateRhs::Expression(expression)),
                 None => Err(unsupported(
                     path,
-                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
                 )),
             }
         }
@@ -2796,7 +2815,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
 }
@@ -3206,6 +3225,7 @@ fn is_to_lower_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("toLower")
+            || name.name.eq_ignore_ascii_case("lower")
     )
 }
 
@@ -3213,6 +3233,7 @@ fn is_to_upper_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("toUpper")
+            || name.name.eq_ignore_ascii_case("upper")
     )
 }
 
@@ -3220,6 +3241,7 @@ fn is_trim_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("trim")
+            || name.name.eq_ignore_ascii_case("btrim")
     )
 }
 
@@ -6742,6 +6764,63 @@ mod tests {
                 direction: OrderDirection::Ascending,
             }]
         ));
+    }
+
+    #[test]
+    fn compiles_gql_string_function_aliases() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE lower(service.name) CONTAINS 'api' \
+             RETURN upper(service.tier) AS tier_upper, \
+                    btrim(service.name) AS name_trimmed \
+             ORDER BY btrim(service.name)",
+        )
+        .expect("GQL string function aliases should compile");
+
+        assert!(matches!(
+            &plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::ToLower { .. },
+                operator: ComparisonOperator::Contains,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(value))),
+            })) if value == "api"
+        ));
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::ToUpper { .. },
+                    alias: tier_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Trim { .. },
+                    alias: trim_alias,
+                },
+            ] if tier_alias == "tier_upper" && trim_alias == "name_trimmed"
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Trim { .. }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
+    }
+
+    #[test]
+    fn rejects_gql_string_aliases_with_unsupported_arity() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN btrim(service.name, '-') AS name_trimmed",
+        )
+        .expect_err("btrim() should require one argument");
+
+        assert!(
+            error
+                .to_string()
+                .contains("btrim() requires exactly one argument"),
+            "{error}"
+        );
     }
 
     #[test]
