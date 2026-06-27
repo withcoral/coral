@@ -2551,6 +2551,11 @@ async fn cypher_case_graph_metadata_predicates_execute_against_synthetic_sources
                     AND 'source' IN keys(owns) THEN 'ownership' \
                   ELSE 'other' \
                 END AS category, \
+                CASE \
+                  WHEN service:Person THEN 'person' \
+                  WHEN service:Service THEN 'service' \
+                  ELSE 'other' \
+                END AS label_bucket, \
                 CASE WHEN type(owns) IN ['OWNS'] THEN 'typed' ELSE 'other' END AS type_bucket \
          ORDER BY service",
     )
@@ -2565,9 +2570,9 @@ async fn cypher_case_graph_metadata_predicates_execute_against_synthetic_sources
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"service": "billing-api", "category": "ownership", "type_bucket": "typed"}),
-            json!({"service": "deployments", "category": "ownership", "type_bucket": "typed"}),
-            json!({"service": "experiments", "category": "ownership", "type_bucket": "typed"}),
+            json!({"service": "billing-api", "category": "ownership", "label_bucket": "service", "type_bucket": "typed"}),
+            json!({"service": "deployments", "category": "ownership", "label_bucket": "service", "type_bucket": "typed"}),
+            json!({"service": "experiments", "category": "ownership", "label_bucket": "service", "type_bucket": "typed"}),
         ]
     );
 }

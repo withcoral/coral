@@ -4818,12 +4818,9 @@ fn compile_predicate_expression_in_mode(
             compile_comparison_expression(lhs, operators.as_slice(), path, mode, context)
         }
         Expression::In { lhs, rhs, .. } => compile_in_predicate(lhs, rhs, path, mode, context),
-        Expression::NodeLabels { base, labels, .. } => match mode.graph_plan() {
+        Expression::NodeLabels { base, labels, .. } => match mode.static_metadata_plan() {
             Some(plan) => compile_graph_label_predicate(base, labels, path, plan),
-            None => Err(unsupported(
-                path,
-                "CASE WHEN label predicates are not supported yet",
-            )),
+            None => Err(unsupported(path, "label predicates require graph context")),
         },
         Expression::Literal(CypherLiteral::Boolean(value)) => {
             Ok(PredicateExpression::Boolean(*value))
