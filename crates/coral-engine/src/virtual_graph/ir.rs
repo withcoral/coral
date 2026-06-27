@@ -857,6 +857,12 @@ pub struct GraphUnion {
     pub first: GraphPlan,
     /// Subsequent branches and their leading union operator.
     pub branches: Vec<GraphUnionBranch>,
+    /// Outer ordering applied after all union branches have been combined.
+    pub order_by: Vec<OrderKey>,
+    /// Outer row offset applied after all union branches have been combined.
+    pub skip: Option<u64>,
+    /// Outer row limit applied after all union branches have been combined.
+    pub limit: Option<u64>,
 }
 
 /// One branch after a `UNION` or `UNION ALL` operator.

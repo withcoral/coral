@@ -95,6 +95,7 @@ impl Declaration {
             .map_err(|_| CoreError::internal("failed to render graph union SQL"))?;
         }
 
+        let sql = render_union_outer_sql(sql, union)?;
         Ok(SqlTranslation::new(sql, diagnostics))
     }
 }
@@ -1931,6 +1932,56 @@ fn render_union_branch_sql(sql: &str, index: usize) -> String {
         "SELECT * FROM ({sql}) AS {}",
         quote_ident(&format!("__coral_union_b{index}"))
     )
+}
+
+fn render_union_outer_sql(sql: String, union: &GraphUnion) -> Result<String, CoreError> {
+    if union.order_by.is_empty() && union.skip.is_none() && union.limit.is_none() {
+        return Ok(sql);
+    }
+
+    let mut outer_sql = format!(
+        "SELECT * FROM ({sql}) AS {}",
+        quote_ident("__coral_union_outer")
+    );
+    if !union.order_by.is_empty() {
+        let mut keys = Vec::with_capacity(union.order_by.len());
+        for (index, key) in union.order_by.iter().enumerate() {
+            keys.push(format!(
+                "{} {}",
+                render_union_outer_order_expression(&key.expression, index)?,
+                match key.direction {
+                    OrderDirection::Ascending => "ASC",
+                    OrderDirection::Descending => "DESC",
+                }
+            ));
+        }
+        write!(outer_sql, " ORDER BY {}", keys.join(", "))
+            .map_err(|_| CoreError::internal("failed to render graph union SQL"))?;
+    }
+    if let Some(limit) = union.limit {
+        write!(outer_sql, " LIMIT {limit}")
+            .map_err(|_| CoreError::internal("failed to render graph union SQL"))?;
+    }
+    if let Some(skip) = union.skip {
+        write!(outer_sql, " OFFSET {skip}")
+            .map_err(|_| CoreError::internal("failed to render graph union SQL"))?;
+    }
+    Ok(outer_sql)
+}
+
+fn render_union_outer_order_expression(
+    expression: &OrderExpression,
+    index: usize,
+) -> Result<String, CoreError> {
+    match expression {
+        OrderExpression::ProjectionAlias(alias) => Ok(quote_ident(alias)),
+        _ => Err(Diagnostic::new(
+            "UNSUPPORTED_GRAPH_QUERY",
+            format!("union.order_by[{index}].expression"),
+            "graph union outer ORDER BY only supports projection aliases",
+        )
+        .into_core_error()),
+    }
 }
 
 fn validate_union_branch_output_names(

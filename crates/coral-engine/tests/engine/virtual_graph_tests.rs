@@ -144,6 +144,41 @@ async fn cypher_static_node_label_alternatives_execute_against_synthetic_sources
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_apply_global_row_modifiers_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN lower(owner.name) AS owner, service.name AS service \
+         ORDER BY owner, service \
+         SKIP 1 \
+         LIMIT 3",
+    )
+    .await
+    .expect("static label alternatives with global row modifiers should execute");
+
+    assert!(
+        execution.translated_sql().contains("__coral_union_outer"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "analytics", "service": "experiments"}),
+            json!({"owner": "grace hopper", "service": "deployments"}),
+            json!({"owner": "infra", "service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_union_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

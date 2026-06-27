@@ -310,27 +310,42 @@ fn compile_single_query_as_graph_query(
     context: &CypherCompileContext,
     path: impl Into<String>,
 ) -> Result<GraphQuery, CoreError> {
-    let variants = compile_single_query_variants(single_query, context, path)?;
-    graph_query_from_alternative_plans(variants)
-}
-
-fn compile_single_query_variants(
-    single_query: &SingleQuery,
-    context: &CypherCompileContext,
-    path: impl Into<String>,
-) -> Result<Vec<GraphPlan>, CoreError> {
     let path = path.into();
-    let variants = expand_single_query_static_label_type_alternatives(single_query)?;
-    if variants.len() > 1 {
-        validate_static_label_type_alternative_expansion_supported(single_query, &path)?;
+    let mut variants = expand_single_query_static_label_type_alternatives(single_query)?;
+    if variants.len() == 1 {
+        let plan = compile_single_query(
+            variants.first().ok_or_else(|| {
+                CoreError::internal("Cypher query expansion produced no variants")
+            })?,
+            context,
+        )?;
+        return Ok(GraphQuery::Plan(plan));
     }
-    variants
+
+    validate_static_label_type_alternative_expansion_supported(single_query, &path)?;
+    for variant in &mut variants {
+        clear_final_return_row_modifiers(variant, &path)?;
+    }
+    let plans = variants
         .iter()
         .map(|variant| compile_single_query(variant, context))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let projection_names = plans
+        .first()
+        .map(GraphPlan::projection_output_names)
+        .ok_or_else(|| CoreError::internal("Cypher query expansion produced no graph plans"))?;
+    let order_by =
+        compile_static_alternative_outer_order_by(single_query, &projection_names, &path)?;
+    let (skip, limit) = compile_static_alternative_outer_skip_limit(single_query, context, &path)?;
+    graph_query_from_alternative_plans(plans, order_by, skip, limit)
 }
 
-fn graph_query_from_alternative_plans(mut plans: Vec<GraphPlan>) -> Result<GraphQuery, CoreError> {
+fn graph_query_from_alternative_plans(
+    mut plans: Vec<GraphPlan>,
+    order_by: Vec<OrderKey>,
+    skip: Option<u64>,
+    limit: Option<u64>,
+) -> Result<GraphQuery, CoreError> {
     if plans.is_empty() {
         return Err(CoreError::internal(
             "Cypher query expansion produced no graph plans",
@@ -346,7 +361,126 @@ fn graph_query_from_alternative_plans(mut plans: Vec<GraphPlan>) -> Result<Graph
             .into_iter()
             .map(|plan| GraphUnionBranch { all: true, plan })
             .collect(),
+        order_by,
+        skip,
+        limit,
     }))
+}
+
+fn clear_final_return_row_modifiers(
+    single_query: &mut SingleQuery,
+    path: &str,
+) -> Result<(), CoreError> {
+    let return_clause = final_return_clause_mut(single_query, path)?;
+    return_clause.order = None;
+    return_clause.skip = None;
+    return_clause.limit = None;
+    Ok(())
+}
+
+fn compile_static_alternative_outer_order_by(
+    single_query: &SingleQuery,
+    projection_names: &[String],
+    path: &str,
+) -> Result<Vec<OrderKey>, CoreError> {
+    let Some(order) = &final_return_clause(single_query, path)?.order else {
+        return Ok(Vec::new());
+    };
+
+    let projection_names = projection_names
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut order_by = Vec::with_capacity(order.items.len());
+    for (index, item) in order.items.iter().enumerate() {
+        let Expression::Variable(variable) = &item.expression else {
+            return Err(unsupported(
+                format!("{path}.return.order.items[{index}].expression"),
+                "static label/type alternatives with global ORDER BY currently require projected aliases",
+            ));
+        };
+        let alias = variable_name(variable);
+        if !projection_names.contains(alias.as_str()) {
+            return Err(unsupported(
+                format!("{path}.return.order.items[{index}].expression"),
+                format!("ORDER BY alias '{alias}' does not match a RETURN projection"),
+            ));
+        }
+        order_by.push(OrderKey {
+            expression: OrderExpression::ProjectionAlias(alias),
+            direction: match item.direction {
+                Some(SortDirection::Descending) => OrderDirection::Descending,
+                Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
+            },
+        });
+    }
+    Ok(order_by)
+}
+
+fn compile_static_alternative_outer_skip_limit(
+    single_query: &SingleQuery,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<(Option<u64>, Option<u64>), CoreError> {
+    let return_clause = final_return_clause(single_query, path)?;
+    let skip = return_clause
+        .skip
+        .as_ref()
+        .map(|skip| compile_skip(skip, format!("{path}.return.skip"), context))
+        .transpose()?;
+    let limit = return_clause
+        .limit
+        .as_ref()
+        .map(|limit| compile_limit(limit, format!("{path}.return.limit"), context))
+        .transpose()?;
+    Ok((skip, limit))
+}
+
+fn final_return_clause<'a>(
+    single_query: &'a SingleQuery,
+    path: &str,
+) -> Result<&'a Return, CoreError> {
+    match &single_query.kind {
+        SingleQueryKind::SinglePart(single_part) => {
+            return_clause_from_single_part(single_part, path)
+        }
+        SingleQueryKind::MultiPart(multi_part) => {
+            return_clause_from_single_part(&multi_part.final_part, format!("{path}.final_part"))
+        }
+    }
+}
+
+fn final_return_clause_mut<'a>(
+    single_query: &'a mut SingleQuery,
+    path: &str,
+) -> Result<&'a mut Return, CoreError> {
+    match &mut single_query.kind {
+        SingleQueryKind::SinglePart(single_part) => {
+            return_clause_mut_from_single_part(single_part, path)
+        }
+        SingleQueryKind::MultiPart(multi_part) => return_clause_mut_from_single_part(
+            &mut multi_part.final_part,
+            format!("{path}.final_part"),
+        ),
+    }
+}
+
+fn return_clause_mut_from_single_part(
+    query: &mut SinglePartQuery,
+    path: impl Into<String>,
+) -> Result<&mut Return, CoreError> {
+    let path = path.into();
+    match &mut query.body {
+        SinglePartBody::Return(return_clause) => Ok(return_clause),
+        SinglePartBody::Updating { .. } => Err(unsupported(
+            path,
+            "write clauses are not supported by Coral virtual graphs",
+        )),
+        SinglePartBody::Finish(_) => Err(unsupported(
+            path,
+            "FINISH is not supported because virtual graph queries must return rows",
+        )),
+    }
 }
 
 fn compile_single_query(
@@ -397,7 +531,13 @@ fn compile_regular_query(
         });
     }
 
-    Ok(GraphQuery::Union(GraphUnion { first, branches }))
+    Ok(GraphQuery::Union(GraphUnion {
+        first,
+        branches,
+        order_by: Vec::new(),
+        skip: None,
+        limit: None,
+    }))
 }
 
 fn projection_names(plan: &GraphPlan) -> Vec<String> {
@@ -880,15 +1020,6 @@ fn validate_return_allows_static_label_type_alternative_expansion(
         return Err(unsupported(
             format!("{path}.return.distinct"),
             "static label/type alternatives with RETURN DISTINCT require staged query planning and are not supported yet",
-        ));
-    }
-    if return_clause.order.is_some()
-        || return_clause.skip.is_some()
-        || return_clause.limit.is_some()
-    {
-        return Err(unsupported(
-            format!("{path}.return"),
-            "static label/type alternatives with RETURN ORDER BY, SKIP, or LIMIT require staged query planning and are not supported yet",
         ));
     }
     for (index, item) in return_clause.items.iter().enumerate() {
@@ -8069,15 +8200,43 @@ mod tests {
     }
 
     #[test]
-    fn rejects_static_label_alternatives_with_global_limit() {
+    fn compiles_static_label_alternatives_with_outer_row_modifiers() {
+        let query = compile_cypher_query(
+            "MATCH (entity:Person|Team) \
+             RETURN entity.name AS name \
+             ORDER BY name DESC \
+             SKIP 1 \
+             LIMIT 5",
+        )
+        .expect("global row modifiers should compile as outer union modifiers");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert!(union.first.order_by.is_empty());
+        assert_eq!(union.first.skip, None);
+        assert_eq!(union.first.limit, None);
+        assert_eq!(
+            union.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("name".to_string()),
+                direction: OrderDirection::Descending,
+            }]
+        );
+        assert_eq!(union.skip, Some(1));
+        assert_eq!(union.limit, Some(5));
+    }
+
+    #[test]
+    fn rejects_static_label_alternatives_with_non_alias_global_ordering() {
         let error = compile_cypher_query(
             "MATCH (entity:Person|Team) \
              RETURN entity.name AS name \
-             LIMIT 5",
+             ORDER BY entity.name",
         )
-        .expect_err("global row modifier should require staged planning");
+        .expect_err("non-alias global ordering should require staged planning");
 
-        assert!(error.to_string().contains("ORDER BY, SKIP, or LIMIT"));
+        assert!(error.to_string().contains("projected aliases"));
     }
 
     #[test]
