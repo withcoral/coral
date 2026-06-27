@@ -92,6 +92,9 @@ The supported foundation subset is intentionally narrow:
   including single-hop directed optional-local predicates and inline property
   maps placed in the join scope; optional plans still require mandatory
   bindings to stay anchored to the first component;
+- non-materialized fixed-length path-variable bindings, including nullable
+  `length(path)` over named optional relationships via the presence-gated
+  scalar expression IR;
 - named node variables where the first binding has one static label and
   repeated bindings may omit the label;
 - directed, reverse, and undirected typed relationships;

@@ -133,10 +133,11 @@ struct GraphValueRef {
     presence_variable: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct PathBinding {
     length: usize,
     optional: bool,
+    presence_variable: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -4557,10 +4558,45 @@ fn validate_ignored_path_variable(
         ));
     }
     let length = path_pattern_length(pattern_part, &path)?;
-    state
-        .path_variables
-        .insert(name, PathBinding { length, optional });
+    let presence_variable = optional_path_presence_variable(pattern_part, optional, &path)?;
+    state.path_variables.insert(
+        name,
+        PathBinding {
+            length,
+            optional,
+            presence_variable,
+        },
+    );
     Ok(())
+}
+
+fn optional_path_presence_variable(
+    pattern_part: &PatternPart,
+    optional: bool,
+    path: &str,
+) -> Result<Option<String>, CoreError> {
+    if !optional {
+        return Ok(None);
+    }
+    let PatternElement::Path { chains, .. } = &pattern_part.anonymous.element else {
+        return Ok(None);
+    };
+    let Some(chain) = chains.last() else {
+        return Ok(None);
+    };
+    chain
+        .relationship
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.variable.as_ref())
+        .map(validate_variable)
+        .transpose()
+        .map_err(|error| {
+            unsupported(
+                format!("{path}.anonymous.relationships"),
+                format!("invalid optional path presence relationship variable: {error}"),
+            )
+        })
 }
 
 fn path_pattern_length(pattern_part: &PatternPart, path: &str) -> Result<usize, CoreError> {
@@ -5497,14 +5533,14 @@ fn compile_path_length_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    let length = compile_path_length_literal(
+    let expression = compile_path_length_scalar_expression(
         function,
         format!("{path}.expression.arguments"),
         state,
         context,
     )?;
     Ok(Projection::Expression {
-        expression: ScalarExpression::Literal(Literal::Integer(length)),
+        expression,
         alias: item
             .alias
             .as_ref()
@@ -5519,17 +5555,24 @@ fn compile_path_length_order_expression(
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
-    let length =
-        compile_path_length_literal(function, format!("{path}.arguments"), state, context)?;
-    Ok(OrderExpression::Literal(Literal::Integer(length)))
+    let expression = compile_path_length_scalar_expression(
+        function,
+        format!("{path}.arguments"),
+        state,
+        context,
+    )?;
+    Ok(match expression {
+        ScalarExpression::Literal(literal) => OrderExpression::Literal(literal),
+        expression => OrderExpression::Scalar(expression),
+    })
 }
 
-fn compile_path_length_literal(
+fn compile_path_length_scalar_expression(
     function: &FunctionInvocation,
     arguments_path: impl Into<String>,
     state: &CypherCompileState,
     context: &CypherCompileContext,
-) -> Result<i64, CoreError> {
+) -> Result<ScalarExpression, CoreError> {
     let arguments_path = arguments_path.into();
     let variable = compile_single_variable_function_argument(
         function,
@@ -5543,14 +5586,22 @@ fn compile_path_length_literal(
             format!("length() argument '{variable}' is not a bound path variable"),
         )
     })?;
+    let length = i64::try_from(binding.length)
+        .map_err(|error| CoreError::internal(format!("path length overflow: {error}")))?;
+    let expression = ScalarExpression::Literal(Literal::Integer(length));
     if binding.optional {
-        return Err(unsupported(
-            format!("{arguments_path}[0]"),
-            "length() over OPTIONAL MATCH path variables is not supported yet because unmatched paths require nullable path values",
+        let Some(presence_variable) = binding.presence_variable.clone() else {
+            return Err(unsupported(
+                format!("{arguments_path}[0]"),
+                "length() over an OPTIONAL MATCH path requires the path's final relationship to be named so null-preserving path length can be gated",
+            ));
+        };
+        return Ok(presence_gate_scalar_expression(
+            Some(presence_variable),
+            expression,
         ));
     }
-    i64::try_from(binding.length)
-        .map_err(|error| CoreError::internal(format!("path length overflow: {error}")))
+    Ok(expression)
 }
 
 fn compile_literal_projection(
@@ -7244,9 +7295,13 @@ fn compile_optional_path_length_scalar_expression(
     let Some(state) = mode.path_state() else {
         return Ok(None);
     };
-    let length =
-        compile_path_length_literal(function, format!("{path}.arguments"), state, context)?;
-    Ok(Some(ScalarExpression::Literal(Literal::Integer(length))))
+    let length = compile_path_length_scalar_expression(
+        function,
+        format!("{path}.arguments"),
+        state,
+        context,
+    )?;
+    Ok(Some(length))
 }
 
 fn compile_arithmetic_operator(
@@ -9302,6 +9357,15 @@ fn compile_left_property_comparison(
     mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<PredicateExpression, CoreError> {
+    if let Some(rhs) =
+        compile_optional_path_length_scalar_expression(rhs, format!("{path}.rhs"), mode, context)?
+    {
+        return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::Property(property),
+            operator,
+            rhs: ScalarPredicateRhs::Expression(rhs),
+        }));
+    }
     if let Some(predicate) = compile_dynamic_string_property_predicate(
         &property,
         operator,
@@ -12047,18 +12111,49 @@ mod tests {
     }
 
     #[test]
-    fn rejects_length_over_optional_path_variable() {
+    fn compiles_length_over_named_optional_path_variable() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH path = (service)-[dependency:DEPENDS_ON]->(target:Service) \
+             RETURN service.name AS service, length(path) AS path_length \
+             ORDER BY length(path)",
+        )
+        .expect("named optional path length should compile");
+
+        let expected = ScalarExpression::PresenceGated {
+            presence_variable: "dependency".to_string(),
+            expression: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+        };
+        assert_eq!(
+            plan.projections.get(1),
+            Some(&Projection::Expression {
+                expression: expected.clone(),
+                alias: "path_length".to_string(),
+            })
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(expected),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_length_over_anonymous_optional_path_variable() {
         let error = compile_cypher(
             "MATCH (service:Service) \
              OPTIONAL MATCH path = (service)-[:DEPENDS_ON]->(target:Service) \
              RETURN service.name AS service, length(path) AS path_length",
         )
-        .expect_err("optional path length should reject until nullable path values exist");
+        .expect_err("anonymous optional path length should reject without a presence variable");
 
         assert!(
             error
                 .to_string()
-                .contains("length() over OPTIONAL MATCH path variables is not supported yet"),
+                .contains("requires the path's final relationship to be named"),
             "{error}"
         );
     }
