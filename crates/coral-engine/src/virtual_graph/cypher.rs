@@ -8172,11 +8172,29 @@ fn compile_scoped_plan_delta_predicate(
 }
 
 fn compile_scoped_plan_delta_pattern(
+    exists_plan: GraphPlan,
+    plan: &GraphPlan,
+    delta: ScopedPlanDelta,
+    path: impl Into<String>,
+    feature_name: &'static str,
+) -> Result<ExistsPatternPredicate, CoreError> {
+    compile_scoped_plan_delta_relationship_pattern(
+        exists_plan,
+        plan,
+        delta,
+        path,
+        feature_name,
+        true,
+    )
+}
+
+fn compile_scoped_plan_delta_relationship_pattern(
     mut exists_plan: GraphPlan,
     plan: &GraphPlan,
     delta: ScopedPlanDelta,
     path: impl Into<String>,
     feature_name: &'static str,
+    require_outer_anchor: bool,
 ) -> Result<ExistsPatternPredicate, CoreError> {
     let path = path.into();
     let relationships = exists_plan
@@ -8190,11 +8208,16 @@ fn compile_scoped_plan_delta_pattern(
             format!("{feature_name} require at least one relationship pattern"),
         ));
     }
-    let outer_variables = bound_graph_variables(plan);
-    if !relationships.iter().any(|relationship| {
-        outer_variables.contains(&relationship.left)
-            || outer_variables.contains(&relationship.right)
-    }) {
+    let has_outer_anchor = if require_outer_anchor {
+        let outer_variables = bound_graph_variables(plan);
+        relationships.iter().any(|relationship| {
+            outer_variables.contains(&relationship.left)
+                || outer_variables.contains(&relationship.right)
+        })
+    } else {
+        true
+    };
+    if !has_outer_anchor {
         return Err(unsupported(
             format!("{path}.pattern"),
             format!("{feature_name} must be anchored to a currently bound graph variable"),
@@ -8229,8 +8252,15 @@ fn compile_scoped_plan_delta_count_subquery(
         .ok_or_else(|| CoreError::internal("COUNT relationship slice was invalid"))?
         .to_vec();
     if !relationships.is_empty() {
-        return compile_scoped_plan_delta_pattern(count_plan, plan, delta, path, feature_name)
-            .map(CountSubqueryPattern::Relationships);
+        return compile_scoped_plan_delta_relationship_pattern(
+            count_plan,
+            plan,
+            delta,
+            path,
+            feature_name,
+            false,
+        )
+        .map(CountSubqueryPattern::Relationships);
     }
 
     let nodes = count_plan

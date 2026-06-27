@@ -1762,6 +1762,46 @@ async fn cypher_count_subqueries_support_correlated_node_only_predicates() {
 }
 
 #[tokio::test]
+async fn cypher_count_subqueries_support_uncorrelated_relationship_matches() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (team:Team) \
+         RETURN team.name AS team, \
+                COUNT { MATCH (:Service)-[:DEPENDS_ON]->(:Service) } AS dependency_edges, \
+                COUNT { \
+                  MATCH (:Service)-[:DEPENDS_ON]->(dependency:Service) \
+                  WHERE dependency.tier = 'dev' \
+                } AS dev_dependency_edges \
+         ORDER BY team",
+    )
+    .await
+    .expect("Cypher COUNT relationship subquery without outer anchor should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("SELECT COUNT(*) FROM \"ops\".\"service_dependencies\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"team": "analytics", "dependency_edges": 3, "dev_dependency_edges": 2}),
+            json!({"team": "infra", "dependency_edges": 3, "dev_dependency_edges": 2}),
+            json!({"team": "platform", "dependency_edges": 3, "dev_dependency_edges": 2}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_root_query_executes_against_synthetic_file_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

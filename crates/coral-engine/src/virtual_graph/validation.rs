@@ -2285,7 +2285,7 @@ impl<'a> GraphPlanValidator<'a> {
         let path = path.into();
         match pattern {
             CountSubqueryPattern::Relationships(predicate) => {
-                self.validate_exists_pattern_predicate(predicate, path)
+                self.validate_count_relationship_pattern(predicate, path)
             }
             CountSubqueryPattern::Nodes { nodes, predicates } => {
                 if nodes.is_empty() {
@@ -2313,6 +2313,30 @@ impl<'a> GraphPlanValidator<'a> {
                 Ok(())
             }
         }
+    }
+
+    fn validate_count_relationship_pattern(
+        &self,
+        predicate: &ExistsPatternPredicate,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        let local_nodes = self.validate_exists_pattern_nodes(predicate, &path)?;
+        self.validate_exists_relationship_variables(predicate, &local_nodes, &path)?;
+        let relationships =
+            self.resolve_exists_relationship_mappings(predicate, &local_nodes, &path)?;
+        let scope = ExistsPredicateValidationContext {
+            relationships: &relationships,
+            local_nodes: &local_nodes,
+        };
+        for (index, property_predicate) in predicate.predicates.iter().enumerate() {
+            self.validate_exists_property_predicate(
+                property_predicate,
+                scope,
+                format!("{path}.predicates[{index}]"),
+            )?;
+        }
+        Ok(())
     }
 
     fn validate_exists_pattern_nodes<'b>(
