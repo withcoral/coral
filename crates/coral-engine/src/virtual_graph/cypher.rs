@@ -3096,6 +3096,15 @@ fn compile_null_predicate(
             },
         ));
     }
+    if let Some(lhs) =
+        compile_optional_predicate_scalar_expression(operand, format!("{path}.operand"), context)?
+    {
+        return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs,
+            operator,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null)),
+        }));
+    }
     if let Some(variable) = compile_optional_graph_variable_ref(operand) {
         if !plan_uses_variable(plan, &variable) {
             return Err(unsupported(
@@ -3113,7 +3122,7 @@ fn compile_null_predicate(
     }
     Err(unsupported(
         format!("{path}.operand"),
-        "IS NULL predicates require a graph variable, variable.property, id(variable), elementId(variable), or type(relationship)",
+        "IS NULL predicates require a graph variable, variable.property, id(variable), elementId(variable), type(relationship), or supported scalar expression",
     ))
 }
 
@@ -5051,6 +5060,33 @@ mod tests {
                 direction: OrderDirection::Ascending,
             }]
         ));
+    }
+
+    #[test]
+    fn compiles_scalar_null_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE coalesce(service.tier, null) IS NOT NULL \
+             RETURN service.name AS service",
+        )
+        .expect("scalar null predicate should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Coalesce {
+                    expressions: vec![
+                        ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "tier".to_string(),
+                        }),
+                        ScalarExpression::Literal(Literal::Null),
+                    ],
+                },
+                operator: ComparisonOperator::NotEqual,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null)),
+            }))
+        );
     }
 
     #[test]

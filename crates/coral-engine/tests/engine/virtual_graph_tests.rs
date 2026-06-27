@@ -1302,6 +1302,37 @@ async fn cypher_string_case_scalar_expressions_execute_against_synthetic_sources
 }
 
 #[tokio::test]
+async fn cypher_scalar_null_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE coalesce(service.tier, null) IS NULL \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect("scalar null predicate query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COALESCE(\"n0\".\"tier\", NULL) IS NULL"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "legacy-sync"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_literal_list_projections_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
