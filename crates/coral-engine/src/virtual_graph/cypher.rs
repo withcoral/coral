@@ -248,6 +248,7 @@ fn compile_single_part(
         context,
     )?;
     compile_return(return_clause, &mut plan, context)?;
+    reject_ignored_path_variable_references(&plan, &state, "return")?;
     Ok(plan)
 }
 
@@ -308,6 +309,7 @@ fn compile_terminal_with_projection(
     compile_terminal_with_clause(&part.with, &mut plan, context)?;
     apply_terminal_return_projection_aliases(return_clause, &mut plan.projections)?;
     apply_terminal_return_modifiers(return_clause, &mut plan, context)?;
+    reject_ignored_path_variable_references(&plan, &state, "with")?;
     Ok(Some(plan))
 }
 
@@ -384,6 +386,7 @@ fn compile_terminal_with_graph_modifiers(
     }
     apply_terminal_graph_with_modifiers(&part.with, &mut plan, context)?;
     compile_return(return_clause, &mut plan, context)?;
+    reject_ignored_path_variable_references(&plan, &state, "return")?;
     Ok(Some(plan))
 }
 
@@ -685,6 +688,7 @@ fn compile_transparent_multi_part(
     }
     let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
     compile_return(return_clause, &mut plan, context)?;
+    reject_ignored_path_variable_references(&plan, &state, "final_part.return")?;
     Ok(plan)
 }
 
@@ -816,7 +820,15 @@ fn apply_transparent_with_scope(
         rename_graph_plan_variables(plan, &renames);
     }
 
-    let predicate = compile_transparent_with_where(with, plan, path, context)?;
+    let predicate = compile_transparent_with_where(with, plan, path.clone(), context)?;
+    reject_ignored_path_variable_references(plan, state, &path)?;
+    if let Some(predicate) = predicate.as_ref() {
+        reject_ignored_path_variable_references_in_predicate(
+            predicate,
+            state,
+            format!("{path}.where"),
+        )?;
+    }
     state.ignored_path_variables.clear();
     Ok(predicate)
 }
@@ -1170,6 +1182,614 @@ fn rename_string(value: &mut String, renames: &BTreeMap<String, String>) {
     if let Some(replacement) = renames.get(value.as_str()) {
         *value = replacement.clone();
     }
+}
+
+fn reject_ignored_path_variable_references(
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    if state.ignored_path_variables.is_empty() {
+        return Ok(());
+    }
+    for (index, projection) in plan.projections.iter().enumerate() {
+        reject_ignored_path_variable_references_in_projection(
+            projection,
+            state,
+            format!("{path}.projections[{index}]"),
+        )?;
+    }
+    for (index, predicate) in plan.predicates.iter().enumerate() {
+        reject_ignored_path_variable_references_in_property_predicate(
+            predicate,
+            state,
+            format!("{path}.predicates[{index}]"),
+        )?;
+    }
+    if let Some(predicate) = &plan.predicate {
+        reject_ignored_path_variable_references_in_predicate(
+            predicate,
+            state,
+            format!("{path}.predicate"),
+        )?;
+    }
+    for (index, optional_match) in plan.optional_matches.iter().enumerate() {
+        if let Some(predicate) = &optional_match.predicate {
+            reject_ignored_path_variable_references_in_predicate(
+                predicate,
+                state,
+                format!("{path}.optional_matches[{index}].predicate"),
+            )?;
+        }
+    }
+    for (index, order_key) in plan.order_by.iter().enumerate() {
+        reject_ignored_path_variable_references_in_order_expression(
+            &order_key.expression,
+            state,
+            format!("{path}.order_by[{index}]"),
+        )?;
+    }
+    Ok(())
+}
+
+fn reject_ignored_path_variable_references_in_projection(
+    projection: &Projection,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    match projection {
+        Projection::Property { property, .. } => {
+            reject_ignored_path_variable_property_ref(property, state, path)
+        }
+        Projection::Key { variable, .. }
+        | Projection::ElementId { variable, .. }
+        | Projection::RelationshipType { variable, .. }
+        | Projection::NodeLabels { variable, .. }
+        | Projection::PropertyKeys { variable, .. } => {
+            reject_ignored_path_variable(variable, state, path)
+        }
+        Projection::Expression { expression, .. } => {
+            reject_ignored_path_variable_references_in_scalar_expression(expression, state, path)
+        }
+        Projection::Aggregate { target, .. } => {
+            reject_ignored_path_variable_references_in_aggregate_target(target, state, path)
+        }
+        Projection::Literal { .. }
+        | Projection::LiteralList { .. }
+        | Projection::CountAll { .. } => Ok(()),
+    }
+}
+
+fn reject_ignored_path_variable_references_in_aggregate_target(
+    target: &AggregateTarget,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    match target {
+        AggregateTarget::Property(property) => {
+            reject_ignored_path_variable_property_ref(property, state, path)
+        }
+        AggregateTarget::VariableKey { variable } => {
+            reject_ignored_path_variable(variable, state, path)
+        }
+    }
+}
+
+fn reject_ignored_path_variable_references_in_order_expression(
+    expression: &OrderExpression,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    match expression {
+        OrderExpression::Property(property) => {
+            reject_ignored_path_variable_property_ref(property, state, path)
+        }
+        OrderExpression::Key { variable }
+        | OrderExpression::ElementId { variable }
+        | OrderExpression::RelationshipType { variable, .. }
+        | OrderExpression::NodeLabels { variable, .. }
+        | OrderExpression::PropertyKeys { variable } => {
+            reject_ignored_path_variable(variable, state, path)
+        }
+        OrderExpression::Scalar(expression) => {
+            reject_ignored_path_variable_references_in_scalar_expression(expression, state, path)
+        }
+        OrderExpression::Literal(_) | OrderExpression::ProjectionAlias(_) => Ok(()),
+    }
+}
+
+fn reject_ignored_path_variable_references_in_predicate(
+    expression: &PredicateExpression,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    match expression {
+        PredicateExpression::Boolean(_) => Ok(()),
+        PredicateExpression::Comparison(predicate) => {
+            reject_ignored_path_variable_references_in_property_predicate(predicate, state, path)
+        }
+        PredicateExpression::KeyComparison(predicate) => {
+            reject_ignored_path_variable(&predicate.variable, state, format!("{path}.variable"))?;
+            reject_ignored_path_variable_references_in_predicate_rhs(
+                &predicate.rhs,
+                state,
+                format!("{path}.rhs"),
+            )
+        }
+        PredicateExpression::ElementIdComparison(predicate) => {
+            reject_ignored_path_variable(&predicate.variable, state, format!("{path}.variable"))?;
+            reject_ignored_path_variable_references_in_predicate_rhs(
+                &predicate.rhs,
+                state,
+                format!("{path}.rhs"),
+            )
+        }
+        PredicateExpression::Presence(predicate) => {
+            reject_ignored_path_variable(&predicate.variable, state, format!("{path}.variable"))
+        }
+        PredicateExpression::PropertyKeyMembership(predicate) => {
+            reject_ignored_path_variable(&predicate.variable, state, format!("{path}.variable"))
+        }
+        PredicateExpression::ScalarComparison(predicate) => {
+            reject_ignored_path_variable_references_in_scalar_expression(
+                &predicate.lhs,
+                state,
+                format!("{path}.lhs"),
+            )?;
+            reject_ignored_path_variable_references_in_scalar_predicate_rhs(
+                &predicate.rhs,
+                state,
+                format!("{path}.rhs"),
+            )
+        }
+        PredicateExpression::And { left, right }
+        | PredicateExpression::Or { left, right }
+        | PredicateExpression::Xor { left, right } => {
+            reject_ignored_path_variable_references_in_predicate(
+                left,
+                state,
+                format!("{path}.left"),
+            )?;
+            reject_ignored_path_variable_references_in_predicate(
+                right,
+                state,
+                format!("{path}.right"),
+            )
+        }
+        PredicateExpression::Not { expression } => {
+            reject_ignored_path_variable_references_in_predicate(
+                expression,
+                state,
+                format!("{path}.expression"),
+            )
+        }
+    }
+}
+
+fn reject_ignored_path_variable_references_in_property_predicate(
+    predicate: &PropertyPredicate,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    reject_ignored_path_variable_property_ref(
+        &predicate.property,
+        state,
+        format!("{path}.property"),
+    )?;
+    reject_ignored_path_variable_references_in_predicate_rhs(
+        &predicate.rhs,
+        state,
+        format!("{path}.rhs"),
+    )
+}
+
+fn reject_ignored_path_variable_references_in_predicate_rhs(
+    rhs: &PredicateRhs,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    match rhs {
+        PredicateRhs::Property(property) => {
+            reject_ignored_path_variable_property_ref(property, state, path)
+        }
+        PredicateRhs::Key { variable } | PredicateRhs::ElementId { variable } => {
+            reject_ignored_path_variable(variable, state, path)
+        }
+        PredicateRhs::Literal(_) | PredicateRhs::List(_) => Ok(()),
+    }
+}
+
+fn reject_ignored_path_variable_references_in_scalar_predicate_rhs(
+    rhs: &ScalarPredicateRhs,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    match rhs {
+        ScalarPredicateRhs::Expression(expression) => {
+            reject_ignored_path_variable_references_in_scalar_expression(expression, state, path)
+        }
+        ScalarPredicateRhs::List(_) => Ok(()),
+    }
+}
+
+fn reject_ignored_path_variable_references_in_scalar_expression(
+    expression: &ScalarExpression,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    if let Some(expression) = unary_scalar_expression_operand(expression) {
+        return reject_ignored_path_variable_references_in_scalar_expression(
+            expression, state, path,
+        );
+    }
+
+    match expression {
+        ScalarExpression::Property(property) => {
+            reject_ignored_path_variable_property_ref(property, state, path)
+        }
+        ScalarExpression::Literal(_) => Ok(()),
+        ScalarExpression::Predicate(predicate) => {
+            reject_ignored_path_variable_references_in_predicate(predicate, state, path)
+        }
+        _ => reject_ignored_path_variable_references_in_structural_scalar_expression(
+            expression, state, path,
+        ),
+    }
+}
+
+fn reject_ignored_path_variable_references_in_structural_scalar_expression(
+    expression: &ScalarExpression,
+    state: &CypherCompileState,
+    path: String,
+) -> Result<(), CoreError> {
+    match expression {
+        ScalarExpression::Coalesce { expressions } => reject_ignored_path_variables_in_scalar_list(
+            expressions,
+            state,
+            format!("{path}.expressions"),
+        ),
+        ScalarExpression::NullIf { expression, value } => {
+            reject_ignored_path_variables_in_scalar_pair(
+                ("expression", expression),
+                ("value", value),
+                state,
+                path,
+            )
+        }
+        ScalarExpression::Round { expression, places } => {
+            reject_ignored_path_variables_in_scalar_optional_pair(
+                ("expression", expression),
+                ("places", places.as_deref()),
+                state,
+                path,
+            )
+        }
+        ScalarExpression::Left { expression, count }
+        | ScalarExpression::Right { expression, count } => {
+            reject_ignored_path_variables_in_scalar_pair(
+                ("expression", expression),
+                ("count", count),
+                state,
+                path,
+            )
+        }
+        ScalarExpression::Replace {
+            expression,
+            search,
+            replacement,
+        } => reject_ignored_path_variables_in_replace_expression(
+            expression,
+            search,
+            replacement,
+            state,
+            path,
+        ),
+        ScalarExpression::Substring {
+            expression,
+            start,
+            length,
+        } => reject_ignored_path_variables_in_substring_expression(
+            expression,
+            start,
+            length.as_deref(),
+            state,
+            path,
+        ),
+        ScalarExpression::Arithmetic { left, right, .. } => {
+            reject_ignored_path_variables_in_scalar_pair(
+                ("left", left),
+                ("right", right),
+                state,
+                path,
+            )
+        }
+        ScalarExpression::Atan2 { y, x } => {
+            reject_ignored_path_variables_in_scalar_pair(("y", y), ("x", x), state, path)
+        }
+        ScalarExpression::Case {
+            alternatives,
+            else_expression,
+        } => reject_ignored_path_variable_references_in_case_expression(
+            alternatives,
+            else_expression.as_deref(),
+            state,
+            path,
+        ),
+        _ => {
+            reject_ignored_path_variable_references_in_non_structural_scalar_expression(expression)
+        }
+    }
+}
+
+fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
+    expression: &ScalarExpression,
+) -> Result<(), CoreError> {
+    match expression {
+        ScalarExpression::Property(_)
+        | ScalarExpression::Literal(_)
+        | ScalarExpression::Predicate(_) => {
+            unreachable!("simple scalar expressions handled before structural path checks")
+        }
+        ScalarExpression::ToString { .. }
+        | ScalarExpression::ToInteger { .. }
+        | ScalarExpression::ToFloat { .. }
+        | ScalarExpression::ToBoolean { .. }
+        | ScalarExpression::ToStringOrNull { .. }
+        | ScalarExpression::ToIntegerOrNull { .. }
+        | ScalarExpression::ToFloatOrNull { .. }
+        | ScalarExpression::ToBooleanOrNull { .. }
+        | ScalarExpression::ToLower { .. }
+        | ScalarExpression::ToUpper { .. }
+        | ScalarExpression::Trim { .. }
+        | ScalarExpression::LTrim { .. }
+        | ScalarExpression::RTrim { .. }
+        | ScalarExpression::CharacterLength { .. }
+        | ScalarExpression::Reverse { .. }
+        | ScalarExpression::Abs { .. }
+        | ScalarExpression::Ceil { .. }
+        | ScalarExpression::Floor { .. }
+        | ScalarExpression::Sqrt { .. }
+        | ScalarExpression::Sign { .. }
+        | ScalarExpression::Exp { .. }
+        | ScalarExpression::Log { .. }
+        | ScalarExpression::Log10 { .. }
+        | ScalarExpression::Sin { .. }
+        | ScalarExpression::Cos { .. }
+        | ScalarExpression::Tan { .. }
+        | ScalarExpression::Cot { .. }
+        | ScalarExpression::Asin { .. }
+        | ScalarExpression::Acos { .. }
+        | ScalarExpression::Atan { .. }
+        | ScalarExpression::Degrees { .. }
+        | ScalarExpression::Radians { .. }
+        | ScalarExpression::Negate { .. } => {
+            unreachable!("unary scalar expressions handled before structural path checks")
+        }
+        ScalarExpression::Coalesce { .. }
+        | ScalarExpression::NullIf { .. }
+        | ScalarExpression::Round { .. }
+        | ScalarExpression::Left { .. }
+        | ScalarExpression::Right { .. }
+        | ScalarExpression::Replace { .. }
+        | ScalarExpression::Substring { .. }
+        | ScalarExpression::Arithmetic { .. }
+        | ScalarExpression::Atan2 { .. }
+        | ScalarExpression::Case { .. } => {
+            unreachable!("structural scalar expressions handled before this path check")
+        }
+    }
+}
+
+fn reject_ignored_path_variables_in_scalar_list(
+    expressions: &[ScalarExpression],
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    for (index, expression) in expressions.iter().enumerate() {
+        reject_ignored_path_variable_references_in_scalar_expression(
+            expression,
+            state,
+            format!("{path}[{index}]"),
+        )?;
+    }
+    Ok(())
+}
+
+fn reject_ignored_path_variables_in_scalar_pair(
+    left: (&str, &ScalarExpression),
+    right: (&str, &ScalarExpression),
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    reject_ignored_path_variable_references_in_scalar_expression(
+        left.1,
+        state,
+        format!("{path}.{}", left.0),
+    )?;
+    reject_ignored_path_variable_references_in_scalar_expression(
+        right.1,
+        state,
+        format!("{path}.{}", right.0),
+    )
+}
+
+fn reject_ignored_path_variables_in_scalar_optional_pair(
+    required: (&str, &ScalarExpression),
+    optional: (&str, Option<&ScalarExpression>),
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    reject_ignored_path_variable_references_in_scalar_expression(
+        required.1,
+        state,
+        format!("{path}.{}", required.0),
+    )?;
+    if let Some(expression) = optional.1 {
+        reject_ignored_path_variable_references_in_scalar_expression(
+            expression,
+            state,
+            format!("{path}.{}", optional.0),
+        )?;
+    }
+    Ok(())
+}
+
+fn reject_ignored_path_variables_in_replace_expression(
+    expression: &ScalarExpression,
+    search: &ScalarExpression,
+    replacement: &ScalarExpression,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    reject_ignored_path_variable_references_in_scalar_expression(
+        expression,
+        state,
+        format!("{path}.expression"),
+    )?;
+    reject_ignored_path_variable_references_in_scalar_expression(
+        search,
+        state,
+        format!("{path}.search"),
+    )?;
+    reject_ignored_path_variable_references_in_scalar_expression(
+        replacement,
+        state,
+        format!("{path}.replacement"),
+    )
+}
+
+fn reject_ignored_path_variables_in_substring_expression(
+    expression: &ScalarExpression,
+    start: &ScalarExpression,
+    length: Option<&ScalarExpression>,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    reject_ignored_path_variable_references_in_scalar_expression(
+        expression,
+        state,
+        format!("{path}.expression"),
+    )?;
+    reject_ignored_path_variable_references_in_scalar_expression(
+        start,
+        state,
+        format!("{path}.start"),
+    )?;
+    if let Some(length) = length {
+        reject_ignored_path_variable_references_in_scalar_expression(
+            length,
+            state,
+            format!("{path}.length"),
+        )?;
+    }
+    Ok(())
+}
+
+fn reject_ignored_path_variable_references_in_case_expression(
+    alternatives: &[ScalarCaseAlternative],
+    else_expression: Option<&ScalarExpression>,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    for (index, alternative) in alternatives.iter().enumerate() {
+        reject_ignored_path_variable_references_in_predicate(
+            &alternative.when,
+            state,
+            format!("{path}.alternatives[{index}].when"),
+        )?;
+        reject_ignored_path_variable_references_in_scalar_expression(
+            &alternative.then,
+            state,
+            format!("{path}.alternatives[{index}].then"),
+        )?;
+    }
+    if let Some(else_expression) = else_expression {
+        reject_ignored_path_variable_references_in_scalar_expression(
+            else_expression,
+            state,
+            format!("{path}.else"),
+        )?;
+    }
+    Ok(())
+}
+
+fn unary_scalar_expression_operand(expression: &ScalarExpression) -> Option<&ScalarExpression> {
+    match expression {
+        ScalarExpression::ToString { expression }
+        | ScalarExpression::ToInteger { expression }
+        | ScalarExpression::ToFloat { expression }
+        | ScalarExpression::ToBoolean { expression }
+        | ScalarExpression::ToStringOrNull { expression }
+        | ScalarExpression::ToIntegerOrNull { expression }
+        | ScalarExpression::ToFloatOrNull { expression }
+        | ScalarExpression::ToBooleanOrNull { expression }
+        | ScalarExpression::ToLower { expression }
+        | ScalarExpression::ToUpper { expression }
+        | ScalarExpression::Trim { expression }
+        | ScalarExpression::LTrim { expression }
+        | ScalarExpression::RTrim { expression }
+        | ScalarExpression::CharacterLength { expression }
+        | ScalarExpression::Reverse { expression }
+        | ScalarExpression::Abs { expression }
+        | ScalarExpression::Ceil { expression }
+        | ScalarExpression::Floor { expression }
+        | ScalarExpression::Sqrt { expression }
+        | ScalarExpression::Sign { expression }
+        | ScalarExpression::Exp { expression }
+        | ScalarExpression::Log { expression }
+        | ScalarExpression::Log10 { expression }
+        | ScalarExpression::Sin { expression }
+        | ScalarExpression::Cos { expression }
+        | ScalarExpression::Tan { expression }
+        | ScalarExpression::Cot { expression }
+        | ScalarExpression::Asin { expression }
+        | ScalarExpression::Acos { expression }
+        | ScalarExpression::Atan { expression }
+        | ScalarExpression::Degrees { expression }
+        | ScalarExpression::Radians { expression }
+        | ScalarExpression::Negate { expression } => Some(expression),
+        _ => None,
+    }
+}
+
+fn reject_ignored_path_variable_property_ref(
+    property: &PropertyRef,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    reject_ignored_path_variable(&property.variable, state, path)
+}
+
+fn reject_ignored_path_variable(
+    variable: &str,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    if state.ignored_path_variables.contains(variable) {
+        return Err(unsupported(
+            path,
+            format!(
+                "path variable '{variable}' cannot be used as a graph value because Coral does not materialize path values yet"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn compile_reading_clauses_into(
@@ -6104,6 +6724,62 @@ mod tests {
             error
                 .to_string()
                 .contains("WITH * cannot carry path variables"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_path_value_property_projections() {
+        let error = compile_cypher(
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             RETURN path.name AS path_name",
+        )
+        .expect_err("path values should not be projected as graph properties");
+
+        assert_path_value_error(&error);
+    }
+
+    #[test]
+    fn rejects_path_value_property_predicates() {
+        let error = compile_cypher(
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             WHERE path.name = 'x' \
+             RETURN person.name AS owner",
+        )
+        .expect_err("path values should not be filtered as graph properties");
+
+        assert_path_value_error(&error);
+    }
+
+    #[test]
+    fn rejects_path_value_property_ordering() {
+        let error = compile_cypher(
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             RETURN person.name AS owner \
+             ORDER BY path.name",
+        )
+        .expect_err("path values should not be ordered as graph properties");
+
+        assert_path_value_error(&error);
+    }
+
+    #[test]
+    fn rejects_transparent_with_path_value_predicates_before_dropping_path_values() {
+        let error = compile_cypher(
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             WITH person, service WHERE path.name = 'x' \
+             RETURN person.name AS owner",
+        )
+        .expect_err("transparent WITH should reject path values before dropping them");
+
+        assert_path_value_error(&error);
+    }
+
+    fn assert_path_value_error(error: &CoreError) {
+        assert!(
+            error
+                .to_string()
+                .contains("path variable 'path' cannot be used as a graph value"),
             "{error}"
         );
     }
