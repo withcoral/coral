@@ -4486,19 +4486,7 @@ fn compile_id_order_expression(
     plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
-    let path = path.into();
-    let variable = compile_single_variable_function_argument(
-        function,
-        format!("{path}.arguments"),
-        "id() supports exactly one graph variable argument",
-        context,
-    )?;
-    if !plan_uses_variable(plan, &variable) {
-        return Err(unsupported(
-            format!("{path}.arguments[0]"),
-            format!("id() argument '{variable}' is not a bound graph variable"),
-        ));
-    }
+    let variable = compile_id_variable(function, path, plan, context)?;
     Ok(OrderExpression::Key { variable })
 }
 
@@ -4720,7 +4708,7 @@ fn compile_projection(
             compile_labels_projection(function, item, path, plan, context)
         }
         Expression::FunctionCall(function) if is_keys_function(function) => {
-            compile_keys_projection(function, item, path, context)
+            compile_keys_projection(function, item, path, plan, context)
         }
         Expression::FunctionCall(function) if is_length_function(function) => {
             compile_path_length_projection(function, item, path, state, context)
@@ -5972,18 +5960,7 @@ fn compile_id_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    let variable = compile_single_variable_function_argument(
-        function,
-        format!("{path}.expression.arguments"),
-        "id() supports exactly one graph variable argument",
-        context,
-    )?;
-    if !plan_uses_variable(plan, &variable) {
-        return Err(unsupported(
-            format!("{path}.expression.arguments[0]"),
-            format!("id() argument '{variable}' is not a bound graph variable"),
-        ));
-    }
+    let variable = compile_id_variable(function, format!("{path}.expression"), plan, context)?;
     Ok(Projection::Key {
         variable,
         alias: item
@@ -6153,10 +6130,11 @@ fn compile_keys_order_expression(
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
-    let variable = compile_single_variable_function_argument(
+    let variable = compile_single_graph_value_function_argument(
         function,
         format!("{path}.arguments"),
         "keys() supports exactly one graph variable argument",
+        plan,
         context,
     )?;
     if !plan_uses_variable(plan, &variable) {
@@ -6427,15 +6405,23 @@ fn compile_keys_projection(
     function: &FunctionInvocation,
     item: &ProjectionItem,
     path: impl Into<String>,
+    plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    let variable = compile_single_variable_function_argument(
+    let variable = compile_single_graph_value_function_argument(
         function,
         format!("{path}.expression.arguments"),
         "keys() supports exactly one graph variable argument",
+        plan,
         context,
     )?;
+    if !plan_uses_variable(plan, &variable) {
+        return Err(unsupported(
+            format!("{path}.expression.arguments[0]"),
+            format!("keys() argument '{variable}' is not a bound graph variable"),
+        ));
+    }
     Ok(Projection::PropertyKeys {
         variable,
         alias: item
@@ -6453,8 +6439,13 @@ fn compile_node_function_target(
     context: &CypherCompileContext,
 ) -> Result<(String, String), CoreError> {
     let path = path.into();
-    let variable =
-        compile_single_variable_function_argument(function, path.clone(), message, context)?;
+    let variable = compile_single_graph_value_function_argument(
+        function,
+        path.clone(),
+        message,
+        plan,
+        context,
+    )?;
     let node = plan
         .nodes
         .iter()
@@ -6466,6 +6457,58 @@ fn compile_node_function_target(
             )
         })?;
     Ok((variable, node.label.clone()))
+}
+
+fn compile_single_graph_value_function_argument(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    message: &'static str,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    match function.arguments.as_slice() {
+        [argument] => compile_graph_value_expression_variable(
+            argument,
+            format!("{path}[0]"),
+            message,
+            plan,
+            context,
+        ),
+        [] => {
+            let variable = context
+                .variable_function_argument(function)
+                .map(str::to_string)
+                .ok_or_else(|| unsupported(path.clone(), message))?;
+            Ok(variable)
+        }
+        _ => Err(unsupported(path, message)),
+    }
+}
+
+fn compile_graph_value_expression_variable(
+    expression: &Expression,
+    path: impl Into<String>,
+    message: &'static str,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_graph_value_expression_variable(inner, path, message, plan, context)
+        }
+        Expression::Variable(variable) => {
+            let variable = variable_name(variable);
+            Ok(variable)
+        }
+        Expression::FunctionCall(function)
+            if is_start_node_function(function) || is_end_node_function(function) =>
+        {
+            compile_relationship_endpoint_variable(function, path, plan, context)
+        }
+        _ => Err(unsupported(path, message)),
+    }
 }
 
 fn compile_single_variable_function_argument(
@@ -6603,6 +6646,19 @@ fn compile_aggregate_target(
         Expression::Variable(variable) => Ok(AggregateTarget::VariableKey {
             variable: variable_name(variable),
         }),
+        Expression::FunctionCall(function)
+            if is_start_node_function(function) || is_end_node_function(function) =>
+        {
+            let Some(plan) = plan else {
+                return Err(unsupported(
+                    path,
+                    "relationship endpoint aggregate targets require graph context",
+                ));
+            };
+            Ok(AggregateTarget::VariableKey {
+                variable: compile_relationship_endpoint_variable(function, path, plan, context)?,
+            })
+        }
         _ => Ok(AggregateTarget::Property(compile_property_ref(
             expression, path, plan, context,
         )?)),
@@ -7142,7 +7198,7 @@ fn compile_predicate_expression_in_mode(
         }
         Expression::In { lhs, rhs, .. } => compile_in_predicate(lhs, rhs, path, mode, context),
         Expression::NodeLabels { base, labels, .. } => match mode.static_metadata_plan() {
-            Some(plan) => compile_graph_label_predicate(base, labels, path, plan),
+            Some(plan) => compile_graph_label_predicate(base, labels, path, plan, context),
             None => Err(unsupported(path, "label predicates require graph context")),
         },
         Expression::Literal(CypherLiteral::Boolean(value)) => {
@@ -8003,9 +8059,16 @@ fn compile_graph_label_predicate(
     labels: &[LabelExpression],
     path: impl Into<String>,
     plan: &GraphPlan,
+    context: &CypherCompileContext,
 ) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
-    let variable = compile_label_predicate_variable(base, format!("{path}.base"))?;
+    let variable = compile_graph_value_expression_variable(
+        base,
+        format!("{path}.base"),
+        "graph label predicates require a node or relationship variable",
+        plan,
+        context,
+    )?;
     let mapped_label = mapped_graph_label_for_variable(plan, &variable).ok_or_else(|| {
         unsupported(
             format!("{path}.base"),
@@ -8031,21 +8094,6 @@ fn compile_graph_label_predicate(
         },
     )?;
     Ok(PredicateExpression::Boolean(matches))
-}
-
-fn compile_label_predicate_variable(
-    expression: &Expression,
-    path: impl Into<String>,
-) -> Result<String, CoreError> {
-    let path = path.into();
-    match expression {
-        Expression::Parenthesized(inner) => compile_label_predicate_variable(inner, path),
-        Expression::Variable(variable) => Ok(variable_name(variable)),
-        _ => Err(unsupported(
-            path,
-            "graph label predicates require a node or relationship variable",
-        )),
-    }
 }
 
 fn mapped_graph_label_for_variable<'a>(plan: &'a GraphPlan, variable: &str) -> Option<&'a str> {
@@ -8103,18 +8151,13 @@ fn compile_optional_keys_ref(
     match expression {
         Expression::Parenthesized(inner) => compile_optional_keys_ref(inner, path, plan, context),
         Expression::FunctionCall(function) if is_keys_function(function) => {
-            let variable = compile_single_variable_function_argument(
+            let variable = compile_single_graph_value_function_argument(
                 function,
                 format!("{path}.arguments"),
                 "keys() supports exactly one graph variable argument",
+                plan,
                 context,
             )?;
-            if !plan_uses_variable(plan, &variable) {
-                return Err(unsupported(
-                    format!("{path}.arguments[0]"),
-                    format!("keys() argument '{variable}' is not a bound graph variable"),
-                ));
-            }
             Ok(Some(variable))
         }
         _ => Ok(None),
@@ -8255,7 +8298,9 @@ fn compile_null_predicate(
         }));
     }
     if let Some(plan) = mode.graph_plan() {
-        if let Some(variable) = compile_optional_graph_variable_ref(operand) {
+        if let Some(variable) =
+            compile_optional_graph_variable_ref(operand, format!("{path}.operand"), plan, context)?
+        {
             if !plan_uses_variable(plan, &variable) {
                 return Err(unsupported(
                     format!("{path}.operand"),
@@ -8277,11 +8322,26 @@ fn compile_null_predicate(
     ))
 }
 
-fn compile_optional_graph_variable_ref(expression: &Expression) -> Option<String> {
+fn compile_optional_graph_variable_ref(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<String>, CoreError> {
+    let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_optional_graph_variable_ref(inner),
-        Expression::Variable(variable) => Some(variable_name(variable)),
-        _ => None,
+        Expression::Parenthesized(inner) => {
+            compile_optional_graph_variable_ref(inner, path, plan, context)
+        }
+        Expression::Variable(variable) => Ok(Some(variable_name(variable))),
+        Expression::FunctionCall(function)
+            if is_start_node_function(function) || is_end_node_function(function) =>
+        {
+            Ok(Some(compile_relationship_endpoint_variable(
+                function, path, plan, context,
+            )?))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -8326,10 +8386,11 @@ fn compile_id_variable(
     context: &CypherCompileContext,
 ) -> Result<String, CoreError> {
     let path = path.into();
-    let variable = compile_single_variable_function_argument(
+    let variable = compile_single_graph_value_function_argument(
         function,
         format!("{path}.arguments"),
         "id() supports exactly one graph variable argument",
+        plan,
         context,
     )?;
     if !plan_uses_variable(plan, &variable) {
@@ -8348,10 +8409,11 @@ fn compile_element_id_variable(
     context: &CypherCompileContext,
 ) -> Result<String, CoreError> {
     let path = path.into();
-    let variable = compile_single_variable_function_argument(
+    let variable = compile_single_graph_value_function_argument(
         function,
         format!("{path}.arguments"),
         "elementId() supports exactly one graph variable argument",
+        plan,
         context,
     )?;
     if !plan_uses_variable(plan, &variable) {
@@ -11266,6 +11328,110 @@ mod tests {
                 distinct: false,
                 alias: "sources".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_relationship_endpoint_identity_projections() {
+        let plan = compile_cypher(
+            "MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \
+             RETURN id(startNode(dependency)) AS source_id, \
+                    elementId(endNode(dependency)) AS target_element_id, \
+                    labels(startNode(dependency)) AS source_labels, \
+                    keys(endNode(dependency)) AS target_keys \
+             ORDER BY id(startNode(dependency))",
+        )
+        .expect("relationship endpoint identity projections should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Key {
+                    variable: "source".to_string(),
+                    alias: "source_id".to_string(),
+                },
+                Projection::ElementId {
+                    variable: "target".to_string(),
+                    alias: "target_element_id".to_string(),
+                },
+                Projection::NodeLabels {
+                    variable: "source".to_string(),
+                    label: "Service".to_string(),
+                    alias: "source_labels".to_string(),
+                },
+                Projection::PropertyKeys {
+                    variable: "target".to_string(),
+                    alias: "target_keys".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Key {
+                    variable: "source".to_string(),
+                },
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_relationship_endpoint_identity_aggregates() {
+        let plan = compile_cypher(
+            "MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \
+             RETURN count(endNode(dependency)) AS targets",
+        )
+        .expect("relationship endpoint identity aggregate should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Aggregate {
+                function: AggregateFunction::Count,
+                target: AggregateTarget::VariableKey {
+                    variable: "target".to_string(),
+                },
+                distinct: false,
+                alias: "targets".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_relationship_endpoint_identity_predicates() {
+        let plan = compile_cypher(
+            "MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \
+             WHERE startNode(dependency) IS NOT NULL \
+               AND endNode(dependency):Service \
+               AND 'Service' IN labels(startNode(dependency)) \
+               AND 'name' IN keys(endNode(dependency)) \
+             RETURN target.name AS target",
+        )
+        .expect("relationship endpoint identity predicates should compile");
+
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::And { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_relationship_endpoint_identity_functions_on_optional_relationships() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(dependency_service:Service) \
+             RETURN id(endNode(dependency)) AS dependency_id",
+        )
+        .expect_err(
+            "relationship endpoint identity functions over optional relationships should reject",
+        );
+
+        assert!(
+            error
+                .to_string()
+                .contains("endNode() over optional relationship variables is not supported yet"),
+            "{error}"
         );
     }
 

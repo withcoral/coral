@@ -6692,6 +6692,65 @@ async fn cypher_reversed_relationship_endpoint_properties_keep_mapping_orientati
 }
 
 #[tokio::test]
+async fn cypher_relationship_endpoint_identity_functions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \
+         WHERE id(startNode(dependency)) = 10 \
+           AND elementId(endNode(dependency)) = '30' \
+           AND 'Service' IN labels(startNode(dependency)) \
+         RETURN id(startNode(dependency)) AS source_id, \
+                elementId(endNode(dependency)) AS target_element_id, \
+                labels(startNode(dependency)) AS source_labels",
+    )
+    .await
+    .expect("relationship endpoint identity function query should execute");
+
+    assert!(
+        execution.translated_sql().contains("\"n0\".\"id\" = 10"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("CAST(\"n1\".\"id\" AS VARCHAR) = '30'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "source_id": 10,
+            "target_element_id": "30",
+            "source_labels": ["Service"]
+        })]
+    );
+
+    let count_execution = CoralQuery::execute_cypher(
+        &[build_source(ops_manifest(temp.path()))],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \
+         RETURN count(startNode(dependency)) AS dependencies",
+    )
+    .await
+    .expect("relationship endpoint identity aggregate should execute");
+
+    assert_eq!(
+        execution_to_rows(count_execution.execution()),
+        vec![json!({"dependencies": 3})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_identity_scalar_expressions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
