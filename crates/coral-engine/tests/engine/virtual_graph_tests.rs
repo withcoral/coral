@@ -312,6 +312,91 @@ async fn graphql_variables_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_object_variables_execute_against_synthetic_sources() {
+    fn object(
+        entries: impl IntoIterator<Item = (&'static str, GraphGraphqlVariableValue)>,
+    ) -> GraphGraphqlVariableValue {
+        GraphGraphqlVariableValue::Object(
+            entries
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect(),
+        )
+    }
+
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let variables = BTreeMap::from([(
+        "filter".to_string(),
+        object([
+            (
+                "tier",
+                object([(
+                    "eq",
+                    GraphGraphqlVariableValue::Literal(GraphLiteral::String("prod".to_string())),
+                )]),
+            ),
+            (
+                "risk",
+                object([(
+                    "gte",
+                    GraphGraphqlVariableValue::Literal(GraphLiteral::Float(
+                        ordered_float::OrderedFloat(0.5),
+                    )),
+                )]),
+            ),
+            (
+                "name",
+                object([(
+                    "in",
+                    GraphGraphqlVariableValue::List(vec![
+                        GraphLiteral::String("billing-api".to_string()),
+                        GraphLiteral::String("deployments".to_string()),
+                    ]),
+                )]),
+            ),
+        ]),
+    )]);
+
+    let execution = CoralQuery::execute_graphql_with_variables(
+        &[source],
+        test_runtime(),
+        &graph,
+        r"
+        query Services($filter: ServiceWhere!) {
+          Service(
+            where: $filter
+            orderBy: [{ field: name, direction: ASC }]
+          ) {
+            service: name
+            tier
+          }
+        }
+        ",
+        &variables,
+    )
+    .await
+    .expect("GraphQL object variable query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"service_name\" IN ('billing-api', 'deployments')"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "tier": "prod"}),
+            json!({"service": "deployments", "tier": "prod"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_variable_defaults_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

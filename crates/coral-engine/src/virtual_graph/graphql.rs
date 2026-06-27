@@ -24,6 +24,10 @@ pub enum GraphqlVariableValue {
     Literal(Literal),
     /// Scalar-list variable, usable where a literal list is accepted.
     List(Vec<Literal>),
+    /// Object variable, usable where supported GraphQL input objects are accepted.
+    Object(BTreeMap<String, GraphqlVariableValue>),
+    /// List of object variables, usable by boolean `where` groups such as `and` and `or`.
+    ObjectList(Vec<BTreeMap<String, GraphqlVariableValue>>),
 }
 
 struct GraphqlCompileContext<'variables, 'query> {
@@ -1300,17 +1304,22 @@ fn compile_root_argument(
 }
 
 fn compile_where_argument(
-    variable: &str,
+    graph_variable: &str,
     value: &Value<'_, String>,
     path: impl Into<String>,
     context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
-    if matches!(value, Value::Variable(_)) {
-        return Err(unsupported(
-            path,
-            "GraphQL object variables are not supported yet; bind variables inside scalar fields",
-        ));
+    if let Value::Variable(variable) = value {
+        let GraphqlVariableValue::Object(object) =
+            context.parameter_value(variable, path.clone())?
+        else {
+            return Err(unsupported(
+                path,
+                format!("GraphQL variable '${variable}' must be an object"),
+            ));
+        };
+        return compile_where_variable_object(graph_variable, object, path, context);
     }
     let Value::Object(properties) = value else {
         return Err(unsupported(path, "GraphQL where must be an object"));
@@ -1319,7 +1328,7 @@ fn compile_where_argument(
     for (property, condition) in properties {
         let next = if let Some(operator) = graphql_boolean_operator(property) {
             compile_where_boolean_operator(
-                variable,
+                graph_variable,
                 operator,
                 condition,
                 format!("{path}.{property}"),
@@ -1327,11 +1336,47 @@ fn compile_where_argument(
             )?
         } else {
             compile_where_property_conditions(
-                variable,
+                graph_variable,
                 property,
                 condition,
                 format!("{path}.{property}"),
                 context,
+            )?
+        };
+        expression = append_optional_and(expression, next);
+    }
+    Ok(expression)
+}
+
+fn compile_where_variable_object(
+    graph_variable: &str,
+    object: &BTreeMap<String, GraphqlVariableValue>,
+    path: impl Into<String>,
+    context: &GraphqlCompileContext<'_, '_>,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    let path = path.into();
+    let mut expression = None;
+    for (property, condition) in object {
+        let next = if let Some(operator) = graphql_boolean_operator(property) {
+            compile_where_variable_boolean_operator(
+                graph_variable,
+                operator,
+                condition,
+                format!("{path}.{property}"),
+                context,
+            )?
+        } else {
+            let GraphqlVariableValue::Object(condition_object) = condition else {
+                return Err(unsupported(
+                    format!("{path}.{property}"),
+                    "GraphQL where property condition variables must be objects",
+                ));
+            };
+            compile_where_variable_property_conditions(
+                graph_variable,
+                property,
+                condition_object,
+                format!("{path}.{property}"),
             )?
         };
         expression = append_optional_and(expression, next);
@@ -1358,13 +1403,22 @@ fn graphql_boolean_operator(name: &str) -> Option<GraphqlBooleanOperator> {
 }
 
 fn compile_where_boolean_operator(
-    variable: &str,
+    graph_variable: &str,
     operator: GraphqlBooleanOperator,
     value: &Value<'_, String>,
     path: impl Into<String>,
     context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
+    if let Value::Variable(variable) = value {
+        return compile_where_variable_boolean_operator(
+            graph_variable,
+            operator,
+            context.parameter_value(variable, path.clone())?,
+            path,
+            context,
+        );
+    }
     match operator {
         GraphqlBooleanOperator::And | GraphqlBooleanOperator::Or => {
             let Value::List(items) = value else {
@@ -1381,8 +1435,12 @@ fn compile_where_boolean_operator(
             }
             let mut expression = None;
             for (index, item) in items.iter().enumerate() {
-                let next =
-                    compile_where_argument(variable, item, format!("{path}[{index}]"), context)?;
+                let next = compile_where_argument(
+                    graph_variable,
+                    item,
+                    format!("{path}[{index}]"),
+                    context,
+                )?;
                 expression = match operator {
                     GraphqlBooleanOperator::And => append_optional_and(expression, next),
                     GraphqlBooleanOperator::Or => append_optional_or(expression, next),
@@ -1407,15 +1465,16 @@ fn compile_where_boolean_operator(
                     "GraphQL where xor operator requires exactly two objects",
                 ));
             };
-            let left = compile_where_argument(variable, left_item, format!("{path}[0]"), context)?
-                .ok_or_else(|| {
+            let left =
+                compile_where_argument(graph_variable, left_item, format!("{path}[0]"), context)?
+                    .ok_or_else(|| {
                     unsupported(
                         format!("{path}[0]"),
                         "GraphQL where xor operands must not be empty",
                     )
                 })?;
             let right =
-                compile_where_argument(variable, right_item, format!("{path}[1]"), context)?
+                compile_where_argument(graph_variable, right_item, format!("{path}[1]"), context)?
                     .ok_or_else(|| {
                         unsupported(
                             format!("{path}[1]"),
@@ -1428,7 +1487,7 @@ fn compile_where_boolean_operator(
             }))
         }
         GraphqlBooleanOperator::Not => {
-            let expression = compile_where_argument(variable, value, path.clone(), context)?
+            let expression = compile_where_argument(graph_variable, value, path.clone(), context)?
                 .ok_or_else(|| unsupported(path, "GraphQL where not requires an object"))?;
             Ok(Some(PredicateExpression::Not {
                 expression: Box::new(expression),
@@ -1437,19 +1496,121 @@ fn compile_where_boolean_operator(
     }
 }
 
+fn compile_where_variable_boolean_operator(
+    graph_variable: &str,
+    operator: GraphqlBooleanOperator,
+    value: &GraphqlVariableValue,
+    path: impl Into<String>,
+    context: &GraphqlCompileContext<'_, '_>,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    let path = path.into();
+    match operator {
+        GraphqlBooleanOperator::And | GraphqlBooleanOperator::Or => {
+            let GraphqlVariableValue::ObjectList(items) = value else {
+                return Err(unsupported(
+                    path,
+                    "GraphQL where and/or/xor operators must contain a list of objects",
+                ));
+            };
+            if items.is_empty() {
+                return Err(unsupported(
+                    path,
+                    "GraphQL where and/or operators require at least one object",
+                ));
+            }
+            let mut expression = None;
+            for (index, item) in items.iter().enumerate() {
+                let next = compile_where_variable_object(
+                    graph_variable,
+                    item,
+                    format!("{path}[{index}]"),
+                    context,
+                )?;
+                expression = match operator {
+                    GraphqlBooleanOperator::And => append_optional_and(expression, next),
+                    GraphqlBooleanOperator::Or => append_optional_or(expression, next),
+                    GraphqlBooleanOperator::Xor => unreachable!("XOR is handled separately"),
+                    GraphqlBooleanOperator::Not => unreachable!("NOT is handled separately"),
+                };
+            }
+            expression
+                .map(Some)
+                .ok_or_else(|| unsupported(path, "GraphQL where boolean list was empty"))
+        }
+        GraphqlBooleanOperator::Xor => {
+            let GraphqlVariableValue::ObjectList(items) = value else {
+                return Err(unsupported(
+                    path,
+                    "GraphQL where and/or/xor operators must contain a list of objects",
+                ));
+            };
+            let [left_item, right_item] = items.as_slice() else {
+                return Err(unsupported(
+                    path,
+                    "GraphQL where xor operator requires exactly two objects",
+                ));
+            };
+            let left = compile_where_variable_object(
+                graph_variable,
+                left_item,
+                format!("{path}[0]"),
+                context,
+            )?
+            .ok_or_else(|| {
+                unsupported(
+                    format!("{path}[0]"),
+                    "GraphQL where xor operands must not be empty",
+                )
+            })?;
+            let right = compile_where_variable_object(
+                graph_variable,
+                right_item,
+                format!("{path}[1]"),
+                context,
+            )?
+            .ok_or_else(|| {
+                unsupported(
+                    format!("{path}[1]"),
+                    "GraphQL where xor operands must not be empty",
+                )
+            })?;
+            Ok(Some(PredicateExpression::Xor {
+                left: Box::new(left),
+                right: Box::new(right),
+            }))
+        }
+        GraphqlBooleanOperator::Not => {
+            let GraphqlVariableValue::Object(object) = value else {
+                return Err(unsupported(path, "GraphQL where not requires an object"));
+            };
+            let expression =
+                compile_where_variable_object(graph_variable, object, path.clone(), context)?
+                    .ok_or_else(|| unsupported(path, "GraphQL where not requires an object"))?;
+            Ok(Some(PredicateExpression::Not {
+                expression: Box::new(expression),
+            }))
+        }
+    }
+}
+
 fn compile_where_property_conditions(
-    variable: &str,
+    graph_variable: &str,
     property: &str,
     condition: &Value<'_, String>,
     path: impl Into<String>,
     context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
-    if matches!(condition, Value::Variable(_)) {
-        return Err(unsupported(
-            path,
-            "GraphQL property condition variables are not supported yet; bind variables inside operators",
-        ));
+    if let Value::Variable(variable) = condition {
+        let GraphqlVariableValue::Object(object) =
+            context.parameter_value(variable, path.clone())?
+        else {
+            return Err(unsupported(
+                path,
+                format!("GraphQL variable '${variable}' must be a property condition object"),
+            ));
+        };
+        return compile_where_variable_property_conditions(graph_variable, property, object, path);
     }
     let Value::Object(operators) = condition else {
         return Err(unsupported(
@@ -1460,12 +1621,34 @@ fn compile_where_property_conditions(
     let mut expression = None;
     for (operator, value) in operators {
         let predicate = compile_where_operator(
-            variable,
+            graph_variable,
             property,
             operator,
             value,
             format!("{path}.{operator}"),
             context,
+        )?;
+        expression =
+            append_optional_and(expression, Some(PredicateExpression::Comparison(predicate)));
+    }
+    Ok(expression)
+}
+
+fn compile_where_variable_property_conditions(
+    graph_variable: &str,
+    property: &str,
+    operators: &BTreeMap<String, GraphqlVariableValue>,
+    path: impl Into<String>,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    let path = path.into();
+    let mut expression = None;
+    for (operator, value) in operators {
+        let predicate = compile_where_variable_operator(
+            graph_variable,
+            property,
+            operator,
+            value,
+            format!("{path}.{operator}"),
         )?;
         expression =
             append_optional_and(expression, Some(PredicateExpression::Comparison(predicate)));
@@ -1648,6 +1831,93 @@ fn compile_where_operator(
     }
 }
 
+fn compile_where_variable_operator(
+    variable: &str,
+    property: &str,
+    operator: &str,
+    value: &GraphqlVariableValue,
+    path: impl Into<String>,
+) -> Result<PropertyPredicate, CoreError> {
+    let path = path.into();
+    let property = PropertyRef {
+        variable: variable.to_string(),
+        property: property.to_string(),
+    };
+    match operator {
+        "eq" => Ok(PropertyPredicate {
+            property,
+            operator: ComparisonOperator::Equal,
+            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
+        }),
+        "ne" => Ok(PropertyPredicate {
+            property,
+            operator: ComparisonOperator::NotEqual,
+            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
+        }),
+        "gt" => Ok(PropertyPredicate {
+            property,
+            operator: ComparisonOperator::GreaterThan,
+            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
+        }),
+        "gte" => Ok(PropertyPredicate {
+            property,
+            operator: ComparisonOperator::GreaterThanOrEqual,
+            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
+        }),
+        "lt" => Ok(PropertyPredicate {
+            property,
+            operator: ComparisonOperator::LessThan,
+            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
+        }),
+        "lte" => Ok(PropertyPredicate {
+            property,
+            operator: ComparisonOperator::LessThanOrEqual,
+            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
+        }),
+        "startsWith" => Ok(PropertyPredicate {
+            property,
+            operator: ComparisonOperator::StartsWith,
+            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
+        }),
+        "endsWith" => Ok(PropertyPredicate {
+            property,
+            operator: ComparisonOperator::EndsWith,
+            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
+        }),
+        "contains" => Ok(PropertyPredicate {
+            property,
+            operator: ComparisonOperator::Contains,
+            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
+        }),
+        "matches" | "regex" => Ok(PropertyPredicate {
+            property,
+            operator: ComparisonOperator::RegexMatch,
+            rhs: PredicateRhs::Literal(compile_variable_regex_literal(value, path)?),
+        }),
+        "in" => Ok(PropertyPredicate {
+            property,
+            operator: ComparisonOperator::In,
+            rhs: PredicateRhs::List(compile_variable_literal_list(value, path)?),
+        }),
+        "isNull" => {
+            let is_null = compile_variable_boolean(value, path, "isNull")?;
+            Ok(PropertyPredicate {
+                property,
+                operator: if is_null {
+                    ComparisonOperator::Equal
+                } else {
+                    ComparisonOperator::NotEqual
+                },
+                rhs: PredicateRhs::Literal(Literal::Null),
+            })
+        }
+        _ => Err(unsupported(
+            path,
+            format!("unsupported GraphQL where operator '{operator}'"),
+        )),
+    }
+}
+
 fn compile_order_by_argument(
     variable: &str,
     value: &Value<'_, String>,
@@ -1726,6 +1996,70 @@ fn compile_order_direction(
     }
 }
 
+fn compile_variable_literal(
+    value: &GraphqlVariableValue,
+    path: impl Into<String>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    match value {
+        GraphqlVariableValue::Literal(value) => Ok(value.clone()),
+        GraphqlVariableValue::List(_)
+        | GraphqlVariableValue::Object(_)
+        | GraphqlVariableValue::ObjectList(_) => Err(unsupported(
+            path,
+            "GraphQL variable value must be a scalar literal",
+        )),
+    }
+}
+
+fn compile_variable_literal_list(
+    value: &GraphqlVariableValue,
+    path: impl Into<String>,
+) -> Result<Vec<Literal>, CoreError> {
+    let path = path.into();
+    match value {
+        GraphqlVariableValue::List(values) => Ok(values.clone()),
+        GraphqlVariableValue::Literal(_)
+        | GraphqlVariableValue::Object(_)
+        | GraphqlVariableValue::ObjectList(_) => Err(unsupported(
+            path,
+            "GraphQL variable value must be a scalar-list literal",
+        )),
+    }
+}
+
+fn compile_variable_regex_literal(
+    value: &GraphqlVariableValue,
+    path: impl Into<String>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let literal = compile_variable_literal(value, path.clone())?;
+    let Literal::String(pattern) = &literal else {
+        return Err(unsupported(
+            path,
+            "GraphQL regex filters require a string literal",
+        ));
+    };
+    Regex::new(pattern)
+        .map_err(|error| unsupported(path, format!("invalid GraphQL regex literal: {error}")))?;
+    Ok(literal)
+}
+
+fn compile_variable_boolean(
+    value: &GraphqlVariableValue,
+    path: impl Into<String>,
+    name: &str,
+) -> Result<bool, CoreError> {
+    let path = path.into();
+    let GraphqlVariableValue::Literal(Literal::Boolean(value)) = value else {
+        return Err(unsupported(
+            path,
+            format!("GraphQL variable value for {name} must be a boolean"),
+        ));
+    };
+    Ok(*value)
+}
+
 fn compile_literal(
     value: &Value<'_, String>,
     path: impl Into<String>,
@@ -1747,7 +2081,9 @@ fn compile_literal(
         Value::Null => Ok(Literal::Null),
         Value::Variable(variable) => match context.parameter_value(variable, path.clone())? {
             GraphqlVariableValue::Literal(value) => Ok(value.clone()),
-            GraphqlVariableValue::List(_) => Err(unsupported(
+            GraphqlVariableValue::List(_)
+            | GraphqlVariableValue::Object(_)
+            | GraphqlVariableValue::ObjectList(_) => Err(unsupported(
                 path,
                 format!("GraphQL variable '${variable}' must be a scalar literal"),
             )),
@@ -1838,7 +2174,9 @@ fn compile_literal_list(
     if let Value::Variable(variable) = value {
         return match context.parameter_value(variable, path.clone())? {
             GraphqlVariableValue::List(values) => Ok(values.clone()),
-            GraphqlVariableValue::Literal(_) => Err(unsupported(
+            GraphqlVariableValue::Literal(_)
+            | GraphqlVariableValue::Object(_)
+            | GraphqlVariableValue::ObjectList(_) => Err(unsupported(
                 path,
                 format!("GraphQL variable '${variable}' must be a scalar-list literal"),
             )),
@@ -1934,7 +2272,10 @@ fn compile_name_value(
         Value::Enum(value) | Value::String(value) => Ok(value.clone()),
         Value::Variable(variable) => match context.parameter_value(variable, path.clone())? {
             GraphqlVariableValue::Literal(Literal::String(value)) => Ok(value.clone()),
-            GraphqlVariableValue::Literal(_) | GraphqlVariableValue::List(_) => Err(unsupported(
+            GraphqlVariableValue::Literal(_)
+            | GraphqlVariableValue::List(_)
+            | GraphqlVariableValue::Object(_)
+            | GraphqlVariableValue::ObjectList(_) => Err(unsupported(
                 path,
                 format!("GraphQL variable '${variable}' must be a string or enum name"),
             )),
@@ -1972,6 +2313,21 @@ fn unsupported(path: impl Into<String>, message: impl Into<String>) -> CoreError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn variable_object(
+        entries: impl IntoIterator<Item = (&'static str, GraphqlVariableValue)>,
+    ) -> GraphqlVariableValue {
+        GraphqlVariableValue::Object(variable_object_map(entries))
+    }
+
+    fn variable_object_map(
+        entries: impl IntoIterator<Item = (&'static str, GraphqlVariableValue)>,
+    ) -> BTreeMap<String, GraphqlVariableValue> {
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect()
+    }
 
     #[test]
     fn compiles_root_node_query() {
@@ -2247,6 +2603,135 @@ mod tests {
     }
 
     #[test]
+    fn compiles_root_query_with_object_where_variable() {
+        let variables = BTreeMap::from([(
+            "filter".to_string(),
+            variable_object([
+                (
+                    "tier",
+                    variable_object([(
+                        "eq",
+                        GraphqlVariableValue::Literal(Literal::String("prod".to_string())),
+                    )]),
+                ),
+                (
+                    "risk",
+                    variable_object([(
+                        "gte",
+                        GraphqlVariableValue::Literal(Literal::Float(OrderedFloat(0.5))),
+                    )]),
+                ),
+                (
+                    "name",
+                    variable_object([(
+                        "in",
+                        GraphqlVariableValue::List(vec![
+                            Literal::String("billing-api".to_string()),
+                            Literal::String("deployments".to_string()),
+                        ]),
+                    )]),
+                ),
+            ]),
+        )]);
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services($filter: ServiceWhere!) {
+              Service(where: $filter) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect("GraphQL object where variable should compile");
+
+        assert_eq!(plan.predicates.len(), 3);
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "tier"
+                && predicate.rhs == PredicateRhs::Literal(Literal::String("prod".to_string()))
+        }));
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "risk"
+                && predicate.operator == ComparisonOperator::GreaterThanOrEqual
+        }));
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "name"
+                && matches!(
+                    &predicate.rhs,
+                    PredicateRhs::List(values) if values.len() == 2
+                )
+        }));
+    }
+
+    #[test]
+    fn compiles_root_query_with_property_condition_variable() {
+        let variables = BTreeMap::from([(
+            "tierCondition".to_string(),
+            variable_object([(
+                "eq",
+                GraphqlVariableValue::Literal(Literal::String("prod".to_string())),
+            )]),
+        )]);
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services($tierCondition: StringCondition!) {
+              Service(where: { tier: $tierCondition }) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect("GraphQL property condition variable should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_root_query_with_object_list_boolean_variable() {
+        let variables = BTreeMap::from([(
+            "filters".to_string(),
+            GraphqlVariableValue::ObjectList(vec![
+                variable_object_map([(
+                    "tier",
+                    variable_object([(
+                        "eq",
+                        GraphqlVariableValue::Literal(Literal::String("prod".to_string())),
+                    )]),
+                )]),
+                variable_object_map([(
+                    "name",
+                    variable_object([(
+                        "contains",
+                        GraphqlVariableValue::Literal(Literal::String("experiments".to_string())),
+                    )]),
+                )]),
+            ]),
+        )]);
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services($filters: [ServiceWhere!]!) {
+              Service(where: { or: $filters }) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect("GraphQL object-list boolean variable should compile");
+
+        assert!(plan.predicates.is_empty());
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::Or { .. })
+        ));
+    }
+
+    #[test]
     fn compiles_root_query_with_variable_defaults() {
         let plan = compile_graphql_with_variables(
             r#"
@@ -2399,6 +2884,81 @@ mod tests {
             error
                 .to_string()
                 .contains("GraphQL variable '$tier' must be a scalar literal"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_graphql_object_variable_in_scalar_position() {
+        let variables = BTreeMap::from([(
+            "tier".to_string(),
+            variable_object([(
+                "eq",
+                GraphqlVariableValue::Literal(Literal::String("prod".to_string())),
+            )]),
+        )]);
+        let error = compile_graphql_with_variables(
+            r"
+            query Services($tier: String!) {
+              Service(where: { tier: { eq: $tier } }) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect_err("object variable in scalar position should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("GraphQL variable '$tier' must be a scalar literal"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_graphql_scalar_variable_in_object_position() {
+        let variables = BTreeMap::from([(
+            "filter".to_string(),
+            GraphqlVariableValue::Literal(Literal::String("prod".to_string())),
+        )]);
+        let error = compile_graphql_with_variables(
+            r"
+            query Services($filter: ServiceWhere!) {
+              Service(where: $filter) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect_err("scalar variable in object position should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("GraphQL variable '$filter' must be an object"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_graphql_scalar_variable_in_property_condition_position() {
+        let variables = BTreeMap::from([(
+            "condition".to_string(),
+            GraphqlVariableValue::Literal(Literal::String("prod".to_string())),
+        )]);
+        let error = compile_graphql_with_variables(
+            r"
+            query Services($condition: ServiceCondition!) {
+              Service(where: { tier: $condition }) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect_err("scalar variable in property condition position should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must be a property condition object"),
             "{error}"
         );
     }
@@ -2867,6 +3427,79 @@ mod tests {
                 },
             ]
         );
+        assert_eq!(plan.predicates.len(), 3);
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.variable == "person" && predicate.property.property == "team"
+        }));
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.variable == "service1" && predicate.property.property == "tier"
+        }));
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.variable == "relationship0"
+                && predicate.property.property == "source"
+        }));
+    }
+
+    #[test]
+    fn compiles_nested_relationship_query_with_object_variables() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let variables = BTreeMap::from([
+            (
+                "personFilter".to_string(),
+                variable_object([(
+                    "team",
+                    variable_object([(
+                        "eq",
+                        GraphqlVariableValue::Literal(Literal::String("infra".to_string())),
+                    )]),
+                )]),
+            ),
+            (
+                "serviceFilter".to_string(),
+                variable_object([(
+                    "tier",
+                    variable_object([(
+                        "eq",
+                        GraphqlVariableValue::Literal(Literal::String("prod".to_string())),
+                    )]),
+                )]),
+            ),
+            (
+                "ownershipFilter".to_string(),
+                variable_object([(
+                    "source",
+                    variable_object([(
+                        "eq",
+                        GraphqlVariableValue::Literal(Literal::String("pagerduty".to_string())),
+                    )]),
+                )]),
+            ),
+        ]);
+        let plan = compile_graphql_for_graph_with_variables(
+            &graph,
+            r"
+            query OwnedServices(
+              $personFilter: PersonWhere!
+              $serviceFilter: ServiceWhere!
+              $ownershipFilter: OwnershipWhere!
+            ) {
+              Person(where: $personFilter) {
+                owner: name
+                out_OWNS(
+                  to: Service
+                  where: $serviceFilter
+                  relationshipWhere: $ownershipFilter
+                ) {
+                  service: name
+                  _edge { source }
+                }
+              }
+            }
+            ",
+            &variables,
+        )
+        .expect("nested GraphQL object variables should compile");
+
         assert_eq!(plan.predicates.len(), 3);
         assert!(plan.predicates.iter().any(|predicate| {
             predicate.property.variable == "person" && predicate.property.property == "team"
