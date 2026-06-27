@@ -102,6 +102,48 @@ async fn cypher_translation_executes_against_synthetic_file_sources() {
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN owner.name AS owner, service.name AS service",
+    )
+    .await
+    .expect("static label alternative Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains("UNION ALL"),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by(|left, right| {
+        let left_key = format!("{}:{}", left["owner"], left["service"]);
+        let right_key = format!("{}:{}", right["owner"], right["service"]);
+        left_key.cmp(&right_key)
+    });
+    assert_eq!(
+        rows,
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api"}),
+            json!({"owner": "Grace Hopper", "service": "deployments"}),
+            json!({"owner": "Katherine Johnson", "service": "experiments"}),
+            json!({"owner": "analytics", "service": "experiments"}),
+            json!({"owner": "infra", "service": "deployments"}),
+            json!({"owner": "platform", "service": "billing-api"}),
+            json!({"owner": "platform", "service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_union_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -48,6 +48,44 @@ struct CompiledRelationship {
     predicates: Vec<PropertyPredicate>,
 }
 
+const MAX_STATIC_LABEL_TYPE_ALTERNATIVE_BRANCHES: usize = 64;
+
+#[derive(Debug, Clone)]
+enum StaticLabelTypeAlternativeSite {
+    SinglePart {
+        reading_clause_index: usize,
+        pattern_part_index: usize,
+        target: PatternAlternativeTarget,
+        alternatives: Vec<LabelTypeAlternative>,
+    },
+    MultiPart {
+        query_part: MultiPartAlternativePart,
+        reading_clause_index: usize,
+        pattern_part_index: usize,
+        target: PatternAlternativeTarget,
+        alternatives: Vec<LabelTypeAlternative>,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MultiPartAlternativePart {
+    Part(usize),
+    FinalPart,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PatternAlternativeTarget {
+    StartNode,
+    ChainNode(usize),
+    Relationship(usize),
+}
+
+#[derive(Debug, Clone)]
+enum LabelTypeAlternative {
+    NodeLabels(Vec<LabelExpression>),
+    RelationshipType(LabelExpression),
+}
+
 #[derive(Debug, Default)]
 struct CypherCompileState {
     ignored_path_variables: BTreeSet<String>,
@@ -256,16 +294,59 @@ fn compile_query(query: &Query, context: &CypherCompileContext) -> Result<GraphQ
         .ok_or_else(|| unsupported("query", "Cypher query must contain a statement"))?;
 
     match statement {
-        QueryBody::SingleQuery(single_query) => Ok(GraphQuery::Plan(compile_single_query(
-            single_query,
-            context,
-        )?)),
+        QueryBody::SingleQuery(single_query) => {
+            compile_single_query_as_graph_query(single_query, context, "query")
+        }
         QueryBody::Regular(regular_query) => compile_regular_query(regular_query, context),
         _ => Err(unsupported(
             "query",
             "only read-only MATCH queries and UNION queries are supported",
         )),
     }
+}
+
+fn compile_single_query_as_graph_query(
+    single_query: &SingleQuery,
+    context: &CypherCompileContext,
+    path: impl Into<String>,
+) -> Result<GraphQuery, CoreError> {
+    let variants = compile_single_query_variants(single_query, context, path)?;
+    graph_query_from_alternative_plans(variants)
+}
+
+fn compile_single_query_variants(
+    single_query: &SingleQuery,
+    context: &CypherCompileContext,
+    path: impl Into<String>,
+) -> Result<Vec<GraphPlan>, CoreError> {
+    let path = path.into();
+    let variants = expand_single_query_static_label_type_alternatives(single_query)?;
+    if variants.len() > 1 {
+        validate_static_label_type_alternative_expansion_supported(single_query, &path)?;
+    }
+    variants
+        .iter()
+        .map(|variant| compile_single_query(variant, context))
+        .collect()
+}
+
+fn graph_query_from_alternative_plans(mut plans: Vec<GraphPlan>) -> Result<GraphQuery, CoreError> {
+    if plans.is_empty() {
+        return Err(CoreError::internal(
+            "Cypher query expansion produced no graph plans",
+        ));
+    }
+    let first = plans.remove(0);
+    if plans.is_empty() {
+        return Ok(GraphQuery::Plan(first));
+    }
+    Ok(GraphQuery::Union(GraphUnion {
+        first,
+        branches: plans
+            .into_iter()
+            .map(|plan| GraphUnionBranch { all: true, plan })
+            .collect(),
+    }))
 }
 
 fn compile_single_query(
@@ -282,6 +363,10 @@ fn compile_regular_query(
     query: &RegularQuery,
     context: &CypherCompileContext,
 ) -> Result<GraphQuery, CoreError> {
+    reject_static_label_type_alternatives_with_explicit_union(
+        &query.single_query,
+        "query.single_query",
+    )?;
     let first = compile_single_query(&query.single_query, context)?;
     if query.unions.is_empty() {
         return Ok(GraphQuery::Plan(first));
@@ -290,6 +375,10 @@ fn compile_regular_query(
     let expected_projection_names = projection_names(&first);
     let mut branches = Vec::with_capacity(query.unions.len());
     for (index, union) in query.unions.iter().enumerate() {
+        reject_static_label_type_alternatives_with_explicit_union(
+            &union.single_query,
+            format!("query.unions[{index}].single_query"),
+        )?;
         let plan = compile_single_query(&union.single_query, context)?;
         let projection_names = projection_names(&plan);
         if projection_names != expected_projection_names {
@@ -313,6 +402,652 @@ fn compile_regular_query(
 
 fn projection_names(plan: &GraphPlan) -> Vec<String> {
     plan.projection_output_names()
+}
+
+fn reject_static_label_type_alternatives_with_explicit_union(
+    single_query: &SingleQuery,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let variants = expand_single_query_static_label_type_alternatives(single_query)?;
+    if variants.len() <= 1 {
+        return Ok(());
+    }
+    Err(unsupported(
+        path,
+        "static pattern label/type alternatives cannot be combined with top-level UNION yet; nested union grouping requires a richer query IR",
+    ))
+}
+
+fn expand_single_query_static_label_type_alternatives(
+    single_query: &SingleQuery,
+) -> Result<Vec<SingleQuery>, CoreError> {
+    let mut expanded = vec![single_query.clone()];
+    loop {
+        let mut progressed = false;
+        let mut next = Vec::with_capacity(expanded.len());
+        for query in expanded {
+            let Some(site) = first_static_label_type_alternative_site(&query) else {
+                next.push(query);
+                continue;
+            };
+            progressed = true;
+            let alternatives = match &site {
+                StaticLabelTypeAlternativeSite::SinglePart { alternatives, .. }
+                | StaticLabelTypeAlternativeSite::MultiPart { alternatives, .. } => {
+                    alternatives.clone()
+                }
+            };
+            for alternative in alternatives {
+                if next.len() >= MAX_STATIC_LABEL_TYPE_ALTERNATIVE_BRANCHES {
+                    return Err(unsupported(
+                        "query.pattern",
+                        format!(
+                            "static label/type alternatives expand to more than {MAX_STATIC_LABEL_TYPE_ALTERNATIVE_BRANCHES} branches; simplify the pattern or split the query explicitly"
+                        ),
+                    ));
+                }
+                let mut variant = query.clone();
+                apply_static_label_type_alternative(&mut variant, &site, alternative)?;
+                next.push(variant);
+            }
+        }
+        expanded = next;
+        if !progressed {
+            return Ok(expanded);
+        }
+    }
+}
+
+fn first_static_label_type_alternative_site(
+    single_query: &SingleQuery,
+) -> Option<StaticLabelTypeAlternativeSite> {
+    match &single_query.kind {
+        SingleQueryKind::SinglePart(single_part) => {
+            first_single_part_static_label_type_alternative_site(single_part)
+        }
+        SingleQueryKind::MultiPart(multi_part) => {
+            first_multi_part_static_label_type_alternative_site(multi_part)
+        }
+    }
+}
+
+fn first_single_part_static_label_type_alternative_site(
+    single_part: &SinglePartQuery,
+) -> Option<StaticLabelTypeAlternativeSite> {
+    first_reading_clause_static_label_type_alternative_site(&single_part.reading_clauses).map(
+        |(reading_clause_index, pattern_part_index, target, alternatives)| {
+            StaticLabelTypeAlternativeSite::SinglePart {
+                reading_clause_index,
+                pattern_part_index,
+                target,
+                alternatives,
+            }
+        },
+    )
+}
+
+fn first_multi_part_static_label_type_alternative_site(
+    multi_part: &MultiPartQuery,
+) -> Option<StaticLabelTypeAlternativeSite> {
+    for (part_index, part) in multi_part.parts.iter().enumerate() {
+        if let Some((reading_clause_index, pattern_part_index, target, alternatives)) =
+            first_reading_clause_static_label_type_alternative_site(&part.reading_clauses)
+        {
+            return Some(StaticLabelTypeAlternativeSite::MultiPart {
+                query_part: MultiPartAlternativePart::Part(part_index),
+                reading_clause_index,
+                pattern_part_index,
+                target,
+                alternatives,
+            });
+        }
+    }
+    first_reading_clause_static_label_type_alternative_site(&multi_part.final_part.reading_clauses)
+        .map(
+            |(reading_clause_index, pattern_part_index, target, alternatives)| {
+                StaticLabelTypeAlternativeSite::MultiPart {
+                    query_part: MultiPartAlternativePart::FinalPart,
+                    reading_clause_index,
+                    pattern_part_index,
+                    target,
+                    alternatives,
+                }
+            },
+        )
+}
+
+fn first_reading_clause_static_label_type_alternative_site(
+    reading_clauses: &[ReadingClause],
+) -> Option<(
+    usize,
+    usize,
+    PatternAlternativeTarget,
+    Vec<LabelTypeAlternative>,
+)> {
+    for (reading_clause_index, clause) in reading_clauses.iter().enumerate() {
+        let ReadingClause::Match(match_clause) = clause else {
+            continue;
+        };
+        if let Some((pattern_part_index, target, alternatives)) =
+            first_match_static_label_type_alternative_site(match_clause)
+        {
+            return Some((
+                reading_clause_index,
+                pattern_part_index,
+                target,
+                alternatives,
+            ));
+        }
+    }
+    None
+}
+
+fn first_match_static_label_type_alternative_site(
+    match_clause: &Match,
+) -> Option<(usize, PatternAlternativeTarget, Vec<LabelTypeAlternative>)> {
+    for (part_index, pattern_part) in match_clause.pattern.parts.iter().enumerate() {
+        let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+            continue;
+        };
+        let raw_alternatives = label_expression_list_alternatives(&start.labels);
+        if raw_alternatives.len() > 1 {
+            let alternatives = deduplicate_node_label_alternatives(raw_alternatives);
+            return Some((
+                part_index,
+                PatternAlternativeTarget::StartNode,
+                alternatives
+                    .into_iter()
+                    .map(LabelTypeAlternative::NodeLabels)
+                    .collect(),
+            ));
+        }
+        for (chain_index, chain) in chains.iter().enumerate() {
+            if let Some(types) = chain
+                .relationship
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.types.as_ref())
+            {
+                let raw_alternatives = label_expression_alternatives(types);
+                if raw_alternatives.len() > 1 {
+                    let alternatives = deduplicate_relationship_type_alternatives(raw_alternatives);
+                    return Some((
+                        part_index,
+                        PatternAlternativeTarget::Relationship(chain_index),
+                        alternatives
+                            .into_iter()
+                            .map(LabelTypeAlternative::RelationshipType)
+                            .collect(),
+                    ));
+                }
+            }
+            let raw_alternatives = label_expression_list_alternatives(&chain.node.labels);
+            if raw_alternatives.len() > 1 {
+                let alternatives = deduplicate_node_label_alternatives(raw_alternatives);
+                return Some((
+                    part_index,
+                    PatternAlternativeTarget::ChainNode(chain_index),
+                    alternatives
+                        .into_iter()
+                        .map(LabelTypeAlternative::NodeLabels)
+                        .collect(),
+                ));
+            }
+        }
+    }
+    None
+}
+
+fn deduplicate_node_label_alternatives(
+    alternatives: Vec<Vec<LabelExpression>>,
+) -> Vec<Vec<LabelExpression>> {
+    let mut seen = BTreeSet::new();
+    alternatives
+        .into_iter()
+        .filter(|alternative| {
+            let Ok(label) = single_static_label(alternative, "query.pattern.alternative") else {
+                return true;
+            };
+            seen.insert(label)
+        })
+        .collect()
+}
+
+fn deduplicate_relationship_type_alternatives(
+    alternatives: Vec<LabelExpression>,
+) -> Vec<LabelExpression> {
+    let mut seen = BTreeSet::new();
+    alternatives
+        .into_iter()
+        .filter(|alternative| {
+            let Ok(relationship_type) = single_static_label(
+                std::slice::from_ref(alternative),
+                "query.pattern.alternative",
+            ) else {
+                return true;
+            };
+            seen.insert(relationship_type)
+        })
+        .collect()
+}
+
+fn label_expression_list_alternatives(labels: &[LabelExpression]) -> Vec<Vec<LabelExpression>> {
+    let mut variants = vec![Vec::new()];
+    for label in labels {
+        let label_alternatives = label_expression_alternatives(label);
+        let mut next = Vec::with_capacity(variants.len() * label_alternatives.len());
+        for variant in &variants {
+            for label_alternative in &label_alternatives {
+                let mut next_variant = variant.clone();
+                next_variant.push(label_alternative.clone());
+                next.push(next_variant);
+            }
+        }
+        variants = next;
+    }
+    variants
+}
+
+fn label_expression_alternatives(expression: &LabelExpression) -> Vec<LabelExpression> {
+    match expression {
+        LabelExpression::Or { lhs, rhs, .. } => label_expression_alternatives(lhs)
+            .into_iter()
+            .chain(label_expression_alternatives(rhs))
+            .collect(),
+        LabelExpression::And { lhs, rhs, span } => {
+            let lhs_alternatives = label_expression_alternatives(lhs);
+            let rhs_alternatives = label_expression_alternatives(rhs);
+            let mut alternatives =
+                Vec::with_capacity(lhs_alternatives.len() * rhs_alternatives.len());
+            for lhs_alternative in &lhs_alternatives {
+                for rhs_alternative in &rhs_alternatives {
+                    alternatives.push(LabelExpression::And {
+                        lhs: Box::new(lhs_alternative.clone()),
+                        rhs: Box::new(rhs_alternative.clone()),
+                        span: *span,
+                    });
+                }
+            }
+            alternatives
+        }
+        LabelExpression::Group { inner, .. } => label_expression_alternatives(inner),
+        LabelExpression::Static(_)
+        | LabelExpression::Dynamic { .. }
+        | LabelExpression::Not { .. } => {
+            vec![expression.clone()]
+        }
+    }
+}
+
+fn apply_static_label_type_alternative(
+    single_query: &mut SingleQuery,
+    site: &StaticLabelTypeAlternativeSite,
+    alternative: LabelTypeAlternative,
+) -> Result<(), CoreError> {
+    match site {
+        StaticLabelTypeAlternativeSite::SinglePart {
+            reading_clause_index,
+            pattern_part_index,
+            target,
+            ..
+        } => {
+            let SingleQueryKind::SinglePart(single_part) = &mut single_query.kind else {
+                return Err(CoreError::internal(
+                    "single-part label/type alternative site applied to multi-part query",
+                ));
+            };
+            apply_reading_clause_static_label_type_alternative(
+                &mut single_part.reading_clauses,
+                *reading_clause_index,
+                *pattern_part_index,
+                *target,
+                alternative,
+            )
+        }
+        StaticLabelTypeAlternativeSite::MultiPart {
+            query_part,
+            reading_clause_index,
+            pattern_part_index,
+            target,
+            ..
+        } => {
+            let SingleQueryKind::MultiPart(multi_part) = &mut single_query.kind else {
+                return Err(CoreError::internal(
+                    "multi-part label/type alternative site applied to single-part query",
+                ));
+            };
+            let reading_clauses = match query_part {
+                MultiPartAlternativePart::Part(index) => multi_part
+                    .parts
+                    .get_mut(*index)
+                    .map(|part| &mut part.reading_clauses),
+                MultiPartAlternativePart::FinalPart => {
+                    Some(&mut multi_part.final_part.reading_clauses)
+                }
+            }
+            .ok_or_else(|| CoreError::internal("multi-part alternative site is out of bounds"))?;
+            apply_reading_clause_static_label_type_alternative(
+                reading_clauses,
+                *reading_clause_index,
+                *pattern_part_index,
+                *target,
+                alternative,
+            )
+        }
+    }
+}
+
+fn apply_reading_clause_static_label_type_alternative(
+    reading_clauses: &mut [ReadingClause],
+    reading_clause_index: usize,
+    pattern_part_index: usize,
+    target: PatternAlternativeTarget,
+    alternative: LabelTypeAlternative,
+) -> Result<(), CoreError> {
+    let ReadingClause::Match(match_clause) = reading_clauses
+        .get_mut(reading_clause_index)
+        .ok_or_else(|| {
+            CoreError::internal("label/type alternative reading clause is out of bounds")
+        })?
+    else {
+        return Err(CoreError::internal(
+            "label/type alternative site did not point at a MATCH clause",
+        ));
+    };
+    let pattern_part = match_clause
+        .pattern
+        .parts
+        .get_mut(pattern_part_index)
+        .ok_or_else(|| {
+            CoreError::internal("label/type alternative pattern part is out of bounds")
+        })?;
+    let PatternElement::Path { start, chains } = &mut pattern_part.anonymous.element else {
+        return Err(CoreError::internal(
+            "label/type alternative site did not point at a path pattern",
+        ));
+    };
+    match (target, alternative) {
+        (PatternAlternativeTarget::StartNode, LabelTypeAlternative::NodeLabels(labels)) => {
+            start.labels = labels;
+            Ok(())
+        }
+        (PatternAlternativeTarget::ChainNode(index), LabelTypeAlternative::NodeLabels(labels)) => {
+            let chain = chains
+                .get_mut(index)
+                .ok_or_else(|| CoreError::internal("node alternative chain is out of bounds"))?;
+            chain.node.labels = labels;
+            Ok(())
+        }
+        (
+            PatternAlternativeTarget::Relationship(index),
+            LabelTypeAlternative::RelationshipType(relationship_type),
+        ) => {
+            let chain = chains.get_mut(index).ok_or_else(|| {
+                CoreError::internal("relationship alternative chain is out of bounds")
+            })?;
+            let detail =
+                chain.relationship.detail.as_mut().ok_or_else(|| {
+                    CoreError::internal("relationship alternative detail is missing")
+                })?;
+            detail.types = Some(relationship_type);
+            Ok(())
+        }
+        _ => Err(CoreError::internal(
+            "label/type alternative site and replacement kind did not match",
+        )),
+    }
+}
+
+fn validate_static_label_type_alternative_expansion_supported(
+    single_query: &SingleQuery,
+    path: &str,
+) -> Result<(), CoreError> {
+    match &single_query.kind {
+        SingleQueryKind::SinglePart(single_part) => {
+            validate_single_part_static_label_type_alternative_expansion_supported(
+                single_part,
+                path,
+            )
+        }
+        SingleQueryKind::MultiPart(multi_part) => {
+            validate_multi_part_static_label_type_alternative_expansion_supported(multi_part, path)
+        }
+    }
+}
+
+fn validate_single_part_static_label_type_alternative_expansion_supported(
+    single_part: &SinglePartQuery,
+    path: &str,
+) -> Result<(), CoreError> {
+    let return_clause = return_clause_from_single_part(single_part, path)?;
+    validate_return_allows_static_label_type_alternative_expansion(return_clause, path)
+}
+
+fn validate_multi_part_static_label_type_alternative_expansion_supported(
+    multi_part: &MultiPartQuery,
+    path: &str,
+) -> Result<(), CoreError> {
+    for (index, part) in multi_part.parts.iter().enumerate() {
+        if !part.updating_clauses.is_empty() {
+            return Err(unsupported(
+                format!("{path}.parts[{index}].updating_clauses"),
+                "write clauses are not supported by Coral virtual graphs",
+            ));
+        }
+        validate_with_allows_static_label_type_alternative_expansion(
+            &part.with,
+            &format!("{path}.parts[{index}].with"),
+        )?;
+    }
+    validate_single_part_static_label_type_alternative_expansion_supported(
+        &multi_part.final_part,
+        &format!("{path}.final_part"),
+    )
+}
+
+fn validate_with_allows_static_label_type_alternative_expansion(
+    with: &With,
+    path: &str,
+) -> Result<(), CoreError> {
+    if with.distinct {
+        return Err(unsupported(
+            format!("{path}.distinct"),
+            "static label/type alternatives with WITH DISTINCT require staged query planning and are not supported yet",
+        ));
+    }
+    if with.order.is_some() || with.skip.is_some() || with.limit.is_some() {
+        return Err(unsupported(
+            path,
+            "static label/type alternatives with WITH ORDER BY, SKIP, or LIMIT require staged query planning and are not supported yet",
+        ));
+    }
+    for (index, item) in with.items.iter().enumerate() {
+        if expression_contains_aggregate(&item.expression) {
+            return Err(unsupported(
+                format!("{path}.items[{index}].expression"),
+                "static label/type alternatives with aggregate WITH projections require staged query planning and are not supported yet",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_return_allows_static_label_type_alternative_expansion(
+    return_clause: &Return,
+    path: &str,
+) -> Result<(), CoreError> {
+    if return_clause.distinct {
+        return Err(unsupported(
+            format!("{path}.return.distinct"),
+            "static label/type alternatives with RETURN DISTINCT require staged query planning and are not supported yet",
+        ));
+    }
+    if return_clause.order.is_some()
+        || return_clause.skip.is_some()
+        || return_clause.limit.is_some()
+    {
+        return Err(unsupported(
+            format!("{path}.return"),
+            "static label/type alternatives with RETURN ORDER BY, SKIP, or LIMIT require staged query planning and are not supported yet",
+        ));
+    }
+    for (index, item) in return_clause.items.iter().enumerate() {
+        if expression_contains_aggregate(&item.expression) {
+            return Err(unsupported(
+                format!("{path}.return.items[{index}].expression"),
+                "static label/type alternatives with aggregate RETURN projections require staged query planning and are not supported yet",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn expression_contains_aggregate(expression: &Expression) -> bool {
+    match expression {
+        Expression::CountStar { .. }
+        | Expression::CountSubquery(_)
+        | Expression::CollectSubquery(_) => true,
+        Expression::FunctionCall(function) => {
+            compile_aggregate_function(function).is_some()
+                || function.arguments.iter().any(expression_contains_aggregate)
+        }
+        Expression::Literal(literal) => literal_contains_aggregate(literal),
+        Expression::PropertyLookup { base, .. }
+        | Expression::IsNull { operand: base, .. }
+        | Expression::UnaryOp { operand: base, .. }
+        | Expression::Parenthesized(base) => expression_contains_aggregate(base),
+        Expression::NodeLabels { base, labels, .. } => {
+            expression_contains_aggregate(base)
+                || labels.iter().any(label_expression_contains_aggregate)
+        }
+        Expression::BinaryOp { lhs, rhs, .. } | Expression::In { lhs, rhs, .. } => {
+            expression_contains_aggregate(lhs) || expression_contains_aggregate(rhs)
+        }
+        Expression::Comparison { lhs, operators, .. } => {
+            expression_contains_aggregate(lhs)
+                || operators
+                    .iter()
+                    .any(|(_, rhs)| expression_contains_aggregate(rhs))
+        }
+        Expression::ListIndex { list, index, .. } => {
+            expression_contains_aggregate(list) || expression_contains_aggregate(index)
+        }
+        Expression::ListSlice {
+            list, start, end, ..
+        } => {
+            expression_contains_aggregate(list)
+                || start.as_deref().is_some_and(expression_contains_aggregate)
+                || end.as_deref().is_some_and(expression_contains_aggregate)
+        }
+        Expression::Case(case) => case_contains_aggregate(case),
+        Expression::ListComprehension(comprehension) => {
+            list_comprehension_contains_aggregate(comprehension)
+        }
+        Expression::PatternComprehension(comprehension) => {
+            pattern_comprehension_contains_aggregate(comprehension)
+        }
+        Expression::All(filter)
+        | Expression::Any(filter)
+        | Expression::None(filter)
+        | Expression::Single(filter) => filter_expression_contains_aggregate(filter),
+        Expression::Exists(exists) => exists_expression_contains_aggregate(exists),
+        Expression::MapProjection(map) => map_projection_contains_aggregate(map),
+        Expression::Variable(_) | Expression::Parameter(_) | Expression::Pattern(_) => false,
+    }
+}
+
+fn literal_contains_aggregate(literal: &CypherLiteral) -> bool {
+    match literal {
+        CypherLiteral::List(list) => list.elements.iter().any(expression_contains_aggregate),
+        CypherLiteral::Map(map) => map
+            .entries
+            .iter()
+            .any(|(_, value)| expression_contains_aggregate(value)),
+        CypherLiteral::Number(_)
+        | CypherLiteral::String(_)
+        | CypherLiteral::Boolean(_)
+        | CypherLiteral::Null => false,
+    }
+}
+
+fn case_contains_aggregate(case: &CaseExpression) -> bool {
+    case.scrutinee
+        .as_deref()
+        .is_some_and(expression_contains_aggregate)
+        || case.alternatives.iter().any(|alternative| {
+            expression_contains_aggregate(&alternative.when)
+                || expression_contains_aggregate(&alternative.then)
+        })
+        || case
+            .default
+            .as_deref()
+            .is_some_and(expression_contains_aggregate)
+}
+
+fn list_comprehension_contains_aggregate(
+    comprehension: &decypher::ast::expr::ListComprehension,
+) -> bool {
+    comprehension
+        .filter
+        .as_deref()
+        .is_some_and(expression_contains_aggregate)
+        || comprehension
+            .map
+            .as_ref()
+            .is_some_and(expression_contains_aggregate)
+}
+
+fn pattern_comprehension_contains_aggregate(
+    comprehension: &decypher::ast::expr::PatternComprehension,
+) -> bool {
+    comprehension
+        .where_clause
+        .as_ref()
+        .is_some_and(expression_contains_aggregate)
+        || expression_contains_aggregate(&comprehension.map)
+}
+
+fn filter_expression_contains_aggregate(filter: &decypher::ast::expr::FilterExpression) -> bool {
+    expression_contains_aggregate(&filter.collection)
+        || filter
+            .predicate
+            .as_deref()
+            .is_some_and(expression_contains_aggregate)
+}
+
+fn exists_expression_contains_aggregate(exists: &decypher::ast::expr::ExistsExpression) -> bool {
+    match exists.inner.as_ref() {
+        decypher::ast::expr::ExistsInner::Pattern(_, predicate) => predicate
+            .as_deref()
+            .is_some_and(expression_contains_aggregate),
+        decypher::ast::expr::ExistsInner::RegularQuery(_) => true,
+    }
+}
+
+fn map_projection_contains_aggregate(map: &decypher::ast::expr::MapProjection) -> bool {
+    map.items.iter().any(|item| match item {
+        decypher::ast::expr::MapProjectionItem::Literal { value, .. } => {
+            expression_contains_aggregate(value)
+        }
+        decypher::ast::expr::MapProjectionItem::AllProperties { .. }
+        | decypher::ast::expr::MapProjectionItem::PropertyLookup { .. } => false,
+    })
+}
+
+fn label_expression_contains_aggregate(expression: &LabelExpression) -> bool {
+    match expression {
+        LabelExpression::Dynamic {
+            expression: dynamic,
+            ..
+        } => expression_contains_aggregate(dynamic),
+        LabelExpression::Or { lhs, rhs, .. } | LabelExpression::And { lhs, rhs, .. } => {
+            label_expression_contains_aggregate(lhs) || label_expression_contains_aggregate(rhs)
+        }
+        LabelExpression::Not { inner, .. } | LabelExpression::Group { inner, .. } => {
+            label_expression_contains_aggregate(inner)
+        }
+        LabelExpression::Static(_) => false,
+    }
 }
 
 fn compile_single_part(
@@ -7246,6 +7981,115 @@ mod tests {
         assert_eq!(union.branches.len(), 1);
         let branch = union.branches.first().expect("union branch should exist");
         assert!(branch.all);
+    }
+
+    #[test]
+    fn compiles_static_node_label_alternatives_as_union_all() {
+        let query = compile_cypher_query(
+            "MATCH (entity:Person|Team) \
+             RETURN entity.name AS name",
+        )
+        .expect("static node label alternatives should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert_eq!(
+            union.first.nodes.first().expect("first node").label,
+            "Person"
+        );
+        assert_eq!(union.branches.len(), 1);
+        let branch = union.branches.first().expect("alternative branch");
+        assert!(branch.all);
+        assert_eq!(
+            branch.plan.nodes.first().expect("branch node").label,
+            "Team"
+        );
+        assert_eq!(projection_names(&union.first), vec!["name".to_string()]);
+        assert_eq!(projection_names(&branch.plan), vec!["name".to_string()]);
+    }
+
+    #[test]
+    fn deduplicates_static_node_label_alternatives_before_union_expansion() {
+        let query = compile_cypher_query(
+            "MATCH (entity:Person|Person) \
+             RETURN entity.name AS name",
+        )
+        .expect("duplicate static node label alternatives should compile");
+
+        let GraphQuery::Plan(plan) = query else {
+            panic!("duplicate static label alternatives should collapse to one graph plan");
+        };
+        assert_eq!(plan.nodes.first().expect("first node").label, "Person");
+    }
+
+    #[test]
+    fn compiles_static_relationship_type_alternatives_as_union_all() {
+        let query = compile_cypher_query(
+            "MATCH (source:Service)-[relationship:DEPENDS_ON|OWNS]->(target:Service) \
+             RETURN type(relationship) AS relationship_type",
+        )
+        .expect("static relationship type alternatives should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static relationship type alternatives to expand into a union query");
+        };
+        assert_eq!(
+            union
+                .first
+                .relationships
+                .first()
+                .expect("first relationship")
+                .relationship_type,
+            "DEPENDS_ON"
+        );
+        assert_eq!(union.branches.len(), 1);
+        let branch = union.branches.first().expect("alternative branch");
+        assert!(branch.all);
+        assert_eq!(
+            branch
+                .plan
+                .relationships
+                .first()
+                .expect("branch relationship")
+                .relationship_type,
+            "OWNS"
+        );
+    }
+
+    #[test]
+    fn rejects_static_label_alternatives_with_aggregate_projection() {
+        let error = compile_cypher_query(
+            "MATCH (entity:Person|Team) \
+             RETURN count(*) AS count",
+        )
+        .expect_err("aggregate projection should require staged planning");
+
+        assert!(error.to_string().contains("aggregate RETURN"));
+    }
+
+    #[test]
+    fn rejects_static_label_alternatives_with_global_limit() {
+        let error = compile_cypher_query(
+            "MATCH (entity:Person|Team) \
+             RETURN entity.name AS name \
+             LIMIT 5",
+        )
+        .expect_err("global row modifier should require staged planning");
+
+        assert!(error.to_string().contains("ORDER BY, SKIP, or LIMIT"));
+    }
+
+    #[test]
+    fn rejects_static_label_alternatives_inside_explicit_union() {
+        let error = compile_cypher_query(
+            "MATCH (entity:Person|Team) RETURN entity.name AS item \
+             UNION ALL \
+             MATCH (service:Service) RETURN service.name AS item",
+        )
+        .expect_err("explicit UNION grouping should stay rejected");
+
+        assert!(error.to_string().contains("top-level UNION"));
     }
 
     #[test]
