@@ -606,16 +606,21 @@ fn compile_static_alternative_outer_aggregate_item(
             "static label/type alternatives only support count(*) and count(property) aggregates after expansion",
         )
     })?;
-    if function_kind != AggregateFunction::Count {
+    if function_kind == AggregateFunction::Collect {
         return Err(unsupported(
             format!("{path}.return.items[{index}].expression"),
-            "static label/type alternatives only support count(*) and count(property) aggregates after expansion",
+            "static label/type alternatives do not support collect(property) after expansion yet",
         ));
     }
+    reject_unsupported_distinct_aggregate(
+        function_kind,
+        function.distinct,
+        format!("{path}.return.items[{index}].expression.distinct"),
+    )?;
     let [argument] = function.arguments.as_slice() else {
         return Err(unsupported(
             format!("{path}.return.items[{index}].expression.arguments"),
-            "static label/type alternatives with count(node) require staged query planning and are not supported yet; use count(*) or count(node.property)",
+            "static label/type alternatives with aggregate graph variables require staged query planning and are not supported yet; use count(*) or aggregate node.property",
         ));
     };
     compile_property_ref(
@@ -8833,14 +8838,62 @@ mod tests {
     }
 
     #[test]
-    fn rejects_static_label_alternatives_with_non_count_aggregate_projection() {
-        let error = compile_cypher_query(
-            "MATCH (entity:Person|Team) \
-             RETURN entity.name AS name, sum(entity.score) AS score",
+    fn compiles_static_label_alternatives_with_numeric_property_aggregates() {
+        let query = compile_cypher_query(
+            "MATCH (entity:Person|Team)-[:OWNS]->(service:Service) \
+             RETURN entity.name AS name, \
+                    sum(service.risk) AS total_risk, \
+                    avg(service.risk) AS average_risk, \
+                    min(service.risk) AS lowest_risk, \
+                    max(service.risk) AS highest_risk \
+             ORDER BY sum(service.risk) DESC",
         )
-        .expect_err("non-count aggregate projection should require staged planning");
+        .expect("numeric property aggregates should compile as outer union aggregates");
 
-        assert!(error.to_string().contains("count(*) and count(property)"));
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        let outer_projection = union
+            .outer_projection
+            .expect("expected an outer union projection");
+        assert_eq!(
+            outer_projection.output_names(),
+            vec![
+                "name".to_string(),
+                "total_risk".to_string(),
+                "average_risk".to_string(),
+                "lowest_risk".to_string(),
+                "highest_risk".to_string(),
+            ]
+        );
+        assert_eq!(
+            union.first.projection_output_names(),
+            vec![
+                "name".to_string(),
+                "__coral_agg_1".to_string(),
+                "__coral_agg_2".to_string(),
+                "__coral_agg_3".to_string(),
+                "__coral_agg_4".to_string(),
+            ]
+        );
+        assert_eq!(
+            union.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("total_risk".to_string()),
+                direction: OrderDirection::Descending,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_static_label_alternatives_with_collect_property_projection() {
+        let error = compile_cypher_query(
+            "MATCH (entity:Person|Team)-[:OWNS]->(service:Service) \
+             RETURN entity.name AS name, collect(service.name) AS services",
+        )
+        .expect_err("collect should remain a staged planning feature");
+
+        assert!(error.to_string().contains("collect(property)"));
     }
 
     #[test]

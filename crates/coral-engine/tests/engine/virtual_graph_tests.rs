@@ -314,6 +314,72 @@ async fn cypher_static_node_label_alternatives_grouped_count_property_after_unio
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_numeric_aggregates_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN owner.name AS owner, \
+                sum(service.risk) AS total_risk, \
+                avg(service.risk) AS average_risk, \
+                min(service.risk) AS lowest_risk, \
+                max(service.risk) AS highest_risk \
+         ORDER BY owner",
+    )
+    .await
+    .expect("static label alternatives with outer numeric aggregates should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("SUM(\"__coral_agg_1\") AS \"total_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "total_risk": 0.9, "average_risk": 0.9, "lowest_risk": 0.9, "highest_risk": 0.9}),
+            json!({"owner": "Grace Hopper", "total_risk": 0.5, "average_risk": 0.5, "lowest_risk": 0.5, "highest_risk": 0.5}),
+            json!({"owner": "Katherine Johnson", "total_risk": 0.25, "average_risk": 0.25, "lowest_risk": 0.25, "highest_risk": 0.25}),
+            json!({"owner": "analytics", "total_risk": 0.25, "average_risk": 0.25, "lowest_risk": 0.25, "highest_risk": 0.25}),
+            json!({"owner": "infra", "total_risk": 0.5, "average_risk": 0.5, "lowest_risk": 0.5, "highest_risk": 0.5}),
+            json!({"owner": "platform", "total_risk": 1.85, "average_risk": 0.925, "lowest_risk": 0.9, "highest_risk": 0.95}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_node_label_alternatives_numeric_aggregate_type_errors_reject_before_sql_execution()
+ {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN owner.name AS owner, sum(service.name) AS bad_sum",
+    )
+    .await
+    .expect_err("sum(string) should fail during graph query validation");
+
+    assert!(
+        error.to_string().contains("requires a numeric property"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
 async fn cypher_union_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

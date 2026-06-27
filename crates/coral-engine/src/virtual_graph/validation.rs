@@ -4,11 +4,12 @@ use super::declaration::{Declaration, Node, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
-    GraphPlan, GraphQuery, KeyPredicate, Literal, OptionalMatchScope, OrderExpression,
-    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
-    ScalarPredicate, ScalarPredicateRhs,
+    GraphPlan, GraphQuery, GraphUnionOuterProjection, GraphUnionOuterProjectionItem, KeyPredicate,
+    Literal, OptionalMatchScope, OrderExpression, PredicateExpression, PredicateRhs,
+    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
+    ProjectionPredicateRhs, PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef,
+    RelationshipPattern, ScalarCaseAlternative, ScalarExpression, ScalarPredicate,
+    ScalarPredicateRhs,
 };
 use crate::{CatalogInfo, CoreError};
 
@@ -122,6 +123,13 @@ impl Declaration {
                     let branch_types = GraphPlanValidator::new(self, &branch.plan, Some(catalog))
                         .validate_and_infer_projection_scalar_types()?;
                     validate_union_projection_types(&mut merged_types, &branch_types, index)?;
+                }
+                if let Some(outer_projection) = &union.outer_projection {
+                    validate_union_outer_projection(
+                        outer_projection,
+                        &expected_names,
+                        &merged_types,
+                    )?;
                 }
                 Ok(())
             }
@@ -2392,20 +2400,7 @@ impl<'a> GraphPlanValidator<'a> {
             return Ok(());
         }
         let scalar_type = self.property_ref_scalar_type(property)?;
-        if scalar_type.is_numeric() || matches!(scalar_type, ScalarType::Unknown | ScalarType::Null)
-        {
-            return Ok(());
-        }
-        Err(Diagnostic::new(
-            "INVALID_AGGREGATE_TARGET",
-            path,
-            format!(
-                "{}(property) requires a numeric property, got {}",
-                aggregate_function_name(function),
-                scalar_type.name()
-            ),
-        )
-        .into_core_error())
+        validate_aggregate_scalar_type(function, scalar_type, path)
     }
 
     fn infer_aggregate_projection_type(
@@ -3679,6 +3674,87 @@ fn validate_union_projection_types(
     Ok(())
 }
 
+fn validate_union_outer_projection(
+    outer_projection: &GraphUnionOuterProjection,
+    branch_projection_names: &[String],
+    branch_projection_types: &[ScalarType],
+) -> Result<(), CoreError> {
+    if branch_projection_names.len() != branch_projection_types.len() {
+        return Err(CoreError::internal(
+            "union branch projection names and scalar types were not aligned",
+        ));
+    }
+    for (index, item) in outer_projection.items.iter().enumerate() {
+        match item {
+            GraphUnionOuterProjectionItem::Column { name } => {
+                validate_union_outer_projection_source(
+                    branch_projection_names,
+                    branch_projection_types,
+                    name,
+                    format!("outer_projection.items[{index}].name"),
+                )?;
+            }
+            GraphUnionOuterProjectionItem::CountAll { .. } => {}
+            GraphUnionOuterProjectionItem::Aggregate {
+                function,
+                source,
+                distinct,
+                ..
+            } => {
+                GraphPlanValidator::validate_aggregate_distinct_support(
+                    *function,
+                    *distinct,
+                    format!("outer_projection.items[{index}].distinct"),
+                )?;
+                let source_type = validate_union_outer_projection_source(
+                    branch_projection_names,
+                    branch_projection_types,
+                    source,
+                    format!("outer_projection.items[{index}].source"),
+                )?;
+                validate_aggregate_scalar_type(
+                    *function,
+                    source_type,
+                    format!("outer_projection.items[{index}].source"),
+                )?;
+            }
+        }
+    }
+    for (index, source) in outer_projection.group_by.iter().enumerate() {
+        validate_union_outer_projection_source(
+            branch_projection_names,
+            branch_projection_types,
+            source,
+            format!("outer_projection.group_by[{index}]"),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_union_outer_projection_source(
+    branch_projection_names: &[String],
+    branch_projection_types: &[ScalarType],
+    source: &str,
+    path: impl Into<String>,
+) -> Result<ScalarType, CoreError> {
+    let path = path.into();
+    let position = branch_projection_names
+        .iter()
+        .position(|name| name == source)
+        .ok_or_else(|| {
+            Diagnostic::new(
+                "UNKNOWN_PROJECTION",
+                path.clone(),
+                format!("outer union projection references unknown branch column '{source}'"),
+            )
+            .into_core_error()
+        })?;
+    branch_projection_types
+        .get(position)
+        .copied()
+        .ok_or_else(|| CoreError::internal("union branch projection type index was out of bounds"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScalarType {
     Unknown,
@@ -3831,6 +3907,29 @@ fn aggregate_function_requires_numeric_target(function: AggregateFunction) -> bo
             | AggregateFunction::StdDev
             | AggregateFunction::StdDevP
     )
+}
+
+fn validate_aggregate_scalar_type(
+    function: AggregateFunction,
+    scalar_type: ScalarType,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    if !aggregate_function_requires_numeric_target(function)
+        || scalar_type.is_numeric()
+        || matches!(scalar_type, ScalarType::Unknown | ScalarType::Null)
+    {
+        return Ok(());
+    }
+    Err(Diagnostic::new(
+        "INVALID_AGGREGATE_TARGET",
+        path,
+        format!(
+            "{}(property) requires a numeric property, got {}",
+            aggregate_function_name(function),
+            scalar_type.name()
+        ),
+    )
+    .into_core_error())
 }
 
 #[cfg(test)]
