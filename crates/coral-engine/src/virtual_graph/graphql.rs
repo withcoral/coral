@@ -4594,6 +4594,43 @@ mod tests {
     }
 
     #[test]
+    fn compiles_nested_relationship_identity_filters() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph(
+            &graph,
+            r#"
+            query {
+              Person {
+                out_OWNS(
+                  to: Service
+                  relationshipWhere: {
+                    _id: { eq: 200 }
+                    _elementId: { eq: "200" }
+                  }
+                ) {
+                  name
+                }
+              }
+            }
+            "#,
+        )
+        .expect("GraphQL relationship identity filters should compile");
+
+        assert!(plan.predicates.is_empty());
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::And { .. })
+        ));
+        assert!(matches!(
+            plan.relationships.as_slice(),
+            [RelationshipPattern {
+                variable: Some(variable),
+                ..
+            }] if variable == "relationship0"
+        ));
+    }
+
+    #[test]
     fn compiles_nested_boolean_where_filters_with_declaration() {
         let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
         let plan = compile_graphql_for_graph(

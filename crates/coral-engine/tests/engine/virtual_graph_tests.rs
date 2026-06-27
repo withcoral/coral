@@ -1066,6 +1066,62 @@ async fn graphql_identity_filters_and_ordering_execute_against_synthetic_sources
 }
 
 #[tokio::test]
+async fn graphql_relationship_identity_filters_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          Person(where: { team: { eq: "infra" } }) {
+            owner: name
+            out_OWNS(
+              to: Service
+              relationshipWhere: {
+                _id: { eq: 200 }
+                _elementId: { eq: "200" }
+              }
+            ) {
+              service: name
+              _edge {
+                ownership_id: _id
+                ownership_element_id: _elementId
+              }
+            }
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("GraphQL relationship identity filter query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"r0\".\"ownership_id\" = 200")
+            && execution
+                .translated_sql()
+                .contains("CAST(\"r0\".\"ownership_id\" AS VARCHAR) = '200'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "owner": "Grace Hopper",
+            "service": "deployments",
+            "ownership_id": 200,
+            "ownership_element_id": "200",
+        })]
+    );
+}
+
+#[tokio::test]
 async fn graphql_edge_fragments_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
