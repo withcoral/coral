@@ -136,14 +136,17 @@ remain separate. The supported slice is intentionally graph-query oriented:
 - nested relationship fields named `out_TYPE(to: Label)`, `in_TYPE(from:
   Label)`, or `any_TYPE(label: Label)`;
 - nested relationship target filters via `where` and relationship property
-  filters via `relationshipWhere`.
+  filters via `relationshipWhere`;
+- relationship property projections through reserved `_edge { ... }`
+  selections inside relationship fields.
 
 Nested relationship fields compile directly to `NodePattern` and
 `RelationshipPattern` IR entries. Endpoint labels are checked against the graph
 declaration before lowering, and the existing graph validator still resolves the
-final relationship mapping. Selected nested node properties are flattened into
-the tabular result set; GraphQL object materialization is intentionally out of
-scope for the DataFusion execution path.
+final relationship mapping. Selected nested node properties and `_edge`
+relationship properties are flattened into the tabular result set; GraphQL
+object materialization is intentionally out of scope for the DataFusion
+execution path.
 
 Fragments, directives, variables, mutations, subscriptions, nested row
 modifiers, and optional GraphQL traversals are rejected with GraphQL-specific

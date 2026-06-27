@@ -226,11 +226,17 @@ async fn graphql_nested_relationship_query_executes_against_synthetic_file_sourc
               where: { tier: { eq: "prod" } }
             ) {
               service: name
+              _edge {
+                ownershipSource: source
+              }
               out_DEPENDS_ON(
                 to: Service
                 relationshipWhere: { criticality: { eq: "dev" } }
               ) {
                 dependency: name
+                _edge {
+                  dependencyCriticality: criticality
+                }
               }
             }
           }
@@ -259,7 +265,9 @@ async fn graphql_nested_relationship_query_executes_against_synthetic_file_sourc
         vec![json!({
             "owner": "Grace Hopper",
             "service": "deployments",
+            "ownershipSource": "pagerduty",
             "dependency": "experiments",
+            "dependencyCriticality": "dev",
         })]
     );
 }

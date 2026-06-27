@@ -173,6 +173,7 @@ fn compile_root_field(
             variable: variable.clone(),
             label: root.name.clone(),
             is_root: true,
+            edge_variable: None,
         },
         format!("{path}.selectionSet"),
     )?;
@@ -195,6 +196,7 @@ struct NodeContext {
     variable: String,
     label: String,
     is_root: bool,
+    edge_variable: Option<String>,
 }
 
 fn compile_selection_set_into_plan(
@@ -218,7 +220,9 @@ fn compile_selection_set_into_plan(
                 "GraphQL field directives are not supported",
             ));
         }
-        if field.selection_set.items.is_empty() {
+        if field.name == "_edge" {
+            compile_edge_field(plan, field, context, format!("{path}.items[{index}]"))?;
+        } else if field.selection_set.items.is_empty() {
             if !field.arguments.is_empty() {
                 return Err(unsupported(
                     format!("{path}.items[{index}].arguments"),
@@ -279,11 +283,17 @@ fn compile_relationship_field(
     )?;
 
     let relationship_index = plan.relationships.len();
-    let relationship_variable = field
+    let needs_relationship_variable = field
         .arguments
         .iter()
         .any(|(name, _)| name == "relationshipWhere")
-        .then(|| format!("relationship{relationship_index}"));
+        || field
+            .selection_set
+            .items
+            .iter()
+            .any(selection_is_edge_field);
+    let relationship_variable = needs_relationship_variable
+        .then(|| relationship_variable_for_field(field, relationship_index));
     let target_variable = nested_variable_for_field(field, &target_label, plan.nodes.len());
 
     for (index, (name, value)) in field.arguments.iter().enumerate() {
@@ -335,7 +345,7 @@ fn compile_relationship_field(
         label: target_label.clone(),
     });
     plan.relationships.push(RelationshipPattern {
-        variable: relationship_variable,
+        variable: relationship_variable.clone(),
         relationship_type,
         left: source.variable.clone(),
         direction,
@@ -350,9 +360,71 @@ fn compile_relationship_field(
             variable: target_variable,
             label: target_label,
             is_root: false,
+            edge_variable: relationship_variable,
         },
         format!("{path}.selectionSet"),
     )
+}
+
+fn compile_edge_field(
+    plan: &mut GraphPlan,
+    field: &Field<'_, String>,
+    context: &NodeContext,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    if field.selection_set.items.is_empty() {
+        return Err(unsupported(
+            format!("{path}.selectionSet"),
+            "GraphQL _edge fields must select relationship properties",
+        ));
+    }
+    if !field.arguments.is_empty() {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "GraphQL _edge fields do not support arguments",
+        ));
+    }
+    let edge_variable = context.edge_variable.as_deref().ok_or_else(|| {
+        unsupported(
+            path.clone(),
+            "GraphQL _edge selections are only valid inside relationship fields",
+        )
+    })?;
+    for (index, selection) in field.selection_set.items.iter().enumerate() {
+        let Selection::Field(property) = selection else {
+            return Err(unsupported(
+                format!("{path}.selectionSet.items[{index}]"),
+                "GraphQL fragments are not supported inside _edge selections",
+            ));
+        };
+        if !property.arguments.is_empty() {
+            return Err(unsupported(
+                format!("{path}.selectionSet.items[{index}].arguments"),
+                "GraphQL _edge property arguments are not supported",
+            ));
+        }
+        if !property.directives.is_empty() {
+            return Err(unsupported(
+                format!("{path}.selectionSet.items[{index}].directives"),
+                "GraphQL _edge property directives are not supported",
+            ));
+        }
+        if !property.selection_set.items.is_empty() {
+            return Err(unsupported(
+                format!("{path}.selectionSet.items[{index}].selectionSet"),
+                "GraphQL _edge properties must be scalar fields",
+            ));
+        }
+        plan.projections.push(Projection::Property {
+            property: PropertyRef {
+                variable: edge_variable.to_string(),
+                property: property.name.clone(),
+            },
+            alias: Some(edge_projection_alias(property, edge_variable)),
+        });
+    }
+    Ok(())
 }
 
 fn compile_relationship_field_name(
@@ -505,6 +577,24 @@ fn projection_alias(field: &Field<'_, String>, context: &NodeContext) -> String 
             format!("{}_{}", context.variable, field.name)
         }
     })
+}
+
+fn edge_projection_alias(field: &Field<'_, String>, edge_variable: &str) -> String {
+    field
+        .alias
+        .clone()
+        .unwrap_or_else(|| format!("{edge_variable}_{}", field.name))
+}
+
+fn selection_is_edge_field(selection: &Selection<'_, String>) -> bool {
+    matches!(selection, Selection::Field(field) if field.name == "_edge")
+}
+
+fn relationship_variable_for_field(field: &Field<'_, String>, index: usize) -> String {
+    field.alias.as_ref().map_or_else(
+        || format!("relationship{index}"),
+        |alias| format!("{alias}_edge"),
+    )
 }
 
 fn compile_root_argument(
@@ -929,6 +1019,9 @@ mod tests {
                 ) {
                   service: name
                   risk
+                  _edge {
+                    ownershipSource: source
+                  }
                 }
               }
             }
@@ -983,6 +1076,13 @@ mod tests {
                     },
                     alias: Some("service1_risk".to_string()),
                 },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "relationship0".to_string(),
+                        property: "source".to_string(),
+                    },
+                    alias: Some("ownershipSource".to_string()),
+                },
             ]
         );
         assert_eq!(plan.predicates.len(), 3);
@@ -1010,6 +1110,9 @@ mod tests {
                 owners: in_OWNS(from: Person) {
                   owner: name
                   team
+                  _edge {
+                    source
+                  }
                 }
               }
             }
@@ -1020,7 +1123,7 @@ mod tests {
         assert_eq!(
             plan.relationships,
             vec![RelationshipPattern {
-                variable: None,
+                variable: Some("owners_edge".to_string()),
                 relationship_type: "OWNS".to_string(),
                 left: "service".to_string(),
                 direction: Direction::Incoming,
@@ -1050,6 +1153,13 @@ mod tests {
                         property: "team".to_string(),
                     },
                     alias: Some("owners_team".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "owners_edge".to_string(),
+                        property: "source".to_string(),
+                    },
+                    alias: Some("owners_edge_source".to_string()),
                 },
             ]
         );
