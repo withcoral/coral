@@ -1014,6 +1014,58 @@ async fn graphql_identity_fields_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_identity_filters_and_ordering_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          Service(
+            where: {
+              _id: { in: [10, 20, 40] }
+              _elementId: { notIn: ["40"] }
+            }
+            orderBy: [{ field: _id, direction: DESC }]
+          ) {
+            service_id: _id
+            service_element_id: _elementId
+            service: name
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("GraphQL identity filter and order query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"id\" IN (10, 20, 40)")
+            && execution
+                .translated_sql()
+                .contains("NOT (CAST(\"n0\".\"id\" AS VARCHAR) IN ('40'))")
+            && execution
+                .translated_sql()
+                .contains("ORDER BY \"n0\".\"id\" DESC"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service_id": 20, "service_element_id": "20", "service": "deployments"}),
+            json!({"service_id": 10, "service_element_id": "10", "service": "billing-api"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_edge_fragments_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

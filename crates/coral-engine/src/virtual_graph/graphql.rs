@@ -11,9 +11,9 @@ use regex::Regex;
 use super::declaration::Declaration;
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    ComparisonOperator, Direction, GraphPlan, Literal, NodePattern, OrderDirection,
-    OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection, PropertyPredicate,
-    PropertyRef, RelationshipPattern,
+    ComparisonOperator, Direction, ElementIdPredicate, GraphPlan, KeyPredicate, Literal,
+    NodePattern, OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
+    Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -2020,26 +2020,80 @@ fn classify_graphql_where_operator(operator: &str) -> Option<GraphqlWhereOperato
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GraphqlWhereTarget {
+    Property(PropertyRef),
+    Key { variable: String },
+    ElementId { variable: String },
+}
+
+fn graphql_where_target(variable: &str, property: &str) -> GraphqlWhereTarget {
+    match property {
+        "_id" => GraphqlWhereTarget::Key {
+            variable: variable.to_string(),
+        },
+        "_elementId" => GraphqlWhereTarget::ElementId {
+            variable: variable.to_string(),
+        },
+        _ => GraphqlWhereTarget::Property(PropertyRef {
+            variable: variable.to_string(),
+            property: property.to_string(),
+        }),
+    }
+}
+
 fn comparison_expression(
-    property: PropertyRef,
+    target: GraphqlWhereTarget,
     operator: ComparisonOperator,
     rhs: PredicateRhs,
-) -> PredicateExpression {
-    PredicateExpression::Comparison(PropertyPredicate {
-        property,
-        operator,
-        rhs,
+    path: &str,
+) -> Result<PredicateExpression, CoreError> {
+    if matches!(target, GraphqlWhereTarget::Key { .. })
+        && matches!(
+            operator,
+            ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains
+                | ComparisonOperator::RegexMatch
+        )
+    {
+        return Err(unsupported(
+            path,
+            "GraphQL _id filters do not support string predicates; use _elementId for string identity filters",
+        ));
+    }
+    Ok(match target {
+        GraphqlWhereTarget::Property(property) => {
+            PredicateExpression::Comparison(PropertyPredicate {
+                property,
+                operator,
+                rhs,
+            })
+        }
+        GraphqlWhereTarget::Key { variable } => PredicateExpression::KeyComparison(KeyPredicate {
+            variable,
+            operator,
+            rhs,
+        }),
+        GraphqlWhereTarget::ElementId { variable } => {
+            PredicateExpression::ElementIdComparison(ElementIdPredicate {
+                variable,
+                operator,
+                rhs,
+            })
+        }
     })
 }
 
 fn negated_comparison_expression(
-    property: PropertyRef,
+    target: GraphqlWhereTarget,
     operator: ComparisonOperator,
     rhs: PredicateRhs,
-) -> PredicateExpression {
-    PredicateExpression::Not {
-        expression: Box::new(comparison_expression(property, operator, rhs)),
-    }
+    path: &str,
+) -> Result<PredicateExpression, CoreError> {
+    Ok(PredicateExpression::Not {
+        expression: Box::new(comparison_expression(target, operator, rhs, path)?),
+    })
 }
 
 fn compile_where_operator_expression(
@@ -2051,67 +2105,72 @@ fn compile_where_operator_expression(
     context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
-    let property = PropertyRef {
-        variable: variable.to_string(),
-        property: property.to_string(),
-    };
+    let target = graphql_where_target(variable, property);
     match classify_graphql_where_operator(operator) {
         Some(GraphqlWhereOperator::Comparison(operator)) => Ok(comparison_expression(
-            property,
+            target,
             operator,
-            PredicateRhs::Literal(compile_literal(value, path, context)?),
-        )),
+            PredicateRhs::Literal(compile_literal(value, path.clone(), context)?),
+            &path,
+        )?),
         Some(GraphqlWhereOperator::RegexMatch) => Ok(comparison_expression(
-            property,
+            target,
             ComparisonOperator::RegexMatch,
-            PredicateRhs::Literal(compile_regex_literal(value, path, context)?),
-        )),
+            PredicateRhs::Literal(compile_regex_literal(value, path.clone(), context)?),
+            &path,
+        )?),
         Some(GraphqlWhereOperator::In) => Ok(comparison_expression(
-            property,
+            target,
             ComparisonOperator::In,
-            PredicateRhs::List(compile_literal_list(value, path, context)?),
-        )),
+            PredicateRhs::List(compile_literal_list(value, path.clone(), context)?),
+            &path,
+        )?),
         Some(GraphqlWhereOperator::IsNull) => {
-            let is_null = compile_boolean(value, path, "isNull", context)?;
+            let is_null = compile_boolean(value, path.clone(), "isNull", context)?;
             Ok(comparison_expression(
-                property,
+                target,
                 if is_null {
                     ComparisonOperator::Equal
                 } else {
                     ComparisonOperator::NotEqual
                 },
                 PredicateRhs::Literal(Literal::Null),
-            ))
+                &path,
+            )?)
         }
         Some(GraphqlWhereOperator::IsNotNull) => {
-            let is_not_null = compile_boolean(value, path, "isNotNull", context)?;
+            let is_not_null = compile_boolean(value, path.clone(), "isNotNull", context)?;
             Ok(comparison_expression(
-                property,
+                target,
                 if is_not_null {
                     ComparisonOperator::NotEqual
                 } else {
                     ComparisonOperator::Equal
                 },
                 PredicateRhs::Literal(Literal::Null),
-            ))
+                &path,
+            )?)
         }
         Some(GraphqlWhereOperator::NegatedComparison(operator)) => {
             Ok(negated_comparison_expression(
-                property,
+                target,
                 operator,
-                PredicateRhs::Literal(compile_literal(value, path, context)?),
-            ))
+                PredicateRhs::Literal(compile_literal(value, path.clone(), context)?),
+                &path,
+            )?)
         }
         Some(GraphqlWhereOperator::NegatedRegexMatch) => Ok(negated_comparison_expression(
-            property,
+            target,
             ComparisonOperator::RegexMatch,
-            PredicateRhs::Literal(compile_regex_literal(value, path, context)?),
-        )),
+            PredicateRhs::Literal(compile_regex_literal(value, path.clone(), context)?),
+            &path,
+        )?),
         Some(GraphqlWhereOperator::NotIn) => Ok(negated_comparison_expression(
-            property,
+            target,
             ComparisonOperator::In,
-            PredicateRhs::List(compile_literal_list(value, path, context)?),
-        )),
+            PredicateRhs::List(compile_literal_list(value, path.clone(), context)?),
+            &path,
+        )?),
         None => Err(unsupported(
             path,
             format!("unsupported GraphQL where operator '{operator}'"),
@@ -2127,67 +2186,72 @@ fn compile_where_variable_operator_expression(
     path: impl Into<String>,
 ) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
-    let property = PropertyRef {
-        variable: variable.to_string(),
-        property: property.to_string(),
-    };
+    let target = graphql_where_target(variable, property);
     match classify_graphql_where_operator(operator) {
         Some(GraphqlWhereOperator::Comparison(operator)) => Ok(comparison_expression(
-            property,
+            target,
             operator,
-            PredicateRhs::Literal(compile_variable_literal(value, path)?),
-        )),
+            PredicateRhs::Literal(compile_variable_literal(value, path.clone())?),
+            &path,
+        )?),
         Some(GraphqlWhereOperator::RegexMatch) => Ok(comparison_expression(
-            property,
+            target,
             ComparisonOperator::RegexMatch,
-            PredicateRhs::Literal(compile_variable_regex_literal(value, path)?),
-        )),
+            PredicateRhs::Literal(compile_variable_regex_literal(value, path.clone())?),
+            &path,
+        )?),
         Some(GraphqlWhereOperator::In) => Ok(comparison_expression(
-            property,
+            target,
             ComparisonOperator::In,
-            PredicateRhs::List(compile_variable_literal_list(value, path)?),
-        )),
+            PredicateRhs::List(compile_variable_literal_list(value, path.clone())?),
+            &path,
+        )?),
         Some(GraphqlWhereOperator::IsNull) => {
-            let is_null = compile_variable_boolean(value, path, "isNull")?;
+            let is_null = compile_variable_boolean(value, path.clone(), "isNull")?;
             Ok(comparison_expression(
-                property,
+                target,
                 if is_null {
                     ComparisonOperator::Equal
                 } else {
                     ComparisonOperator::NotEqual
                 },
                 PredicateRhs::Literal(Literal::Null),
-            ))
+                &path,
+            )?)
         }
         Some(GraphqlWhereOperator::IsNotNull) => {
-            let is_not_null = compile_variable_boolean(value, path, "isNotNull")?;
+            let is_not_null = compile_variable_boolean(value, path.clone(), "isNotNull")?;
             Ok(comparison_expression(
-                property,
+                target,
                 if is_not_null {
                     ComparisonOperator::NotEqual
                 } else {
                     ComparisonOperator::Equal
                 },
                 PredicateRhs::Literal(Literal::Null),
-            ))
+                &path,
+            )?)
         }
         Some(GraphqlWhereOperator::NegatedComparison(operator)) => {
             Ok(negated_comparison_expression(
-                property,
+                target,
                 operator,
-                PredicateRhs::Literal(compile_variable_literal(value, path)?),
-            ))
+                PredicateRhs::Literal(compile_variable_literal(value, path.clone())?),
+                &path,
+            )?)
         }
         Some(GraphqlWhereOperator::NegatedRegexMatch) => Ok(negated_comparison_expression(
-            property,
+            target,
             ComparisonOperator::RegexMatch,
-            PredicateRhs::Literal(compile_variable_regex_literal(value, path)?),
-        )),
+            PredicateRhs::Literal(compile_variable_regex_literal(value, path.clone())?),
+            &path,
+        )?),
         Some(GraphqlWhereOperator::NotIn) => Ok(negated_comparison_expression(
-            property,
+            target,
             ComparisonOperator::In,
-            PredicateRhs::List(compile_variable_literal_list(value, path)?),
-        )),
+            PredicateRhs::List(compile_variable_literal_list(value, path.clone())?),
+            &path,
+        )?),
         None => Err(unsupported(
             path,
             format!("unsupported GraphQL where operator '{operator}'"),
@@ -2268,10 +2332,7 @@ fn compile_order_by_object(
             compile_order_direction(value, format!("{path}.direction"), context)
         })?;
     Ok(OrderKey {
-        expression: OrderExpression::Property(PropertyRef {
-            variable: variable.to_string(),
-            property: field,
-        }),
+        expression: graphql_order_expression(variable, &field),
         direction,
     })
 }
@@ -2300,12 +2361,24 @@ fn compile_order_by_variable_object(
             compile_variable_order_direction(value, format!("{path}.direction"))
         })?;
     Ok(OrderKey {
-        expression: OrderExpression::Property(PropertyRef {
-            variable: variable.to_string(),
-            property: field,
-        }),
+        expression: graphql_order_expression(variable, &field),
         direction,
     })
+}
+
+fn graphql_order_expression(variable: &str, field: &str) -> OrderExpression {
+    match field {
+        "_id" => OrderExpression::Key {
+            variable: variable.to_string(),
+        },
+        "_elementId" => OrderExpression::ElementId {
+            variable: variable.to_string(),
+        },
+        _ => OrderExpression::Property(PropertyRef {
+            variable: variable.to_string(),
+            property: field.to_string(),
+        }),
+    }
 }
 
 fn compile_order_direction(
@@ -2903,6 +2976,73 @@ mod tests {
                     alias: Some("name".to_string()),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_graphql_identity_filters_and_ordering() {
+        let plan = compile_graphql(
+            r#"
+            query {
+              Service(
+                where: {
+                  _id: { in: [10, 20, 40] }
+                  _elementId: { notIn: ["40"] }
+                }
+                orderBy: [
+                  { field: _id, direction: DESC }
+                  { field: _elementId, direction: ASC }
+                ]
+              ) {
+                name
+              }
+            }
+            "#,
+        )
+        .expect("GraphQL identity filters and ordering should compile");
+
+        assert!(plan.predicates.is_empty());
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::And { .. })
+        ));
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::Key {
+                        variable: "service".to_string(),
+                    },
+                    direction: OrderDirection::Descending,
+                },
+                OrderKey {
+                    expression: OrderExpression::ElementId {
+                        variable: "service".to_string(),
+                    },
+                    direction: OrderDirection::Ascending,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_graphql_string_filters_on_raw_identity_fields() {
+        let error = compile_graphql(
+            r#"
+            query {
+              Service(where: { _id: { contains: "1" } }) {
+                name
+              }
+            }
+            "#,
+        )
+        .expect_err("GraphQL string filters on _id should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("GraphQL _id filters do not support string predicates"),
+            "{error}"
         );
     }
 

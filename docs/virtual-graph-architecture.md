@@ -167,7 +167,10 @@ remain separate. The supported slice is intentionally graph-query oriented:
   equality, inequality, range, string, regex, list-membership, and null filters
   plus generated-client-friendly operator aliases and negated property filters,
   with `and`, `or`, `xor`, and `not` boolean filter composition;
-- `orderBy` object or list of objects using property fields and `ASC` / `DESC`;
+- reserved `_id` and `_elementId` identity filters and `orderBy` fields, where
+  `_id` targets the mapped key and `_elementId` targets the string element id;
+- `orderBy` object or list of objects using property or identity fields and
+  `ASC` / `DESC`;
 - integer `limit`, `offset` / `skip`, and boolean `distinct` root arguments;
 - typed GraphQL variables bound through the explicit variable API in supported
   scalar literal, scalar-list `in`, enum/string name, boolean, and
