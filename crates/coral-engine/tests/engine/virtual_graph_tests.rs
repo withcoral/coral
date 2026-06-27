@@ -1445,6 +1445,89 @@ async fn cypher_exists_match_subqueries_apply_later_hop_relationship_predicates(
 }
 
 #[tokio::test]
+async fn cypher_exists_match_subqueries_support_multiple_inner_match_clauses() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { \
+           MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+           MATCH (owner:Person)-[:OWNS]->(dependency) \
+           WHERE owner.team = 'analytics' \
+         } \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher EXISTS subqueries should support multiple inner MATCH clauses");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"ownerships\" AS \"__coral_exists_r1\" ON TRUE"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_match_subqueries_apply_where_from_each_inner_match_clause() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { \
+           MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+           WHERE dependency.tier = 'prod' \
+           MATCH (owner:Person)-[:OWNS]->(dependency) \
+           WHERE owner.team = 'infra' \
+         } \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher EXISTS subqueries should preserve WHERE predicates from each MATCH clause");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"__coral_exists_n0\".\"tier\" = 'prod'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"__coral_exists_n1\".\"team\" = 'infra'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_exists_match_subqueries_reject_disconnected_inner_components() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
