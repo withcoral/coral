@@ -3481,6 +3481,82 @@ async fn cypher_optional_match_inline_property_maps_execute_as_join_predicates()
 }
 
 #[tokio::test]
+async fn cypher_multihop_optional_match_preserves_whole_pattern_null_semantics() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[:DEPENDS_ON]->(middle:Service)-[:DEPENDS_ON]->(target:Service) \
+         RETURN service.name AS service, middle.name AS middle, target.name AS target \
+         ORDER BY service, middle, target",
+    )
+    .await
+    .expect("multi-hop OPTIONAL MATCH query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LEFT JOIN ("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "middle": "deployments", "target": "experiments"}),
+            json!({"service": "deployments"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_multihop_optional_match_where_applies_to_whole_scope() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[:DEPENDS_ON]->(middle:Service)-[:DEPENDS_ON]->(target:Service) \
+         WHERE target.tier = 'dev' \
+         RETURN service.name AS service, middle.name AS middle, target.name AS target \
+         ORDER BY service, middle, target",
+    )
+    .await
+    .expect("multi-hop OPTIONAL MATCH WHERE query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LEFT JOIN ("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        !execution.translated_sql().contains(" WHERE "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "middle": "deployments", "target": "experiments"}),
+            json!({"service": "deployments"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_chained_optional_matches_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

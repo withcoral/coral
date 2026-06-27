@@ -128,6 +128,7 @@ enum RelationshipEndpoint {
 #[derive(Debug, Clone, Copy)]
 struct PathBinding {
     length: usize,
+    optional: bool,
 }
 
 #[derive(Debug, Default)]
@@ -4043,13 +4044,6 @@ fn attach_optional_match_scope(
         return Ok(());
     }
 
-    if relationship_indices.len() != 1 {
-        return Err(unsupported(
-            path,
-            "OPTIONAL MATCH currently requires a single relationship pattern to preserve whole-pattern null semantics",
-        ));
-    }
-
     plan.optional_matches.push(OptionalMatchScope {
         relationship_indices,
         predicate,
@@ -4152,6 +4146,7 @@ fn compile_pattern_part_into(
         pattern_part,
         plan,
         state,
+        optional,
         format!("match.pattern.parts[{part_index}]"),
     )?;
 
@@ -4321,6 +4316,7 @@ fn validate_ignored_path_variable(
     pattern_part: &PatternPart,
     plan: &GraphPlan,
     state: &mut CypherCompileState,
+    optional: bool,
     path: impl Into<String>,
 ) -> Result<(), CoreError> {
     let path = path.into();
@@ -4349,7 +4345,9 @@ fn validate_ignored_path_variable(
         ));
     }
     let length = path_pattern_length(pattern_part, &path)?;
-    state.path_variables.insert(name, PathBinding { length });
+    state
+        .path_variables
+        .insert(name, PathBinding { length, optional });
     Ok(())
 }
 
@@ -5188,6 +5186,12 @@ fn compile_path_length_literal(
             format!("length() argument '{variable}' is not a bound path variable"),
         )
     })?;
+    if binding.optional {
+        return Err(unsupported(
+            format!("{arguments_path}[0]"),
+            "length() over OPTIONAL MATCH path variables is not supported yet because unmatched paths require nullable path values",
+        ));
+    }
     i64::try_from(binding.length)
         .map_err(|error| CoreError::internal(format!("path length overflow: {error}")))
 }
@@ -10822,6 +10826,23 @@ mod tests {
     }
 
     #[test]
+    fn rejects_length_over_optional_path_variable() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH path = (service)-[:DEPENDS_ON]->(target:Service) \
+             RETURN service.name AS service, length(path) AS path_length",
+        )
+        .expect_err("optional path length should reject until nullable path values exist");
+
+        assert!(
+            error
+                .to_string()
+                .contains("length() over OPTIONAL MATCH path variables is not supported yet"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn rejects_path_variable_collisions() {
         let error = compile_cypher(
             "MATCH path = (path:Person)-[:OWNS]->(service:Service) \
@@ -11255,6 +11276,27 @@ mod tests {
         assert_eq!(plan.nodes.len(), 1);
         assert_eq!(plan.relationships.len(), 0);
         assert_eq!(plan.projections.len(), 1);
+    }
+
+    #[test]
+    fn compiles_multihop_optional_match_scope() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (service)-[:DEPENDS_ON]->(middle:Service)-[:DEPENDS_ON]->(target:Service) \
+             RETURN service.name AS service, middle.name AS middle, target.name AS target",
+        )
+        .expect("multi-hop optional match should compile");
+
+        assert_eq!(plan.relationships.len(), 2);
+        assert_eq!(plan.optional_relationships, vec![0, 1]);
+        assert_eq!(plan.optional_matches.len(), 1);
+        assert_eq!(
+            plan.optional_matches
+                .first()
+                .expect("optional match scope")
+                .relationship_indices,
+            vec![0, 1]
+        );
     }
 
     #[test]
@@ -15491,12 +15533,6 @@ mod tests {
     #[test]
     fn rejects_unsupported_optional_match_shapes() {
         assert_unsupported("OPTIONAL MATCH (service:Service) RETURN service.name");
-        assert_unsupported(
-            "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service)-[:DEPENDS_ON]->(next:Service) RETURN service.name, target.name, next.name",
-        );
-        assert_unsupported(
-            "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service)-[:DEPENDS_ON]->(next:Service) WHERE next.tier = 'prod' RETURN service.name",
-        );
         assert_unsupported(
             "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service) MATCH (target)-[:DEPENDS_ON]->(next:Service) RETURN next.name",
         );

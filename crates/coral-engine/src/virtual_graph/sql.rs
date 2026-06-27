@@ -6,8 +6,8 @@ use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator, Direction,
     ElementIdPredicate, GraphPlan, GraphQuery, GraphUnion, GraphUnionOuterProjectionItem,
-    KeyPredicate, Literal, NullOrder, OrderDirection, OrderExpression, PredicateExpression,
-    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    KeyPredicate, Literal, NullOrder, OptionalMatchScope, OrderDirection, OrderExpression,
+    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
     PropertyRef, ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
 };
@@ -125,6 +125,13 @@ struct JoinRelationshipOptions<'p> {
     optional_predicate: Option<&'p str>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct OptionalScopeAnchor<'a> {
+    relationship_index: usize,
+    anchor_variable: &'a str,
+    anchor_is_left: bool,
+}
+
 impl<'a> Lowerer<'a> {
     fn new(validated: ValidatedGraphPlan<'a>) -> Self {
         Self {
@@ -174,7 +181,7 @@ impl<'a> Lowerer<'a> {
 
         self.join_mandatory_relationships()?;
         self.cross_join_isolated_nodes()?;
-        self.join_relationships(true)?;
+        self.join_optional_relationships()?;
 
         Ok(())
     }
@@ -254,15 +261,14 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    fn join_relationships(&mut self, optional: bool) -> Result<(), CoreError> {
-        let plan = self.validated.plan();
-        let validated = &self.validated;
-        let mut remaining_relationships = (0..plan.relationships.len())
-            .filter(|index| validated.relationship_is_optional(*index) == optional)
-            .collect::<BTreeSet<_>>();
+    fn join_relationship_index_set(
+        &mut self,
+        remaining_relationships: &mut BTreeSet<usize>,
+        optional: bool,
+    ) -> Result<(), CoreError> {
         while !remaining_relationships.is_empty() {
             let progressed =
-                self.join_available_relationships(&mut remaining_relationships, optional)?;
+                self.join_available_relationships(&mut *remaining_relationships, optional)?;
             if !progressed {
                 if optional {
                     let index = *remaining_relationships.first().ok_or_else(|| {
@@ -278,6 +284,109 @@ impl<'a> Lowerer<'a> {
             }
         }
         Ok(())
+    }
+
+    fn join_optional_relationships(&mut self) -> Result<(), CoreError> {
+        let scoped_relationships = self.optional_match_scope_relationships();
+        self.join_optional_match_scopes()?;
+
+        let mut remaining_relationships = self
+            .validated
+            .plan()
+            .optional_relationships
+            .iter()
+            .copied()
+            .filter(|index| !scoped_relationships.contains(index))
+            .collect::<BTreeSet<_>>();
+        self.join_relationship_index_set(&mut remaining_relationships, true)
+    }
+
+    fn optional_match_scope_relationships(&self) -> BTreeSet<usize> {
+        self.validated
+            .plan()
+            .optional_matches
+            .iter()
+            .flat_map(|optional_match| optional_match.relationship_indices.iter().copied())
+            .collect()
+    }
+
+    fn join_optional_match_scopes(&mut self) -> Result<(), CoreError> {
+        let mut remaining_scopes =
+            (0..self.validated.plan().optional_matches.len()).collect::<BTreeSet<_>>();
+        while !remaining_scopes.is_empty() {
+            let mut progressed = false;
+            for index in remaining_scopes.iter().copied().collect::<Vec<_>>() {
+                let optional_match = self
+                    .validated
+                    .plan()
+                    .optional_matches
+                    .get(index)
+                    .ok_or_else(|| CoreError::internal("optional match scope index missing"))?
+                    .clone();
+                if self.try_join_optional_match_scope(&optional_match)? {
+                    remaining_scopes.remove(&index);
+                    progressed = true;
+                }
+            }
+            if progressed {
+                continue;
+            }
+
+            let index = *remaining_scopes
+                .first()
+                .ok_or_else(|| CoreError::internal("remaining optional scope set was empty"))?;
+            let optional_match = self
+                .validated
+                .plan()
+                .optional_matches
+                .get(index)
+                .ok_or_else(|| CoreError::internal("optional match scope index missing"))?;
+            let anchor = self.optional_match_scope_component_anchor(optional_match)?;
+            self.cross_join_node(anchor)?;
+        }
+        Ok(())
+    }
+
+    fn try_join_optional_match_scope(
+        &mut self,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<bool, CoreError> {
+        let relationship_indices = optional_match.relationship_indices.as_slice();
+        let [relationship_index] = relationship_indices else {
+            let Some(anchor) = self.optional_match_scope_join_anchor(optional_match)? else {
+                return Ok(false);
+            };
+            self.join_optional_match_group(optional_match, anchor)?;
+            return Ok(true);
+        };
+
+        let pattern = self
+            .validated
+            .plan()
+            .relationships
+            .get(*relationship_index)
+            .ok_or_else(|| CoreError::internal("validated relationship index was out of bounds"))?;
+        let left_joined = self.joined_nodes.contains(pattern.left.as_str());
+        let right_joined = self.joined_nodes.contains(pattern.right.as_str());
+        if !left_joined && !right_joined {
+            return Ok(false);
+        }
+
+        let relationship = self.validated.relationship_mapping(*relationship_index)?;
+        let optional_predicate = self.render_optional_match_predicate(optional_match)?;
+        Self::join_relationship(
+            &self.validated,
+            &mut self.joined_nodes,
+            &mut self.from_clause,
+            *relationship_index,
+            pattern,
+            relationship,
+            JoinRelationshipOptions {
+                optional: true,
+                optional_predicate: optional_predicate.as_deref(),
+            },
+        )?;
+        Ok(true)
     }
 
     fn optional_relationship_component_anchor(
@@ -297,6 +406,278 @@ impl<'a> Lowerer<'a> {
         } else {
             Ok(pattern.right.as_str())
         }
+    }
+
+    fn optional_match_scope_component_anchor(
+        &self,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<&'a str, CoreError> {
+        optional_match
+            .relationship_indices
+            .iter()
+            .copied()
+            .flat_map(|relationship_index| {
+                self.validated
+                    .plan()
+                    .relationships
+                    .get(relationship_index)
+                    .into_iter()
+                    .flat_map(|relationship| {
+                        [relationship.left.as_str(), relationship.right.as_str()]
+                    })
+            })
+            .min_by_key(|variable| self.node_position(variable).unwrap_or(usize::MAX))
+            .ok_or_else(|| CoreError::internal("optional match scope had no anchor candidates"))
+    }
+
+    fn optional_match_scope_join_anchor(
+        &self,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<Option<OptionalScopeAnchor<'a>>, CoreError> {
+        let mut anchor = None;
+        for relationship_index in optional_match.relationship_indices.iter().copied() {
+            let pattern = self
+                .validated
+                .plan()
+                .relationships
+                .get(relationship_index)
+                .ok_or_else(|| {
+                    CoreError::internal("validated relationship index was out of bounds")
+                })?;
+            let left_joined = self.joined_nodes.contains(pattern.left.as_str());
+            let right_joined = self.joined_nodes.contains(pattern.right.as_str());
+            if left_joined ^ right_joined {
+                if anchor.is_some() {
+                    return Err(CoreError::internal(
+                        "validated optional match scope had multiple joined boundaries",
+                    ));
+                }
+                anchor = Some(OptionalScopeAnchor {
+                    relationship_index,
+                    anchor_variable: if left_joined {
+                        pattern.left.as_str()
+                    } else {
+                        pattern.right.as_str()
+                    },
+                    anchor_is_left: left_joined,
+                });
+            }
+        }
+        Ok(anchor)
+    }
+
+    fn join_optional_match_group(
+        &mut self,
+        optional_match: &OptionalMatchScope,
+        anchor: OptionalScopeAnchor<'a>,
+    ) -> Result<(), CoreError> {
+        let mut remaining_relationships = optional_match
+            .relationship_indices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut inner_joined_nodes = BTreeSet::new();
+        let (mut join_group, outer_condition) =
+            self.render_optional_match_group_anchor(anchor, &mut inner_joined_nodes)?;
+        remaining_relationships.remove(&anchor.relationship_index);
+
+        while !remaining_relationships.is_empty() {
+            let mut progressed = false;
+            for relationship_index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
+                let pattern = self
+                    .validated
+                    .plan()
+                    .relationships
+                    .get(relationship_index)
+                    .ok_or_else(|| {
+                        CoreError::internal("validated relationship index was out of bounds")
+                    })?;
+                let left_joined = inner_joined_nodes.contains(pattern.left.as_str());
+                let right_joined = inner_joined_nodes.contains(pattern.right.as_str());
+                if !left_joined && !right_joined {
+                    continue;
+                }
+
+                self.render_optional_match_group_relationship(
+                    &mut join_group,
+                    &mut inner_joined_nodes,
+                    relationship_index,
+                    left_joined,
+                    right_joined,
+                )?;
+                remaining_relationships.remove(&relationship_index);
+                progressed = true;
+            }
+            if !progressed {
+                return Err(CoreError::internal(
+                    "validated optional match scope was not joinable",
+                ));
+            }
+        }
+
+        let optional_predicate = self.render_optional_match_predicate(optional_match)?;
+        let outer_condition =
+            Self::join_condition_with_predicate(outer_condition, optional_predicate.as_deref());
+        write!(
+            self.from_clause,
+            " LEFT JOIN ({join_group}) ON {outer_condition}"
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+
+        for relationship_index in optional_match.relationship_indices.iter().copied() {
+            let pattern = self
+                .validated
+                .plan()
+                .relationships
+                .get(relationship_index)
+                .ok_or_else(|| {
+                    CoreError::internal("validated relationship index was out of bounds")
+                })?;
+            self.joined_nodes.insert(pattern.left.as_str());
+            self.joined_nodes.insert(pattern.right.as_str());
+        }
+        Ok(())
+    }
+
+    fn render_optional_match_group_anchor(
+        &self,
+        anchor: OptionalScopeAnchor<'a>,
+        inner_joined_nodes: &mut BTreeSet<&'a str>,
+    ) -> Result<(String, String), CoreError> {
+        let pattern = self
+            .validated
+            .plan()
+            .relationships
+            .get(anchor.relationship_index)
+            .ok_or_else(|| CoreError::internal("validated relationship index was out of bounds"))?;
+        let relationship = self
+            .validated
+            .relationship_mapping(anchor.relationship_index)?;
+        let relationship_alias = self
+            .validated
+            .relationship_alias(anchor.relationship_index, pattern);
+        let relationship_join = Self::relationship_known_node_condition(
+            &self.validated,
+            relationship,
+            pattern,
+            &relationship_alias,
+            anchor.anchor_variable,
+            anchor.anchor_is_left,
+        )?;
+        let outer_condition = Self::relationship_outer_condition_for_known_node(
+            &self.validated,
+            relationship,
+            pattern,
+            &relationship_alias,
+            relationship_join,
+        )?;
+        let unknown_variable = if anchor.anchor_is_left {
+            pattern.right.as_str()
+        } else {
+            pattern.left.as_str()
+        };
+        let unknown_join = Self::relationship_inner_unknown_condition_for_known_node(
+            &self.validated,
+            relationship,
+            pattern,
+            &relationship_alias,
+            unknown_variable,
+            !anchor.anchor_is_left,
+        )?;
+        let unknown_node = self.validated.node_binding(unknown_variable)?;
+        let unknown_alias = self.validated.binding(unknown_variable)?.alias();
+        inner_joined_nodes.insert(unknown_variable);
+        Ok((
+            format!(
+                "{} AS {} JOIN {} AS {} ON {}",
+                render_table_ref(&relationship.table),
+                quote_ident(&relationship_alias),
+                render_table_ref(&unknown_node.table),
+                quote_ident(unknown_alias),
+                unknown_join
+            ),
+            outer_condition,
+        ))
+    }
+
+    fn render_optional_match_group_relationship(
+        &self,
+        join_group: &mut String,
+        inner_joined_nodes: &mut BTreeSet<&'a str>,
+        relationship_index: usize,
+        left_joined: bool,
+        right_joined: bool,
+    ) -> Result<(), CoreError> {
+        let pattern = self
+            .validated
+            .plan()
+            .relationships
+            .get(relationship_index)
+            .ok_or_else(|| CoreError::internal("validated relationship index was out of bounds"))?;
+        let relationship = self.validated.relationship_mapping(relationship_index)?;
+        let relationship_alias = self
+            .validated
+            .relationship_alias(relationship_index, pattern);
+        if left_joined && right_joined {
+            let condition = Self::relationship_pair_condition(
+                &self.validated,
+                relationship,
+                &relationship_alias,
+                pattern,
+            )?;
+            write!(
+                join_group,
+                " JOIN {} AS {} ON {}",
+                render_table_ref(&relationship.table),
+                quote_ident(&relationship_alias),
+                condition
+            )
+            .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+            return Ok(());
+        }
+
+        let (known_variable, unknown_variable, known_is_left) = if left_joined {
+            (pattern.left.as_str(), pattern.right.as_str(), true)
+        } else {
+            (pattern.right.as_str(), pattern.left.as_str(), false)
+        };
+        let relationship_join = Self::relationship_known_node_condition(
+            &self.validated,
+            relationship,
+            pattern,
+            &relationship_alias,
+            known_variable,
+            known_is_left,
+        )?;
+        write!(
+            join_group,
+            " JOIN {} AS {} ON {}",
+            render_table_ref(&relationship.table),
+            quote_ident(&relationship_alias),
+            relationship_join
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+
+        let unknown_join = Self::relationship_inner_unknown_condition_for_known_node(
+            &self.validated,
+            relationship,
+            pattern,
+            &relationship_alias,
+            unknown_variable,
+            !known_is_left,
+        )?;
+        let unknown_node = self.validated.node_binding(unknown_variable)?;
+        let unknown_alias = self.validated.binding(unknown_variable)?.alias();
+        write!(
+            join_group,
+            " JOIN {} AS {} ON {}",
+            render_table_ref(&unknown_node.table),
+            quote_ident(unknown_alias),
+            unknown_join
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        inner_joined_nodes.insert(unknown_variable);
+        Ok(())
     }
 
     fn node_position(&self, variable: &str) -> Result<usize, CoreError> {
@@ -554,6 +935,17 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn render_optional_match_predicate(
+        &self,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<Option<String>, CoreError> {
+        optional_match
+            .predicate
+            .as_ref()
+            .map(|predicate| self.render_predicate_expression(predicate))
+            .transpose()
+    }
+
     fn join_condition_with_predicate(
         condition: String,
         optional_predicate: Option<&str>,
@@ -561,6 +953,46 @@ impl<'a> Lowerer<'a> {
         match optional_predicate {
             Some(predicate) => format!("({condition}) AND ({predicate})"),
             None => condition,
+        }
+    }
+
+    fn relationship_outer_condition_for_known_node(
+        validated: &ValidatedGraphPlan<'a>,
+        relationship: &Relationship,
+        pattern: &'a super::ir::RelationshipPattern,
+        relationship_alias: &str,
+        relationship_join: String,
+    ) -> Result<String, CoreError> {
+        if pattern.direction == Direction::Undirected
+            && Self::relationship_orientations(validated, relationship, pattern)?.len() > 1
+        {
+            Self::relationship_pair_condition(validated, relationship, relationship_alias, pattern)
+        } else {
+            Ok(relationship_join)
+        }
+    }
+
+    fn relationship_inner_unknown_condition_for_known_node(
+        validated: &ValidatedGraphPlan<'a>,
+        relationship: &Relationship,
+        pattern: &'a super::ir::RelationshipPattern,
+        relationship_alias: &str,
+        unknown_variable: &str,
+        unknown_is_left: bool,
+    ) -> Result<String, CoreError> {
+        if pattern.direction == Direction::Undirected
+            && Self::relationship_orientations(validated, relationship, pattern)?.len() > 1
+        {
+            Self::relationship_pair_condition(validated, relationship, relationship_alias, pattern)
+        } else {
+            Self::relationship_known_node_condition(
+                validated,
+                relationship,
+                pattern,
+                relationship_alias,
+                unknown_variable,
+                unknown_is_left,
+            )
         }
     }
 
@@ -2572,6 +3004,93 @@ relationships:
              CROSS JOIN \"ops\".\"people\" AS \"n1\" \
              LEFT JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n1\".\"id\" \
              LEFT JOIN \"ops\".\"services\" AS \"n2\" ON \"r0\".\"service_id\" = \"n2\".\"id\""
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_multihop_optional_scope_as_grouped_left_join() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "middle".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "target".to_string(),
+                    label: "Service".to_string(),
+                },
+            ],
+            relationships: vec![
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "service".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "middle".to_string(),
+                },
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "middle".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "target".to_string(),
+                },
+            ],
+            optional_relationships: vec![0, 1],
+            optional_matches: vec![OptionalMatchScope {
+                relationship_indices: vec![0, 1],
+                predicate: None,
+            }],
+            distinct: false,
+            projections: vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "middle".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("middle".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("target".to_string()),
+                },
+            ],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("multi-hop optional scope should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n0\".\"service_name\" AS \"service\", \"n1\".\"service_name\" AS \"middle\", \"n2\".\"service_name\" AS \"target\" \
+             FROM \"ops\".\"services\" AS \"n0\" \
+             LEFT JOIN (\"ops\".\"service_dependencies\" AS \"r0\" \
+             JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"to_service_id\" = \"n1\".\"id\" \
+             JOIN \"ops\".\"service_dependencies\" AS \"r1\" ON \"r1\".\"from_service_id\" = \"n1\".\"id\" \
+             JOIN \"ops\".\"services\" AS \"n2\" ON \"r1\".\"to_service_id\" = \"n2\".\"id\") \
+             ON \"r0\".\"from_service_id\" = \"n0\".\"id\""
         );
     }
 

@@ -732,7 +732,7 @@ impl<'a> GraphPlanValidator<'a> {
         optional_match: &OptionalMatchScope,
     ) -> Result<(), CoreError> {
         let allowed_variables = self.optional_match_scope_variables(index, optional_match)?;
-        Self::validate_optional_match_scope_shape(index, optional_match)?;
+        self.validate_optional_match_scope_shape(index, optional_match)?;
         let Some(predicate) = &optional_match.predicate else {
             return Ok(());
         };
@@ -851,7 +851,7 @@ impl<'a> GraphPlanValidator<'a> {
         index: usize,
         optional_match: &OptionalMatchScope,
     ) -> Result<(), CoreError> {
-        Self::validate_optional_match_scope_shape(index, optional_match)?;
+        self.validate_optional_match_scope_shape(index, optional_match)?;
         let relationship_index = *optional_match
             .relationship_indices
             .first()
@@ -864,17 +864,98 @@ impl<'a> GraphPlanValidator<'a> {
     }
 
     fn validate_optional_match_scope_shape(
+        &self,
         index: usize,
         optional_match: &OptionalMatchScope,
     ) -> Result<(), CoreError> {
-        if optional_match.relationship_indices.len() != 1 {
+        if optional_match.relationship_indices.len() == 1 {
+            return Ok(());
+        }
+
+        let mandatory_nodes = self.mandatory_reachable_nodes()?;
+        let mut degree_by_node = BTreeMap::new();
+        let mut boundary_relationships = 0;
+        let mut reachable_nodes = BTreeSet::new();
+        let mut remaining_relationships = optional_match
+            .relationship_indices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        for relationship_index in optional_match.relationship_indices.iter().copied() {
+            let relationship = self
+                .plan
+                .relationships
+                .get(relationship_index)
+                .ok_or_else(|| CoreError::internal("validated optional index was invalid"))?;
+            *degree_by_node
+                .entry(relationship.left.as_str())
+                .or_insert(0) += 1;
+            *degree_by_node
+                .entry(relationship.right.as_str())
+                .or_insert(0) += 1;
+
+            let left_is_mandatory = mandatory_nodes.contains(relationship.left.as_str());
+            let right_is_mandatory = mandatory_nodes.contains(relationship.right.as_str());
+            if left_is_mandatory ^ right_is_mandatory {
+                boundary_relationships += 1;
+                reachable_nodes.insert(relationship.left.as_str());
+                reachable_nodes.insert(relationship.right.as_str());
+            } else if left_is_mandatory && right_is_mandatory {
+                return Err(Diagnostic::new(
+                    "UNSUPPORTED_OPTIONAL_MATCH_SCOPE",
+                    format!("optional_matches[{index}].relationship_indices"),
+                    "multi-hop optional match scopes cannot connect two already-bound nodes yet",
+                )
+                .into_core_error());
+            }
+        }
+
+        if boundary_relationships != 1 {
             return Err(Diagnostic::new(
                 "UNSUPPORTED_OPTIONAL_MATCH_SCOPE",
                 format!("optional_matches[{index}].relationship_indices"),
-                "optional match scopes currently require a single relationship pattern to preserve whole-pattern null semantics",
+                "multi-hop optional match scopes require exactly one relationship connected to a previously-bound anchor node",
             )
             .into_core_error());
         }
+
+        if degree_by_node.values().any(|degree| *degree > 2) {
+            return Err(Diagnostic::new(
+                "UNSUPPORTED_OPTIONAL_MATCH_SCOPE",
+                format!("optional_matches[{index}].relationship_indices"),
+                "multi-hop optional match scopes currently require one connected chain, not a branching pattern",
+            )
+            .into_core_error());
+        }
+
+        while !remaining_relationships.is_empty() {
+            let mut progressed = false;
+            for relationship_index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
+                let relationship = self
+                    .plan
+                    .relationships
+                    .get(relationship_index)
+                    .ok_or_else(|| CoreError::internal("validated optional index was invalid"))?;
+                if reachable_nodes.contains(relationship.left.as_str())
+                    || reachable_nodes.contains(relationship.right.as_str())
+                {
+                    reachable_nodes.insert(relationship.left.as_str());
+                    reachable_nodes.insert(relationship.right.as_str());
+                    remaining_relationships.remove(&relationship_index);
+                    progressed = true;
+                }
+            }
+            if !progressed {
+                return Err(Diagnostic::new(
+                    "UNSUPPORTED_OPTIONAL_MATCH_SCOPE",
+                    format!("optional_matches[{index}].relationship_indices"),
+                    "multi-hop optional match scopes must be one connected chain",
+                )
+                .into_core_error());
+            }
+        }
+
         Ok(())
     }
 
@@ -5012,6 +5093,83 @@ relationships:
         graph
             .validate_graph_plan(&plan)
             .expect("scoped optional predicate should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_accepts_multihop_optional_match_scope() {
+        let graph = Declaration::from_yaml(
+            r"
+version: 1
+name: dependencies
+nodes:
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+    properties:
+      name: service_name
+relationships:
+  - type: DEPENDS_ON
+    table: { schema: ops, name: service_dependencies }
+    from: { label: Service, key: from_service_id }
+    to: { label: Service, key: to_service_id }
+",
+        )
+        .expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "source".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "middle".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "target".to_string(),
+                    label: "Service".to_string(),
+                },
+            ],
+            relationships: vec![
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "source".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "middle".to_string(),
+                },
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "middle".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "target".to_string(),
+                },
+            ],
+            optional_relationships: vec![0, 1],
+            optional_matches: vec![OptionalMatchScope {
+                relationship_indices: vec![0, 1],
+                predicate: None,
+            }],
+            distinct: false,
+            projections: vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "target".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("target".to_string()),
+            }],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("multi-hop optional scope should validate");
     }
 
     #[test]
