@@ -63,6 +63,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `WHERE node:Label` / `relationship:TYPE` predicates | Supported foundation | Static label/type expressions fold against the mapped node label or relationship type, including grouped conjunction/disjunction/negation; dynamic labels remain rejected |
 | Chained comparisons | Supported foundation | Normalized to conjunctions, e.g. `10 <= n.score < 20` |
 | Literal-left comparisons | Supported foundation | Operators are inverted around the property operand where possible |
+| Literal-only predicates | Supported foundation | Non-null literal comparisons and literal `IN` membership fold to boolean predicates; null-producing unknown cases are rejected instead of guessed |
 | `WHERE` boolean logic | Supported foundation | `AND`, `OR`, `NOT`, and parentheses lower to SQL boolean predicates |
 | `WHERE ... IN [...]` | Supported foundation | Literal scalar lists, including numeric and null members, lower to SQL `IN`; empty lists lower to `FALSE` |
 | `WHERE '<Label>' IN labels(node)` | Supported foundation | String-literal and scalar string parameter membership predicates fold against the statically mapped node label |

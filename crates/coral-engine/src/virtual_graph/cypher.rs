@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection, With};
@@ -2364,6 +2365,13 @@ fn compile_binary_comparison(
             &lhs, operator, &rhs, path,
         )?));
     }
+    if is_literal_expression(lhs) && is_literal_expression(rhs) {
+        let lhs = compile_literal(lhs, format!("{path}.lhs"), context)?;
+        let rhs = compile_literal(rhs, format!("{path}.rhs"), context)?;
+        return Ok(PredicateExpression::Boolean(
+            evaluate_literal_only_comparison(&lhs, operator, &rhs, path)?,
+        ));
+    }
 
     Err(unsupported(
         path,
@@ -2412,7 +2420,15 @@ fn compile_in_predicate(
     }
     if contains_type_function(lhs) {
         let literal = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
-        return Ok(PredicateExpression::Boolean(literals.contains(&literal)));
+        return Ok(PredicateExpression::Boolean(evaluate_literal_in_list(
+            &literal, &literals, path,
+        )?));
+    }
+    if is_literal_expression(lhs) {
+        let literal = compile_literal(lhs, format!("{path}.lhs"), context)?;
+        return Ok(PredicateExpression::Boolean(evaluate_literal_in_list(
+            &literal, &literals, path,
+        )?));
     }
     Err(unsupported(
         format!("{path}.lhs"),
@@ -2801,8 +2817,14 @@ fn evaluate_literal_comparison(
 ) -> Result<bool, CoreError> {
     let path = path.into();
     match operator {
-        ComparisonOperator::Equal => Ok(lhs == rhs),
-        ComparisonOperator::NotEqual => Ok(lhs != rhs),
+        ComparisonOperator::Equal => match compare_numeric_literals(lhs, rhs, path.clone())? {
+            Some(ordering) => Ok(ordering == Ordering::Equal),
+            None => Ok(lhs == rhs),
+        },
+        ComparisonOperator::NotEqual => match compare_numeric_literals(lhs, rhs, path.clone())? {
+            Some(ordering) => Ok(ordering != Ordering::Equal),
+            None => Ok(lhs != rhs),
+        },
         ComparisonOperator::StartsWith => match (lhs, rhs) {
             (Literal::String(lhs), Literal::String(rhs)) => Ok(lhs.starts_with(rhs)),
             _ => Err(unsupported(
@@ -2827,12 +2849,129 @@ fn evaluate_literal_comparison(
         ComparisonOperator::GreaterThan
         | ComparisonOperator::GreaterThanOrEqual
         | ComparisonOperator::LessThan
-        | ComparisonOperator::LessThanOrEqual
-        | ComparisonOperator::In => Err(unsupported(
+        | ComparisonOperator::LessThanOrEqual => {
+            let Some(ordering) = compare_numeric_literals(lhs, rhs, path.clone())? else {
+                return Err(unsupported(
+                    path,
+                    "ordered literal comparisons require numeric operands",
+                ));
+            };
+            match operator {
+                ComparisonOperator::GreaterThan => Ok(ordering == Ordering::Greater),
+                ComparisonOperator::GreaterThanOrEqual => {
+                    Ok(matches!(ordering, Ordering::Greater | Ordering::Equal))
+                }
+                ComparisonOperator::LessThan => Ok(ordering == Ordering::Less),
+                ComparisonOperator::LessThanOrEqual => {
+                    Ok(matches!(ordering, Ordering::Less | Ordering::Equal))
+                }
+                _ => unreachable!("non-ordered operator reached ordered comparison branch"),
+            }
+        }
+        ComparisonOperator::In => Err(unsupported(
             path,
-            "literal comparisons only support equality and string predicates",
+            "literal comparisons do not use the IN comparison operator",
         )),
     }
+}
+
+fn evaluate_literal_only_comparison(
+    lhs: &Literal,
+    operator: ComparisonOperator,
+    rhs: &Literal,
+    path: impl Into<String>,
+) -> Result<bool, CoreError> {
+    let path = path.into();
+    if matches!(lhs, Literal::Null) || matches!(rhs, Literal::Null) {
+        return Err(unsupported(
+            path,
+            "literal-only null comparisons are not supported because Cypher null comparisons produce unknown",
+        ));
+    }
+    evaluate_literal_comparison(lhs, operator, rhs, path)
+}
+
+fn evaluate_literal_in_list(
+    literal: &Literal,
+    literals: &[Literal],
+    path: impl Into<String>,
+) -> Result<bool, CoreError> {
+    let path = path.into();
+    if matches!(literal, Literal::Null) {
+        return Err(unsupported(
+            path,
+            "literal IN predicates with a null left-hand side are not supported because Cypher membership produces unknown",
+        ));
+    }
+
+    let mut saw_null = false;
+    for candidate in literals {
+        if matches!(candidate, Literal::Null) {
+            saw_null = true;
+            continue;
+        }
+        if evaluate_literal_comparison(literal, ComparisonOperator::Equal, candidate, path.clone())?
+        {
+            return Ok(true);
+        }
+    }
+
+    if saw_null {
+        return Err(unsupported(
+            path,
+            "literal IN predicates with null members cannot be folded unless a non-null match is found",
+        ));
+    }
+
+    Ok(false)
+}
+
+fn compare_numeric_literals(
+    lhs: &Literal,
+    rhs: &Literal,
+    path: impl Into<String>,
+) -> Result<Option<Ordering>, CoreError> {
+    let path = path.into();
+    match (lhs, rhs) {
+        (Literal::Integer(lhs), Literal::Integer(rhs)) => Ok(Some(lhs.cmp(rhs))),
+        (Literal::Float(lhs), Literal::Float(rhs)) => lhs
+            .into_inner()
+            .partial_cmp(&rhs.into_inner())
+            .map(Some)
+            .ok_or_else(|| unsupported(path, "non-finite numeric literals are not supported")),
+        (Literal::Integer(lhs), Literal::Float(rhs)) => {
+            compare_integer_float_literals(*lhs, rhs.into_inner(), path).map(Some)
+        }
+        (Literal::Float(lhs), Literal::Integer(rhs)) => {
+            compare_integer_float_literals(*rhs, lhs.into_inner(), path)
+                .map(Ordering::reverse)
+                .map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "integer is range-checked to f64's exact integer range before casting"
+)]
+fn compare_integer_float_literals(
+    integer: i64,
+    float: f64,
+    path: impl Into<String>,
+) -> Result<Ordering, CoreError> {
+    const MAX_EXACT_F64_INTEGER: i64 = 9_007_199_254_740_992;
+    let path = path.into();
+    if !(-MAX_EXACT_F64_INTEGER..=MAX_EXACT_F64_INTEGER).contains(&integer) {
+        return Err(unsupported(
+            path,
+            "mixed integer/float literal comparisons require an integer that can be represented exactly as f64",
+        ));
+    }
+    // The range guard above restricts the integer to f64's exact integer range.
+    (integer as f64)
+        .partial_cmp(&float)
+        .ok_or_else(|| unsupported(path, "non-finite numeric literals are not supported"))
 }
 
 fn compile_property_ref(
@@ -4567,6 +4706,70 @@ mod tests {
     }
 
     #[test]
+    fn compiles_literal_only_predicates() {
+        for (cypher, expected) in [
+            (
+                "MATCH (service:Service) WHERE 1 = 1 RETURN service.name",
+                true,
+            ),
+            (
+                "MATCH (service:Service) WHERE 5 > 3 RETURN service.name",
+                true,
+            ),
+            (
+                "MATCH (service:Service) WHERE 1 = 1.0 RETURN service.name",
+                true,
+            ),
+            (
+                "MATCH (service:Service) WHERE 'prod' IN ['dev', 'prod', null] RETURN service.name",
+                true,
+            ),
+            (
+                "MATCH (service:Service) WHERE 'stage' IN ['dev', 'prod'] RETURN service.name",
+                false,
+            ),
+        ] {
+            let plan = compile_cypher(cypher).expect("literal-only predicate should compile");
+            assert_eq!(plan.predicate, Some(PredicateExpression::Boolean(expected)));
+        }
+
+        let parameters = BTreeMap::from([(
+            "enabled".to_string(),
+            CypherParameterValue::Literal(Literal::Boolean(true)),
+        )]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (service:Service) WHERE $enabled = true RETURN service.name",
+            &parameters,
+        )
+        .expect("parameterized literal-only predicate should compile");
+        assert_eq!(plan.predicate, Some(PredicateExpression::Boolean(true)));
+    }
+
+    #[test]
+    fn rejects_unsafe_literal_only_predicates() {
+        for (cypher, expected) in [
+            (
+                "MATCH (service:Service) WHERE null = null RETURN service.name",
+                "literal-only null comparisons",
+            ),
+            (
+                "MATCH (service:Service) WHERE null IN ['prod'] RETURN service.name",
+                "null left-hand side",
+            ),
+            (
+                "MATCH (service:Service) WHERE 'prod' IN ['dev', null] RETURN service.name",
+                "null members cannot be folded",
+            ),
+        ] {
+            let error = compile_cypher(cypher).expect_err("query should be rejected");
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn preserves_parenthesized_boolean_precedence() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -5055,8 +5258,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_comparisons_without_property_operands() {
-        assert_unsupported("MATCH (service:Service) WHERE 10 < 20 RETURN service.name");
+    fn rejects_comparisons_without_supported_operands() {
+        assert_unsupported("MATCH (service:Service) WHERE service = service RETURN service.name");
     }
 
     #[test]

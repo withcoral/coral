@@ -964,6 +964,53 @@ async fn cypher_constant_boolean_predicates_execute_against_synthetic_sources() 
 }
 
 #[tokio::test]
+async fn cypher_literal_only_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE 1 = 1 AND 5 >= 3 AND 'prod' IN ['prod', 'dev'] \
+         RETURN service.name AS service \
+         ORDER BY service \
+         LIMIT 2",
+    )
+    .await
+    .expect("literal-only predicate query should execute");
+
+    assert!(
+        execution.translated_sql().contains("TRUE"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+
+    let no_rows = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE 2 < 1 OR 'stage' IN ['prod', 'dev'] \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect("false literal-only predicate query should execute");
+
+    assert_eq!(execution_to_rows(no_rows.execution()), Vec::<Value>::new());
+}
+
+#[tokio::test]
 async fn cypher_in_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
