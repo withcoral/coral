@@ -241,6 +241,42 @@ async fn graphql_root_query_executes_against_synthetic_file_sources() {
 }
 
 #[tokio::test]
+async fn graphql_first_argument_executes_as_limit_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r"
+        query {
+          Service(orderBy: [{ field: name, direction: ASC }], first: 2, skip: 1) {
+            service: name
+          }
+        }
+        ",
+    )
+    .await
+    .expect("GraphQL first argument should execute as a row limit");
+
+    assert!(
+        execution.translated_sql().contains("LIMIT 2 OFFSET 1"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "deployments"}),
+            json!({"service": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_variables_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

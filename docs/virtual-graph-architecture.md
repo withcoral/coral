@@ -171,7 +171,8 @@ remain separate. The supported slice is intentionally graph-query oriented:
   `_id` targets the mapped key and `_elementId` targets the string element id;
 - `orderBy` object or list of objects using property or identity fields and
   `ASC` / `DESC`;
-- integer `limit`, `offset` / `skip`, and boolean `distinct` root arguments;
+- integer `limit` / `first`, `offset` / `skip`, and boolean `distinct` root
+  arguments;
 - typed GraphQL variables bound through the explicit variable API in supported
   scalar literal, scalar-list `in`, enum/string name, boolean, and
   non-negative integer positions;

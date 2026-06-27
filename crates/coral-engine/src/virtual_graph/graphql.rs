@@ -826,7 +826,7 @@ fn compile_relationship_field_arguments(
                     )?,
                 );
             }
-            "orderBy" | "limit" | "offset" | "skip" | "distinct" => {
+            "orderBy" | "limit" | "first" | "offset" | "skip" | "distinct" => {
                 return Err(unsupported(
                     argument_path,
                     "GraphQL nested relationship fields do not support row modifiers yet",
@@ -1505,8 +1505,8 @@ fn compile_root_argument(
                 .extend(compile_order_by_argument(variable, value, path, context)?);
             Ok(())
         }
-        "limit" => {
-            plan.limit = Some(compile_non_negative_u64(value, path, "limit", context)?);
+        "limit" | "first" => {
+            plan.limit = Some(compile_non_negative_u64(value, path, name, context)?);
             Ok(())
         }
         "offset" | "skip" => {
@@ -2882,6 +2882,23 @@ mod tests {
         );
         assert_eq!(plan.limit, Some(10));
         assert_eq!(plan.skip, Some(2));
+    }
+
+    #[test]
+    fn compiles_root_first_argument_as_limit() {
+        let plan = compile_graphql(
+            r"
+            query {
+              Service(first: 3, skip: 1) {
+                name
+              }
+            }
+            ",
+        )
+        .expect("GraphQL first argument should compile as a limit");
+
+        assert_eq!(plan.limit, Some(3));
+        assert_eq!(plan.skip, Some(1));
     }
 
     #[test]
@@ -4857,6 +4874,29 @@ mod tests {
     }
 
     #[test]
+    fn rejects_nested_graphql_relationship_row_modifiers() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let error = compile_graphql_for_graph(
+            &graph,
+            r"
+            {
+              Person {
+                out_OWNS(to: Service, first: 2) { name }
+              }
+            }
+            ",
+        )
+        .expect_err("nested GraphQL relationship first argument should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("nested relationship fields do not support row modifiers"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn rejects_graphql_edge_fragment_type_mismatches() {
         let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
         let error = compile_graphql_for_graph(
@@ -4894,7 +4934,7 @@ mod tests {
             .expect("generated SDL should parse as GraphQL schema");
         assert!(sdl.contains("scalar CoralGraphValue"));
         assert!(sdl.contains(
-            "Person(where: PersonWhere, orderBy: [PersonOrderBy!], limit: Int, offset: Int, skip: Int, distinct: Boolean): [Person!]!"
+            "Person(where: PersonWhere, orderBy: [PersonOrderBy!], limit: Int, first: Int, offset: Int, skip: Int, distinct: Boolean): [Person!]!"
         ));
         assert!(sdl.contains("input PersonWhere {"));
         assert!(sdl.contains("  _id: CoralGraphIdentityFilter"));

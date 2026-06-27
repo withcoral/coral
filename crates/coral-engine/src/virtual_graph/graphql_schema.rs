@@ -234,7 +234,7 @@ fn push_query_type(sdl: &mut String, graph: &Declaration) {
     for node in &graph.nodes {
         writeln!(
             sdl,
-            "  {}(where: {}, orderBy: [{}!], limit: Int, offset: Int, skip: Int, distinct: Boolean): [{}!]!",
+            "  {}(where: {}, orderBy: [{}!], limit: Int, first: Int, offset: Int, skip: Int, distinct: Boolean): [{}!]!",
             node.label,
             node_where_type(&node.label),
             node_order_by_type(&node.label),
