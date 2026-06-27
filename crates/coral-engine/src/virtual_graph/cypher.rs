@@ -2125,6 +2125,30 @@ fn compile_radians_scalar_expression(
     })
 }
 
+fn compile_haversin_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(haversin_expression(
+        compile_single_scalar_function_argument(function, path, "haversin", context)?,
+    ))
+}
+
+fn haversin_expression(expression: ScalarExpression) -> ScalarExpression {
+    ScalarExpression::Arithmetic {
+        operator: ArithmeticOperator::Divide,
+        left: Box::new(ScalarExpression::Arithmetic {
+            operator: ArithmeticOperator::Subtract,
+            left: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+            right: Box::new(ScalarExpression::Cos {
+                expression: Box::new(expression),
+            }),
+        }),
+        right: Box::new(ScalarExpression::Literal(Literal::Integer(2))),
+    }
+}
+
 fn compile_zero_scalar_function_arguments(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -2254,7 +2278,9 @@ fn compile_scalar_function_expression(
     } else if is_degrees_function(function) {
         compile_degrees_scalar_expression(function, path.clone(), context)?
     } else if is_radians_function(function) {
-        compile_radians_scalar_expression(function, path, context)?
+        compile_radians_scalar_expression(function, path.clone(), context)?
+    } else if is_haversin_function(function) {
+        compile_haversin_scalar_expression(function, path, context)?
     } else {
         return Ok(None);
     };
@@ -2313,7 +2339,7 @@ fn compile_scalar_expression(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), or radians() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
 }
@@ -2571,7 +2597,7 @@ fn compile_scalar_predicate_rhs(
                 Some(expression) => Ok(ScalarPredicateRhs::Expression(expression)),
                 None => Err(unsupported(
                     path,
-                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), or radians() expressions",
+                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
                 )),
             }
         }
@@ -2583,7 +2609,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), or radians() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
 }
@@ -3170,6 +3196,13 @@ fn is_radians_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("radians")
+    )
+}
+
+fn is_haversin_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("haversin")
     )
 }
 
@@ -6911,6 +6944,73 @@ mod tests {
                 error
                     .to_string()
                     .contains("requires exactly zero arguments"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn compiles_haversin_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE haversin(service.risk) < 0.1 \
+             RETURN haversin(0.0) AS zero_haversin \
+             ORDER BY haversin(service.risk)",
+        )
+        .expect("haversin() should compile");
+
+        assert!(matches!(
+            &plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Divide,
+                    left,
+                    right,
+                },
+                operator: ComparisonOperator::LessThan,
+                ..
+            })) if matches!(
+                left.as_ref(),
+                ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Subtract,
+                    ..
+                }
+            ) && matches!(
+                right.as_ref(),
+                ScalarExpression::Literal(Literal::Integer(2))
+            )
+        ));
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression: ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Divide,
+                    ..
+                },
+                alias
+            }] if alias == "zero_haversin"
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Divide,
+                    ..
+                }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
+    }
+
+    #[test]
+    fn rejects_haversin_with_unsupported_arity() {
+        for cypher in [
+            "MATCH (service:Service) RETURN haversin() AS value",
+            "MATCH (service:Service) RETURN haversin(service.risk, 1) AS value",
+        ] {
+            let error = compile_cypher(cypher).expect_err("wrong arity should be rejected");
+            assert!(
+                error.to_string().contains("requires exactly one argument"),
                 "{error}"
             );
         }

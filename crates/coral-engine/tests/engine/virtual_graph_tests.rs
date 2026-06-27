@@ -2053,6 +2053,47 @@ async fn cypher_math_constant_scalar_expressions_execute_against_synthetic_sourc
 }
 
 #[tokio::test]
+async fn cypher_haversin_scalar_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {name: 'experiments'}) \
+         WHERE haversin(service.risk) < 0.02 \
+         RETURN service.name AS service, haversin(0.0) AS zero_haversin",
+    )
+    .await
+    .expect("haversin scalar function query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("((1 - cos(\"n0\".\"risk_score\")) / 2) < 0.02"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("((1 - cos(0)) / 2) AS \"zero_haversin\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "service": "experiments",
+            "zero_haversin": 0.0,
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_unary_negation_scalar_expressions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
