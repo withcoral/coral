@@ -196,11 +196,14 @@ tables:
         nullable: true
         description: Artifact size in bytes.
         expr: {kind: path, path: [size]}
-      - name: pull_count
-        type: Int64
+      - name: pull_time
+        type: Timestamp
         nullable: true
-        description: Artifact pull count.
-        expr: {kind: path, path: [pull_count]}
+        description: Last time the artifact was pulled.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [pull_time]}
       - name: tags
         type: Utf8
         nullable: true

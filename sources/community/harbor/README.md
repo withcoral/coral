@@ -119,7 +119,7 @@ Specific image manifests, tags, and build layers within a Harbor repository.
 | `id` | Int64 | Internal artifact identifier |
 | `digest` | Utf8 | Artifact digest |
 | `size` | Int64 | Artifact size in bytes |
-| `pull_count` | Int64 | Artifact pull count |
+| `pull_time` | Timestamp | Last time the artifact was pulled |
 | `tags` | Utf8 | JSON list string of artifact tags |
 | `push_time` | Timestamp | Artifact upload timestamp |
 
@@ -161,7 +161,7 @@ team/backend -> team%252Fbackend
 Query example:
 
 ```sql
-SELECT digest, tags, size, pull_count
+SELECT digest, tags, size, pull_time
 FROM harbor.artifacts
 WHERE project_name = 'production-apps'
   AND encoded_repository_name = 'team%252Fbackend'
