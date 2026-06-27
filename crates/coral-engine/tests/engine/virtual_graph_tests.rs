@@ -804,6 +804,7 @@ async fn graphql_nested_relationship_query_executes_against_synthetic_file_sourc
             ) {
               service: name
               _edge {
+                ownershipKind: __typename
                 ownershipSource: source
               }
               out_DEPENDS_ON(
@@ -812,6 +813,7 @@ async fn graphql_nested_relationship_query_executes_against_synthetic_file_sourc
               ) {
                 dependency: name
                 _edge {
+                  dependencyKind: __typename
                   dependencyCriticality: criticality
                 }
               }
@@ -842,8 +844,10 @@ async fn graphql_nested_relationship_query_executes_against_synthetic_file_sourc
         vec![json!({
             "owner": "Grace Hopper",
             "service": "deployments",
+            "ownershipKind": "OWNS",
             "ownershipSource": "pagerduty",
             "dependency": "experiments",
+            "dependencyKind": "DEPENDS_ON",
             "dependencyCriticality": "dev",
         })]
     );

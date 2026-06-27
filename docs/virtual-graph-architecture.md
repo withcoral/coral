@@ -153,7 +153,8 @@ remain separate. The supported slice is intentionally graph-query oriented:
   do not change Coral's flat tabular result shape;
 - scalar property selections with optional GraphQL aliases;
 - node-level `__typename`, lowered as a static literal projection of the graph
-  node label;
+  node label, and edge-level `__typename`, lowered as the static relationship
+  type;
 - named and inline fragments on node selections when their type condition
   matches the current graph label;
 - `@include(if:)` and `@skip(if:)` on fields, fragment spreads, and inline
@@ -170,8 +171,8 @@ remain separate. The supported slice is intentionally graph-query oriented:
 - nested relationship target filters via `where` and relationship property
   filters via `relationshipWhere`, with the same boolean composition support
   as root filters;
-- relationship property projections through reserved `_edge { ... }`
-  selections inside relationship fields.
+- relationship property and relationship type metadata projections through
+  reserved `_edge { ... }` selections inside relationship fields.
 
 Nested relationship fields compile directly to `NodePattern` and
 `RelationshipPattern` IR entries. Endpoint labels are checked against the graph
@@ -184,6 +185,6 @@ execution path.
 Conflicting response aliases are rejected before SQL lowering; exact duplicate
 projections, such as repeated `__typename` through fragments, are suppressed.
 Fragment definition directives, operation directives, unknown directives,
-variable defaults, object-level variables, mutations, subscriptions, nested row
-modifiers, and optional GraphQL traversals are rejected with GraphQL-specific
-diagnostics until their IR contracts are defined.
+mutations, subscriptions, nested row modifiers, and optional GraphQL traversals
+are rejected with GraphQL-specific diagnostics until their IR contracts are
+defined.

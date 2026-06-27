@@ -427,6 +427,7 @@ fn compile_root_field(
             label: root.name.clone(),
             is_root: true,
             edge_variable: None,
+            edge_relationship_type: None,
         },
         format!("{path}.selectionSet"),
         context,
@@ -460,6 +461,7 @@ struct NodeContext {
     label: String,
     is_root: bool,
     edge_variable: Option<String>,
+    edge_relationship_type: Option<String>,
 }
 
 fn compile_selection_set_into_plan(
@@ -714,6 +716,7 @@ fn compile_relationship_field(
     let relationship_variable = needs_relationship_variable
         .then(|| relationship_variable_for_field(field, relationship_index));
     let target_variable = nested_variable_for_field(field, &target_label, plan.nodes.len());
+    let edge_relationship_type = relationship_type.clone();
 
     compile_relationship_field_arguments(
         plan,
@@ -746,6 +749,7 @@ fn compile_relationship_field(
             label: target_label,
             is_root: false,
             edge_variable: relationship_variable,
+            edge_relationship_type: Some(edge_relationship_type),
         },
         format!("{path}.selectionSet"),
         compile_context,
@@ -835,6 +839,9 @@ fn compile_edge_field(
             "GraphQL _edge selections are only valid inside relationship fields",
         )
     })?;
+    let edge_relationship_type = context.edge_relationship_type.as_deref().ok_or_else(|| {
+        CoreError::internal("GraphQL edge relationship type missing for _edge selection")
+    })?;
     for (index, selection) in field.selection_set.items.iter().enumerate() {
         let Selection::Field(property) = selection else {
             return Err(unsupported(
@@ -862,10 +869,15 @@ fn compile_edge_field(
             ));
         }
         if property.name == "__typename" {
-            return Err(unsupported(
-                format!("{path}.selectionSet.items[{index}].name"),
-                "GraphQL __typename is only supported on node selections",
-            ));
+            push_graphql_projection(
+                plan,
+                Projection::Literal {
+                    literal: Literal::String(edge_relationship_type.to_string()),
+                    alias: edge_projection_alias(property, edge_variable),
+                },
+                &format!("{path}.selectionSet.items[{index}]"),
+            )?;
+            continue;
         }
         push_graphql_projection(
             plan,
@@ -1159,6 +1171,7 @@ fn relationship_selection_needs_edge_variable(
                         label: target_label.to_string(),
                         is_root: false,
                         edge_variable: None,
+                        edge_relationship_type: None,
                     },
                     format!("{item_path}.typeCondition"),
                 )?;
@@ -1196,6 +1209,7 @@ fn relationship_selection_needs_edge_variable(
                         label: target_label.to_string(),
                         is_root: false,
                         edge_variable: None,
+                        edge_relationship_type: None,
                     },
                     format!("{item_path}.typeCondition"),
                 )?;
@@ -3674,6 +3688,7 @@ mod tests {
                   service: name
                   risk
                   _edge {
+                    ownershipKind: __typename
                     ownershipSource: source
                   }
                 }
@@ -3729,6 +3744,10 @@ mod tests {
                         property: "risk".to_string(),
                     },
                     alias: Some("service1_risk".to_string()),
+                },
+                Projection::Literal {
+                    literal: Literal::String("OWNS".to_string()),
+                    alias: "ownershipKind".to_string(),
                 },
                 Projection::Property {
                     property: PropertyRef {
