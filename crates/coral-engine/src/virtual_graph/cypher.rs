@@ -11381,6 +11381,7 @@ mod tests {
                     sum(service.risk) AS total_risk, \
                     avg(service.risk) AS average_risk, \
                     min(service.risk) AS lowest_risk, \
+                    min(DISTINCT service.risk) AS distinct_lowest_risk, \
                     max(DISTINCT service.risk) AS highest_risk \
              ORDER BY average_risk DESC",
         )
@@ -11422,6 +11423,15 @@ mod tests {
                     }),
                     distinct: false,
                     alias: "lowest_risk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: super::AggregateFunction::Min,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: true,
+                    alias: "distinct_lowest_risk".to_string(),
                 },
                 Projection::Aggregate {
                     function: super::AggregateFunction::Max,

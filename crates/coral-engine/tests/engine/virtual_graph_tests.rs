@@ -5197,7 +5197,9 @@ async fn cypher_numeric_aggregate_projections_execute_against_synthetic_sources(
                 sum(service.risk) AS total_risk, \
                 avg(service.risk) AS average_risk, \
                 min(service.risk) AS lowest_risk, \
-                max(service.risk) AS highest_risk \
+                min(DISTINCT service.risk) AS distinct_lowest_risk, \
+                max(service.risk) AS highest_risk, \
+                max(DISTINCT service.risk) AS distinct_highest_risk \
          ORDER BY average_risk DESC, tier",
     )
     .await
@@ -5210,6 +5212,20 @@ async fn cypher_numeric_aggregate_projections_execute_against_synthetic_sources(
         "{}",
         execution.translated_sql()
     );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("MIN(DISTINCT \"n0\".\"risk_score\") AS \"distinct_lowest_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("MAX(DISTINCT \"n0\".\"risk_score\") AS \"distinct_highest_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
@@ -5218,14 +5234,18 @@ async fn cypher_numeric_aggregate_projections_execute_against_synthetic_sources(
                 "total_risk": 1.4,
                 "average_risk": 0.7,
                 "lowest_risk": 0.5,
-                "highest_risk": 0.9
+                "distinct_lowest_risk": 0.5,
+                "highest_risk": 0.9,
+                "distinct_highest_risk": 0.9
             }),
             json!({
                 "tier": "dev",
                 "total_risk": 0.25,
                 "average_risk": 0.25,
                 "lowest_risk": 0.25,
-                "highest_risk": 0.25
+                "distinct_lowest_risk": 0.25,
+                "highest_risk": 0.25,
+                "distinct_highest_risk": 0.25
             }),
         ]
     );
