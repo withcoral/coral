@@ -1570,6 +1570,47 @@ async fn cypher_case_graph_null_checks_execute_against_optional_matches() {
 }
 
 #[tokio::test]
+async fn cypher_case_graph_metadata_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         RETURN service.name AS service, \
+                CASE \
+                  WHEN type(owns) = 'OWNS' \
+                    AND service:Service \
+                    AND 'Service' IN labels(service) \
+                    AND 'source' IN keys(owns) THEN 'ownership' \
+                  ELSE 'other' \
+                END AS category, \
+                CASE WHEN type(owns) IN ['OWNS'] THEN 'typed' ELSE 'other' END AS type_bucket \
+         ORDER BY service",
+    )
+    .await
+    .expect("CASE graph metadata predicates should execute");
+
+    assert!(
+        execution.translated_sql().contains("THEN 'ownership'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "category": "ownership", "type_bucket": "typed"}),
+            json!({"service": "deployments", "category": "ownership", "type_bucket": "typed"}),
+            json!({"service": "experiments", "category": "ownership", "type_bucket": "typed"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_disconnected_comma_patterns_are_rejected_before_sql_planning() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

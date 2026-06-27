@@ -109,7 +109,7 @@ impl<'a> PredicateCompileMode<'a> {
                 "WHERE only supports graph property, id(), elementId(), labels(), keys(), exists(property), isEmpty(scalar), and supported scalar predicates combined with AND, OR, XOR, and NOT"
             }
             Self::CaseWhen { .. } => {
-                "CASE WHEN predicates support property/scalar comparisons, IN literal lists, null checks, exists(property), isEmpty(scalar), boolean literals, and AND/OR/XOR/NOT"
+                "CASE WHEN predicates support property/scalar comparisons, static graph metadata predicates, IN literal lists, null checks, exists(property), isEmpty(scalar), boolean literals, and AND/OR/XOR/NOT"
             }
         }
     }
@@ -120,7 +120,7 @@ impl<'a> PredicateCompileMode<'a> {
                 "comparisons must include at least one variable.property, id(variable), elementId(variable), type(relationship), or supported scalar expression operand"
             }
             Self::CaseWhen { .. } => {
-                "CASE WHEN comparisons must include at least one variable.property or supported scalar expression operand"
+                "CASE WHEN comparisons must include at least one variable.property, type(relationship), or supported scalar expression operand"
             }
         }
     }
@@ -131,7 +131,7 @@ impl<'a> PredicateCompileMode<'a> {
                 "IN predicates require variable.property, id(variable), elementId(variable), type(relationship), supported scalar expression, '<label>' IN labels(node), or '<key>' IN keys(variable)"
             }
             Self::CaseWhen { .. } => {
-                "CASE WHEN IN predicates require variable.property or supported scalar expression left-hand sides"
+                "CASE WHEN IN predicates require variable.property, type(relationship), supported scalar expression, '<label>' IN labels(node), or '<key>' IN keys(variable)"
             }
         }
     }
@@ -151,6 +151,13 @@ impl<'a> PredicateCompileMode<'a> {
         match self {
             Self::Graph { plan } => Some(plan),
             Self::CaseWhen { .. } => None,
+        }
+    }
+
+    fn static_metadata_plan(self) -> Option<&'a GraphPlan> {
+        match self {
+            Self::Graph { plan } => Some(plan),
+            Self::CaseWhen { plan } => plan,
         }
     }
 }
@@ -4148,7 +4155,7 @@ fn compile_binary_comparison(
         }));
     }
 
-    if let Some(plan) = mode.graph_metadata_plan()
+    if let Some(plan) = mode.static_metadata_plan()
         && (contains_type_function(lhs) || contains_type_function(rhs))
     {
         let lhs = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
@@ -4303,7 +4310,7 @@ fn compile_in_predicate(
             rhs: ScalarPredicateRhs::List(literals),
         }));
     }
-    if let Some(plan) = mode.graph_metadata_plan()
+    if let Some(plan) = mode.static_metadata_plan()
         && contains_type_function(lhs)
     {
         let literal = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
@@ -4749,12 +4756,9 @@ fn compile_predicate_literal_in_mode(
             compile_predicate_literal_in_mode(inner, path, mode, context)
         }
         Expression::FunctionCall(function) if is_type_function(function) => {
-            match mode.graph_metadata_plan() {
+            match mode.static_metadata_plan() {
                 Some(plan) => compile_type_literal(function, path, plan, context),
-                None => Err(unsupported(
-                    path,
-                    "CASE WHEN predicates do not support type() operands yet",
-                )),
+                None => Err(unsupported(path, "type() operands require graph context")),
             }
         }
         Expression::FunctionCall(function)
@@ -8009,20 +8013,49 @@ mod tests {
     }
 
     #[test]
-    fn rejects_graph_metadata_comparisons_inside_searched_case_predicates() {
-        let error = compile_cypher(
+    fn compiles_graph_metadata_predicates_inside_searched_case_predicates() {
+        let plan = compile_cypher(
             "MATCH (service:Service) \
-             OPTIONAL MATCH (person:Person)-[owns:OWNS]->(service) \
-             RETURN CASE WHEN type(owns) = 'OWNS' THEN 'owned' ELSE 'unknown' END AS state",
+             MATCH (person:Person)-[owns:OWNS]->(service) \
+             RETURN CASE \
+                      WHEN type(owns) = 'OWNS' THEN 'relationship' \
+                      WHEN service:Service AND 'Service' IN labels(service) AND 'source' IN keys(owns) THEN 'metadata' \
+                      ELSE 'unknown' \
+                    END AS state \
+             ORDER BY CASE WHEN type(owns) IN ['OWNS'] THEN 0 ELSE 1 END",
         )
-        .expect_err("CASE metadata comparisons should stay unsupported");
+        .expect("CASE graph metadata predicates should compile");
 
-        assert!(
-            error
-                .to_string()
-                .contains("CASE WHEN comparisons must include"),
-            "{error}"
-        );
+        let [
+            Projection::Expression {
+                expression: ScalarExpression::Case { alternatives, .. },
+                ..
+            },
+        ] = plan.projections.as_slice()
+        else {
+            panic!("expected CASE expression projection");
+        };
+        let [relationship, metadata] = alternatives.as_slice() else {
+            panic!("expected two CASE alternatives");
+        };
+        assert_eq!(relationship.when, PredicateExpression::Boolean(true));
+        assert!(matches!(metadata.when, PredicateExpression::And { .. }));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Case {
+                    alternatives,
+                    ..
+                }),
+                ..
+            }] if matches!(
+                alternatives.as_slice(),
+                [ScalarCaseAlternative {
+                    when: PredicateExpression::Boolean(true),
+                    ..
+                }]
+            )
+        ));
     }
 
     #[test]
