@@ -10,6 +10,7 @@ use decypher::ast::expr::{
 use decypher::ast::names::Variable;
 use decypher::ast::pattern::{
     LabelExpression, NodePattern as CypherNodePattern, PatternElement, Properties,
+    Quantifier as CypherQuantifier, RangeLiteral as CypherRangeLiteral,
     RelationshipDirection as CypherRelationshipDirection,
     RelationshipPattern as CypherRelationshipPattern,
 };
@@ -1016,11 +1017,8 @@ fn compile_relationship(
 ) -> Result<CompiledRelationship, CoreError> {
     let path = path.into();
     let (left, right) = endpoints;
-    if pattern.quantifier.is_some() {
-        return Err(unsupported(
-            format!("{path}.quantifier"),
-            "quantified relationship patterns are not supported yet",
-        ));
+    if let Some(quantifier) = &pattern.quantifier {
+        validate_exact_one_quantifier(quantifier, format!("{path}.quantifier"))?;
     }
 
     let direction = match pattern.direction {
@@ -1037,11 +1035,8 @@ fn compile_relationship(
             "relationship type is required for virtual graph queries",
         )
     })?;
-    if detail.range.is_some() {
-        return Err(unsupported(
-            format!("{path}.range"),
-            "variable-length relationship ranges are not supported yet",
-        ));
+    if let Some(range) = &detail.range {
+        validate_exact_one_range(range, format!("{path}.range"))?;
     }
     let relationship_type = detail.types.as_ref().ok_or_else(|| {
         unsupported(
@@ -1085,6 +1080,42 @@ fn compile_relationship(
         },
         predicates,
     })
+}
+
+fn validate_exact_one_quantifier(
+    quantifier: &CypherQuantifier,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    validate_exact_one_bounds(
+        quantifier.start,
+        quantifier.end,
+        path,
+        "relationship quantifiers other than exact {1} are not supported yet",
+    )
+}
+
+fn validate_exact_one_range(
+    range: &CypherRangeLiteral,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    validate_exact_one_bounds(
+        range.start,
+        range.end,
+        path,
+        "variable-length relationship ranges other than exact *1 are not supported yet",
+    )
+}
+
+fn validate_exact_one_bounds(
+    start: Option<i64>,
+    end: Option<i64>,
+    path: impl Into<String>,
+    message: &'static str,
+) -> Result<(), CoreError> {
+    if start == Some(1) && end == Some(1) {
+        return Ok(());
+    }
+    Err(unsupported(path, message))
 }
 
 fn compile_return(
@@ -8742,7 +8773,39 @@ mod tests {
 
     #[test]
     fn rejects_variable_length_relationships() {
-        assert_unsupported("MATCH (a:Service)-[:DEPENDS_ON*1..3]->(b:Service) RETURN a.name");
+        for cypher in [
+            "MATCH (a:Service)-[:DEPENDS_ON*]->(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON*0..1]->(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON*1..3]->(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON]->{0,1}(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON]->{1,3}(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON]->{1,}(b:Service) RETURN a.name",
+        ] {
+            assert_unsupported(cypher);
+        }
+    }
+
+    #[test]
+    fn compiles_exact_one_relationship_ranges_as_single_hop() {
+        for cypher in [
+            "MATCH (a:Service)-[:DEPENDS_ON*1]->(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON*1..1]->(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON]->{1}(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON]->{1,1}(b:Service) RETURN a.name",
+        ] {
+            let plan = compile_cypher(cypher).expect("exact-one relationship should compile");
+
+            assert_eq!(
+                plan.relationships,
+                vec![RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "a".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "b".to_string(),
+                }]
+            );
+        }
     }
 
     #[test]

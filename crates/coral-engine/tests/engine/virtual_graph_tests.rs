@@ -129,6 +129,41 @@ async fn cypher_relationship_type_overloads_execute_against_synthetic_sources() 
 }
 
 #[tokio::test]
+async fn cypher_exact_one_relationship_ranges_execute_as_single_hop() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service)-[:DEPENDS_ON*1..1]->(target:Service) \
+         RETURN source.name AS source, target.name AS target \
+         ORDER BY source, target",
+    )
+    .await
+    .expect("exact-one relationship range query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"service_dependencies\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"source": "billing-api", "target": "deployments"}),
+            json!({"source": "billing-api", "target": "experiments"}),
+            json!({"source": "deployments", "target": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_inline_node_property_maps_execute_as_predicates() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

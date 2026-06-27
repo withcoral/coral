@@ -53,7 +53,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Single `MATCH ... RETURN` | Supported foundation | One non-optional MATCH clause with one or more connected pattern parts |
 | Comma-separated `MATCH` patterns | Supported foundation | Supported when parts are connected by reused node variables |
 | Labeled node patterns | Supported foundation | Named node variables are supported; anonymous node patterns are supported when they declare exactly one static label; first named binding needs exactly one static label and repeated named bindings may omit the label |
-| Typed directed relationships | Supported foundation | Requires one static relationship type |
+| Typed directed relationships | Supported foundation | Requires one static relationship type; exact-one relationship ranges/quantifiers such as `*1`, `*1..1`, `{1}`, and `{1,1}` are accepted as single-hop syntax compatibility |
 | Undirected relationships | Supported foundation | Lowers to orientation-aware joins; same-label relationships use disjunctive endpoint conditions; inverse overloaded mappings that both match are rejected as ambiguous |
 | Multi-hop relationship chains | Supported foundation | Forward, reverse, and mixed chains compile through the shared graph IR |
 | Multiple `MATCH` clauses | Supported foundation | Transparent multi-part read clauses compile into one connected graph plan |
@@ -95,7 +95,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Optional-local `WHERE` and inline property maps | Supported foundation | Supported for single-hop directed optional patterns by placing predicates inside the null-preserving join scope |
 | General list-expression predicates | Rejected | Only literal-list `IN` and static `'<Label>' IN labels(node)` are supported; arbitrary list expressions need a richer list IR |
 | Multi-hop or undirected optional-local predicates | Rejected | Needs broader optional-scope grouping and orientation-aware predicate placement |
-| Variable-length paths | Rejected | Needs recursive/path expansion semantics |
+| Variable-length paths | Rejected | Exact-one relationship ranges/quantifiers are accepted as single-hop syntax; all other variable-length ranges still need recursive/path expansion semantics |
 | Path variables and path values | Rejected | Needs graph value representation |
 | User variables beginning with `__coral_` | Rejected | Prefix reserved for internal planner bindings |
 | General `WITH`, `UNION`, subqueries, procedure calls | Rejected | Non-terminal projection boundaries and set/pipeline semantics need staged planning |
