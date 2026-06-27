@@ -5794,9 +5794,9 @@ fn compile_literal_list_length_scalar_expression(
         Expression::Parenthesized(inner) => {
             compile_literal_list_length_scalar_expression(inner, path, context)
         }
-        Expression::Literal(CypherLiteral::List(_)) => Ok(Some(list_length_scalar_expression(
-            compile_literal_list(expression, path, context)?.len(),
-        )?)),
+        Expression::Literal(CypherLiteral::List(_)) | Expression::ListSlice { .. } => Ok(Some(
+            list_length_scalar_expression(compile_literal_list(expression, path, context)?.len())?,
+        )),
         Expression::Parameter(parameter) => {
             match context.parameter_value(parameter, path.clone())? {
                 CypherParameterValue::List(values) => {
@@ -6552,6 +6552,11 @@ fn compile_projection_literal(
                     compile_literal(expression, format!("{path}[{index}]"), context)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            validate_literal_list_projection(&literals, path)?;
+            Ok(ProjectionLiteral::List(literals))
+        }
+        Expression::ListSlice { .. } => {
+            let literals = compile_literal_list(expression, path.clone(), context)?;
             validate_literal_list_projection(&literals, path)?;
             Ok(ProjectionLiteral::List(literals))
         }
@@ -9950,11 +9955,63 @@ fn compile_literal_list(
                 )),
             }
         }
+        Expression::ListSlice {
+            list, start, end, ..
+        } => compile_literal_list_slice(list, start.as_deref(), end.as_deref(), path, context),
         _ => Err(unsupported(
             path,
             "IN predicates require a literal list right-hand side",
         )),
     }
+}
+
+fn compile_literal_list_slice(
+    list: &Expression,
+    start: Option<&Expression>,
+    end: Option<&Expression>,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Vec<Literal>, CoreError> {
+    let path = path.into();
+    let values = compile_literal_list(list, format!("{path}.list"), context)?;
+    let len = i64::try_from(values.len())
+        .map_err(|error| CoreError::internal(format!("literal list length overflow: {error}")))?;
+    let start = compile_literal_list_slice_bound(start, 0, len, format!("{path}.start"), context)?;
+    let end = compile_literal_list_slice_bound(end, len, len, format!("{path}.end"), context)?;
+    if start >= end {
+        return Ok(Vec::new());
+    }
+    values
+        .get(start..end)
+        .map(<[Literal]>::to_vec)
+        .ok_or_else(|| CoreError::internal("literal list slice bounds were invalid after checking"))
+}
+
+fn compile_literal_list_slice_bound(
+    bound: Option<&Expression>,
+    default: i64,
+    len: i64,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<usize, CoreError> {
+    let path = path.into();
+    let Some(bound) = bound else {
+        return usize::try_from(default).map_err(|error| {
+            CoreError::internal(format!(
+                "literal list default slice bound overflow: {error}"
+            ))
+        });
+    };
+    let bound = compile_literal(bound, path.clone(), context)?;
+    let Literal::Integer(bound) = bound else {
+        return Err(unsupported(
+            path,
+            "literal list slice bounds require integer literals or scalar integer parameters",
+        ));
+    };
+    let normalized = if bound < 0 { len + bound } else { bound };
+    usize::try_from(normalized.clamp(0, len))
+        .map_err(|error| CoreError::internal(format!("literal list slice bound overflow: {error}")))
 }
 
 fn compile_literal_list_index(
@@ -10097,7 +10154,10 @@ fn literal_list_element_kind(literal: &Literal) -> Option<LiteralListElementKind
 fn is_literal_projection_expression(expression: &Expression) -> bool {
     match expression {
         Expression::Parenthesized(inner) => is_literal_projection_expression(inner),
-        Expression::ListIndex { .. } | Expression::Literal(_) | Expression::Parameter(_) => true,
+        Expression::ListIndex { .. }
+        | Expression::ListSlice { .. }
+        | Expression::Literal(_)
+        | Expression::Parameter(_) => true,
         Expression::UnaryOp {
             op: UnaryOperator::Negate,
             operand,

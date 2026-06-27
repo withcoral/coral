@@ -5990,6 +5990,103 @@ async fn cypher_literal_list_indexes_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_literal_list_slices_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([
+        (
+            "selected_tiers".to_string(),
+            GraphCypherParameterValue::List(vec![
+                GraphLiteral::String("prod".to_string()),
+                GraphLiteral::String("critical".to_string()),
+                GraphLiteral::String("dev".to_string()),
+            ]),
+        ),
+        (
+            "slice_start".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::Integer(1)),
+        ),
+        (
+            "slice_end".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::Integer(3)),
+        ),
+    ]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier IN ['dev', 'prod', 'critical'][..2] \
+         RETURN service.name AS service, \
+                ['prod', 'critical', 'dev'][0..2] AS first_tiers, \
+                ['prod', 'critical', 'dev'][..-1] AS without_last, \
+                $selected_tiers[$slice_start..$slice_end] AS parameter_slice, \
+                ['prod', 'critical', 'dev'][1..][0] AS nested_first, \
+                size(['prod', 'critical', 'dev'][1..]) AS slice_size, \
+                isEmpty(['prod'][1..1]) AS empty_slice \
+         ORDER BY service",
+        &parameters,
+    )
+    .await
+    .expect("literal list slice query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("make_array('prod', 'critical') AS \"first_tiers\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("'critical' AS \"nested_first\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("2 AS \"slice_size\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({
+                "service": "billing-api",
+                "first_tiers": ["prod", "critical"],
+                "without_last": ["prod", "critical"],
+                "parameter_slice": ["critical", "dev"],
+                "nested_first": "critical",
+                "slice_size": 2,
+                "empty_slice": true,
+            }),
+            json!({
+                "service": "deployments",
+                "first_tiers": ["prod", "critical"],
+                "without_last": ["prod", "critical"],
+                "parameter_slice": ["critical", "dev"],
+                "nested_first": "critical",
+                "slice_size": 2,
+                "empty_slice": true,
+            }),
+            json!({
+                "service": "experiments",
+                "first_tiers": ["prod", "critical"],
+                "without_last": ["prod", "critical"],
+                "parameter_slice": ["critical", "dev"],
+                "nested_first": "critical",
+                "slice_size": 2,
+                "empty_slice": true,
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_is_empty_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -6042,6 +6139,31 @@ async fn cypher_literal_list_indexes_reject_dynamic_elements() {
     )
     .await
     .expect_err("literal list indexes should reject dynamic list elements");
+
+    assert!(
+        error
+            .to_string()
+            .contains("only string, numeric, boolean, and null literals are supported"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn cypher_literal_list_slices_reject_dynamic_elements() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN [service.name, 'fallback'][0..1] AS names",
+    )
+    .await
+    .expect_err("literal list slices should reject dynamic list elements");
 
     assert!(
         error
