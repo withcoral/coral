@@ -8721,10 +8721,11 @@ fn compile_relationship_endpoint_variable(
         },
         context,
     )?;
-    let relationship = plan
+    let (relationship_index, relationship) = plan
         .relationships
         .iter()
-        .find(|relationship| relationship.variable.as_deref() == Some(variable.as_str()))
+        .enumerate()
+        .find(|(_, relationship)| relationship.variable.as_deref() == Some(variable.as_str()))
         .ok_or_else(|| {
             unsupported(
                 format!("{path}.arguments[0]"),
@@ -8733,6 +8734,14 @@ fn compile_relationship_endpoint_variable(
                 ),
             )
         })?;
+    if plan.optional_relationships.contains(&relationship_index) {
+        return Err(unsupported(
+            path,
+            format!(
+                "{function_name}() over optional relationship variables is not supported yet because missing relationships require nullable endpoint expressions"
+            ),
+        ));
+    }
     match relationship.direction {
         Direction::Outgoing => Ok(match endpoint {
             RelationshipEndpoint::Start => relationship.left.clone(),
@@ -14741,6 +14750,23 @@ mod tests {
             .first()
             .expect("optional relationship should be present");
         assert_eq!(relationship.direction, Direction::Undirected);
+    }
+
+    #[test]
+    fn rejects_relationship_endpoint_properties_on_optional_relationships() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(dependency_service:Service) \
+             RETURN service.name AS service, endNode(dependency).name AS dependency",
+        )
+        .expect_err("relationship endpoint functions over optional relationships should reject");
+
+        assert!(
+            error
+                .to_string()
+                .contains("endNode() over optional relationship variables is not supported yet"),
+            "{error}"
+        );
     }
 
     #[test]
