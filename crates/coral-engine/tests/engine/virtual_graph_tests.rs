@@ -5631,6 +5631,29 @@ async fn cypher_catalog_typed_scalar_type_errors_reject_before_sql_execution() {
 }
 
 #[tokio::test]
+async fn cypher_catalog_typed_aggregate_target_errors_reject_before_sql_execution() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) RETURN sum(service.name) AS bad_sum",
+    )
+    .await
+    .expect_err("catalog-typed aggregate target mismatch should fail before SQL execution");
+
+    assert!(
+        error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("numeric"), "{error:?}");
+}
+
+#[tokio::test]
 async fn cypher_element_id_scalar_expressions_preserve_optional_nulls() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

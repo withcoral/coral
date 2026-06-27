@@ -2247,7 +2247,10 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<(), CoreError> {
         let path = path.into();
         match target {
-            AggregateTarget::Property(property) => self.validate_property_ref(property, path),
+            AggregateTarget::Property(property) => {
+                self.validate_property_ref(property, path.clone())?;
+                self.validate_aggregate_property_type(function, property, path)
+            }
             AggregateTarget::VariableKey { variable } => {
                 if function != AggregateFunction::Count {
                     return Err(Diagnostic::new(
@@ -2274,6 +2277,32 @@ impl<'a> GraphPlanValidator<'a> {
                 }
             }
         }
+    }
+
+    fn validate_aggregate_property_type(
+        &self,
+        function: AggregateFunction,
+        property: &PropertyRef,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        if self.catalog.is_none() || !aggregate_function_requires_numeric_target(function) {
+            return Ok(());
+        }
+        let scalar_type = self.property_ref_scalar_type(property)?;
+        if scalar_type.is_numeric() || matches!(scalar_type, ScalarType::Unknown | ScalarType::Null)
+        {
+            return Ok(());
+        }
+        Err(Diagnostic::new(
+            "INVALID_AGGREGATE_TARGET",
+            path,
+            format!(
+                "{}(property) requires a numeric property, got {}",
+                aggregate_function_name(function),
+                scalar_type.name()
+            ),
+        )
+        .into_core_error())
     }
 
     fn validate_node_labels_projection(
@@ -3616,6 +3645,17 @@ fn aggregate_function_name(function: AggregateFunction) -> &'static str {
     }
 }
 
+fn aggregate_function_requires_numeric_target(function: AggregateFunction) -> bool {
+    matches!(
+        function,
+        AggregateFunction::Sum
+            | AggregateFunction::Avg
+            | AggregateFunction::Median
+            | AggregateFunction::StdDev
+            | AggregateFunction::StdDevP
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3882,6 +3922,50 @@ relationships:
             .expect_err("unknown aggregate property should fail validation");
 
         assert!(error.to_string().contains("UNKNOWN_PROPERTY"), "{error:?}");
+    }
+
+    #[test]
+    fn validate_graph_plan_accepts_catalog_typed_numeric_aggregate_targets() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Aggregate {
+            function: AggregateFunction::Sum,
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "id".to_string(),
+            }),
+            distinct: false,
+            alias: "service_id_sum".to_string(),
+        }];
+
+        graph
+            .validate_graph_plan_against_catalog(&plan, &typed_ownership_catalog())
+            .expect("numeric aggregate target should validate against catalog types");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_catalog_typed_non_numeric_aggregate_targets() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Aggregate {
+            function: AggregateFunction::Sum,
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "person".to_string(),
+                property: "name".to_string(),
+            }),
+            distinct: false,
+            alias: "bad_sum".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan_against_catalog(&plan, &typed_ownership_catalog())
+            .expect_err("string aggregate target should fail catalog-aware validation");
+
+        assert!(
+            error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("numeric"), "{error:?}");
     }
 
     #[test]

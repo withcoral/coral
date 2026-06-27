@@ -57,6 +57,9 @@ The foundation slice establishes:
 - catalog-aware scalar type validation for runtime graph execution, including
   `coalesce`, `nullIf`, CASE result branches, string and numeric functions,
   arithmetic, and scalar/direct predicate operands.
+- catalog-aware numeric aggregate target validation for runtime graph
+  execution, so non-numeric mapped properties are rejected before DataFusion
+  planning for `sum`, `avg`, `median`, `stDev`, and `stDevP`.
 - SQL lowering for node scans, directed and undirected relationship traversals,
   property and identity projections, connected multi-hop paths, disconnected
   mandatory components as explicit `CROSS JOIN`s, property and identity
