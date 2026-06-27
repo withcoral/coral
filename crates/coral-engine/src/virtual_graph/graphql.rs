@@ -2308,16 +2308,20 @@ fn compile_order_by_argument(
         Value::Variable(graphql_variable) => match context
             .parameter_value(graphql_variable, path.clone())?
         {
-            GraphqlVariableValue::Object(object) => Ok(vec![compile_order_by_variable_object(
-                variable, object, path,
-            )?]),
-            GraphqlVariableValue::ObjectList(items) => items
-                .iter()
-                .enumerate()
-                .map(|(index, object)| {
-                    compile_order_by_variable_object(variable, object, format!("{path}[{index}]"))
-                })
-                .collect(),
+            GraphqlVariableValue::Object(object) => {
+                compile_order_by_variable_object(variable, object, path)
+            }
+            GraphqlVariableValue::ObjectList(items) => {
+                let mut order_keys = Vec::with_capacity(items.len());
+                for (index, object) in items.iter().enumerate() {
+                    order_keys.extend(compile_order_by_variable_object(
+                        variable,
+                        object,
+                        format!("{path}[{index}]"),
+                    )?);
+                }
+                Ok(order_keys)
+            }
             GraphqlVariableValue::Literal(_) | GraphqlVariableValue::List(_) => Err(unsupported(
                 path,
                 format!(
@@ -2325,16 +2329,19 @@ fn compile_order_by_argument(
                 ),
             )),
         },
-        Value::Object(_) => Ok(vec![compile_order_by_object(
-            variable, value, path, context,
-        )?]),
-        Value::List(items) => items
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                compile_order_by_object(variable, value, format!("{path}[{index}]"), context)
-            })
-            .collect(),
+        Value::Object(_) => compile_order_by_object(variable, value, path, context),
+        Value::List(items) => {
+            let mut order_keys = Vec::with_capacity(items.len());
+            for (index, value) in items.iter().enumerate() {
+                order_keys.extend(compile_order_by_object(
+                    variable,
+                    value,
+                    format!("{path}[{index}]"),
+                    context,
+                )?);
+            }
+            Ok(order_keys)
+        }
         _ => Err(unsupported(
             path,
             "GraphQL orderBy must be an object or list of objects",
@@ -2347,11 +2354,14 @@ fn compile_order_by_object(
     value: &Value<'_, String>,
     path: impl Into<String>,
     context: &GraphqlCompileContext<'_, '_>,
-) -> Result<OrderKey, CoreError> {
+) -> Result<Vec<OrderKey>, CoreError> {
     let path = path.into();
     let Value::Object(object) = value else {
         return Err(unsupported(path, "GraphQL orderBy entries must be objects"));
     };
+    if !object.contains_key("field") && !object.contains_key("direction") {
+        return compile_order_by_shorthand_object(variable, object, path, context);
+    }
     for name in object.keys() {
         if name != "field" && name != "direction" {
             return Err(unsupported(
@@ -2369,18 +2379,44 @@ fn compile_order_by_object(
         .map_or(Ok(OrderDirection::Ascending), |value| {
             compile_order_direction(value, format!("{path}.direction"), context)
         })?;
-    Ok(OrderKey {
+    Ok(vec![OrderKey {
         expression: graphql_order_expression(variable, &field),
         direction,
-    })
+    }])
+}
+
+fn compile_order_by_shorthand_object(
+    variable: &str,
+    object: &BTreeMap<String, Value<'_, String>>,
+    path: impl Into<String>,
+    context: &GraphqlCompileContext<'_, '_>,
+) -> Result<Vec<OrderKey>, CoreError> {
+    let path = path.into();
+    if object.len() != 1 {
+        return Err(unsupported(
+            path,
+            "GraphQL shorthand orderBy entries must contain exactly one field",
+        ));
+    }
+    let (field, direction_value) = object
+        .iter()
+        .next()
+        .expect("shorthand orderBy object length was checked");
+    Ok(vec![OrderKey {
+        expression: graphql_order_expression(variable, field),
+        direction: compile_order_direction(direction_value, format!("{path}.{field}"), context)?,
+    }])
 }
 
 fn compile_order_by_variable_object(
     variable: &str,
     object: &BTreeMap<String, GraphqlVariableValue>,
     path: impl Into<String>,
-) -> Result<OrderKey, CoreError> {
+) -> Result<Vec<OrderKey>, CoreError> {
     let path = path.into();
+    if !object.contains_key("field") && !object.contains_key("direction") {
+        return compile_order_by_variable_shorthand_object(variable, object, path);
+    }
     for name in object.keys() {
         if name != "field" && name != "direction" {
             return Err(unsupported(
@@ -2398,10 +2434,32 @@ fn compile_order_by_variable_object(
         .map_or(Ok(OrderDirection::Ascending), |value| {
             compile_variable_order_direction(value, format!("{path}.direction"))
         })?;
-    Ok(OrderKey {
+    Ok(vec![OrderKey {
         expression: graphql_order_expression(variable, &field),
         direction,
-    })
+    }])
+}
+
+fn compile_order_by_variable_shorthand_object(
+    variable: &str,
+    object: &BTreeMap<String, GraphqlVariableValue>,
+    path: impl Into<String>,
+) -> Result<Vec<OrderKey>, CoreError> {
+    let path = path.into();
+    if object.len() != 1 {
+        return Err(unsupported(
+            path,
+            "GraphQL shorthand orderBy variable entries must contain exactly one field",
+        ));
+    }
+    let (field, direction_value) = object
+        .iter()
+        .next()
+        .expect("shorthand orderBy variable object length was checked");
+    Ok(vec![OrderKey {
+        expression: graphql_order_expression(variable, field),
+        direction: compile_variable_order_direction(direction_value, format!("{path}.{field}"))?,
+    }])
 }
 
 fn graphql_order_expression(variable: &str, field: &str) -> OrderExpression {
@@ -3085,6 +3143,45 @@ mod tests {
     }
 
     #[test]
+    fn compiles_graphql_shorthand_order_by_fields() {
+        let plan = compile_graphql(
+            r"
+            query {
+              Service(
+                orderBy: [
+                  { risk: DESC }
+                  { name: ASCENDING }
+                ]
+              ) {
+                name
+              }
+            }
+            ",
+        )
+        .expect("GraphQL shorthand orderBy fields should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    direction: OrderDirection::Descending,
+                },
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn rejects_graphql_string_filters_on_raw_identity_fields() {
         let error = compile_graphql(
             r#"
@@ -3696,6 +3793,37 @@ mod tests {
             &variables,
         )
         .expect("GraphQL orderBy object variable should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Descending,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_root_query_with_shorthand_order_by_object_variable() {
+        let variables = BTreeMap::from([(
+            "order".to_string(),
+            variable_object([(
+                "name",
+                GraphqlVariableValue::Literal(Literal::String("DESC".to_string())),
+            )]),
+        )]);
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services($order: ServiceOrder!) {
+              Service(orderBy: $order) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect("GraphQL shorthand orderBy object variable should compile");
 
         assert_eq!(
             plan.order_by,
@@ -4970,6 +5098,27 @@ mod tests {
             error
                 .to_string()
                 .contains("unsupported GraphQL orderBy key"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_multi_field_graphql_shorthand_order_by_objects() {
+        let error = compile_graphql(
+            r"
+            {
+              Service(orderBy: { risk: DESC, name: ASC }) {
+                name
+              }
+            }
+            ",
+        )
+        .expect_err("multi-field shorthand orderBy object should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("shorthand orderBy entries must contain exactly one field"),
             "unexpected error: {error}"
         );
     }

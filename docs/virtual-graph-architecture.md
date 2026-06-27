@@ -178,7 +178,10 @@ remain separate. The supported slice is intentionally graph-query oriented:
 - reserved `_id` and `_elementId` identity filters and `orderBy` fields, where
   `_id` targets the mapped key and `_elementId` targets the string element id;
 - `orderBy` object or list of objects using property or identity fields and
-  `ASC` / `ASCENDING` / `DESC` / `DESCENDING`;
+  `ASC` / `ASCENDING` / `DESC` / `DESCENDING`, including single-field
+  shorthand objects such as `{ risk: DESC }`; multi-column shorthand ordering
+  must use a list of single-field objects because GraphQL input object field
+  order is not a stable sort-precedence contract;
 - integer `limit` / `first`, `offset` / `skip`, and boolean `distinct` root
   arguments;
 - typed GraphQL variables bound through the explicit variable API in supported
