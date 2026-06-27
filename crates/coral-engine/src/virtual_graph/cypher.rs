@@ -7801,47 +7801,177 @@ fn compile_exists_pattern_predicate(
     context: &CypherCompileContext,
 ) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
-    let Some(plan) = plan else {
+    match exists.inner.as_ref() {
+        ExistsInner::Pattern(pattern, where_clause) => {
+            if where_clause.is_some() {
+                return Err(unsupported(
+                    format!("{path}.where"),
+                    "EXISTS pattern predicates currently support inline property maps; WHERE inside EXISTS requires scoped predicate planning",
+                ));
+            }
+            let [part] = pattern.parts.as_slice() else {
+                return Err(unsupported(
+                    format!("{path}.pattern.parts"),
+                    "EXISTS pattern predicates currently support exactly one connected pattern part",
+                ));
+            };
+            compile_scoped_pattern_predicate(
+                part,
+                path,
+                plan,
+                context,
+                "EXISTS pattern predicates",
+                "EXISTS pattern predicates require graph context",
+            )
+        }
+        ExistsInner::RegularQuery(query) => {
+            compile_exists_regular_query_predicate(query, path, plan, context)
+        }
+    }
+}
+
+fn compile_exists_regular_query_predicate(
+    query: &RegularQuery,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    if !query.unions.is_empty() {
         return Err(unsupported(
-            path,
-            "EXISTS pattern predicates require graph context",
-        ));
-    };
-    let ExistsInner::Pattern(pattern, where_clause) = exists.inner.as_ref() else {
-        return Err(unsupported(
-            path,
-            "EXISTS subqueries with MATCH/RETURN require staged query planning and are not supported yet",
-        ));
-    };
-    if where_clause.is_some() {
-        return Err(unsupported(
-            format!("{path}.where"),
-            "EXISTS pattern predicates currently support inline property maps; WHERE inside EXISTS requires scoped predicate planning",
+            format!("{path}.unions"),
+            "EXISTS subqueries with UNION require staged subquery planning and are not supported yet",
         ));
     }
-    let [part] = pattern.parts.as_slice() else {
+    let SingleQueryKind::SinglePart(single_part) = &query.single_query.kind else {
         return Err(unsupported(
-            format!("{path}.pattern.parts"),
-            "EXISTS pattern predicates currently support exactly one connected pattern part",
+            format!("{path}.single_query"),
+            "EXISTS subqueries with WITH require staged subquery planning and are not supported yet",
         ));
     };
+    match &single_part.body {
+        SinglePartBody::Finish(_) => {}
+        SinglePartBody::Return(_) => {
+            return Err(unsupported(
+                format!("{path}.return"),
+                "RETURN inside EXISTS subqueries is not supported yet",
+            ));
+        }
+        SinglePartBody::Updating {
+            updating,
+            return_clause,
+        } if updating.is_empty() && return_clause.is_none() => {}
+        SinglePartBody::Updating {
+            updating,
+            return_clause,
+        } if updating.is_empty() && return_clause.is_some() => {
+            return Err(unsupported(
+                format!("{path}.return"),
+                "RETURN inside EXISTS subqueries is not supported yet",
+            ));
+        }
+        SinglePartBody::Updating { .. } => {
+            return Err(unsupported(
+                format!("{path}.updating"),
+                "write clauses are not supported by Coral virtual graphs",
+            ));
+        }
+    }
+    let Some(plan) = plan else {
+        return Err(unsupported(path, "EXISTS subqueries require graph context"));
+    };
+    if single_part.reading_clauses.is_empty() {
+        return Err(unsupported(
+            format!("{path}.match"),
+            "EXISTS subqueries with scoped WHERE predicates currently require an explicit MATCH clause",
+        ));
+    }
+    let mut exists_plan = plan.clone();
+    let mut exists_state = CypherCompileState::default();
+    let node_start = exists_plan.nodes.len();
+    let relationship_start = exists_plan.relationships.len();
+    let predicate_start = exists_plan.predicates.len();
+    compile_reading_clauses_into(
+        &single_part.reading_clauses,
+        format!("{path}.match"),
+        &mut exists_plan,
+        &mut exists_state,
+        context,
+    )?;
+    if !exists_plan.optional_relationships.is_empty() || !exists_plan.optional_matches.is_empty() {
+        return Err(unsupported(
+            format!("{path}.match"),
+            "OPTIONAL MATCH inside EXISTS subqueries requires nullable scoped predicate planning and is not supported yet",
+        ));
+    }
+    compile_scoped_plan_delta_predicate(
+        exists_plan,
+        plan,
+        ScopedPlanDelta {
+            nodes_before: node_start,
+            relationship_base: relationship_start,
+            predicate_offset: predicate_start,
+        },
+        path,
+        "EXISTS subqueries",
+    )
+}
 
+#[derive(Debug, Clone, Copy)]
+struct ScopedPlanDelta {
+    nodes_before: usize,
+    relationship_base: usize,
+    predicate_offset: usize,
+}
+
+fn compile_scoped_pattern_predicate(
+    part: &PatternPart,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+    feature_name: &'static str,
+    missing_context_message: &'static str,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    let Some(plan) = plan else {
+        return Err(unsupported(path, missing_context_message));
+    };
     let mut exists_plan = plan.clone();
     let mut exists_state = CypherCompileState::default();
     let node_start = exists_plan.nodes.len();
     let relationship_start = exists_plan.relationships.len();
     let predicate_start = exists_plan.predicates.len();
     compile_pattern_part_into(part, 0, false, &mut exists_plan, &mut exists_state, context)?;
+    compile_scoped_plan_delta_predicate(
+        exists_plan,
+        plan,
+        ScopedPlanDelta {
+            nodes_before: node_start,
+            relationship_base: relationship_start,
+            predicate_offset: predicate_start,
+        },
+        path,
+        feature_name,
+    )
+}
 
+fn compile_scoped_plan_delta_predicate(
+    mut exists_plan: GraphPlan,
+    plan: &GraphPlan,
+    delta: ScopedPlanDelta,
+    path: impl Into<String>,
+    feature_name: &'static str,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
     let relationships = exists_plan
         .relationships
-        .get(relationship_start..)
+        .get(delta.relationship_base..)
         .ok_or_else(|| CoreError::internal("EXISTS relationship slice was invalid"))?
         .to_vec();
     let [relationship] = relationships.as_slice() else {
         return Err(unsupported(
             format!("{path}.pattern.relationships"),
-            "EXISTS pattern predicates currently support exactly one relationship pattern",
+            format!("{feature_name} currently support exactly one relationship pattern"),
         ));
     };
     let outer_variables = bound_graph_variables(plan);
@@ -7850,22 +7980,35 @@ fn compile_exists_pattern_predicate(
     {
         return Err(unsupported(
             format!("{path}.pattern"),
-            "EXISTS pattern predicates must be anchored to a currently bound graph variable",
+            format!("{feature_name} must be anchored to a currently bound graph variable"),
         ));
+    }
+
+    let mut predicates = exists_plan
+        .predicates
+        .get(delta.predicate_offset..)
+        .ok_or_else(|| CoreError::internal("EXISTS predicate slice was invalid"))?
+        .to_vec();
+    if let Some(predicate) = exists_plan.predicate.take() {
+        if !is_conjunctive_expression(&predicate) {
+            return Err(unsupported(
+                format!("{path}.where"),
+                format!(
+                    "{feature_name} currently support WHERE clauses with property comparisons joined by AND"
+                ),
+            ));
+        }
+        append_conjunctive_expression(predicate, &mut predicates);
     }
 
     Ok(PredicateExpression::ExistsPattern(ExistsPatternPredicate {
         nodes: exists_plan
             .nodes
-            .get(node_start..)
+            .get(delta.nodes_before..)
             .ok_or_else(|| CoreError::internal("EXISTS node slice was invalid"))?
             .to_vec(),
         relationship: relationship.clone(),
-        predicates: exists_plan
-            .predicates
-            .get(predicate_start..)
-            .ok_or_else(|| CoreError::internal("EXISTS predicate slice was invalid"))?
-            .to_vec(),
+        predicates,
     }))
 }
 
