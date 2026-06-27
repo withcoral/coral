@@ -3217,7 +3217,9 @@ fn rename_non_unary_scalar_expression_variables(
         | ScalarExpression::ElementId { variable }
         | ScalarExpression::GraphIdentity { variable }
         | ScalarExpression::GraphPresence { variable }
-        | ScalarExpression::RelationshipType { variable, .. } => {
+        | ScalarExpression::PropertyKeys { variable }
+        | ScalarExpression::RelationshipType { variable, .. }
+        | ScalarExpression::NodeLabels { variable, .. } => {
             rename_string(variable, renames);
         }
         ScalarExpression::PresenceGated {
@@ -3658,7 +3660,9 @@ fn reject_ignored_path_variable_references_in_scalar_expression(
         | ScalarExpression::ElementId { variable }
         | ScalarExpression::GraphIdentity { variable }
         | ScalarExpression::GraphPresence { variable }
-        | ScalarExpression::RelationshipType { variable, .. } => {
+        | ScalarExpression::PropertyKeys { variable }
+        | ScalarExpression::RelationshipType { variable, .. }
+        | ScalarExpression::NodeLabels { variable, .. } => {
             reject_ignored_path_variable(variable, state, path)
         }
         ScalarExpression::PresenceGated {
@@ -3767,6 +3771,8 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
         | ScalarExpression::ElementId { .. }
         | ScalarExpression::GraphIdentity { .. }
         | ScalarExpression::GraphPresence { .. }
+        | ScalarExpression::NodeLabels { .. }
+        | ScalarExpression::PropertyKeys { .. }
         | ScalarExpression::PresenceGated { .. }
         | ScalarExpression::RelationshipType { .. } => {
             unreachable!("simple scalar expressions handled before structural path checks")
@@ -5157,6 +5163,21 @@ fn graph_value_element_id_scalar_expression(value: GraphValueRef) -> ScalarExpre
 
 fn graph_value_presence_scalar_expression(value: GraphValueRef) -> ScalarExpression {
     let expression = ScalarExpression::GraphPresence {
+        variable: value.variable,
+    };
+    presence_gate_scalar_expression(value.presence_variable, expression)
+}
+
+fn graph_value_labels_scalar_expression(value: GraphValueRef, label: String) -> ScalarExpression {
+    let expression = ScalarExpression::NodeLabels {
+        variable: value.variable,
+        label,
+    };
+    presence_gate_scalar_expression(value.presence_variable, expression)
+}
+
+fn graph_value_keys_scalar_expression(value: GraphValueRef) -> ScalarExpression {
+    let expression = ScalarExpression::PropertyKeys {
         variable: value.variable,
     };
     presence_gate_scalar_expression(value.presence_variable, expression)
@@ -6880,15 +6901,24 @@ fn compile_labels_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    let (variable, label) = compile_node_function_target(
+    let (value, label) = compile_node_function_target_ref(
         function,
         format!("{path}.expression.arguments"),
         "labels() supports exactly one node variable argument",
         plan,
         context,
     )?;
+    if value.presence_variable.is_some() {
+        return Ok(Projection::Expression {
+            expression: graph_value_labels_scalar_expression(value, label),
+            alias: item
+                .alias
+                .as_ref()
+                .map_or_else(|| "labels".to_string(), variable_name),
+        });
+    }
     Ok(Projection::NodeLabels {
-        variable,
+        variable: value.variable,
         label,
         alias: item
             .alias
@@ -6904,14 +6934,22 @@ fn compile_labels_order_expression(
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
-    let (variable, label) = compile_node_function_target(
+    let (value, label) = compile_node_function_target_ref(
         function,
         format!("{path}.arguments"),
         "labels() supports exactly one node variable argument",
         plan,
         context,
     )?;
-    Ok(OrderExpression::NodeLabels { variable, label })
+    if value.presence_variable.is_some() {
+        return Ok(OrderExpression::Scalar(
+            graph_value_labels_scalar_expression(value, label),
+        ));
+    }
+    Ok(OrderExpression::NodeLabels {
+        variable: value.variable,
+        label,
+    })
 }
 
 fn compile_keys_order_expression(
@@ -6921,20 +6959,30 @@ fn compile_keys_order_expression(
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
-    let variable = compile_single_graph_value_function_argument(
+    let value = compile_single_graph_value_function_argument_ref(
         function,
         format!("{path}.arguments"),
         "keys() supports exactly one graph variable argument",
         plan,
         context,
     )?;
-    if !plan_uses_variable(plan, &variable) {
+    if !plan_uses_variable(plan, &value.variable) {
         return Err(unsupported(
             format!("{path}.arguments[0]"),
-            format!("keys() argument '{variable}' is not a bound graph variable"),
+            format!(
+                "keys() argument '{}' is not a bound graph variable",
+                value.variable
+            ),
         ));
     }
-    Ok(OrderExpression::PropertyKeys { variable })
+    if value.presence_variable.is_some() {
+        return Ok(OrderExpression::Scalar(graph_value_keys_scalar_expression(
+            value,
+        )));
+    }
+    Ok(OrderExpression::PropertyKeys {
+        variable: value.variable,
+    })
 }
 
 fn compile_arithmetic_order_expression(
@@ -7262,21 +7310,33 @@ fn compile_keys_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    let variable = compile_single_graph_value_function_argument(
+    let value = compile_single_graph_value_function_argument_ref(
         function,
         format!("{path}.expression.arguments"),
         "keys() supports exactly one graph variable argument",
         plan,
         context,
     )?;
-    if !plan_uses_variable(plan, &variable) {
+    if !plan_uses_variable(plan, &value.variable) {
         return Err(unsupported(
             format!("{path}.expression.arguments[0]"),
-            format!("keys() argument '{variable}' is not a bound graph variable"),
+            format!(
+                "keys() argument '{}' is not a bound graph variable",
+                value.variable
+            ),
         ));
     }
+    if value.presence_variable.is_some() {
+        return Ok(Projection::Expression {
+            expression: graph_value_keys_scalar_expression(value),
+            alias: item
+                .alias
+                .as_ref()
+                .map_or_else(|| "keys".to_string(), variable_name),
+        });
+    }
     Ok(Projection::PropertyKeys {
-        variable,
+        variable: value.variable,
         alias: item
             .alias
             .as_ref()
@@ -7284,15 +7344,15 @@ fn compile_keys_projection(
     })
 }
 
-fn compile_node_function_target(
+fn compile_node_function_target_ref(
     function: &FunctionInvocation,
     path: impl Into<String>,
     message: &'static str,
     plan: &GraphPlan,
     context: &CypherCompileContext,
-) -> Result<(String, String), CoreError> {
+) -> Result<(GraphValueRef, String), CoreError> {
     let path = path.into();
-    let variable = compile_single_graph_value_function_argument(
+    let value = compile_single_graph_value_function_argument_ref(
         function,
         path.clone(),
         message,
@@ -7302,14 +7362,17 @@ fn compile_node_function_target(
     let node = plan
         .nodes
         .iter()
-        .find(|node| node.variable == variable)
+        .find(|node| node.variable == value.variable)
         .ok_or_else(|| {
             unsupported(
                 format!("{path}[0]"),
-                format!("labels() argument '{variable}' is not a node variable"),
+                format!(
+                    "labels() argument '{}' is not a node variable",
+                    value.variable
+                ),
             )
         })?;
-    Ok((variable, node.label.clone()))
+    Ok((value, node.label.clone()))
 }
 
 fn compile_single_graph_value_function_argument(
@@ -9346,8 +9409,7 @@ fn compile_property_key_membership_predicate(
     context: &CypherCompileContext,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
-    let Some(variable) = compile_optional_keys_ref(rhs, format!("{path}.rhs"), plan, context)?
-    else {
+    let Some(value) = compile_optional_keys_ref(rhs, format!("{path}.rhs"), plan, context)? else {
         return Ok(None);
     };
     let literal = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
@@ -9358,7 +9420,11 @@ fn compile_property_key_membership_predicate(
         ));
     };
     Ok(Some(PredicateExpression::PropertyKeyMembership(
-        PropertyKeyMembershipPredicate { variable, key },
+        PropertyKeyMembershipPredicate {
+            variable: value.variable,
+            key,
+            presence_variable: value.presence_variable,
+        },
     )))
 }
 
@@ -9370,7 +9436,8 @@ fn compile_label_membership_predicate(
     context: &CypherCompileContext,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
-    let Some((_, label)) = compile_optional_labels_ref(rhs, format!("{path}.rhs"), plan, context)?
+    let Some((value, label)) =
+        compile_optional_labels_ref(rhs, format!("{path}.rhs"), plan, context)?
     else {
         return Ok(None);
     };
@@ -9381,7 +9448,25 @@ fn compile_label_membership_predicate(
             "label membership predicates require a string literal or scalar string parameter",
         ));
     };
-    Ok(Some(PredicateExpression::Boolean(candidate == label)))
+    let matches = candidate == label;
+    if let Some(presence_variable) = value.presence_variable {
+        return Ok(Some(presence_gated_boolean_predicate(
+            presence_variable,
+            matches,
+        )));
+    }
+    Ok(Some(PredicateExpression::Boolean(matches)))
+}
+
+fn presence_gated_boolean_predicate(presence_variable: String, value: bool) -> PredicateExpression {
+    PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: ScalarExpression::PresenceGated {
+            presence_variable,
+            expression: Box::new(ScalarExpression::Literal(Literal::Boolean(value))),
+        },
+        operator: ComparisonOperator::Equal,
+        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Boolean(true))),
+    })
 }
 
 fn compile_graph_label_predicate(
@@ -9476,19 +9561,28 @@ fn compile_optional_keys_ref(
     path: impl Into<String>,
     plan: &GraphPlan,
     context: &CypherCompileContext,
-) -> Result<Option<String>, CoreError> {
+) -> Result<Option<GraphValueRef>, CoreError> {
     let path = path.into();
     match expression {
         Expression::Parenthesized(inner) => compile_optional_keys_ref(inner, path, plan, context),
         Expression::FunctionCall(function) if is_keys_function(function) => {
-            let variable = compile_single_graph_value_function_argument(
+            let value = compile_single_graph_value_function_argument_ref(
                 function,
                 format!("{path}.arguments"),
                 "keys() supports exactly one graph variable argument",
                 plan,
                 context,
             )?;
-            Ok(Some(variable))
+            if !plan_uses_variable(plan, &value.variable) {
+                return Err(unsupported(
+                    format!("{path}.arguments[0]"),
+                    format!(
+                        "keys() argument '{}' is not a bound graph variable",
+                        value.variable
+                    ),
+                ));
+            }
+            Ok(Some(value))
         }
         _ => Ok(None),
     }
@@ -9499,12 +9593,12 @@ fn compile_optional_labels_ref(
     path: impl Into<String>,
     plan: &GraphPlan,
     context: &CypherCompileContext,
-) -> Result<Option<(String, String)>, CoreError> {
+) -> Result<Option<(GraphValueRef, String)>, CoreError> {
     let path = path.into();
     match expression {
         Expression::Parenthesized(inner) => compile_optional_labels_ref(inner, path, plan, context),
         Expression::FunctionCall(function) if is_labels_function(function) => {
-            Ok(Some(compile_node_function_target(
+            Ok(Some(compile_node_function_target_ref(
                 function,
                 format!("{path}.arguments"),
                 "labels() supports exactly one node variable argument",
@@ -13097,6 +13191,71 @@ mod tests {
     }
 
     #[test]
+    fn compiles_relationship_endpoint_metadata_functions_on_optional_relationships() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(dependency_service:Service) \
+             RETURN labels(endNode(dependency)) AS dependency_labels, \
+                    keys(startNode(dependency)) AS source_keys \
+             ORDER BY labels(endNode(dependency)), keys(startNode(dependency))",
+        )
+        .expect(
+            "relationship endpoint metadata functions over optional relationships should compile",
+        );
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable: "dependency".to_string(),
+                        expression: Box::new(ScalarExpression::NodeLabels {
+                            variable: "dependency_service".to_string(),
+                            label: "Service".to_string(),
+                        }),
+                    },
+                    alias: "dependency_labels".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable: "dependency".to_string(),
+                        expression: Box::new(ScalarExpression::PropertyKeys {
+                            variable: "service".to_string(),
+                        }),
+                    },
+                    alias: "source_keys".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::Scalar(ScalarExpression::PresenceGated {
+                        presence_variable: "dependency".to_string(),
+                        expression: Box::new(ScalarExpression::NodeLabels {
+                            variable: "dependency_service".to_string(),
+                            label: "Service".to_string(),
+                        }),
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+                OrderKey {
+                    expression: OrderExpression::Scalar(ScalarExpression::PresenceGated {
+                        presence_variable: "dependency".to_string(),
+                        expression: Box::new(ScalarExpression::PropertyKeys {
+                            variable: "service".to_string(),
+                        }),
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn rejects_relationship_endpoint_properties_on_undirected_relationships() {
         let error = compile_cypher(
             "MATCH (left:Service)-[dependency:DEPENDS_ON]-(right:Service) \
@@ -13366,12 +13525,14 @@ mod tests {
                     PropertyKeyMembershipPredicate {
                         variable: "person".to_string(),
                         key: "name".to_string(),
+                        presence_variable: None,
                     },
                 )),
                 right: Box::new(PredicateExpression::PropertyKeyMembership(
                     PropertyKeyMembershipPredicate {
                         variable: "owns".to_string(),
                         key: "since".to_string(),
+                        presence_variable: None,
                     },
                 )),
             })

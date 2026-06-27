@@ -180,6 +180,18 @@ pub enum ScalarExpression {
         /// Graph variable.
         variable: String,
     },
+    /// Static labels of a node variable as a one-element list.
+    NodeLabels {
+        /// Graph node variable.
+        variable: String,
+        /// Static graph node label.
+        label: String,
+    },
+    /// Statically declared property keys for a graph variable.
+    PropertyKeys {
+        /// Graph variable.
+        variable: String,
+    },
     /// Return `expression` only when `presence_variable` is bound. This is used
     /// for values derived from optional relationships where the endpoint node
     /// may itself be a mandatory anchor.
@@ -683,6 +695,8 @@ pub struct PropertyKeyMembershipPredicate {
     pub variable: String,
     /// Property key name to check.
     pub key: String,
+    /// Optional graph variable whose binding controls nullability.
+    pub presence_variable: Option<String>,
 }
 
 /// Existential graph pattern predicate.

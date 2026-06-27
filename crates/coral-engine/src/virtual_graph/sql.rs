@@ -1799,7 +1799,12 @@ impl<'a> Lowerer<'a> {
                 relationship.properties.contains_key(&predicate.key)
             }
         };
-        let presence = self.render_binding_presence_ref(&predicate.variable)?;
+        let presence = self.render_binding_presence_ref(
+            predicate
+                .presence_variable
+                .as_deref()
+                .unwrap_or(&predicate.variable),
+        )?;
         let value = if has_key { "TRUE" } else { "FALSE" };
         Ok(format!(
             "CASE WHEN {presence} IS NULL THEN NULL ELSE {value} END"
@@ -2634,6 +2639,9 @@ impl<'a> Lowerer<'a> {
         if let Some(rendered) = self.render_simple_scalar_expression(expression)? {
             return Ok(rendered);
         }
+        if let Some(rendered) = self.render_graph_metadata_scalar_expression(expression)? {
+            return Ok(rendered);
+        }
 
         match expression {
             ScalarExpression::Property(property) => self.render_property_ref(property),
@@ -2642,24 +2650,10 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::CountSubquery { pattern } => {
                 self.render_count_subquery_expression(pattern)
             }
-            ScalarExpression::Key { variable } => self.render_binding_key_ref(variable),
-            ScalarExpression::ElementId { variable } => {
-                self.render_binding_element_id_ref(variable)
-            }
-            ScalarExpression::GraphIdentity { variable } => {
-                self.render_binding_graph_identity_ref(variable)
-            }
-            ScalarExpression::GraphPresence { variable } => {
-                self.render_binding_graph_presence_ref(variable)
-            }
             ScalarExpression::PresenceGated {
                 presence_variable,
                 expression,
             } => self.render_presence_gated_scalar_expression(presence_variable, expression),
-            ScalarExpression::RelationshipType {
-                variable,
-                relationship_type,
-            } => self.render_relationship_type_ref(variable, relationship_type),
             ScalarExpression::Coalesce { expressions } => {
                 self.render_coalesce_expression(expressions)
             }
@@ -2703,8 +2697,15 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::Atan2 { .. }
             | ScalarExpression::Degrees { .. }
             | ScalarExpression::Radians { .. }
-            | ScalarExpression::Negate { .. } => {
-                unreachable!("simple scalar expressions handled above")
+            | ScalarExpression::Negate { .. }
+            | ScalarExpression::Key { .. }
+            | ScalarExpression::ElementId { .. }
+            | ScalarExpression::GraphIdentity { .. }
+            | ScalarExpression::GraphPresence { .. }
+            | ScalarExpression::NodeLabels { .. }
+            | ScalarExpression::PropertyKeys { .. }
+            | ScalarExpression::RelationshipType { .. } => {
+                unreachable!("scalar expression handled above")
             }
             ScalarExpression::Replace {
                 expression,
@@ -2741,6 +2742,37 @@ impl<'a> Lowerer<'a> {
             .collect::<Result<Vec<_>, _>>()?
             .join(", ");
         Ok(format!("COALESCE({rendered})"))
+    }
+
+    fn render_graph_metadata_scalar_expression(
+        &self,
+        expression: &ScalarExpression,
+    ) -> Result<Option<String>, CoreError> {
+        match expression {
+            ScalarExpression::Key { variable } => self.render_binding_key_ref(variable).map(Some),
+            ScalarExpression::ElementId { variable } => {
+                self.render_binding_element_id_ref(variable).map(Some)
+            }
+            ScalarExpression::GraphIdentity { variable } => {
+                self.render_binding_graph_identity_ref(variable).map(Some)
+            }
+            ScalarExpression::GraphPresence { variable } => {
+                self.render_binding_graph_presence_ref(variable).map(Some)
+            }
+            ScalarExpression::NodeLabels { variable, label } => {
+                self.render_node_labels_ref(variable, label).map(Some)
+            }
+            ScalarExpression::PropertyKeys { variable } => {
+                self.render_property_keys_ref(variable).map(Some)
+            }
+            ScalarExpression::RelationshipType {
+                variable,
+                relationship_type,
+            } => self
+                .render_relationship_type_ref(variable, relationship_type)
+                .map(Some),
+            _ => Ok(None),
+        }
     }
 
     fn render_simple_scalar_expression(

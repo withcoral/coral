@@ -8264,6 +8264,93 @@ async fn cypher_optional_relationship_endpoint_values_preserve_optional_nulls() 
 }
 
 #[tokio::test]
+async fn cypher_optional_relationship_endpoint_metadata_preserves_optional_nulls() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(dependency_service:Service) \
+         RETURN service.name AS service, \
+                labels(endNode(dependency)) AS dependency_labels, \
+                keys(startNode(dependency)) AS source_keys \
+         ORDER BY service, coalesce(endNode(dependency).name, 'zzzz')",
+    )
+    .await
+    .expect("optional endpoint metadata should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "CASE WHEN \"r0\".\"from_service_id\" IS NULL THEN NULL ELSE CASE WHEN \"n1\".\"id\" IS NULL THEN NULL ELSE make_array('Service') END END"
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dependency_labels": ["Service"], "source_keys": ["active", "id", "name", "risk", "team", "tier"]}),
+            json!({"service": "billing-api", "dependency_labels": ["Service"], "source_keys": ["active", "id", "name", "risk", "team", "tier"]}),
+            json!({"service": "deployments", "dependency_labels": ["Service"], "source_keys": ["active", "id", "name", "risk", "team", "tier"]}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_optional_relationship_endpoint_metadata_membership_scopes_unmatched_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(dependency_service:Service) \
+         WHERE 'Service' IN labels(endNode(dependency)) \
+           AND 'tier' IN keys(startNode(dependency)) \
+         RETURN service.name AS service, dependency_service.name AS dependency \
+         ORDER BY service, dependency",
+    )
+    .await
+    .expect("optional endpoint metadata membership should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "CASE WHEN \"r0\".\"from_service_id\" IS NULL THEN NULL ELSE true END = true"
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("CASE WHEN \"r0\".\"from_service_id\" IS NULL THEN NULL ELSE TRUE END"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dependency": "deployments"}),
+            json!({"service": "billing-api", "dependency": "experiments"}),
+            json!({"service": "deployments", "dependency": "experiments"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_labels_projection_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

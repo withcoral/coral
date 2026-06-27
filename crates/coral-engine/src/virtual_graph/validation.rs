@@ -1146,7 +1146,9 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::ElementId { variable }
             | ScalarExpression::GraphIdentity { variable }
             | ScalarExpression::GraphPresence { variable }
-            | ScalarExpression::RelationshipType { variable, .. } => {
+            | ScalarExpression::PropertyKeys { variable }
+            | ScalarExpression::RelationshipType { variable, .. }
+            | ScalarExpression::NodeLabels { variable, .. } => {
                 variables.insert(variable.as_str());
             }
             ScalarExpression::PresenceGated {
@@ -1387,6 +1389,14 @@ impl<'a> GraphPlanValidator<'a> {
         path: impl Into<String>,
     ) -> Result<(), CoreError> {
         let path = path.into();
+        if let Some(presence_variable) = &predicate.presence_variable {
+            Self::validate_variable_not_optional(
+                presence_variable,
+                optional_variables,
+                format!("{path}.presence_variable"),
+            )?;
+            return Ok(());
+        }
         Self::validate_variable_not_optional(
             &predicate.variable,
             optional_variables,
@@ -1612,7 +1622,9 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::ElementId { variable }
             | ScalarExpression::GraphIdentity { variable }
             | ScalarExpression::GraphPresence { variable }
-            | ScalarExpression::RelationshipType { variable, .. } => {
+            | ScalarExpression::PropertyKeys { variable }
+            | ScalarExpression::RelationshipType { variable, .. }
+            | ScalarExpression::NodeLabels { variable, .. } => {
                 Self::validate_variable_not_optional(variable, optional_variables, path)
             }
             ScalarExpression::PresenceGated {
@@ -3153,16 +3165,25 @@ impl<'a> GraphPlanValidator<'a> {
         path: impl Into<String>,
     ) -> Result<(), CoreError> {
         let path = path.into();
-        if self.bindings.contains_key(predicate.variable.as_str()) {
-            Ok(())
-        } else {
-            Err(Diagnostic::new(
+        if !self.bindings.contains_key(predicate.variable.as_str()) {
+            return Err(Diagnostic::new(
                 "UNKNOWN_VARIABLE",
                 format!("{path}.variable"),
                 format!("unknown graph variable '{}'", predicate.variable),
             )
-            .into_core_error())
+            .into_core_error());
         }
+        if let Some(presence_variable) = &predicate.presence_variable
+            && !self.bindings.contains_key(presence_variable.as_str())
+        {
+            return Err(Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                format!("{path}.presence_variable"),
+                format!("unknown graph variable '{presence_variable}'"),
+            )
+            .into_core_error());
+        }
+        Ok(())
     }
 
     fn validate_projection_predicate(
@@ -3689,6 +3710,8 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::ElementId { .. }
             | ScalarExpression::GraphIdentity { .. }
             | ScalarExpression::GraphPresence { .. }
+            | ScalarExpression::NodeLabels { .. }
+            | ScalarExpression::PropertyKeys { .. }
             | ScalarExpression::PresenceGated { .. }
             | ScalarExpression::RelationshipType { .. } => {
                 self.infer_atomic_scalar_type(expression, &path)
@@ -3741,6 +3764,14 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::GraphPresence { variable } => {
                 self.validate_graph_presence_projection(variable, path)?;
                 Ok(ScalarType::String)
+            }
+            ScalarExpression::NodeLabels { variable, label } => {
+                self.validate_node_labels_projection(variable, label, path)?;
+                Ok(ScalarType::Other)
+            }
+            ScalarExpression::PropertyKeys { variable } => {
+                self.validate_property_keys_projection(variable, path)?;
+                Ok(ScalarType::Other)
             }
             ScalarExpression::PresenceGated {
                 presence_variable,
@@ -5816,6 +5847,7 @@ relationships:
             PropertyKeyMembershipPredicate {
                 variable: "person".to_string(),
                 key: "name".to_string(),
+                presence_variable: None,
             },
         ));
 
@@ -5832,6 +5864,7 @@ relationships:
             PropertyKeyMembershipPredicate {
                 variable: "unknown".to_string(),
                 key: "name".to_string(),
+                presence_variable: None,
             },
         ));
 
