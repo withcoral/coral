@@ -248,6 +248,15 @@ pub struct KeyPredicate {
     pub rhs: PredicateRhs,
 }
 
+/// Predicate over graph binding presence, compiled from `variable IS NULL`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresencePredicate {
+    /// Graph variable whose binding presence is tested.
+    pub variable: String,
+    /// Null comparison operator. Only `Equal` and `NotEqual` are valid.
+    pub operator: ComparisonOperator,
+}
+
 /// Scope introduced by one `OPTIONAL MATCH` clause.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptionalMatchScope {
@@ -266,6 +275,8 @@ pub enum PredicateExpression {
     Comparison(PropertyPredicate),
     /// Leaf key comparison.
     KeyComparison(KeyPredicate),
+    /// Leaf graph binding presence comparison.
+    Presence(PresencePredicate),
     /// Boolean conjunction.
     And {
         /// Left-hand expression.

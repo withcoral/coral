@@ -4,9 +4,9 @@ use super::declaration::{Declaration, Node, Relationship};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
-    Literal, OptionalMatchScope, OrderExpression, PredicateExpression, PredicateRhs, Projection,
-    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate,
-    PropertyRef, RelationshipPattern,
+    Literal, OptionalMatchScope, OrderExpression, PredicateExpression, PredicateRhs,
+    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
+    ProjectionPredicateRhs, PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -701,6 +701,9 @@ impl<'a> GraphPlanValidator<'a> {
                 variables.insert(predicate.variable.as_str());
                 Self::collect_predicate_rhs_variables(&predicate.rhs, variables);
             }
+            PredicateExpression::Presence(predicate) => {
+                variables.insert(predicate.variable.as_str());
+            }
             PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
                 Self::collect_predicate_expression_variables(left, variables);
                 Self::collect_predicate_expression_variables(right, variables);
@@ -746,6 +749,9 @@ impl<'a> GraphPlanValidator<'a> {
             }
             PredicateExpression::KeyComparison(predicate) => {
                 Self::validate_key_predicate_not_optional(predicate, optional_variables, path)
+            }
+            PredicateExpression::Presence(predicate) => {
+                Self::validate_presence_predicate_not_optional(predicate, optional_variables, path)
             }
             PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
                 Self::validate_predicate_expression_not_optional(
@@ -796,6 +802,19 @@ impl<'a> GraphPlanValidator<'a> {
             format!("{path}.variable"),
         )?;
         Self::validate_predicate_rhs_not_optional(&predicate.rhs, optional_variables, path)
+    }
+
+    fn validate_presence_predicate_not_optional(
+        predicate: &PresencePredicate,
+        optional_variables: &BTreeSet<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        Self::validate_variable_not_optional(
+            &predicate.variable,
+            optional_variables,
+            format!("{path}.variable"),
+        )
     }
 
     fn validate_predicate_rhs_not_optional(
@@ -897,6 +916,9 @@ impl<'a> GraphPlanValidator<'a> {
             }
             PredicateExpression::KeyComparison(predicate) => {
                 self.validate_key_predicate(predicate, path)
+            }
+            PredicateExpression::Presence(predicate) => {
+                self.validate_presence_predicate(predicate, path)
             }
             PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
                 self.validate_predicate_expression(left, format!("{path}.left"))?;
@@ -1216,6 +1238,39 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 Ok(())
             }
+        }
+    }
+
+    fn validate_presence_predicate(
+        &self,
+        predicate: &PresencePredicate,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        validate_variable(format!("{path}.variable"), &predicate.variable)?;
+        if !self.bindings.contains_key(predicate.variable.as_str()) {
+            return Err(Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                format!("{path}.variable"),
+                format!("unknown graph variable '{}'", predicate.variable),
+            )
+            .into_core_error());
+        }
+        match predicate.operator {
+            ComparisonOperator::Equal | ComparisonOperator::NotEqual => Ok(()),
+            ComparisonOperator::GreaterThan
+            | ComparisonOperator::GreaterThanOrEqual
+            | ComparisonOperator::LessThan
+            | ComparisonOperator::LessThanOrEqual
+            | ComparisonOperator::In
+            | ComparisonOperator::StartsWith
+            | ComparisonOperator::EndsWith
+            | ComparisonOperator::Contains => Err(Diagnostic::new(
+                "INVALID_PRESENCE_PREDICATE",
+                path,
+                "graph variable presence predicates only support IS NULL and IS NOT NULL",
+            )
+            .into_core_error()),
         }
     }
 
@@ -2410,6 +2465,39 @@ relationships:
 
         assert!(
             error.to_string().contains("INVALID_PREDICATE_OPERAND"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_accepts_presence_predicates_for_keyless_relationships() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicate = Some(PredicateExpression::Presence(PresencePredicate {
+            variable: "owns".to_string(),
+            operator: ComparisonOperator::Equal,
+        }));
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("presence predicates should validate for keyless relationships");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_invalid_presence_predicate_operator() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicate = Some(PredicateExpression::Presence(PresencePredicate {
+            variable: "owns".to_string(),
+            operator: ComparisonOperator::GreaterThan,
+        }));
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("invalid presence predicate operator should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_PRESENCE_PREDICATE"),
             "{error:?}"
         );
     }

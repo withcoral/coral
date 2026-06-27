@@ -19,7 +19,7 @@ pub use execution::{GraphExecution, GraphQueryPlan};
 pub use ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
     Literal, NodePattern, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey,
-    PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
+    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
     RelationshipPattern,
 };

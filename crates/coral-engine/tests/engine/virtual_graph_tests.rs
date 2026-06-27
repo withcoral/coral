@@ -2169,6 +2169,37 @@ async fn cypher_count_keyless_relationship_variables_executes_against_synthetic_
 }
 
 #[tokio::test]
+async fn cypher_keyless_relationship_presence_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \
+         WHERE dependency IS NOT NULL \
+         RETURN count(dependency) AS dependencies",
+    )
+    .await
+    .expect("keyless relationship presence predicate should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"r0\".\"from_service_id\" IS NOT NULL"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"dependencies": 3})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_grouped_count_property_projection_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

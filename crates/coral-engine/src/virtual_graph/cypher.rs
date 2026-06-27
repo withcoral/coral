@@ -24,7 +24,7 @@ use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
     Literal, NodePattern, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey,
-    PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
+    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
     RelationshipPattern,
 };
@@ -2063,6 +2063,7 @@ fn is_conjunctive_expression(expression: &PredicateExpression) -> bool {
         }
         PredicateExpression::Boolean(_)
         | PredicateExpression::KeyComparison(_)
+        | PredicateExpression::Presence(_)
         | PredicateExpression::Or { .. }
         | PredicateExpression::Not { .. } => false,
     }
@@ -2080,6 +2081,7 @@ fn append_conjunctive_expression(
         }
         PredicateExpression::Boolean(_)
         | PredicateExpression::KeyComparison(_)
+        | PredicateExpression::Presence(_)
         | PredicateExpression::Or { .. }
         | PredicateExpression::Not { .. } => {
             unreachable!("non-conjunctive predicate expression reached conjunctive appender")
@@ -2452,13 +2454,33 @@ fn compile_null_predicate(
             rhs: PredicateRhs::Literal(Literal::Null),
         }));
     }
+    if let Some(variable) = compile_optional_graph_variable_ref(operand) {
+        if !plan_uses_variable(plan, &variable) {
+            return Err(unsupported(
+                format!("{path}.operand"),
+                format!("IS NULL argument '{variable}' is not a bound graph variable"),
+            ));
+        }
+        return Ok(PredicateExpression::Presence(PresencePredicate {
+            variable,
+            operator,
+        }));
+    }
     if contains_type_function(operand) {
         return Ok(PredicateExpression::Boolean(negated));
     }
     Err(unsupported(
         format!("{path}.operand"),
-        "IS NULL predicates require variable.property, id(variable), or type(relationship)",
+        "IS NULL predicates require a graph variable, variable.property, id(variable), or type(relationship)",
     ))
+}
+
+fn compile_optional_graph_variable_ref(expression: &Expression) -> Option<String> {
+    match expression {
+        Expression::Parenthesized(inner) => compile_optional_graph_variable_ref(inner),
+        Expression::Variable(variable) => Some(variable_name(variable)),
+        _ => None,
+    }
 }
 
 fn compile_optional_id_ref(
@@ -4254,6 +4276,31 @@ mod tests {
                 operator: ComparisonOperator::Equal,
                 rhs: PredicateRhs::Literal(Literal::Null),
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_graph_variable_null_predicates() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE person IS NOT NULL AND owns IS NULL \
+             RETURN person.name AS owner",
+        )
+        .expect("graph variable null predicates should compile");
+
+        assert!(plan.predicates.is_empty());
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::Presence(PresencePredicate {
+                    variable: "person".to_string(),
+                    operator: ComparisonOperator::NotEqual,
+                })),
+                right: Box::new(PredicateExpression::Presence(PresencePredicate {
+                    variable: "owns".to_string(),
+                    operator: ComparisonOperator::Equal,
+                })),
+            })
         );
     }
 

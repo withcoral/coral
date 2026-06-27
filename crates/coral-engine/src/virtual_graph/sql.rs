@@ -5,8 +5,9 @@ use super::declaration::{Declaration, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
-    Literal, OrderDirection, OrderExpression, PredicateExpression, PredicateRhs, Projection,
-    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyRef,
+    Literal, OrderDirection, OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate,
+    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    PropertyRef,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -705,6 +706,7 @@ impl<'a> Lowerer<'a> {
             PredicateExpression::Boolean(value) => Ok(value.to_string().to_uppercase()),
             PredicateExpression::Comparison(predicate) => self.render_predicate(predicate),
             PredicateExpression::KeyComparison(predicate) => self.render_key_predicate(predicate),
+            PredicateExpression::Presence(predicate) => self.render_presence_predicate(predicate),
             PredicateExpression::And { left, right } => Ok(format!(
                 "({} AND {})",
                 self.render_predicate_expression(left)?,
@@ -921,6 +923,27 @@ impl<'a> Lowerer<'a> {
                 "{key} {} {}",
                 render_operator(predicate.operator),
                 self.render_predicate_rhs(&predicate.rhs)?
+            )),
+        }
+    }
+
+    fn render_presence_predicate(
+        &self,
+        predicate: &PresencePredicate,
+    ) -> Result<String, CoreError> {
+        let presence = self.render_binding_presence_ref(&predicate.variable)?;
+        match predicate.operator {
+            ComparisonOperator::Equal => Ok(format!("{presence} IS NULL")),
+            ComparisonOperator::NotEqual => Ok(format!("{presence} IS NOT NULL")),
+            ComparisonOperator::GreaterThan
+            | ComparisonOperator::GreaterThanOrEqual
+            | ComparisonOperator::LessThan
+            | ComparisonOperator::LessThanOrEqual
+            | ComparisonOperator::In
+            | ComparisonOperator::StartsWith
+            | ComparisonOperator::EndsWith
+            | ComparisonOperator::Contains => Err(CoreError::internal(
+                "validated presence predicate contained an invalid operator",
             )),
         }
     }
@@ -2746,6 +2769,61 @@ relationships: []
             translation
                 .sql()
                 .contains("COUNT(\"r0\".\"from_service_id\") AS \"dependency_count\""),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_presence_predicate_for_keyless_relationship() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "source".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "target".to_string(),
+                    label: "Service".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: Some("dependency".to_string()),
+                relationship_type: "DEPENDS_ON".to_string(),
+                left: "source".to_string(),
+                direction: Direction::Outgoing,
+                right: "target".to_string(),
+            }],
+            optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
+            distinct: false,
+            projections: vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "source".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("source".to_string()),
+            }],
+            predicates: Vec::new(),
+            predicate: Some(PredicateExpression::Presence(PresencePredicate {
+                variable: "dependency".to_string(),
+                operator: ComparisonOperator::NotEqual,
+            })),
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("keyless relationship presence predicate should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("\"r0\".\"from_service_id\" IS NOT NULL"),
             "{}",
             translation.sql()
         );
