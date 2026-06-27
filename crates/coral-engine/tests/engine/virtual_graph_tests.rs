@@ -1032,6 +1032,55 @@ async fn cypher_path_length_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_bounded_variable_length_ranges_expand_to_union_all() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH path = (source:Service)-[:DEPENDS_ON*1..2]->(target:Service) \
+         RETURN source.name AS source, target.name AS target, length(path) AS hops \
+         ORDER BY source, target, hops",
+    )
+    .await
+    .expect("bounded variable-length range query should execute");
+
+    assert!(
+        execution.translated_sql().contains("UNION ALL"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"source": "billing-api", "target": "deployments", "hops": 1}),
+            json!({"source": "billing-api", "target": "experiments", "hops": 1}),
+            json!({"source": "billing-api", "target": "experiments", "hops": 2}),
+            json!({"source": "deployments", "target": "experiments", "hops": 1}),
+        ]
+    );
+
+    let count_execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (source:Service)-[:DEPENDS_ON*1..2]->(target:Service) \
+         RETURN count(*) AS paths",
+    )
+    .await
+    .expect("bounded variable-length aggregate query should execute");
+
+    assert_eq!(
+        execution_to_rows(count_execution.execution()),
+        vec![json!({"paths": 4})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_exact_fixed_relationship_range_property_maps_apply_per_hop() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

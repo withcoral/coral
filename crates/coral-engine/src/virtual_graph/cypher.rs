@@ -10,7 +10,7 @@ use decypher::ast::expr::{
 use decypher::ast::names::{SymbolicName, Variable};
 use decypher::ast::pattern::{
     LabelExpression, NodePattern as CypherNodePattern, PatternElement, PatternPart, Properties,
-    RelationshipDirection as CypherRelationshipDirection,
+    Quantifier, RangeLiteral, RelationshipDirection as CypherRelationshipDirection,
     RelationshipPattern as CypherRelationshipPattern,
 };
 use decypher::ast::query::{
@@ -50,7 +50,7 @@ struct CompiledRelationship {
     length: usize,
 }
 
-const MAX_STATIC_LABEL_TYPE_ALTERNATIVE_BRANCHES: usize = 64;
+const MAX_PATTERN_ALTERNATIVE_BRANCHES: usize = 64;
 const MAX_FIXED_RELATIONSHIP_LENGTH: usize = 8;
 const INTERNAL_GRAPH_IDENTITY_FUNCTION: &str = "__coral_graph_identity";
 const INTERNAL_GRAPH_PRESENCE_FUNCTION: &str = "__coral_graph_presence";
@@ -90,6 +90,34 @@ enum LabelTypeAlternative {
     NodeLabels(Vec<LabelExpression>),
     RelationshipType(LabelExpression),
 }
+
+#[derive(Debug, Clone)]
+enum BoundedRelationshipRangeSite {
+    SinglePart {
+        reading_clause_index: usize,
+        pattern_part_index: usize,
+        chain_index: usize,
+        target: RelationshipRangeTarget,
+        alternatives: Vec<usize>,
+    },
+    MultiPart {
+        query_part: MultiPartAlternativePart,
+        reading_clause_index: usize,
+        pattern_part_index: usize,
+        chain_index: usize,
+        target: RelationshipRangeTarget,
+        alternatives: Vec<usize>,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RelationshipRangeTarget {
+    DetailRange,
+    Quantifier,
+}
+
+type BoundedRelationshipRangeSiteInfo = (usize, usize, usize, RelationshipRangeTarget, Vec<usize>);
+type MatchBoundedRelationshipRangeSiteInfo = (usize, usize, RelationshipRangeTarget, Vec<usize>);
 
 #[derive(Debug, Clone, Copy)]
 enum RelationshipEndpoint {
@@ -327,7 +355,7 @@ fn compile_single_query_as_graph_query(
     path: impl Into<String>,
 ) -> Result<GraphQuery, CoreError> {
     let path = path.into();
-    let mut variants = expand_single_query_static_label_type_alternatives(single_query)?;
+    let mut variants = expand_single_query_pattern_alternatives(single_query)?;
     if variants.len() == 1 {
         let plan = compile_single_query(
             variants.first().ok_or_else(|| {
@@ -1325,7 +1353,7 @@ fn append_explicit_union_component(
     }
 }
 
-fn expand_single_query_static_label_type_alternatives(
+fn expand_single_query_pattern_alternatives(
     single_query: &SingleQuery,
 ) -> Result<Vec<SingleQuery>, CoreError> {
     let mut expanded = vec![single_query.clone()];
@@ -1333,30 +1361,55 @@ fn expand_single_query_static_label_type_alternatives(
         let mut progressed = false;
         let mut next = Vec::with_capacity(expanded.len());
         for query in expanded {
-            let Some(site) = first_static_label_type_alternative_site(&query) else {
-                next.push(query);
+            if let Some(site) = first_static_label_type_alternative_site(&query) {
+                progressed = true;
+                let alternatives = match &site {
+                    StaticLabelTypeAlternativeSite::SinglePart { alternatives, .. }
+                    | StaticLabelTypeAlternativeSite::MultiPart { alternatives, .. } => {
+                        alternatives.clone()
+                    }
+                };
+                for alternative in alternatives {
+                    if next.len() >= MAX_PATTERN_ALTERNATIVE_BRANCHES {
+                        return Err(unsupported(
+                            "query.pattern",
+                            format!(
+                                "pattern alternatives expand to more than {MAX_PATTERN_ALTERNATIVE_BRANCHES} branches; simplify the pattern or split the query explicitly"
+                            ),
+                        ));
+                    }
+                    let mut variant = query.clone();
+                    apply_static_label_type_alternative(&mut variant, &site, alternative)?;
+                    next.push(variant);
+                }
                 continue;
-            };
-            progressed = true;
-            let alternatives = match &site {
-                StaticLabelTypeAlternativeSite::SinglePart { alternatives, .. }
-                | StaticLabelTypeAlternativeSite::MultiPart { alternatives, .. } => {
-                    alternatives.clone()
-                }
-            };
-            for alternative in alternatives {
-                if next.len() >= MAX_STATIC_LABEL_TYPE_ALTERNATIVE_BRANCHES {
-                    return Err(unsupported(
-                        "query.pattern",
-                        format!(
-                            "static label/type alternatives expand to more than {MAX_STATIC_LABEL_TYPE_ALTERNATIVE_BRANCHES} branches; simplify the pattern or split the query explicitly"
-                        ),
-                    ));
-                }
-                let mut variant = query.clone();
-                apply_static_label_type_alternative(&mut variant, &site, alternative)?;
-                next.push(variant);
             }
+
+            if let Some(site) = first_bounded_relationship_range_site(&query)? {
+                progressed = true;
+                let alternatives = match &site {
+                    BoundedRelationshipRangeSite::SinglePart { alternatives, .. }
+                    | BoundedRelationshipRangeSite::MultiPart { alternatives, .. } => {
+                        alternatives.clone()
+                    }
+                };
+                for length in alternatives {
+                    if next.len() >= MAX_PATTERN_ALTERNATIVE_BRANCHES {
+                        return Err(unsupported(
+                            "query.pattern",
+                            format!(
+                                "pattern alternatives expand to more than {MAX_PATTERN_ALTERNATIVE_BRANCHES} branches; simplify the pattern or split the query explicitly"
+                            ),
+                        ));
+                    }
+                    let mut variant = query.clone();
+                    apply_bounded_relationship_range_alternative(&mut variant, &site, length)?;
+                    next.push(variant);
+                }
+                continue;
+            }
+
+            next.push(query);
         }
         expanded = next;
         if !progressed {
@@ -1703,6 +1756,330 @@ fn apply_reading_clause_static_label_type_alternative(
             "label/type alternative site and replacement kind did not match",
         )),
     }
+}
+
+fn first_bounded_relationship_range_site(
+    single_query: &SingleQuery,
+) -> Result<Option<BoundedRelationshipRangeSite>, CoreError> {
+    match &single_query.kind {
+        SingleQueryKind::SinglePart(single_part) => {
+            first_single_part_bounded_relationship_range_site(single_part)
+        }
+        SingleQueryKind::MultiPart(multi_part) => {
+            first_multi_part_bounded_relationship_range_site(multi_part)
+        }
+    }
+}
+
+fn first_single_part_bounded_relationship_range_site(
+    single_part: &SinglePartQuery,
+) -> Result<Option<BoundedRelationshipRangeSite>, CoreError> {
+    first_reading_clause_bounded_relationship_range_site(&single_part.reading_clauses).map(|site| {
+        site.map(
+            |(reading_clause_index, pattern_part_index, chain_index, target, alternatives)| {
+                BoundedRelationshipRangeSite::SinglePart {
+                    reading_clause_index,
+                    pattern_part_index,
+                    chain_index,
+                    target,
+                    alternatives,
+                }
+            },
+        )
+    })
+}
+
+fn first_multi_part_bounded_relationship_range_site(
+    multi_part: &MultiPartQuery,
+) -> Result<Option<BoundedRelationshipRangeSite>, CoreError> {
+    for (part_index, part) in multi_part.parts.iter().enumerate() {
+        if let Some((reading_clause_index, pattern_part_index, chain_index, target, alternatives)) =
+            first_reading_clause_bounded_relationship_range_site(&part.reading_clauses)?
+        {
+            return Ok(Some(BoundedRelationshipRangeSite::MultiPart {
+                query_part: MultiPartAlternativePart::Part(part_index),
+                reading_clause_index,
+                pattern_part_index,
+                chain_index,
+                target,
+                alternatives,
+            }));
+        }
+    }
+    first_reading_clause_bounded_relationship_range_site(&multi_part.final_part.reading_clauses)
+        .map(|site| {
+            site.map(
+                |(reading_clause_index, pattern_part_index, chain_index, target, alternatives)| {
+                    BoundedRelationshipRangeSite::MultiPart {
+                        query_part: MultiPartAlternativePart::FinalPart,
+                        reading_clause_index,
+                        pattern_part_index,
+                        chain_index,
+                        target,
+                        alternatives,
+                    }
+                },
+            )
+        })
+}
+
+fn first_reading_clause_bounded_relationship_range_site(
+    reading_clauses: &[ReadingClause],
+) -> Result<Option<BoundedRelationshipRangeSiteInfo>, CoreError> {
+    for (reading_clause_index, clause) in reading_clauses.iter().enumerate() {
+        let ReadingClause::Match(match_clause) = clause else {
+            continue;
+        };
+        if let Some((pattern_part_index, chain_index, target, alternatives)) =
+            first_match_bounded_relationship_range_site(match_clause)?
+        {
+            if match_clause.optional {
+                return Err(unsupported(
+                    format!(
+                        "match.reading_clauses[{reading_clause_index}].pattern.parts[{pattern_part_index}].relationships[{chain_index}]"
+                    ),
+                    "OPTIONAL MATCH with bounded variable-length relationship ranges is not supported yet because branch expansion would duplicate unmatched null rows",
+                ));
+            }
+            return Ok(Some((
+                reading_clause_index,
+                pattern_part_index,
+                chain_index,
+                target,
+                alternatives,
+            )));
+        }
+    }
+    Ok(None)
+}
+
+fn first_match_bounded_relationship_range_site(
+    match_clause: &Match,
+) -> Result<Option<MatchBoundedRelationshipRangeSiteInfo>, CoreError> {
+    for (part_index, pattern_part) in match_clause.pattern.parts.iter().enumerate() {
+        let PatternElement::Path { chains, .. } = &pattern_part.anonymous.element else {
+            continue;
+        };
+        for (chain_index, chain) in chains.iter().enumerate() {
+            if let Some((target, alternatives)) = bounded_relationship_range_alternatives(
+                &chain.relationship,
+                format!("match.pattern.parts[{part_index}].relationships[{chain_index}]"),
+            )? {
+                return Ok(Some((part_index, chain_index, target, alternatives)));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn bounded_relationship_range_alternatives(
+    pattern: &CypherRelationshipPattern,
+    path: impl Into<String>,
+) -> Result<Option<(RelationshipRangeTarget, Vec<usize>)>, CoreError> {
+    let path = path.into();
+    let detail_range = pattern
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.range.as_ref());
+    if detail_range.is_some() && pattern.quantifier.is_some() {
+        return Err(unsupported(
+            path,
+            "relationship patterns cannot combine a variable-length range and a GQL quantifier",
+        ));
+    }
+    if let Some(range) = detail_range {
+        return bounded_range_alternatives(
+            range.start,
+            range.end,
+            format!("{path}.range"),
+            "variable-length relationship ranges require finite positive bounds such as *1..3; zero-hop and unbounded ranges are not supported yet",
+        )
+        .map(|alternatives| alternatives.map(|alternatives| (RelationshipRangeTarget::DetailRange, alternatives)));
+    }
+    if let Some(quantifier) = pattern.quantifier.as_ref() {
+        return bounded_range_alternatives(
+            quantifier.start,
+            quantifier.end,
+            format!("{path}.quantifier"),
+            "relationship quantifiers require finite positive bounds such as {1,3}; zero-hop and unbounded quantifiers are not supported yet",
+        )
+        .map(|alternatives| alternatives.map(|alternatives| (RelationshipRangeTarget::Quantifier, alternatives)));
+    }
+    Ok(None)
+}
+
+fn bounded_range_alternatives(
+    start: Option<i64>,
+    end: Option<i64>,
+    path: impl Into<String>,
+    message: &'static str,
+) -> Result<Option<Vec<usize>>, CoreError> {
+    let path = path.into();
+    let (Some(start), Some(end)) = (start, end) else {
+        return Err(unsupported(path, message));
+    };
+    if start == end {
+        return Ok(None);
+    }
+    if start < 1 || end < 1 || start > end {
+        return Err(unsupported(path, message));
+    }
+    let start = usize::try_from(start).map_err(|error| {
+        unsupported(
+            path.clone(),
+            format!("bounded relationship range lower bound is out of range: {error}"),
+        )
+    })?;
+    let end = usize::try_from(end).map_err(|error| {
+        unsupported(
+            path.clone(),
+            format!("bounded relationship range upper bound is out of range: {error}"),
+        )
+    })?;
+    if end > MAX_FIXED_RELATIONSHIP_LENGTH {
+        return Err(unsupported(
+            path,
+            format!(
+                "bounded relationship range upper bound {end} exceeds Coral's current maximum of {MAX_FIXED_RELATIONSHIP_LENGTH} hops"
+            ),
+        ));
+    }
+    Ok(Some((start..=end).collect()))
+}
+
+fn apply_bounded_relationship_range_alternative(
+    single_query: &mut SingleQuery,
+    site: &BoundedRelationshipRangeSite,
+    length: usize,
+) -> Result<(), CoreError> {
+    match site {
+        BoundedRelationshipRangeSite::SinglePart {
+            reading_clause_index,
+            pattern_part_index,
+            chain_index,
+            target,
+            ..
+        } => {
+            let SingleQueryKind::SinglePart(single_part) = &mut single_query.kind else {
+                return Err(CoreError::internal(
+                    "single-part bounded range site applied to multi-part query",
+                ));
+            };
+            apply_reading_clause_bounded_relationship_range_alternative(
+                &mut single_part.reading_clauses,
+                *reading_clause_index,
+                *pattern_part_index,
+                *chain_index,
+                *target,
+                length,
+            )
+        }
+        BoundedRelationshipRangeSite::MultiPart {
+            query_part,
+            reading_clause_index,
+            pattern_part_index,
+            chain_index,
+            target,
+            ..
+        } => {
+            let SingleQueryKind::MultiPart(multi_part) = &mut single_query.kind else {
+                return Err(CoreError::internal(
+                    "multi-part bounded range site applied to single-part query",
+                ));
+            };
+            let reading_clauses = match query_part {
+                MultiPartAlternativePart::Part(index) => multi_part
+                    .parts
+                    .get_mut(*index)
+                    .map(|part| &mut part.reading_clauses),
+                MultiPartAlternativePart::FinalPart => {
+                    Some(&mut multi_part.final_part.reading_clauses)
+                }
+            }
+            .ok_or_else(|| CoreError::internal("multi-part bounded range site is out of bounds"))?;
+            apply_reading_clause_bounded_relationship_range_alternative(
+                reading_clauses,
+                *reading_clause_index,
+                *pattern_part_index,
+                *chain_index,
+                *target,
+                length,
+            )
+        }
+    }
+}
+
+fn apply_reading_clause_bounded_relationship_range_alternative(
+    reading_clauses: &mut [ReadingClause],
+    reading_clause_index: usize,
+    pattern_part_index: usize,
+    chain_index: usize,
+    target: RelationshipRangeTarget,
+    length: usize,
+) -> Result<(), CoreError> {
+    let ReadingClause::Match(match_clause) = reading_clauses
+        .get_mut(reading_clause_index)
+        .ok_or_else(|| CoreError::internal("bounded range reading clause is out of bounds"))?
+    else {
+        return Err(CoreError::internal(
+            "bounded range site did not point at a MATCH clause",
+        ));
+    };
+    let pattern_part = match_clause
+        .pattern
+        .parts
+        .get_mut(pattern_part_index)
+        .ok_or_else(|| CoreError::internal("bounded range pattern part is out of bounds"))?;
+    let PatternElement::Path { chains, .. } = &mut pattern_part.anonymous.element else {
+        return Err(CoreError::internal(
+            "bounded range site did not point at a path pattern",
+        ));
+    };
+    let chain = chains
+        .get_mut(chain_index)
+        .ok_or_else(|| CoreError::internal("bounded range chain is out of bounds"))?;
+    set_exact_relationship_range(&mut chain.relationship, target, length)
+}
+
+fn set_exact_relationship_range(
+    relationship: &mut CypherRelationshipPattern,
+    target: RelationshipRangeTarget,
+    length: usize,
+) -> Result<(), CoreError> {
+    let length = i64::try_from(length)
+        .map_err(|error| CoreError::internal(format!("range length out of range: {error}")))?;
+    match target {
+        RelationshipRangeTarget::DetailRange => {
+            let detail = relationship
+                .detail
+                .as_mut()
+                .ok_or_else(|| CoreError::internal("bounded range relationship detail missing"))?;
+            let range = detail
+                .range
+                .as_mut()
+                .ok_or_else(|| CoreError::internal("bounded relationship range missing"))?;
+            set_exact_range_literal(range, length);
+            Ok(())
+        }
+        RelationshipRangeTarget::Quantifier => {
+            let quantifier = relationship
+                .quantifier
+                .as_mut()
+                .ok_or_else(|| CoreError::internal("bounded relationship quantifier missing"))?;
+            set_exact_quantifier(quantifier, length);
+            Ok(())
+        }
+    }
+}
+
+fn set_exact_range_literal(range: &mut RangeLiteral, length: i64) {
+    range.start = Some(length);
+    range.end = Some(length);
+}
+
+fn set_exact_quantifier(quantifier: &mut Quantifier, length: i64) {
+    quantifier.start = Some(length);
+    quantifier.end = Some(length);
 }
 
 fn validate_static_label_type_alternative_expansion_supported(
@@ -9465,7 +9842,7 @@ mod tests {
 
     #[test]
     fn rejects_static_label_alternatives_that_exceed_branch_cap() {
-        let labels = (0..=MAX_STATIC_LABEL_TYPE_ALTERNATIVE_BRANCHES)
+        let labels = (0..=MAX_PATTERN_ALTERNATIVE_BRANCHES)
             .map(|index| format!("Label{index}"))
             .collect::<Vec<_>>()
             .join("|");
@@ -14999,16 +15376,66 @@ mod tests {
         for cypher in [
             "MATCH (a:Service)-[:DEPENDS_ON*]->(b:Service) RETURN a.name",
             "MATCH (a:Service)-[:DEPENDS_ON*0..1]->(b:Service) RETURN a.name",
-            "MATCH (a:Service)-[:DEPENDS_ON*1..3]->(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON*..3]->(b:Service) RETURN a.name",
             "MATCH (a:Service)-[:DEPENDS_ON]->{0,1}(b:Service) RETURN a.name",
-            "MATCH (a:Service)-[:DEPENDS_ON]->{1,3}(b:Service) RETURN a.name",
             "MATCH (a:Service)-[:DEPENDS_ON]->{1,}(b:Service) RETURN a.name",
             "MATCH (a:Service)-[:DEPENDS_ON*9..9]->(b:Service) RETURN a.name",
+            "MATCH (a:Service) OPTIONAL MATCH (a)-[:DEPENDS_ON*1..2]->(b:Service) RETURN a.name",
             "MATCH (a:Service)-[:DEPENDS_ON*2]->(b:Person) RETURN a.name",
             "MATCH (a:Service)-[r:DEPENDS_ON*2]->(b:Service) RETURN a.name",
         ] {
             assert_unsupported(cypher);
         }
+    }
+
+    #[test]
+    fn compiles_bounded_variable_length_relationship_ranges_as_union_all() {
+        let query = compile_cypher_query(
+            "MATCH path = (a:Service)-[:DEPENDS_ON*1..3]->(b:Service) \
+             RETURN a.name AS source, b.name AS target, length(path) AS hops \
+             ORDER BY source, target, hops",
+        )
+        .expect("bounded relationship range should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected bounded relationship range to expand into a union query");
+        };
+        assert_eq!(union.branches.len(), 2);
+        let first_branch = union.branches.first().expect("first range branch");
+        let second_branch = union.branches.get(1).expect("second range branch");
+        assert_eq!(union.first.relationships.len(), 1);
+        assert_eq!(first_branch.plan.relationships.len(), 2);
+        assert_eq!(second_branch.plan.relationships.len(), 3);
+        assert!(union.branches.iter().all(|branch| branch.all));
+        assert_eq!(path_length_projection_literal(&union.first), Some(1));
+        assert_eq!(path_length_projection_literal(&first_branch.plan), Some(2));
+        assert_eq!(path_length_projection_literal(&second_branch.plan), Some(3));
+        assert_eq!(union.order_by.len(), 3);
+    }
+
+    #[test]
+    fn compiles_bounded_gql_relationship_quantifiers_as_union_all() {
+        let query = compile_cypher_query(
+            "MATCH (a:Service)-[:DEPENDS_ON]->{1,2}(b:Service) \
+             RETURN a.name AS source, b.name AS target",
+        )
+        .expect("bounded GQL relationship quantifier should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected bounded relationship quantifier to expand into a union query");
+        };
+        assert_eq!(union.first.relationships.len(), 1);
+        assert_eq!(union.branches.len(), 1);
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .expect("first range branch")
+                .plan
+                .relationships
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -15827,5 +16254,18 @@ mod tests {
             error.to_string().contains("UNSUPPORTED_CYPHER"),
             "unexpected error: {error}"
         );
+    }
+
+    fn path_length_projection_literal(plan: &GraphPlan) -> Option<i64> {
+        plan.projections.iter().find_map(|projection| {
+            let Projection::Expression {
+                expression: ScalarExpression::Literal(Literal::Integer(length)),
+                alias,
+            } = projection
+            else {
+                return None;
+            };
+            (alias == "hops").then_some(*length)
+        })
     }
 }
