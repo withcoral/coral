@@ -155,7 +155,9 @@ shared graph IR and let validation, catalog checks, SQL lowering, and execution
 remain separate. The supported slice is intentionally graph-query oriented:
 
 - exactly one query operation or anonymous selection set;
-- exactly one included root field whose field name is the graph node label;
+- exactly one included root field whose field name is the graph node label, or
+  a declaration-aware generated-client alias such as `service`, `Services`, or
+  `services` when the alias resolves to exactly one declared label;
 - root field aliases, which are accepted for generated-client compatibility but
   do not change Coral's flat tabular result shape;
 - scalar property selections with optional GraphQL aliases;

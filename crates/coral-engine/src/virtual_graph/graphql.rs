@@ -86,11 +86,13 @@ struct GraphqlVariableDeclarations {
 /// Parses and compiles the Coral-supported read-only GraphQL virtual graph subset.
 ///
 /// The first GraphQL slice is intentionally root-node oriented: one query
-/// operation with one root field whose name is the graph node label. Selected
-/// scalar fields become property projections, and supported root arguments
-/// compile into predicates, ordering, offsets, limits, and distinct row
-/// selection. Relationship fields use the explicit `out_TYPE`, `in_TYPE`, and
-/// `any_TYPE` traversal convention when a graph declaration is available.
+/// operation with one root field whose name is the graph node label, or a
+/// declaration-aware generated-client alias when a graph declaration is
+/// available. Selected scalar fields become property projections, and supported
+/// root arguments compile into predicates, ordering, offsets, limits, and
+/// distinct row selection. Relationship fields use the explicit `out_TYPE`,
+/// `in_TYPE`, and `any_TYPE` traversal convention when a graph declaration is
+/// available.
 ///
 /// # Errors
 ///
@@ -399,11 +401,12 @@ fn compile_root_field(
         ));
     }
 
-    let variable = variable_for_label(&root.name);
+    let label = resolve_root_label(&root.name, graph, format!("{path}.name"))?;
+    let variable = variable_for_label(&label);
     let mut plan = GraphPlan {
         nodes: vec![NodePattern {
             variable: variable.clone(),
-            label: root.name.clone(),
+            label: label.clone(),
         }],
         relationships: Vec::new(),
         optional_relationships: Vec::new(),
@@ -424,7 +427,7 @@ fn compile_root_field(
         &root.selection_set,
         &NodeContext {
             variable: variable.clone(),
-            label: root.name.clone(),
+            label,
             is_root: true,
             edge_variable: None,
             edge_relationship_type: None,
@@ -453,6 +456,47 @@ fn compile_root_field(
     }
 
     Ok(plan)
+}
+
+fn resolve_root_label(
+    root_name: &str,
+    graph: Option<&Declaration>,
+    path: impl Into<String>,
+) -> Result<String, CoreError> {
+    let Some(graph) = graph else {
+        return Ok(root_name.to_string());
+    };
+    if graph.node(root_name).is_some() {
+        return Ok(root_name.to_string());
+    }
+
+    let matching_labels = graph
+        .nodes
+        .iter()
+        .filter(|node| root_field_aliases_for_label(&node.label).contains(root_name))
+        .map(|node| node.label.as_str())
+        .collect::<Vec<_>>();
+    match matching_labels.as_slice() {
+        [label] => Ok((*label).to_string()),
+        [] => Ok(root_name.to_string()),
+        labels => Err(unsupported(
+            path,
+            format!(
+                "GraphQL root field '{root_name}' is ambiguous across node labels {}; use the exact graph label instead",
+                labels.join(", ")
+            ),
+        )),
+    }
+}
+
+fn root_field_aliases_for_label(label: &str) -> BTreeSet<String> {
+    let lower_first = variable_for_label(label);
+    let mut aliases = BTreeSet::from([lower_first.clone()]);
+    if !label.ends_with('s') {
+        aliases.insert(format!("{label}s"));
+        aliases.insert(format!("{lower_first}s"));
+    }
+    aliases
 }
 
 #[derive(Debug, Clone)]
@@ -4344,6 +4388,88 @@ mod tests {
             ]
         );
         assert_eq!(plan.limit, Some(2));
+    }
+
+    #[test]
+    fn compiles_declaration_aware_root_field_aliases() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph(
+            &graph,
+            r"
+            query {
+              services {
+                __typename
+                service: name
+              }
+            }
+            ",
+        )
+        .expect("GraphQL declaration-aware root field alias should compile");
+
+        assert_eq!(
+            plan.nodes,
+            vec![NodePattern {
+                variable: "service".to_string(),
+                label: "Service".to_string(),
+            }]
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Literal {
+                    literal: Literal::String("Service".to_string()),
+                    alias: "__typename".to_string(),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_declaration_aware_root_field_aliases() {
+        let graph = Declaration::from_yaml(
+            r"
+version: 1
+name: ambiguous_roots
+nodes:
+  - label: User
+    table: { schema: ops, name: users }
+    key: id
+    properties:
+      name: name
+  - label: user
+    table: { schema: ops, name: lower_users }
+    key: id
+    properties:
+      name: name
+",
+        )
+        .expect("graph should parse");
+
+        let error = compile_graphql_for_graph(
+            &graph,
+            r"
+            query {
+              users {
+                name
+              }
+            }
+            ",
+        )
+        .expect_err("ambiguous declaration-aware root field alias should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("GraphQL root field 'users' is ambiguous"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

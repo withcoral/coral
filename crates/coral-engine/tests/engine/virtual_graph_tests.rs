@@ -241,6 +241,48 @@ async fn graphql_root_query_executes_against_synthetic_file_sources() {
 }
 
 #[tokio::test]
+async fn graphql_declaration_root_field_alias_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          services(
+            where: { tier: { eq: "prod" } }
+            orderBy: [{ field: name, direction: ASC }]
+          ) {
+            service: name
+            tier
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("GraphQL declaration-aware root field alias should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("FROM \"ops\".\"services\" AS \"n0\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "tier": "prod"}),
+            json!({"service": "deployments", "tier": "prod"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_shorthand_where_filters_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
