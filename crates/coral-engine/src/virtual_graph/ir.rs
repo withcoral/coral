@@ -215,6 +215,25 @@ pub enum ScalarExpression {
         /// Optional length expression.
         length: Option<Box<ScalarExpression>>,
     },
+    /// Return the leftmost characters from a scalar string expression.
+    Left {
+        /// Source expression.
+        expression: Box<ScalarExpression>,
+        /// Character count expression.
+        count: Box<ScalarExpression>,
+    },
+    /// Return the rightmost characters from a scalar string expression.
+    Right {
+        /// Source expression.
+        expression: Box<ScalarExpression>,
+        /// Character count expression.
+        count: Box<ScalarExpression>,
+    },
+    /// Reverse the characters in a scalar string expression.
+    Reverse {
+        /// Inner expression to reverse.
+        expression: Box<ScalarExpression>,
+    },
     /// Numeric binary arithmetic over scalar expressions.
     Arithmetic {
         /// Arithmetic operator.

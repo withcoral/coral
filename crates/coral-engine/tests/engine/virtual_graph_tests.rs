@@ -1767,6 +1767,51 @@ async fn cypher_character_length_and_substring_execute_against_synthetic_sources
 }
 
 #[tokio::test]
+async fn cypher_left_right_and_reverse_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE left(service.name, 7) = 'billing' \
+         RETURN service.name AS service, \
+                right(service.name, 3) AS suffix, \
+                reverse(service.tier) AS reversed_tier \
+         ORDER BY reverse(service.name)",
+    )
+    .await
+    .expect("left, right, and reverse query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("left(\"n0\".\"service_name\", 7) = 'billing'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("right(\"n0\".\"service_name\", 3) AS \"suffix\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "service": "billing-api",
+            "suffix": "api",
+            "reversed_tier": "dorp",
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_scalar_null_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

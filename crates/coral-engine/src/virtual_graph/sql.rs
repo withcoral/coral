@@ -1415,6 +1415,15 @@ impl<'a> Lowerer<'a> {
                 start,
                 length,
             } => self.render_substring_expression(expression, start, length.as_deref()),
+            ScalarExpression::Left { expression, count } => {
+                self.render_binary_function_expression("left", expression, count)
+            }
+            ScalarExpression::Right { expression, count } => {
+                self.render_binary_function_expression("right", expression, count)
+            }
+            ScalarExpression::Reverse { expression } => {
+                self.render_unary_function_expression("reverse", expression)
+            }
             ScalarExpression::Arithmetic {
                 operator,
                 left,
@@ -1465,6 +1474,19 @@ impl<'a> Lowerer<'a> {
             self.render_scalar_expression(expression)?,
             self.render_scalar_expression(search)?,
             self.render_scalar_expression(replacement)?
+        ))
+    }
+
+    fn render_binary_function_expression(
+        &self,
+        function_name: &str,
+        left: &ScalarExpression,
+        right: &ScalarExpression,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "{function_name}({}, {})",
+            self.render_scalar_expression(left)?,
+            self.render_scalar_expression(right)?
         ))
     }
 
@@ -2826,6 +2848,82 @@ relationships: []
             translation
                 .sql()
                 .contains("ORDER BY SUBSTRING(\"n1\".\"service_name\" FROM (0 + 1)) ASC"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_left_right_and_reverse_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.projections = vec![
+            Projection::Expression {
+                expression: ScalarExpression::Right {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    })),
+                    count: Box::new(ScalarExpression::Literal(Literal::Integer(3))),
+                },
+                alias: "suffix".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Reverse {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    })),
+                },
+                alias: "reversed_tier".to_string(),
+            },
+        ];
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::Left {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                })),
+                count: Box::new(ScalarExpression::Literal(Literal::Integer(7))),
+            },
+            operator: ComparisonOperator::Equal,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                "billing".to_string(),
+            ))),
+        }));
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::Scalar(ScalarExpression::Reverse {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                })),
+            }),
+            direction: OrderDirection::Ascending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("left, right, and reverse expressions should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("SELECT right(\"n1\".\"service_name\", 3) AS \"suffix\", reverse(\"n1\".\"tier\") AS \"reversed_tier\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE left(\"n1\".\"service_name\", 7) = 'billing'"),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("ORDER BY reverse(\"n1\".\"service_name\") ASC"),
             "{}",
             translation.sql()
         );

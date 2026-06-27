@@ -104,7 +104,7 @@ The supported foundation subset is intentionally narrow:
   ordering, including `coalesce`, scalar casts, string case conversion,
   whitespace trimming, `replace`, character length via `size`, `char_length`,
   and `character_length`, and zero-based `substring` lowered to DataFusion
-  `SUBSTRING`;
+  `SUBSTRING`, plus `left`, `right`, and `reverse`;
 - inline node property maps normalized to equality predicates;
 - inline relationship property maps normalized to equality predicates, with
   internal relationship variables for anonymous edges;

@@ -1200,6 +1200,15 @@ fn compile_order_expression(
         Expression::FunctionCall(function) if is_substring_function(function) => {
             compile_substring_order_expression(function, path, context)
         }
+        Expression::FunctionCall(function) if is_left_function(function) => {
+            compile_left_order_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_right_function(function) => {
+            compile_right_order_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_reverse_function(function) => {
+            compile_reverse_order_expression(function, path, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             aggregate_order_expression_for_projection(function, projections, path, context)
         }
@@ -1510,6 +1519,15 @@ fn compile_projection(
         }
         Expression::FunctionCall(function) if is_substring_function(function) => {
             compile_substring_projection(function, item, path, context)
+        }
+        Expression::FunctionCall(function) if is_left_function(function) => {
+            compile_left_projection(function, item, path, context)
+        }
+        Expression::FunctionCall(function) if is_right_function(function) => {
+            compile_right_projection(function, item, path, context)
+        }
+        Expression::FunctionCall(function) if is_reverse_function(function) => {
+            compile_reverse_projection(function, item, path, context)
         }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             compile_aggregate_projection(function, item, path, context)
@@ -1848,6 +1866,66 @@ fn compile_substring_projection(
     })
 }
 
+fn compile_left_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_left_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "left".to_string(), variable_name),
+    })
+}
+
+fn compile_right_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_right_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "right".to_string(), variable_name),
+    })
+}
+
+fn compile_reverse_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_reverse_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "reverse".to_string(), variable_name),
+    })
+}
+
 fn compile_coalesce_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -2076,6 +2154,44 @@ fn compile_substring_scalar_expression(
     }
 }
 
+fn compile_left_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let (expression, count) =
+        compile_two_scalar_function_arguments(function, path, "left", context)?;
+    Ok(ScalarExpression::Left {
+        expression: Box::new(expression),
+        count: Box::new(count),
+    })
+}
+
+fn compile_right_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let (expression, count) =
+        compile_two_scalar_function_arguments(function, path, "right", context)?;
+    Ok(ScalarExpression::Right {
+        expression: Box::new(expression),
+        count: Box::new(count),
+    })
+}
+
+fn compile_reverse_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Reverse {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "reverse", context,
+        )?),
+    })
+}
+
 fn compile_single_scalar_function_argument(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -2090,6 +2206,25 @@ fn compile_single_scalar_function_argument(
         ));
     };
     compile_scalar_expression(argument, format!("{path}.arguments[0]"), context)
+}
+
+fn compile_two_scalar_function_arguments(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    function_name: &str,
+    context: &CypherCompileContext,
+) -> Result<(ScalarExpression, ScalarExpression), CoreError> {
+    let path = path.into();
+    let [left, right] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            format!("{function_name}() requires exactly two arguments"),
+        ));
+    };
+    Ok((
+        compile_scalar_expression(left, format!("{path}.arguments[0]"), context)?,
+        compile_scalar_expression(right, format!("{path}.arguments[1]"), context)?,
+    ))
 }
 
 fn compile_scalar_expression(
@@ -2159,6 +2294,15 @@ fn compile_scalar_expression(
         Expression::FunctionCall(function) if is_substring_function(function) => {
             compile_substring_scalar_expression(function, path, context)
         }
+        Expression::FunctionCall(function) if is_left_function(function) => {
+            compile_left_scalar_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_right_function(function) => {
+            compile_right_scalar_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_reverse_function(function) => {
+            compile_reverse_scalar_expression(function, path, context)
+        }
         Expression::FunctionCall(function) => Err(unsupported(
             path,
             format!(
@@ -2168,7 +2312,7 @@ fn compile_scalar_expression(
         )),
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), or substring() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), or reverse() expressions",
         )),
     }
 }
@@ -2457,6 +2601,30 @@ fn compile_substring_order_expression(
     compile_substring_scalar_expression(function, path, context).map(OrderExpression::Scalar)
 }
 
+fn compile_left_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_left_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
+fn compile_right_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_right_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
+fn compile_reverse_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_reverse_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
 fn compile_optional_predicate_scalar_expression(
     expression: &Expression,
     path: impl Into<String>,
@@ -2509,6 +2677,15 @@ fn compile_optional_predicate_scalar_expression(
         )),
         Expression::FunctionCall(function) if is_substring_function(function) => Ok(Some(
             compile_substring_scalar_expression(function, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_left_function(function) => Ok(Some(
+            compile_left_scalar_expression(function, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_right_function(function) => Ok(Some(
+            compile_right_scalar_expression(function, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_reverse_function(function) => Ok(Some(
+            compile_reverse_scalar_expression(function, path, context)?,
         )),
         _ => Ok(None),
     }
@@ -2593,6 +2770,21 @@ fn compile_scalar_predicate_rhs(
                 compile_substring_scalar_expression(function, path, context)?,
             ))
         }
+        Expression::FunctionCall(function) if is_left_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_left_scalar_expression(function, path, context)?,
+            ))
+        }
+        Expression::FunctionCall(function) if is_right_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_right_scalar_expression(function, path, context)?,
+            ))
+        }
+        Expression::FunctionCall(function) if is_reverse_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_reverse_scalar_expression(function, path, context)?,
+            ))
+        }
         Expression::PropertyLookup { .. } => Ok(ScalarPredicateRhs::Expression(
             ScalarExpression::Property(compile_property_ref(expression, path)?),
         )),
@@ -2601,7 +2793,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), or substring() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), or reverse() expressions",
         )),
     }
 }
@@ -3023,6 +3215,27 @@ fn is_substring_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("substring")
+    )
+}
+
+fn is_left_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("left")
+    )
+}
+
+fn is_right_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("right")
+    )
+}
+
+fn is_reverse_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("reverse")
     )
 }
 
@@ -6203,6 +6416,82 @@ mod tests {
             error
                 .to_string()
                 .contains("substring() requires exactly two or three arguments"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn compiles_left_right_and_reverse_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE left(service.name, 7) = 'billing' \
+             RETURN right(service.name, 3) AS suffix, \
+                    reverse(service.tier) AS reversed_tier \
+             ORDER BY reverse(service.name)",
+        )
+        .expect("left, right, and reverse scalar expressions should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Left {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    })),
+                    count: Box::new(ScalarExpression::Literal(Literal::Integer(7))),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                    "billing".to_string()
+                ))),
+            }))
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::Right {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "name".to_string(),
+                        })),
+                        count: Box::new(ScalarExpression::Literal(Literal::Integer(3))),
+                    },
+                    alias: "suffix".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Reverse {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "tier".to_string(),
+                        })),
+                    },
+                    alias: "reversed_tier".to_string(),
+                },
+            ]
+        );
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Reverse { .. }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
+    }
+
+    #[test]
+    fn rejects_left_with_unsupported_arity() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN left(service.name) AS prefix",
+        )
+        .expect_err("left() requires a count argument");
+
+        assert!(
+            error
+                .to_string()
+                .contains("left() requires exactly two arguments"),
             "{error}"
         );
     }
