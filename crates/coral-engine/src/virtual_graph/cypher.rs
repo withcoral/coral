@@ -1165,6 +1165,9 @@ fn compile_order_expression(
         Expression::FunctionCall(function) if is_labels_function(function) => {
             compile_labels_order_expression(function, path, plan, context)
         }
+        Expression::FunctionCall(function) if is_keys_function(function) => {
+            compile_keys_order_expression(function, path, plan, context)
+        }
         Expression::FunctionCall(function) => {
             if let Some(expression) =
                 compile_scalar_function_expression(function, path.clone(), context)?
@@ -2210,6 +2213,28 @@ fn compile_labels_order_expression(
         context,
     )?;
     Ok(OrderExpression::NodeLabels { variable, label })
+}
+
+fn compile_keys_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    let path = path.into();
+    let variable = compile_single_variable_function_argument(
+        function,
+        format!("{path}.arguments"),
+        "keys() supports exactly one graph variable argument",
+        context,
+    )?;
+    if !plan_uses_variable(plan, &variable) {
+        return Err(unsupported(
+            format!("{path}.arguments[0]"),
+            format!("keys() argument '{variable}' is not a bound graph variable"),
+        ));
+    }
+    Ok(OrderExpression::PropertyKeys { variable })
 }
 
 fn compile_arithmetic_order_expression(
@@ -5071,6 +5096,34 @@ mod tests {
                 },
                 direction: OrderDirection::Descending,
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_order_by_keys_function() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             RETURN service.name AS service \
+             ORDER BY keys(service) DESC, keys(owns)",
+        )
+        .expect("keys() order expressions should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::PropertyKeys {
+                        variable: "service".to_string(),
+                    },
+                    direction: OrderDirection::Descending,
+                },
+                OrderKey {
+                    expression: OrderExpression::PropertyKeys {
+                        variable: "owns".to_string(),
+                    },
+                    direction: OrderDirection::Ascending,
+                },
+            ]
         );
     }
 

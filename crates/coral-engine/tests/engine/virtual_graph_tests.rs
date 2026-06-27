@@ -2934,6 +2934,40 @@ async fn cypher_keys_projection_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_order_by_keys_function_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service {name: 'billing-api'}) \
+         RETURN service.name AS service, keys(service) AS service_keys \
+         ORDER BY keys(service), keys(owns)",
+    )
+    .await
+    .expect("keys() order expression should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ORDER BY CASE WHEN \"n1\".\"id\" IS NULL THEN NULL ELSE make_array('active', 'id', 'name', 'risk', 'team', 'tier') END ASC"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "service": "billing-api",
+            "service_keys": ["active", "id", "name", "risk", "team", "tier"],
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_property_key_membership_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

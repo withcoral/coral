@@ -1168,6 +1168,7 @@ impl<'a> Lowerer<'a> {
             OrderExpression::NodeLabels { variable, label } => {
                 self.render_node_labels_ref(variable, label)
             }
+            OrderExpression::PropertyKeys { variable } => self.render_property_keys_ref(variable),
             OrderExpression::RelationshipType {
                 variable,
                 relationship_type,
@@ -2085,6 +2086,31 @@ relationships:
              JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
              JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"service_id\" = \"n1\".\"id\" \
              WHERE \"n1\".\"tier\" = 'prod' ORDER BY \"n0\".\"full_name\" ASC LIMIT 25"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_property_keys_ordering() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::PropertyKeys {
+                variable: "service".to_string(),
+            },
+            direction: OrderDirection::Descending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("property key ordering should lower");
+
+        assert!(
+            translation.sql().contains(
+                "ORDER BY CASE WHEN \"n1\".\"id\" IS NULL THEN NULL ELSE \
+                 make_array('name', 'risk', 'tier') END DESC"
+            ),
+            "{}",
+            translation.sql()
         );
     }
 

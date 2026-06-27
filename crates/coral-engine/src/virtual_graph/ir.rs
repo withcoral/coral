@@ -610,6 +610,11 @@ pub enum OrderExpression {
         /// Static graph node label.
         label: String,
     },
+    /// Order by the static property keys of a graph variable.
+    PropertyKeys {
+        /// Graph variable.
+        variable: String,
+    },
     /// Order by a scalar expression.
     Scalar(ScalarExpression),
     /// Order by a literal value.

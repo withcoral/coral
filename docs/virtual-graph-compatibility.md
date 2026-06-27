@@ -87,7 +87,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `RETURN keys(variable)` | Supported foundation | Projects declared property keys for node and relationship variables via DataFusion `make_array`; identity keys are included only when declared as graph properties |
 | `RETURN sum/avg/min/max(property)` | Supported foundation | Numeric aggregate projections over mapped properties |
 | `RETURN property, count(...)` | Supported foundation | Uses Cypher-style implicit grouping over projected properties |
-| `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, identity expressions including `elementId(...)`, direct aggregate expressions that match `RETURN` projections, projection aliases including aggregate aliases, and non-negative integer offsets/limits |
+| `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, identity expressions including `elementId(...)`, static metadata functions including `labels(...)` and `keys(...)`, direct aggregate expressions that match `RETURN` projections, projection aliases including aggregate aliases, and non-negative integer offsets/limits |
 | `WITH` pass-through | Supported foundation | Transparent `WITH var, ...` and `WITH *` preserve bound graph variables |
 | Terminal `WITH` projections | Supported foundation | Terminal projection, alias filtering, ordering, skip, and limit are supported without staging another `MATCH` |
 | `OPTIONAL MATCH` | Supported foundation | Requires an already-bound node anchor and one connected pattern part; preserves unmatched rows with nullable optional bindings |

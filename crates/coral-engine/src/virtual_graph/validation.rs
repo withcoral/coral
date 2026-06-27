@@ -1424,6 +1424,9 @@ impl<'a> GraphPlanValidator<'a> {
             OrderExpression::NodeLabels { variable, label } => {
                 self.validate_node_labels_projection(variable, label, format!("{path}.variable"))
             }
+            OrderExpression::PropertyKeys { variable } => {
+                self.validate_property_keys_projection(variable, format!("{path}.variable"))
+            }
             OrderExpression::RelationshipType {
                 variable,
                 relationship_type,
@@ -1488,6 +1491,17 @@ impl<'a> GraphPlanValidator<'a> {
                             label: projected_label,
                             ..
                         } if projected == variable && projected_label == label
+                    )
+                })
+            }
+            OrderExpression::PropertyKeys { variable } => {
+                self.plan.projections.iter().any(|projection| {
+                    matches!(
+                        projection,
+                        Projection::PropertyKeys {
+                            variable: projected,
+                            ..
+                        } if projected == variable
                     )
                 })
             }
